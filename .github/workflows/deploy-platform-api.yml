@@ -1,6 +1,9 @@
 name: Deploy Platform API
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       confirm_production:
@@ -17,7 +20,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: ${{ inputs.confirm_production == 'DEPLOY' }}
+    if: ${{ github.event_name == 'push' || inputs.confirm_production == 'DEPLOY' }}
     runs-on: ubuntu-latest
     environment: production
     defaults:
