@@ -1,0 +1,15 @@
+name = "cryptophys-platform-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+PLATFORM_NAME = "cryptophys-cloud-platform"
+PLATFORM_ENVIRONMENT = "production"
+API_CONTRACT_VERSION = "v1"
+
+# No routes, custom domains, secrets, or storage bindings are configured.
+# Add bindings only after ownership and account-specific IDs are reviewed.
