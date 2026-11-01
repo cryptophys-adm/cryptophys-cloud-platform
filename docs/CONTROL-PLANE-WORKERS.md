@@ -14,7 +14,11 @@ This change adds six separately deployable TypeScript Worker service boundaries 
 
 ## Mandatory AI Engine architecture
 
-All six capability Workers are required to use the shared `cryptophys-ai-engine` for AI-assisted tasks, with inference through Cloudflare Workers AI on the Free plan. This is an accepted architecture requirement documented in [`architecture/AI-ENGINE-REQUIREMENT.md`](../architecture/AI-ENGINE-REQUIREMENT.md). The AI Engine does not exist in this repository yet; the requirement is not implemented by this scaffold. The engine must use only models confirmed available on the account's Free plan and enforce the shared 10,000-Neuron/day allocation, with no paid or external fallback. AI must remain advisory: policy decisions, canonical state, audit evidence, deployment authorization, and recovery execution remain deterministic and governed by explicit controls.
+**One Worker = one dedicated AI Engine.** Each of the six capability Workers must implement its own inference logic using its own Cloudflare Workers AI `env.AI` binding, model/task allow-list, schemas, output validation, and error/usage controls. There is no shared AI Engine Worker. A shared source library may be used for common mechanics, but each Worker runs and configures its own engine. See [the AI Engine architecture decision](../architecture/AI-ENGINE-REQUIREMENT.md).
+
+The six engines remain subject to one account-wide Workers AI Free allocation; six Worker instances do not create six separate free quotas. No paid or external fallback is allowed. AI is advisory only; policy decisions, canonical state, audit integrity, deployment authorization, and recovery execution remain deterministic and explicitly controlled.
+
+The current Worker code is still scaffold-only; none of the six AI Engines is implemented or production-ready yet.
 
 ## Safety and limitations
 
