@@ -16,12 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  validate-confirmation:
     runs-on: ubuntu-latest
-    environment: production
-    defaults:
-      run:
-        working-directory: workers/platform-api
     steps:
       - name: Require exact production confirmation
         shell: bash
@@ -33,6 +29,15 @@ jobs:
             echo "Production deployment requires the exact input DEPLOY."
             exit 1
           fi
+
+  deploy:
+    needs: validate-confirmation
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: workers/platform-api
+    steps:
       - name: Checkout source
         uses: actions/checkout@v4
       - name: Setup Node.js
