@@ -7,7 +7,7 @@
 
 The initial D1 schema was applied before the resource ownership register was updated. A read-only inspection found the seven application tables and their indexes, with no application rows at inspection time. The initial schema has no foreign-key constraints for service-scoped records, and it uses globally unique idempotency keys even though requests and records carry a `service_id`.
 
-The existing `0001_initial.sql` must remain immutable because it has been applied to the live database.
+The existing `0001_initial.sql` must remain immutable because it has been applied to the live database. The read-only inspection did not find a `d1_migrations` table, so the live schema's Wrangler migration history is not reconciled with repository migration files.
 
 ## Proposed decision
 
