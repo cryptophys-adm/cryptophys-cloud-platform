@@ -13,11 +13,11 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "workers/platform-registry/src/**/*.ts",
-    "workers/deployment-orchestrator/src/**/*.ts",
-    "workers/policy-engine/src/**/*.ts",
-    "workers/drift-detector/src/**/*.ts",
-    "workers/audit-ledger/src/**/*.ts",
-    "workers/recovery-manager/src/**/*.ts"
+    "platform-registry/src/**/*.ts",
+    "deployment-orchestrator/src/**/*.ts",
+    "policy-engine/src/**/*.ts",
+    "drift-detector/src/**/*.ts",
+    "audit-ledger/src/**/*.ts",
+    "recovery-manager/src/**/*.ts"
   ]
 }
