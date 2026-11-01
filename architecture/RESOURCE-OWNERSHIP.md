@@ -5,7 +5,7 @@ Every Cloudflare resource must have an owner, purpose, environment, data classif
 | Resource class | Initial status | Rule |
 |---|---|---|
 | Worker: `cryptophys-platform-api` | Defined in Git; not deployed | Dedicated Worker name; manual production deploy |
-| D1 | Not provisioned | Define schema, migrations, backups, recovery, and data owner first |
+| D1: `cryptophys-control-plane` | Observed in the connected account; ownership, environment, data classification, lifecycle/retention, backup, and recovery approval are pending. No Worker binding is authorized. | Keep unbound and unused until this record is reviewed and required recovery controls are verified. Keep the account-specific database ID outside Git per ADR-0001. |
 | KV | Not provisioned | Define purpose, TTL, and consistency expectations |
 | R2 | Not provisioned | Define purpose, lifecycle, retention, and access policy |
 | Queues | Not provisioned | Define delivery semantics, retries, dead-letter strategy, and consumer |
