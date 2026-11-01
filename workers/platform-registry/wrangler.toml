@@ -1,0 +1,11 @@
+name = "cryptophys-platform-registry"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+[observability]
+enabled = true
+[vars]
+SERVICE_NAME = "cryptophys-platform-registry"
+SERVICE_ENVIRONMENT = "development"
+API_CONTRACT_VERSION = "v1"
+SERVICE_CONFIGURED = "false"
