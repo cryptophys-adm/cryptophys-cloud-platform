@@ -1,0 +1,37 @@
+name: Validate Control Plane Workers
+
+on:
+  pull_request:
+    paths:
+      - "workers/**"
+      - "docs/CONTROL-PLANE-WORKERS.md"
+      - ".github/workflows/validate-control-plane.yml"
+  push:
+    branches: [main]
+    paths:
+      - "workers/**"
+      - "docs/CONTROL-PLANE-WORKERS.md"
+      - ".github/workflows/validate-control-plane.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck-control-plane:
+    name: Type-check Control Plane Worker services
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/platform-api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install TypeScript toolchain
+        run: npm install
+      - name: Type-check six Control Plane Workers
+        run: npx tsc --noEmit -p ../control-plane-tsconfig.json

@@ -1,0 +1,15 @@
+name = "cryptophys-policy-engine"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+SERVICE_NAME = "cryptophys-policy-engine"
+SERVICE_ENVIRONMENT = "development"
+API_CONTRACT_VERSION = "v1"
+SERVICE_CONFIGURED = "false"
+
+# No production routes, secrets, or storage bindings are configured.
