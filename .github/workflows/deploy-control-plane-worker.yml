@@ -75,8 +75,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: ${{ steps.target.outputs.directory }}/package.json
 
       - name: Install dependencies and type-check
         working-directory: ${{ steps.target.outputs.directory }}
