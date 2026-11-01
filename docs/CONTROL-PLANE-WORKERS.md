@@ -12,6 +12,10 @@ This change adds six separately deployable TypeScript Worker service boundaries 
 | `cryptophys-audit-ledger` | Append-only audit records | Scaffold only; storage/integrity not configured |
 | `cryptophys-recovery-manager` | Reviewed recovery plans | Scaffold only; recovery execution disabled |
 
+## Mandatory AI Engine architecture
+
+All six capability Workers are required to use the shared `cryptophys-ai-engine` for AI-assisted tasks, with inference through Cloudflare Workers AI on the Free plan. This is an accepted architecture requirement documented in [`architecture/AI-ENGINE-REQUIREMENT.md`](../architecture/AI-ENGINE-REQUIREMENT.md). The AI Engine does not exist in this repository yet; the requirement is not implemented by this scaffold. The engine must use only models confirmed available on the account's Free plan and enforce the shared 10,000-Neuron/day allocation, with no paid or external fallback. AI must remain advisory: policy decisions, canonical state, audit evidence, deployment authorization, and recovery execution remain deterministic and governed by explicit controls.
+
 ## Safety and limitations
 
 - No production routes, custom domains, DNS, secrets, or storage bindings are added.
