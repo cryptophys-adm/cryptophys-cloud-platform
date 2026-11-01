@@ -169,4 +169,44 @@ expect_integrity_error(
 )
 
 assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-print("PASS: initial schema, forward migration, data preservation, indexes, CHECK constraints, foreign keys, and service-scoped idempotency")
+# A failed forward migration must not leave a partially rebuilt schema.
+# This mirrors D1's transactional migration behavior using an isolated SQLite transaction.
+failure_db = sqlite3.connect(":memory:")
+failure_db.execute("PRAGMA foreign_keys = ON")
+failure_db.executescript(INITIAL.read_text(encoding="utf-8"))
+failure_db.execute(
+    """INSERT INTO service_registry
+       (service_id, display_name, environment, status, created_at, updated_at)
+       VALUES ('svc-valid', 'Service', 'development', 'registered', 't0', 't0')"""
+)
+failure_db.execute(
+    """INSERT INTO deployment_requests
+       (request_id, service_id, requested_version, requested_by, status, idempotency_key,
+        details_json, created_at, updated_at)
+       VALUES ('orphan-request', 'missing-service', 'v1', 'test', 'pending', 'orphan-key', '{}', 't0', 't0')"""
+)
+failure_db.commit()
+
+try:
+    failure_db.executescript("BEGIN;\\n" + FORWARD.read_text(encoding="utf-8") + "\\nCOMMIT;")
+except sqlite3.IntegrityError:
+    failure_db.rollback()
+else:
+    raise AssertionError("orphan service reference: forward migration should fail closed")
+
+tables_after_failure = {
+    row[0] for row in failure_db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+}
+assert "deployment_requests" in tables_after_failure
+assert "deployment_requests_new" not in tables_after_failure, (
+    "failed migration left a partially rebuilt deployment_requests table"
+)
+assert failure_db.execute(
+    "SELECT service_id FROM deployment_requests WHERE request_id='orphan-request'"
+).fetchone() == ("missing-service",), "failed migration did not preserve the original row"
+assert not failure_db.execute("PRAGMA foreign_key_list(deployment_requests)").fetchall(), (
+    "failed migration unexpectedly replaced the original deployment_requests schema"
+)
+failure_db.close()
+
+print("PASS: initial schema, forward migration, data preservation, indexes, CHECK constraints, foreign keys, service-scoped idempotency, and fail-closed rollback")
