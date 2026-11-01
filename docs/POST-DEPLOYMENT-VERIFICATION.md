@@ -31,7 +31,7 @@ curl --fail --silent --show-error --max-time 20 "$BASE_URL/"
 printf '\n'
 ```
 
-Confirm that each response is valid JSON and reports the expected service and environment metadata. Do not infer dependency health from a 200 response alone.
+Validate each endpoint against its own response contract:\n- `/health`: `status=ok`, `service=cryptophys-cloud-platform`, `environment=production`, `contract_version=v1`.\n- `/ready`: `status=ready`, `service=cryptophys-cloud-platform`, and an empty `dependencies` array.\n- `/`: `service=cryptophys-cloud-platform`, `api_version=v1`, and `administrative_api=not_implemented`.\n\nDo not require `environment` on `/ready` or `/`; those endpoints do not currently return that field. Do not infer dependency health from a 200 response alone.
 
 ## Custom domain gate
 
@@ -44,7 +44,7 @@ The production deployment workflow must:
 2. Run type-checking and verify Cloudflare credentials before deployment.
 3. Check the deployed public health and readiness endpoints after deployment.
 4. Fail if either endpoint returns a non-success HTTP status or unexpected JSON.
-5. Record the workflow run URL and the resulting deployment version.
+5. Record the workflow run URL and active Worker version in the deployment job log.
 
 ## Known implementation limits
 
