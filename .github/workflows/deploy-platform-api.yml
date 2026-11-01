@@ -17,13 +17,22 @@ concurrency:
 
 jobs:
   deploy:
-    if: ${{ inputs.confirm_production == 'DEPLOY' }}
     runs-on: ubuntu-latest
     environment: production
     defaults:
       run:
         working-directory: workers/platform-api
     steps:
+      - name: Require exact production confirmation
+        shell: bash
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM_PRODUCTION" != "DEPLOY" ]]; then
+            echo "Production deployment requires the exact input DEPLOY."
+            exit 1
+          fi
       - name: Checkout source
         uses: actions/checkout@v4
       - name: Setup Node.js
