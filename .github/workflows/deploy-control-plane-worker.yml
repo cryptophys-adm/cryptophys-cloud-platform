@@ -1,0 +1,134 @@
+name: Deploy Control Plane Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: "Select exactly one Control Plane Worker"
+        required: true
+        type: choice
+        options:
+          - cryptophys-platform-registry
+          - cryptophys-deployment-orchestrator
+          - cryptophys-policy-engine
+          - cryptophys-drift-detector
+          - cryptophys-audit-ledger
+          - cryptophys-recovery-manager
+      confirm_production:
+        description: "Type DEPLOY to deploy the selected Worker from reviewed Git source"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-${{ inputs.worker }}-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit production confirmation
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM_PRODUCTION" == "DEPLOY" ]] || {
+            echo "Production deployment requires the exact input DEPLOY."
+            exit 1
+          }
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@v4
+
+      - name: Resolve selected source directory
+        id: target
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          case "$WORKER" in
+            cryptophys-platform-registry) dir="workers/platform-registry" ;;
+            cryptophys-deployment-orchestrator) dir="workers/deployment-orchestrator" ;;
+            cryptophys-policy-engine) dir="workers/policy-engine" ;;
+            cryptophys-drift-detector) dir="workers/drift-detector" ;;
+            cryptophys-audit-ledger) dir="workers/audit-ledger" ;;
+            cryptophys-recovery-manager) dir="workers/recovery-manager" ;;
+            *) echo "Unrecognized Worker"; exit 1 ;;
+          esac
+          test -f "$dir/wrangler.toml"
+          test -f "$dir/src/index.ts"
+          echo "directory=$dir" >> "$GITHUB_OUTPUT"
+          echo "worker=$WORKER" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ steps.target.outputs.directory }}/package.json
+
+      - name: Install dependencies and type-check
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: |
+          set -euo pipefail
+          npm install
+          npm run typecheck
+
+      - name: Verify Cloudflare credentials
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          npx wrangler whoami
+
+      - name: Deploy selected Worker from repository source
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: npx wrangler deploy
+
+      - name: Verify deployed health contract
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKER: ${{ steps.target.outputs.worker }}
+        run: |
+          set -euo pipefail
+          subdomain="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" | jq -er '.result.subdomain')"
+          base="https://${WORKER}.${subdomain}.workers.dev"
+          health="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 "${base}/health")"
+          printf '%s' "$health" | jq -e --arg service "$WORKER" '
+            .status == "ok" and .service == $service and .contract_version == "v1"
+          '
+          # Foundation scaffolds must remain explicitly NOT ready until their
+          # persistence, authorization, policy, and AI requirements are implemented.
+          readiness_code="$(curl --silent --show-error --retry 2 --retry-delay 1 --max-time 20 \
+            --output /tmp/readiness.json --write-out '%{http_code}' "${base}/ready")"
+          if [[ "$readiness_code" == "503" ]]; then
+            jq -e '.status == "not_configured" and .production_ready == false' /tmp/readiness.json
+            echo "Deployment verified as source-aligned scaffold; operational readiness remains blocked."
+          elif [[ "$readiness_code" == "200" ]]; then
+            jq -e '.status == "ready" and .production_ready == true' /tmp/readiness.json
+          else
+            echo "Unexpected readiness HTTP status: $readiness_code"
+            cat /tmp/readiness.json
+            exit 1
+          fi
