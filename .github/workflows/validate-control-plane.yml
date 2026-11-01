@@ -6,12 +6,14 @@ on:
       - "workers/**"
       - "docs/CONTROL-PLANE-WORKERS.md"
       - ".github/workflows/validate-control-plane.yml"
+      - ".github/workflows/deploy-control-plane-worker.yml"
   push:
     branches: [main]
     paths:
       - "workers/**"
       - "docs/CONTROL-PLANE-WORKERS.md"
       - ".github/workflows/validate-control-plane.yml"
+      - ".github/workflows/deploy-control-plane-worker.yml"
   workflow_dispatch:
 
 permissions:
@@ -19,19 +21,34 @@ permissions:
 
 jobs:
   typecheck-control-plane:
-    name: Type-check Control Plane Worker services
+    name: Type-check and validate Control Plane Worker services
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: workers/platform-api
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Install TypeScript toolchain
+      - name: Install TypeScript and Wrangler toolchain
         run: npm install
       - name: Type-check six Control Plane Workers
         run: npx tsc --noEmit -p ../control-plane-tsconfig.json
+      - name: Validate all Worker bundles and Wrangler configurations without credentials
+        run: |
+          set -euo pipefail
+          for worker in \
+            platform-registry \
+            deployment-orchestrator \
+            policy-engine \
+            drift-detector \
+            audit-ledger \
+            recovery-manager; do
+            config="$GITHUB_WORKSPACE/workers/$worker/wrangler.toml"
+            test -f "$config"
+            test -f "$GITHUB_WORKSPACE/workers/$worker/src/index.ts"
+            npx wrangler deploy --dry-run --config "$config" --outdir "/tmp/cryptophys-$worker-dry-run"
+          done
