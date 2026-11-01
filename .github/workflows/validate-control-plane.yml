@@ -5,6 +5,9 @@ on:
     paths:
       - "workers/**"
       - "docs/CONTROL-PLANE-WORKERS.md"
+      - "docs/CONTROL-PLANE-DEPLOYMENT.md"
+      - "architecture/adr/**"
+      - "architecture/RESOURCE-OWNERSHIP.md"
       - ".github/workflows/validate-control-plane.yml"
   push:
     branches: [main]
