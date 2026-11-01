@@ -1,0 +1,4 @@
+# Replace with explicit maintainer teams when established.
+/.github/workflows/ @cryptophys-adm
+/architecture/ @cryptophys-adm
+/workers/ @cryptophys-adm
