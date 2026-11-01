@@ -73,6 +73,14 @@ jobs:
             .service == "cryptophys-cloud-platform" and
             (.dependencies | length == 0)
           '
+
+          deployment_version="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/cryptophys-platform-api/versions" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            | jq -er '.result.items[0].id')"
+
+          printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          printf 'Active Worker version: %s\n' "$deployment_version"
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
