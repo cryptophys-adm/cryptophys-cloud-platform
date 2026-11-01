@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   platform-api:
-    name: Type-check platform API
+    name: Type-check and validate Cloudflare Worker
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -27,3 +27,5 @@ jobs:
         run: npm install
       - name: Type-check
         run: npm run typecheck
+      - name: Validate Cloudflare Worker deployment configuration
+        run: npx wrangler deploy --dry-run --outdir /tmp/cryptophys-platform-api-dry-run
