@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   typecheck-control-plane:
-    name: Type-check Control Plane Worker services
+    name: Type-check and test Control Plane services
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -35,3 +35,5 @@ jobs:
         run: npm install
       - name: Type-check six Control Plane Workers
         run: npx tsc --noEmit -p ../control-plane-tsconfig.json
+      - name: Test D1 migrations against isolated SQLite
+        run: python3 ../control-plane-migrations/test_migrations.py
