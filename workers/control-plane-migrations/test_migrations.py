@@ -188,7 +188,7 @@ failure_db.execute(
 failure_db.commit()
 
 try:
-    failure_db.executescript("BEGIN;\\n" + FORWARD.read_text(encoding="utf-8") + "\\nCOMMIT;")
+    failure_db.executescript("BEGIN;\n" + FORWARD.read_text(encoding="utf-8") + "\nCOMMIT;")
 except sqlite3.IntegrityError:
     failure_db.rollback()
 else:
