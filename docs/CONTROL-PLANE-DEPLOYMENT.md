@@ -20,7 +20,7 @@ Schema files:
 - `workers/control-plane-migrations/0001_initial.sql` — already reflected in the observed live schema; do not edit in place.
 - `workers/control-plane-migrations/0002_service_referential_integrity.sql` — forward-only correction; not applied by CI or by this PR.
 
-The resource ownership register still requires maintainer review. Do not bind Workers to this D1 database or write production data until the resource owner, environment, data classification, lifecycle/retention, backup, and recovery plan are reviewed and recorded. Keep the account-specific database ID outside Git as required by ADR-0001.
+The read-only inspection did not find a `d1_migrations` table, so the live schema has no Wrangler migration ledger proving which repository migrations were applied. Do not run `wrangler d1 migrations apply` until maintainers reconcile migration history and approve a recoverable migration procedure. The resource ownership register still requires maintainer review. Do not bind Workers to this D1 database or write production data until the resource owner, environment, data classification, lifecycle/retention, backup, and recovery plan are reviewed and recorded. Keep the account-specific database ID outside Git as required by ADR-0001.
 
 ## Migration controls
 
