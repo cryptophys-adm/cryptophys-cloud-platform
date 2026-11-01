@@ -31,7 +31,12 @@ curl --fail --silent --show-error --max-time 20 "$BASE_URL/"
 printf '\n'
 ```
 
-Validate each endpoint against its own response contract:\n- `/health`: `status=ok`, `service=cryptophys-cloud-platform`, `environment=production`, `contract_version=v1`.\n- `/ready`: `status=ready`, `service=cryptophys-cloud-platform`, and an empty `dependencies` array.\n- `/`: `service=cryptophys-cloud-platform`, `api_version=v1`, and `administrative_api=not_implemented`.\n\nDo not require `environment` on `/ready` or `/`; those endpoints do not currently return that field. Do not infer dependency health from a 200 response alone.
+Validate each endpoint against its own response contract:
+- `/health`: `status=ok`, `service=cryptophys-cloud-platform`, `environment=production`, `contract_version=v1`.
+- `/ready`: `status=ready`, `service=cryptophys-cloud-platform`, and an empty `dependencies` array.
+- `/`: `service=cryptophys-cloud-platform`, `api_version=v1`, and `administrative_api=not_implemented`.
+
+Do not require `environment` on `/ready` or `/`; those endpoints do not currently return that field. Do not infer dependency health from a 200 response alone.
 
 ## Custom domain gate
 
