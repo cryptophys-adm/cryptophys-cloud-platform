@@ -21,6 +21,7 @@ jobs:
     steps:
       - name: Require exact production confirmation
         shell: bash
+        working-directory: ${{ github.workspace }}
         env:
           CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
         run: |
