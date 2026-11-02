@@ -73,6 +73,10 @@ jobs:
             echo "Refusing scaffold deployment unless SERVICE_CONFIGURED remains false."
             exit 1
           }
+          grep -Eq '^[[:space:]]*workers_dev[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$config" || {
+            echo "Refusing deployment: $WORKER must keep workers_dev disabled until a reviewed public route is approved."
+            exit 1
+          }
           echo "config=$config" >> "$GITHUB_OUTPUT"
           echo "worker=$WORKER" >> "$GITHUB_OUTPUT"
 
@@ -133,6 +137,10 @@ jobs:
           test -f "$GITHUB_WORKSPACE/workers/$dir/src/index.ts"
           grep -Eq '^[[:space:]]*SERVICE_ENVIRONMENT[[:space:]]*=[[:space:]]*"production"[[:space:]]*$' "$config"
           grep -Eq '^[[:space:]]*SERVICE_CONFIGURED[[:space:]]*=[[:space:]]*"false"[[:space:]]*$' "$config"
+          grep -Eq '^[[:space:]]*workers_dev[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$config" || {
+            echo "Refusing deployment: $WORKER must keep workers_dev disabled until a reviewed public route is approved."
+            exit 1
+          }
           echo "config=$config" >> "$GITHUB_OUTPUT"
           echo "worker=$WORKER" >> "$GITHUB_OUTPUT"
 
@@ -159,36 +167,42 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"
           npx wrangler whoami
 
-      - name: Deploy selected Worker from repository source
-        env:
-          CONFIG_PATH: ${{ steps.target.outputs.config }}
-        working-directory: workers/platform-api
-        run: npx wrangler deploy --config "$CONFIG_PATH"
-
-      - name: Verify deployed health contract
+      - name: Capture active deployment before rollout
+        id: before
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKER: ${{ steps.target.outputs.worker }}
         run: |
           set -euo pipefail
-          subdomain="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" | jq -er '.result.subdomain')"
-          base="https://${WORKER}.${subdomain}.workers.dev"
-          health="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 "${base}/health")"
-          printf '%s' "$health" | jq -e --arg service "$WORKER" '
-            .status == "ok" and
-            .service == $service and
-            .environment == "production" and
-            .contract_version == "v1"
+          response="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER}/deployments?per_page=1" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")"
+          previous="$(printf '%s' "$response" | jq -er '.result.deployments[0].id // ""')"
+          echo "deployment_id=$previous" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy selected Worker from repository source
+        env:
+          CONFIG_PATH: ${{ steps.target.outputs.config }}
+        working-directory: workers/platform-api
+        run: npx wrangler deploy --config "$CONFIG_PATH"
+
+      - name: Verify active deployment metadata
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKER: ${{ steps.target.outputs.worker }}
+          PREVIOUS_DEPLOYMENT_ID: ${{ steps.before.outputs.deployment_id }}
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER}/deployments?per_page=1" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")"
+          printf '%s' "$response" | jq -e --arg previous "$PREVIOUS_DEPLOYMENT_ID" '
+            .success == true and
+            (.result.deployments | length > 0) and
+            (.result.deployments[0].id != $previous) and
+            (.result.deployments[0].versions | length == 1) and
+            (.result.deployments[0].versions[0].percentage == 100)
           '
-          readiness_code="$(curl --silent --show-error --retry 2 --retry-delay 1 --max-time 20 \
-            --output /tmp/readiness.json --write-out '%{http_code}' "${base}/ready")"
-          [[ "$readiness_code" == "503" ]] || {
-            echo "Foundation Worker must remain not_configured; unexpected readiness HTTP status: $readiness_code"
-            cat /tmp/readiness.json
-            exit 1
-          }
-          jq -e '.status == "not_configured" and .production_ready == false' /tmp/readiness.json
-          echo "Deployment verified as source-aligned scaffold; operational readiness remains blocked."
+          echo "Verified a new active deployment with 100% traffic. Live HTTP health checks are intentionally omitted because workers.dev is disabled to match the architecture baseline."
