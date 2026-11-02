@@ -50,5 +50,11 @@ jobs:
             config="$GITHUB_WORKSPACE/workers/$worker/wrangler.toml"
             test -f "$config"
             test -f "$GITHUB_WORKSPACE/workers/$worker/src/index.ts"
+            grep -Eq '^[[:space:]]*workers_dev[[:space:]]*=[[:space:]]*false[[:space:]]*            npx wrangler deploy --dry-run --config "$config" --outdir "/tmp/cryptophys-$worker-dry-run"
+          done
+ "$config" || {
+              echo "Refusing public workers.dev exposure for $worker until a reviewed route is approved."
+              exit 1
+            }
             npx wrangler deploy --dry-run --config "$config" --outdir "/tmp/cryptophys-$worker-dry-run"
           done
