@@ -2,14 +2,22 @@ name = "cryptophys-deployment-orchestrator"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
+routes = [{ pattern = "deploy-orchestrator.cryptophys.work", custom_domain = true }]
 
 [observability]
 enabled = true
 
 [vars]
 SERVICE_NAME = "cryptophys-deployment-orchestrator"
-SERVICE_ENVIRONMENT = "development"
+SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
-SERVICE_CONFIGURED = "false"
 
-# No production routes, secrets, or storage bindings are configured.
+[[durable_objects.bindings]]
+name = "DEPLOYMENT_LOCK"
+class_name = "DeploymentLock"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DeploymentLock"]
+
+# Secrets are configured out-of-band in Cloudflare and are never stored in this file.

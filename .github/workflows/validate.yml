@@ -24,15 +24,26 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
-      - name: Export generated lockfile for dependency audit
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: platform-api-lockfile-${{ github.run_id }}
-          path: workers/platform-api/package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+        run: npm ci
       - name: Type-check
         run: npm run typecheck
       - name: Validate Cloudflare Worker deployment configuration
         run: npx wrangler deploy --dry-run --outdir /tmp/cryptophys-platform-api-dry-run
+
+  deployment-orchestrator:
+    name: Type-check deployment orchestrator
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/deployment-orchestrator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Type-check
+        run: npm run typecheck

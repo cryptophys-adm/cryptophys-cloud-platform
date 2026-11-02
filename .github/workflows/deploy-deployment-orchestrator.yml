@@ -1,0 +1,99 @@
+name: Deploy Production Deployment Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: "Type DEPLOY to deploy the production orchestrator"
+        required: true
+        type: string
+      commit_sha:
+        description: "Exact full commit SHA to deploy"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-deployment-orchestrator-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate explicit production confirmation and immutable SHA
+        shell: bash
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM_PRODUCTION" == "DEPLOY" ]] || { echo "Exact confirmation DEPLOY required"; exit 1; }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Full lowercase commit SHA required"; exit 1; }
+          [[ "$COMMIT_SHA" == "$GITHUB_SHA" ]] || { echo "Commit SHA must equal the workflow dispatch ref"; exit 1; }
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: workers/deployment-orchestrator
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Type-check orchestrator
+        run: npm run typecheck
+      - name: Verify Cloudflare credentials
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          npx wrangler whoami
+      - name: Deploy production orchestrator
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
+      - name: Verify production bindings without exposing secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="$(curl --fail --silent --show-error --max-time 20 \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/cryptophys-deployment-orchestrator/settings" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")"
+          printf '%s' "$config" | jq -e '
+            .success == true and
+            ([.result.bindings[] | select(.name == "DEPLOYMENT_LOCK" and .type == "durable_object_namespace")] | length == 1) and
+            ([.result.bindings[] | select(.name == "GH_ACTIONS_TOKEN" and .type == "secret_text")] | length == 1) and
+            ([.result.bindings[] | select(.name == "ORCHESTRATOR_SHARED_SECRET" and .type == "secret_text")] | length == 1)
+          ' >/dev/null
+          printf 'Durable Object and both required secret bindings are present; values were not read.\n'
+      - name: Verify live health and readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_url="https://deploy-orchestrator.cryptophys.work"
+          health="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 --max-time 20 "$base_url/health")"
+          printf '%s' "$health" | jq -e '.status == "ok" and .service == "cryptophys-deployment-orchestrator" and .environment == "production" and .contract_version == "v1"'
+          readiness="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 --max-time 20 "$base_url/ready")"
+          printf '%s' "$readiness" | jq -e '.status == "ready" and .service == "cryptophys-deployment-orchestrator" and .production_dispatch_enabled == true'
+          printf 'Live health/readiness verified for commit %s\n' "$COMMIT_SHA"
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
