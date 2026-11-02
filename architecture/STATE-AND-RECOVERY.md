@@ -54,5 +54,7 @@ If state cannot be trusted, stop and escalate for manual inventory/reconciliatio
 - Existing Worker deployment: Wrangler-based; no Terraform/OpenTofu state is currently required.
 - Remote IaC state backend: **not provisioned**.
 - State locking/version recovery: **not yet tested**.
-- Automated drift detection and recovery: **not implemented**.
-- Production deployment: must remain gated until required GitHub Environment secrets and protections are configured.
+- Drift detection: **implemented** for Worker versions and health (Drift Detector, every 15 minutes); resource-level drift for D1/DNS is not covered.
+- Recovery: recovery plans with separated approval and policy-gated, operator-recorded execution (Recovery Manager); no automatic remediation.
+- D1 control-plane state: schema migrations through `deploy-control-plane.yml` with a Time Travel bookmark captured before each migration.
+- Production deployment: gated by the `production` Environment and its secrets.

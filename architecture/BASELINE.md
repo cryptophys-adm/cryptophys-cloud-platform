@@ -22,9 +22,9 @@
 - Worker: `cryptophys-platform-api`
 - Source: `workers/platform-api/src/index.ts`
 - Config: `workers/platform-api/wrangler.toml`
-- Deployment: GitHub Actions, manually triggered, protected `production` environment.
-- Public routes/custom domains: none configured in this baseline.
-- Persistence bindings: none attached until ownership, data model, and account-specific IDs are reviewed.
+- Deployment: GitHub Actions `workflow_dispatch`, requested through the authenticated Deployment Orchestrator, protected `production` environment.
+- Public routes/custom domains: none for the Platform API (workers.dev only).
+- Persistence bindings: none for the Platform API. Control-plane state is in D1 `cryptophys-control-plane` (see RESOURCE-OWNERSHIP.md and ADR-0004).
 
 ## Target logical control plane
 
@@ -35,13 +35,13 @@
 - Audit Ledger — append-only event records with retention and integrity requirements.
 - Recovery Manager — documented recovery plans; no automatic destructive remediation by default.
 
-These are architectural capabilities, not claims that all services are implemented. Deliver them incrementally with contracts, tests, and explicit resource bindings.
+All six are implemented and deployed as separate Workers (see `docs/CONTROL-PLANE-WORKERS.md` and ADR-0004). Extend them incrementally with contracts, tests, and explicit resource bindings.
 
 ## Promotion flow
 
 1. Pull request: static validation and review.
 2. Merge to `main`: source of truth advances; no production deployment.
-3. Manual workflow dispatch: deploy only the selected Worker to the protected production environment.
+3. Workflow dispatch (Platform API via the authenticated Orchestrator; Orchestrator and control plane by an operator): deploy only the selected Worker(s) to the protected production environment.
 4. Verify health and record the commit SHA/deployment result.
 5. Rollback uses a reviewed commit or deployment version; no blind overwrite.
 

@@ -1,0 +1,208 @@
+name: Deploy Control Plane
+
+# Production deployment of the five control-plane service Workers from one reviewed
+# main commit: Platform Registry, Policy Engine, Audit Ledger, Recovery Manager and
+# Drift Detector. The Deployment Orchestrator and Platform API keep their own workflows.
+#
+# Order matters: service bindings require their targets to exist, so the Policy
+# Engine deploys before the Recovery Manager and the Drift Detector deploys last.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: "Type DEPLOY to deploy the control plane to production"
+        required: true
+        type: string
+      commit_sha:
+        description: "Exact full commit SHA of main to deploy"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-control-plane-production
+  cancel-in-progress: false
+
+env:
+  D1_DATABASE_NAME: cryptophys-control-plane
+  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager drift-detector"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate explicit production confirmation and immutable SHA
+        shell: bash
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch from main only"; exit 1; }
+          [[ "$CONFIRM_PRODUCTION" == "DEPLOY" ]] || { echo "::error::Exact confirmation DEPLOY required"; exit 1; }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Full lowercase commit SHA required"; exit 1; }
+          [[ "$COMMIT_SHA" == "$GITHUB_SHA" ]] || { echo "::error::Commit SHA must equal the workflow dispatch ref"; exit 1; }
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+        working-directory: workers/control-plane-shared
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install locked toolchain
+        run: npm ci
+
+      - name: Type-check, test and validate migrations before credentials are used
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm test
+          python3 ../control-plane-migrations/test_migrations.py
+
+      - name: Verify credentials and required secrets without printing them
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
+          CONTROL_PLANE_APPROVER_TOKEN: ${{ secrets.CONTROL_PLANE_APPROVER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID missing"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN missing"; exit 1; }
+          (( ${#CONTROL_PLANE_ADMIN_TOKEN} >= 32 )) || { echo "::error::CONTROL_PLANE_ADMIN_TOKEN must be set in the production environment (>= 32 chars)"; exit 1; }
+          (( ${#CONTROL_PLANE_APPROVER_TOKEN} >= 32 )) || { echo "::error::CONTROL_PLANE_APPROVER_TOKEN must be set in the production environment (>= 32 chars)"; exit 1; }
+          [[ "$CONTROL_PLANE_ADMIN_TOKEN" != "$CONTROL_PLANE_APPROVER_TOKEN" ]] || { echo "::error::Admin and approver tokens must differ"; exit 1; }
+          npx wrangler whoami
+
+      - name: Resolve the control-plane D1 database by exact name and render deploy configs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          dirs=()
+          for dir in $DEPLOY_ORDER; do dirs+=("../$dir"); done
+          "$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" "${dirs[@]}"
+
+      - name: Record a D1 Time Travel restore point before migrating
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          info="$(npx wrangler d1 time-travel info "$D1_DATABASE_NAME" --json --config ../audit-ledger/wrangler.deploy.toml)"
+          bookmark="$(printf '%s' "$info" | jq -er '.bookmark')"
+          echo "Pre-migration D1 bookmark: ${bookmark}"
+          echo "Restore with: wrangler d1 time-travel restore ${D1_DATABASE_NAME} --bookmark=${bookmark}"
+          echo "### D1 restore point" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${bookmark}\` (commit ${{ inputs.commit_sha }})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml
+          npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml
+
+      - name: Deploy, provision secrets and verify each Worker live
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
+          CONTROL_PLANE_APPROVER_TOKEN: ${{ secrets.CONTROL_PLANE_APPROVER_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          tag="${COMMIT_SHA:0:12}"
+          secrets_file="$RUNNER_TEMP/control-plane-secrets.json"
+          trap 'rm -f "$secrets_file"' EXIT
+          for dir in $DEPLOY_ORDER; do
+            name="cryptophys-${dir}"
+            umask 077
+            if [[ "$dir" == "recovery-manager" ]]; then
+              jq -n --arg a "$CONTROL_PLANE_ADMIN_TOKEN" --arg b "$CONTROL_PLANE_APPROVER_TOKEN" '{ADMIN_TOKEN: $a, APPROVER_TOKEN: $b}' > "$secrets_file"
+            else
+              jq -n --arg a "$CONTROL_PLANE_ADMIN_TOKEN" '{ADMIN_TOKEN: $a}' > "$secrets_file"
+            fi
+            echo "::group::Deploy ${name}"
+            npx wrangler deploy --config "../${dir}/wrangler.deploy.toml" --tag "$tag" --message "commit ${COMMIT_SHA}" --secrets-file "$secrets_file"
+            rm -f "$secrets_file"
+            "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
+              --script "$name" \
+              --commit "$COMMIT_SHA" \
+              --health-filter ".status == \"ok\" and .service == \"${name}\" and .environment == \"production\" and .contract_version == \"v1\" and .version.tag == \"${tag}\"" \
+              --ready-filter ".status == \"ready\" and .service == \"${name}\" and .production_ready == true and ([.checks[]] | all)"
+            echo "::endgroup::"
+          done
+
+      - name: Record desired versions, observe drift and verify the audit chain end to end
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          tag="${COMMIT_SHA:0:12}"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          url() { printf 'https://cryptophys-%s.%s.workers.dev' "$1" "$subdomain"; }
+          api() { # METHOD URL [JSON]
+            local out status
+            local -a data=()
+            [[ $# -ge 3 ]] && data=(--data "$3")
+            out="$(mktemp)"
+            status="$(curl --silent --show-error --proto '=https' --max-time 30 --request "$1" "$2" \
+              --header "Authorization: Bearer ${CONTROL_PLANE_ADMIN_TOKEN}" \
+              --header "Content-Type: application/json" "${data[@]}" \
+              --output "$out" --write-out '%{http_code}')"
+            [[ "$status" =~ ^2 ]] || { echo "::error::$1 $2 returned HTTP $status: $(head -c 1000 "$out")"; exit 1; }
+            cat "$out"
+          }
+          registry="$(url platform-registry)"
+          for dir in $DEPLOY_ORDER; do
+            api PUT "${registry}/v1/services/cryptophys-${dir}/desired-version" \
+              "$(jq -cn --arg v "$tag" '{desired_version: $v, actor: "github-actions"}')" \
+              | jq -e --arg v "$tag" '.service.desired_version == $v' >/dev/null
+          done
+          echo "Desired version ${tag} recorded for: ${DEPLOY_ORDER}"
+
+          report="$(api POST "$(url drift-detector)/v1/observe" '{"actor":"github-actions"}')"
+          printf '%s' "$report" | jq '{run_id, drifted, services: [.services[] | {service_id, desired_version, observed_version, drifted, reasons, status}]}'
+          for dir in $DEPLOY_ORDER; do
+            printf '%s' "$report" | jq -e --arg s "cryptophys-${dir}" --arg v "$tag" \
+              '.services[] | select(.service_id == $s) | .drifted == false and .observed_version == $v and .status == "healthy"' >/dev/null \
+              || { echo "::error::cryptophys-${dir} is drifted or unhealthy after deployment"; exit 1; }
+          done
+
+          api POST "$(url audit-ledger)/v1/events" "$(jq -cn --arg sha "$COMMIT_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg order "$DEPLOY_ORDER" \
+            '{event_type: "deployment.control_plane_completed", actor: "github-actions", subject: "control-plane", outcome: "success", payload: {commit_sha: $sha, workflow_run: $run, workers: ($order | split(" "))}}')" \
+            | jq '{event_id: .event.event_id, event_hash: .event.event_hash}'
+          api GET "$(url audit-ledger)/v1/verify" | tee /dev/stderr | jq -e '.valid == true and .events_checked > 0' >/dev/null
+
+          policy="$(api POST "$(url policy-engine)/v1/evaluate" "$(jq -cn --arg sha "$COMMIT_SHA" \
+            '{subject: "github-actions", action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false}}')")"
+          printf '%s' "$policy" | jq -e '.decision == "deny" and (.reason | test("ci_green"))' >/dev/null \
+            || { echo "::error::Policy Engine did not deny a deployment with failing CI"; exit 1; }
+          echo "Control plane ${tag} deployed, registered, observed in sync, audited and policy-verified."
+          echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
