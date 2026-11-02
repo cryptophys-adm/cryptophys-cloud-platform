@@ -82,8 +82,7 @@ export default {
       return json({
         status: ready ? "ready" : "not_configured",
         service: env.SERVICE_NAME,
-        production_dispatch_enabled: ready,
-        production_dispatch_enabled: false
+        production_dispatch_enabled: ready
       }, ready ? 200 : 503);
     }
 
