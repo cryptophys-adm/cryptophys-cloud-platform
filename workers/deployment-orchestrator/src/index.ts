@@ -20,7 +20,7 @@ export interface Env {
 }
 
 const REPOSITORY = "cryptophys-adm/cryptophys-cloud-platform";
-const WORKFLOW = "validate.yml";
+const WORKFLOW = "deploy-platform-api.yml";
 const API = "https://api.github.com";
 const headers = {
   "content-type": "application/json; charset=utf-8",
@@ -74,7 +74,7 @@ export default {
 
     if (request.method === "GET" && ["/ready", "/readyz"].includes(url.pathname)) {
       const ready = Boolean(
-        env.SERVICE_ENVIRONMENT === "staging" &&
+        env.SERVICE_ENVIRONMENT === "production" &&
         env.GH_ACTIONS_TOKEN &&
         env.ORCHESTRATOR_SHARED_SECRET &&
         env.DEPLOYMENT_LOCK
@@ -82,15 +82,15 @@ export default {
       return json({
         status: ready ? "ready" : "not_configured",
         service: env.SERVICE_NAME,
-        staging_validation_enabled: ready,
+        production_dispatch_enabled: ready,
         production_dispatch_enabled: false
       }, ready ? 200 : 503);
     }
 
     if (url.pathname !== "/v1/deployments") return json({ error: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    if (env.SERVICE_ENVIRONMENT !== "staging") {
-      return json({ error: "staging_only", production_dispatch_enabled: false }, 503);
+    if (env.SERVICE_ENVIRONMENT !== "production") {
+      return json({ error: "production_worker_required", production_dispatch_enabled: false }, 503);
     }
     if (!(await authorized(request, env.ORCHESTRATOR_SHARED_SECRET))) {
       return json({ error: "unauthorized" }, 401);
@@ -99,7 +99,7 @@ export default {
       return json({ error: "not_configured", operational: false }, 503);
     }
 
-    let body: { commit_sha?: unknown; confirm_staging?: unknown };
+    let body: { commit_sha?: unknown; confirm_production?: unknown };
     try {
       body = await request.json() as typeof body;
     } catch {
@@ -108,8 +108,8 @@ export default {
 
     const sha = typeof body.commit_sha === "string" ? body.commit_sha : "";
     if (!/^[0-9a-f]{40}$/.test(sha)) return json({ error: "invalid_commit_sha" }, 400);
-    if (body.confirm_staging !== "STAGING_TEST") {
-      return json({ error: "staging_confirmation_required" }, 400);
+    if (body.confirm_production !== "DEPLOY") {
+      return json({ error: "production_confirmation_required" }, 400);
     }
 
     const refResponse = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/git/ref/heads/main");
@@ -160,7 +160,7 @@ export default {
       }, 409);
     }
 
-    const lockId = env.DEPLOYMENT_LOCK.idFromName("platform-api-staging-validation:" + sha);
+    const lockId = env.DEPLOYMENT_LOCK.idFromName("platform-api-production:" + sha);
     const lockResponse = await env.DEPLOYMENT_LOCK.get(lockId).fetch("https://lock.internal/claim", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -168,18 +168,18 @@ export default {
     });
     const lock = await lockResponse.json() as { claimed?: boolean };
     if (!lockResponse.ok || !lock.claimed) {
-      return json({ error: "duplicate_staging_validation_request", commit_sha: sha }, 409);
+      return json({ error: "duplicate_production_deployment_request", commit_sha: sha }, 409);
     }
 
-    // This workflow only type-checks and dry-runs; it never deploys a Worker.
+    // Production workflow has GitHub environment protection; reviewer approval must remain authoritative.
     const dispatch = await gh(
       env.GH_ACTIONS_TOKEN,
       "/repos/" + REPOSITORY + "/actions/workflows/" + WORKFLOW + "/dispatches",
-      { method: "POST", body: JSON.stringify({ ref: "main" }) }
+      { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) }
     );
     if (dispatch.status !== 204) {
       return json({
-        error: "staging_validation_dispatch_failed",
+        error: "production_dispatch_failed",
         status: dispatch.status,
         commit_sha: sha,
         manual_reconciliation_required: true
@@ -187,12 +187,12 @@ export default {
     }
 
     return json({
-      status: "staging_validation_dispatch_accepted",
+      status: "production_dispatch_accepted",
       repository: REPOSITORY,
       workflow: WORKFLOW,
       ref: "main",
       requested_commit_sha: sha,
-      production_deployment_triggered: false
+      production_deployment_triggered: true
     }, 202);
   }
 };
