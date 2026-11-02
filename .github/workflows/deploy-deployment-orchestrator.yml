@@ -118,4 +118,4 @@ jobs:
             --commit "$COMMIT_SHA" \
             --health-filter '.status == "ok" and .service == "cryptophys-deployment-orchestrator" and .environment == "production" and .contract_version == "v1"' \
             --ready-filter '.status == "ready" and .service == "cryptophys-deployment-orchestrator" and .production_dispatch_enabled == true' \
-            --custom-domain deploy-orchestrator.cryptophys.work
+            # Use the ADR-0004-approved workers.dev endpoint; the custom-domain certificate is currently mismatched.
