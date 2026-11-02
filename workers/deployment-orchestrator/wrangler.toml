@@ -19,4 +19,7 @@ class_name = "DeploymentLock"
 tag = "v1"
 new_sqlite_classes = ["DeploymentLock"]
 
-# Secrets are configured out-of-band in Cloudflare. Production routes are managed separately.
+# Production custom domain for health, readiness, and authenticated deployment requests.
+routes = [{ pattern = "deploy-orchestrator.cryptophys.work", custom_domain = true }]
+
+# Secrets are configured out-of-band in Cloudflare and are never stored in this file.
