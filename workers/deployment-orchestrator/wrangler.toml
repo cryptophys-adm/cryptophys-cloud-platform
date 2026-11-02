@@ -2,6 +2,7 @@ name = "cryptophys-deployment-orchestrator"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = false
+routes = [{ pattern = "deploy-orchestrator.cryptophys.work", custom_domain = true }]
 
 [observability]
 enabled = true
@@ -18,8 +19,5 @@ class_name = "DeploymentLock"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["DeploymentLock"]
-
-# Production custom domain for health, readiness, and authenticated deployment requests.
-routes = [{ pattern = "deploy-orchestrator.cryptophys.work", custom_domain = true }]
 
 # Secrets are configured out-of-band in Cloudflare and are never stored in this file.
