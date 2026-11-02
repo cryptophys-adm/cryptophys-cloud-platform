@@ -7,7 +7,7 @@ workers_dev = false
 enabled = true
 
 [vars]
-SERVICE_NAME = "cryptophys-deployment-orchestrator-staging"
+SERVICE_NAME = "cryptophys-deployment-orchestrator"
 SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
 
