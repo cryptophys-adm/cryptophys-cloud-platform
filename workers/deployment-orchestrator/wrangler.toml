@@ -1,4 +1,4 @@
-name = "cryptophys-deployment-orchestrator"
+name = "cryptophys-deployment-orchestrator-staging"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
