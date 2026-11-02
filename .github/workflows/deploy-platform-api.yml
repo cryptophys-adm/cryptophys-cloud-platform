@@ -7,6 +7,10 @@ on:
         description: "Type DEPLOY to confirm production deployment"
         required: true
         type: string
+      commit_sha:
+        description: "Exact full commit SHA validated by the deployment orchestrator"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,10 +28,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
           if [[ "$CONFIRM_PRODUCTION" != "DEPLOY" ]]; then
             echo "Production deployment requires the exact input DEPLOY."
+            exit 1
+          fi
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "A full lowercase 40-character commit SHA is required."
+            exit 1
+          fi
+          if [[ "$COMMIT_SHA" != "$GITHUB_SHA" ]]; then
+            echo "Requested commit SHA does not match the workflow dispatch ref."
             exit 1
           fi
 
@@ -39,8 +52,10 @@ jobs:
       run:
         working-directory: workers/platform-api
     steps:
-      - name: Checkout source
+      - name: Checkout validated commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
