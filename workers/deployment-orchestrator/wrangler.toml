@@ -1,7 +1,7 @@
 name = "cryptophys-deployment-orchestrator"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
-workers_dev = false
+workers_dev = true
 
 [observability]
 enabled = true
@@ -19,4 +19,4 @@ class_name = "DeploymentLock"
 tag = "v1"
 new_sqlite_classes = ["DeploymentLock"]
 
-# Secrets are configured out-of-band in Cloudflare. Production routes are managed separately.
+# Secrets are configured out-of-band in Cloudflare. The public workers.dev endpoint exposes health/readiness only; deployment requests require the shared bearer secret.
