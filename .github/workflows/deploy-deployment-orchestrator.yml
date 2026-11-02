@@ -70,6 +70,23 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx wrangler deploy
+      - name: Verify production bindings without exposing secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="$(curl --fail --silent --show-error --max-time 20 \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/cryptophys-deployment-orchestrator/settings" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")"
+          printf '%s' "$config" | jq -e '
+            .success == true and
+            ([.result.bindings[] | select(.name == "DEPLOYMENT_LOCK" and .type == "durable_object_namespace")] | length == 1) and
+            ([.result.bindings[] | select(.name == "GH_ACTIONS_TOKEN" and .type == "secret_text")] | length == 1) and
+            ([.result.bindings[] | select(.name == "ORCHESTRATOR_SHARED_SECRET" and .type == "secret_text")] | length == 1)
+          ' >/dev/null
+          printf 'Durable Object and both required secret bindings are present; values were not read.\n'
       - name: Verify live health and readiness
         shell: bash
         run: |
