@@ -56,3 +56,10 @@ jobs:
             }
             npx wrangler deploy --dry-run --config "$config" --outdir "/tmp/cryptophys-$worker-dry-run"
           done
+
+      - name: Install locked deployment orchestrator toolchain
+        working-directory: workers/deployment-orchestrator
+        run: npm ci
+      - name: Type-check deployment orchestrator
+        working-directory: workers/deployment-orchestrator
+        run: npm run typecheck
