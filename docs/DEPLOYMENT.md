@@ -1,7 +1,6 @@
 # Deployment Runbook
 
 ## Scope
-
 This deploys only `workers/platform-api` as Worker `cryptophys-platform-api`. It does not provision databases, queues, buckets, routes, DNS records, or other services.
 
 ## One-time GitHub configuration
@@ -19,12 +18,12 @@ Do not put these values into repository files or send them in chat. Secrets must
 
 ## Deployment
 
-1. Merge reviewed changes to `main`.
-2. Open **Actions → Deploy Platform API → Run workflow**.
-3. Enter `DEPLOY` exactly and select the intended ref.
-4. Approve the protected `production` Environment.
-5. Confirm the run succeeds and inspect the Worker in the intended Cloudflare account.
-6. Verify `/health` and `/ready` using the workers.dev URL shown in Cloudflare. No custom domain is configured by this repository.
+1. Merge reviewed changes to `main`. A merge alone does not deploy production.
+2. The authenticated Deployment Orchestrator is the production dispatch entry point. It must validate the requested full commit SHA against current `main`, require exact `DEPLOY` confirmation, verify all required commit statuses/check runs/check suites are successful, and acquire the deployment lock before dispatching `deploy-platform-api.yml`.
+3. The orchestrator dispatches the GitHub Actions workflow programmatically using the validated SHA and the required inputs. No operator needs to open **Actions → Deploy Platform API → Run workflow** or manually submit the workflow inputs.
+4. The workflow remains responsible for checking the confirmation and SHA, running type-checks, verifying Cloudflare credentials, deploying the Worker, and testing live health/readiness.
+5. The protected GitHub `production` Environment remains authoritative. If required reviewers are configured, their approval is still required before the deployment job can proceed; automated dispatch does not bypass environment protection.
+6. Confirm the workflow result and inspect the Worker in the intended Cloudflare account. Verify `/health` and `/ready` using the workers.dev URL shown in Cloudflare. No custom domain is configured by this repository.
 
 ## Infrastructure state and recovery
 
@@ -34,6 +33,6 @@ See [State and Recovery Contract](../architecture/STATE-AND-RECOVERY.md). The cu
 
 - No database or other storage is attached.
 - No admin API, identity provider, or mutation endpoint exists.
-- No production deployment has been performed by creating these files.
+- Deployment dispatch is orchestrator-driven; the GitHub workflow still uses `workflow_dispatch` as its machine-callable trigger.
+- The production Environment may require reviewer approval, depending on its GitHub settings.
 - No Cloudflare account/resource identifiers are hard-coded.
-- Manual workflow dispatch is the only production deployment trigger.
