@@ -35,6 +35,7 @@ concurrency:
 jobs:
   request:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Validate request inputs
         shell: bash
