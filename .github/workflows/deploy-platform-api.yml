@@ -7,6 +7,10 @@ on:
         description: "Type DEPLOY to confirm production deployment"
         required: true
         type: string
+      commit_sha:
+        description: "Exact validated source commit SHA to deploy"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,7 +23,7 @@ jobs:
   validate-confirmation:
     runs-on: ubuntu-latest
     steps:
-      - name: Require exact production confirmation
+      - name: Validate deployment inputs
         shell: bash
         working-directory: ${{ github.workspace }}
         env:
@@ -30,6 +34,13 @@ jobs:
             echo "Production deployment requires the exact input DEPLOY."
             exit 1
           fi
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Deployment requires a full 40-character commit SHA."
+            exit 1
+          fi
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
 
   deploy:
     needs: validate-confirmation
@@ -39,8 +50,10 @@ jobs:
       run:
         working-directory: workers/platform-api
     steps:
-      - name: Checkout source
+      - name: Checkout validated source commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
