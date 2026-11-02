@@ -9,9 +9,6 @@
       "ES2022",
       "DOM"
     ],
-    "types": [
-      "@cloudflare/workers-types"
-    ],
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
