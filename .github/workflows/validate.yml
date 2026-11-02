@@ -45,3 +45,14 @@ jobs:
         run: npm install
       - name: Type-check
         run: npm run typecheck
+
+  deployment-verification-script:
+    name: Test deployment verification script
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck .github/scripts/*.sh
+      - name: Run hermetic tests
+        run: bash .github/scripts/verify-worker-live.test.sh
