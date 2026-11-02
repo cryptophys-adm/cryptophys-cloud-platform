@@ -31,7 +31,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install TypeScript toolchain
-        run: npm install
+      - name: Install locked TypeScript toolchain
+        run: npm ci
       - name: Type-check six Control Plane Workers
         run: npx tsc --noEmit -p ../control-plane-tsconfig.json
