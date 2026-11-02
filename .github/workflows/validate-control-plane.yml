@@ -33,8 +33,8 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Install TypeScript and Wrangler toolchain
-        run: npm install
+      - name: Install locked TypeScript and Wrangler toolchain
+        run: npm ci
       - name: Type-check six Control Plane Workers
         run: npx tsc --noEmit -p ../control-plane-tsconfig.json
       - name: Validate all Worker bundles and Wrangler configurations without credentials
