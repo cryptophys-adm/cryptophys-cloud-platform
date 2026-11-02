@@ -2,6 +2,7 @@ export interface Env {
   PLATFORM_NAME: string;
   PLATFORM_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;
+  CF_VERSION_METADATA?: { id: string; tag?: string };
 }
 
 const jsonHeaders = {
@@ -23,7 +24,13 @@ export default {
     }
 
     if (url.pathname === "/health" || url.pathname === "/healthz") {
-      return json({ status: "ok", service: env.PLATFORM_NAME, environment: env.PLATFORM_ENVIRONMENT, contract_version: env.API_CONTRACT_VERSION });
+      return json({
+        status: "ok",
+        service: env.PLATFORM_NAME,
+        environment: env.PLATFORM_ENVIRONMENT,
+        contract_version: env.API_CONTRACT_VERSION,
+        version: env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, tag: env.CF_VERSION_METADATA.tag ?? null } : null,
+      });
     }
 
     if (url.pathname === "/ready" || url.pathname === "/readyz") {

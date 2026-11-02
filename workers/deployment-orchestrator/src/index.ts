@@ -17,6 +17,7 @@ export interface Env {
   GH_ACTIONS_TOKEN: string;
   ORCHESTRATOR_SHARED_SECRET: string;
   DEPLOYMENT_LOCK: DurableObjectNamespaceLike;
+  CF_VERSION_METADATA?: { id: string; tag?: string };
 }
 
 const REPOSITORY = "cryptophys-adm/cryptophys-cloud-platform";
@@ -68,7 +69,8 @@ export default {
         status: "ok",
         service: env.SERVICE_NAME,
         environment: env.SERVICE_ENVIRONMENT,
-        contract_version: env.API_CONTRACT_VERSION
+        contract_version: env.API_CONTRACT_VERSION,
+        version: env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, tag: env.CF_VERSION_METADATA.tag ?? null } : null
       });
     }
 

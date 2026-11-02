@@ -19,12 +19,22 @@ Do not put these values into repository files or send them in chat. Secrets must
 
 ## Deployment
 
-1. Merge reviewed changes to `main`.
-2. Open **Actions → Deploy Platform API → Run workflow**.
-3. Enter `DEPLOY` exactly and select the intended ref.
-4. Approve the protected `production` Environment.
-5. Confirm the run succeeds and inspect the Worker in the intended Cloudflare account.
-6. Verify `/health` and `/ready` using the workers.dev URL shown in Cloudflare. No custom domain is configured by this repository.
+Production has three protected `workflow_dispatch` workflows, all gated by the `production` Environment and pinned to an exact `main` SHA:
+
+| Workflow | Deploys | Started by |
+|---|---|---|
+| `deploy-platform-api.yml` | `cryptophys-platform-api` | The Deployment Orchestrator (`POST /v1/deployments`), via `request-platform-api-deployment.yml` |
+| `deploy-deployment-orchestrator.yml` | `cryptophys-deployment-orchestrator` | Operator |
+| `deploy-control-plane.yml` | The five control-plane services | Operator — see [CONTROL-PLANE-DEPLOYMENT.md](CONTROL-PLANE-DEPLOYMENT.md) |
+
+### Platform API through the Orchestrator
+
+1. Merge reviewed changes to `main`; a merge alone does not deploy.
+2. Run **Request Platform API Deployment** from a request ref (not `main`) with the current `main` SHA, `DEPLOY` and the Orchestrator workers.dev URL. Running it from `main` would make it an in-progress check on the commit, and the Orchestrator would refuse the request.
+3. The Orchestrator authenticates the request, requires the SHA to be current `main`, requires every status, check run and check suite on it to be successful, claims a one-time deployment lock, and dispatches `deploy-platform-api.yml`.
+4. The workflow re-checks confirmation and SHA, type-checks, deploys with `--tag <sha12>`, and verifies the active version and `/health` + `/ready` on workers.dev.
+
+Every deploy workflow verifies the live Worker with `.github/scripts/verify-worker-live.sh`: active version annotated with the commit, HTTP 200 and JSON contract for health and readiness, TLS verification always on.
 
 ## Infrastructure state and recovery
 
@@ -32,8 +42,7 @@ See [State and Recovery Contract](../architecture/STATE-AND-RECOVERY.md). The cu
 
 ## Current limitations
 
-- No database or other storage is attached.
-- No admin API, identity provider, or mutation endpoint exists.
-- No production deployment has been performed by creating these files.
-- No Cloudflare account/resource identifiers are hard-coded.
-- Manual workflow dispatch is the only production deployment trigger.
+- The Platform API has no storage and no mutation endpoints; the control-plane services own D1 state.
+- Operator identity on control-plane APIs is a shared bearer credential plus a declared `actor`; per-person identity is a follow-up.
+- No Cloudflare account/resource identifiers are committed; the D1 ID is resolved at deploy time.
+- `workflow_dispatch` is the only production deployment trigger.

@@ -5,14 +5,16 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noEmit": true,
-    "lib": [
-      "ES2022",
-      "DOM"
-    ],
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "typeRoots": ["./control-plane-shared/node_modules/@types"],
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
   "include": [
+    "control-plane-shared/src/**/*.ts",
+    "control-plane-shared/test/**/*.ts",
     "platform-registry/src/**/*.ts",
     "deployment-orchestrator/src/**/*.ts",
     "policy-engine/src/**/*.ts",

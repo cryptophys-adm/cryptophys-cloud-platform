@@ -1,0 +1,16 @@
+{
+  "name": "@cryptophys/control-plane",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Toolchain, shared library and tests for the control-plane Workers",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ../control-plane-tsconfig.json",
+    "test": "node --test --experimental-sqlite --disable-warning=ExperimentalWarning test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.45.0"
+  }
+}

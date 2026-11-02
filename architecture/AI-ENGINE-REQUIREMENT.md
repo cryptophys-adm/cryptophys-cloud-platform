@@ -1,6 +1,6 @@
 # Architecture Decision: One AI Engine per Control Plane Worker
 
-Status: **Accepted architectural requirement; implementation pending review**
+Status: **Accepted; implemented in five service Workers (ADR-0004); Deployment Orchestrator engine pending**
 
 Date: 2026-11-01
 
@@ -20,7 +20,7 @@ This means six independently governed AI Engines:
 
 The engine logic may use a common source-code library for safe shared mechanics, but each Worker must instantiate and configure its own engine locally. A shared library is not a shared runtime service. No central AI Engine Worker is part of this architecture.
 
-The six current Workers are scaffolds and do not yet contain functioning AI Engine implementations. This decision is not considered implemented until each Worker has its own binding, task/model policy, validation, tests, and usage/error telemetry.
+Platform Registry, Policy Engine, Drift Detector, Audit Ledger and Recovery Manager each have their own `AI` binding, task allow-list, validators, D1-enforced budget, tests and failure telemetry (`ai_usage`). The Deployment Orchestrator does not yet have its engine; this decision is fully implemented only when it does.
 
 ## Free-tier constraints
 

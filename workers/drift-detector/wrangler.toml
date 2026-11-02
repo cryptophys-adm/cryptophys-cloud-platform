@@ -2,14 +2,62 @@ name = "cryptophys-drift-detector"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
+preview_urls = false
 
 [observability]
 enabled = true
 
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+# Dedicated Workers AI engine for this Worker (architecture/AI-ENGINE-REQUIREMENT.md).
+[ai]
+binding = "AI"
+
 [vars]
 SERVICE_NAME = "cryptophys-drift-detector"
-SERVICE_ENVIRONMENT = "development"
+SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
-SERVICE_CONFIGURED = "false"
+AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+# Per-service and coordinated account-wide daily request caps (Workers AI Free allocation).
+AI_DAILY_REQUEST_LIMIT = "80"
+AI_ACCOUNT_DAILY_REQUEST_LIMIT = "400"
 
-# No production routes, secrets, or storage bindings are configured.
+# The account-specific database_id is kept out of Git (ADR-0001). The deploy workflow
+# resolves it from the Cloudflare API by exact database name and substitutes it.
+[[d1_databases]]
+binding = "DB"
+database_name = "cryptophys-control-plane"
+database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
+migrations_dir = "../control-plane-migrations"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Observation is performed over service bindings, not public routes.
+[[services]]
+binding = "SVC_PLATFORM_API"
+service = "cryptophys-platform-api"
+
+[[services]]
+binding = "SVC_DEPLOYMENT_ORCHESTRATOR"
+service = "cryptophys-deployment-orchestrator"
+
+[[services]]
+binding = "SVC_PLATFORM_REGISTRY"
+service = "cryptophys-platform-registry"
+
+[[services]]
+binding = "SVC_POLICY_ENGINE"
+service = "cryptophys-policy-engine"
+
+[[services]]
+binding = "SVC_AUDIT_LEDGER"
+service = "cryptophys-audit-ledger"
+
+[[services]]
+binding = "SVC_RECOVERY_MANAGER"
+service = "cryptophys-recovery-manager"
+
+# Secrets are provisioned by .github/workflows/deploy-control-plane.yml from GitHub
+# Environment secrets and are never stored in this file: ADMIN_TOKEN
