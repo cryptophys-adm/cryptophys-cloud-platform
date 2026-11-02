@@ -31,10 +31,7 @@ jobs:
           COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Production deployment must be dispatched against main."
-            exit 1
-          fi
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Production deployment must be dispatched against main."; exit 1; }
           if [[ "$CONFIRM_PRODUCTION" != "DEPLOY" ]]; then
             echo "Production deployment requires the exact input DEPLOY."
             exit 1
@@ -66,7 +63,7 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Type-check
         run: npm run typecheck
       - name: Verify deployment configuration
@@ -78,44 +75,22 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - name: Deploy Worker
-        run: npx wrangler deploy
+        run: npx wrangler deploy --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}"
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: Verify live health and readiness
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+      - name: Verify live health, readiness and active version
         shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-
-          account_subdomain="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            | jq -er '.result.subdomain')"
-
-          base_url="https://cryptophys-platform-api.${account_subdomain}.workers.dev"
-
-          health="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 "${base_url}/health")"
-          printf '%s' "$health" | jq -e '
-            .status == "ok" and
-            .service == "cryptophys-cloud-platform" and
-            .environment == "production" and
-            .contract_version == "v1"
-          '
-
-          readiness="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 "${base_url}/ready")"
-          printf '%s' "$readiness" | jq -e '
-            .status == "ready" and
-            .service == "cryptophys-cloud-platform" and
-            (.dependencies | length == 0)
-          '
-
-          deployment_version="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 2 --max-time 20 \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/cryptophys-platform-api/versions" \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            | jq -er '.result.items[0].id')"
-
+          "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
+            --script cryptophys-platform-api \
+            --commit "$COMMIT_SHA" \
+            --health-filter '.status == "ok" and .service == "cryptophys-cloud-platform" and .environment == "production" and .contract_version == "v1"' \
+            --ready-filter '.status == "ready" and .service == "cryptophys-cloud-platform" and (.dependencies | length == 0)'
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-          printf 'Active Worker version: %s\n' "$deployment_version"
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
