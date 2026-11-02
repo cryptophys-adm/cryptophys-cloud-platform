@@ -8,7 +8,7 @@ enabled = true
 
 [vars]
 SERVICE_NAME = "cryptophys-drift-detector"
-SERVICE_ENVIRONMENT = "development"
+SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
 SERVICE_CONFIGURED = "false"
 
