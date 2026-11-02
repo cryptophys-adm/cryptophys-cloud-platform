@@ -26,8 +26,6 @@ jobs:
       - name: Validate deployment inputs
         shell: bash
         working-directory: ${{ github.workspace }}
-        env:
-          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
         run: |
           set -euo pipefail
           if [[ "$CONFIRM_PRODUCTION" != "DEPLOY" ]]; then
