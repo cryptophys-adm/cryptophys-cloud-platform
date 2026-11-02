@@ -1,4 +1,4 @@
-name = "cryptophys-deployment-orchestrator-staging"
+name = "cryptophys-deployment-orchestrator"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = false
@@ -8,7 +8,7 @@ enabled = true
 
 [vars]
 SERVICE_NAME = "cryptophys-deployment-orchestrator-staging"
-SERVICE_ENVIRONMENT = "staging"
+SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
 
 [[durable_objects.bindings]]
@@ -19,4 +19,4 @@ class_name = "DeploymentLock"
 tag = "v1"
 new_sqlite_classes = ["DeploymentLock"]
 
-# Configure secrets via wrangler secret put after review; no production routes during staging.
+# Secrets are configured out-of-band in Cloudflare. Production routes are managed separately.
