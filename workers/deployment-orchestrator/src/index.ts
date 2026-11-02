@@ -1,3 +1,8 @@
+import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
+import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
+import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
+
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
@@ -18,6 +23,47 @@ export interface Env {
   ORCHESTRATOR_SHARED_SECRET: string;
   DEPLOYMENT_LOCK: DurableObjectNamespaceLike;
   CF_VERSION_METADATA?: { id: string; tag?: string };
+  /** Shared control-plane D1: deployment ledger, audit log and AI budget. */
+  DB: D1Database;
+  /** Dedicated Deployment Orchestrator AI engine (advisory only). */
+  AI?: AiBinding;
+  AI_MODEL?: string;
+  AI_DAILY_REQUEST_LIMIT?: string;
+  AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string;
+}
+
+const SERVICE = "cryptophys-deployment-orchestrator";
+const TARGET_SERVICE = "cryptophys-platform-api";
+const ACTOR = /^[A-Za-z0-9._@:-]{1,128}$/;
+
+interface RiskSummary { summary: string; risk_level: "low" | "medium" | "high"; notes: string[] }
+
+/** Advisory only: never consulted for authorization, CI gating, locking or dispatch. */
+const riskTask: AiTask<RiskSummary> = {
+  name: "summarize_deployment_risk",
+  instructions:
+    'Summarize an already-dispatched production deployment for operators from the supplied evidence. Return ' +
+    '{"summary": at most 400 characters, "risk_level": "low" | "medium" | "high", "notes": up to 4 strings of at most 160 characters}.',
+  maxInputChars: 8000,
+  maxOutputTokens: 300,
+  validate(output) {
+    const o = output as Record<string, unknown>;
+    const summary = boundedString(o?.summary, 400);
+    const notes = boundedStringArray(o?.notes, 4, 160);
+    const level = o?.risk_level;
+    if (!summary || !notes || (level !== "low" && level !== "medium" && level !== "high")) return null;
+    return { summary, risk_level: level, notes };
+  }
+};
+
+/** Best-effort audit for rejections; a failure here must not change the response. */
+async function auditQuietly(env: Env, event: Parameters<typeof appendAuditEvent>[1]): Promise<string | null> {
+  try {
+    return (await appendAuditEvent(env.DB, event)).event_id;
+  } catch (err) {
+    console.error(JSON.stringify({ service: SERVICE, event: "audit_write_failed", message: String((err as Error)?.message ?? err) }));
+    return null;
+  }
 }
 
 const REPOSITORY = "cryptophys-adm/cryptophys-cloud-platform";
@@ -75,16 +121,20 @@ export default {
     }
 
     if (request.method === "GET" && ["/ready", "/readyz"].includes(url.pathname)) {
-      const ready = Boolean(
-        env.SERVICE_ENVIRONMENT === "production" &&
-        env.GH_ACTIONS_TOKEN &&
-        env.ORCHESTRATOR_SHARED_SECRET &&
-        env.DEPLOYMENT_LOCK
-      );
+      const checks = {
+        production_environment: env.SERVICE_ENVIRONMENT === "production",
+        github_token_configured: Boolean(env.GH_ACTIONS_TOKEN),
+        shared_secret_configured: Boolean(env.ORCHESTRATOR_SHARED_SECRET),
+        deployment_lock_binding: Boolean(env.DEPLOYMENT_LOCK),
+        database_schema: Boolean(env.DB) && await schemaReady(env as never),
+        ai_binding: Boolean(env.AI)
+      };
+      const ready = Object.values(checks).every(Boolean);
       return json({
         status: ready ? "ready" : "not_configured",
         service: env.SERVICE_NAME,
-        production_dispatch_enabled: ready
+        production_dispatch_enabled: ready,
+        checks
       }, ready ? 200 : 503);
     }
 
@@ -96,11 +146,11 @@ export default {
     if (!(await authorized(request, env.ORCHESTRATOR_SHARED_SECRET))) {
       return json({ error: "unauthorized" }, 401);
     }
-    if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) {
+    if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK || !env.DB) {
       return json({ error: "not_configured", operational: false }, 503);
     }
 
-    let body: { commit_sha?: unknown; confirm_production?: unknown };
+    let body: { commit_sha?: unknown; confirm_production?: unknown; requested_by?: unknown };
     try {
       body = await request.json() as typeof body;
     } catch {
@@ -112,6 +162,8 @@ export default {
     if (body.confirm_production !== "DEPLOY") {
       return json({ error: "production_confirmation_required" }, 400);
     }
+    const requestedBy = body.requested_by === undefined ? "orchestrator-client" : body.requested_by;
+    if (typeof requestedBy !== "string" || !ACTOR.test(requestedBy)) return json({ error: "invalid_requested_by" }, 400);
 
     const refResponse = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/git/ref/heads/main");
     if (!refResponse.ok) {
@@ -119,6 +171,7 @@ export default {
     }
     const refData = await refResponse.json() as { object?: { sha?: string } };
     if (refData.object?.sha !== sha) {
+      await auditQuietly(env, { event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "commit_not_current_main", payload: { commit_sha: sha, main_sha: refData.object?.sha ?? null } });
       return json({ error: "commit_not_current_main", expected_sha: refData.object?.sha ?? null }, 409);
     }
 
@@ -148,6 +201,10 @@ export default {
       suites.some(suite => suite.status !== "completed" || suite.conclusion !== "success");
 
     if (statusBlocked || runsBlocked || suitesBlocked) {
+      await auditQuietly(env, {
+        event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "ci_not_green",
+        payload: { commit_sha: sha, commit_status: statusData.state ?? "unknown", blocking_checks: runs.filter((r) => r.status !== "completed" || r.conclusion !== "success").map((r) => r.name) }
+      });
       return json({
         error: "ci_not_green",
         commit_status: statusData.state ?? "unknown",
@@ -159,6 +216,24 @@ export default {
         suites_total: suitesData.total_count ?? 0,
         suites: suites.map(({ status, conclusion }) => ({ status, conclusion }))
       }, 409);
+    }
+
+    // Durable ledger entry first: the (service_id, idempotency_key) UNIQUE constraint is a
+    // second duplicate guard alongside the Durable Object lock.
+    const requestId = "dep_" + crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    try {
+      await env.DB.prepare(
+        `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'approved', NULL, ?, ?, ?, ?)`
+      ).bind(requestId, TARGET_SERVICE, sha, requestedBy, sha,
+        JSON.stringify({ workflow: WORKFLOW, ref: "main", checks: runs.map(({ name, conclusion }) => ({ name, conclusion })) }),
+        createdAt, createdAt).run();
+    } catch (err) {
+      if (/UNIQUE constraint failed/i.test(String((err as Error)?.message ?? err))) {
+        return json({ error: "duplicate_production_deployment_request", commit_sha: sha }, 409);
+      }
+      return json({ error: "deployment_ledger_unavailable", operational: false }, 503);
     }
 
     const lockId = env.DEPLOYMENT_LOCK.idFromName("platform-api-production:" + sha);
@@ -178,8 +253,18 @@ export default {
       "/repos/" + REPOSITORY + "/actions/workflows/" + WORKFLOW + "/dispatches",
       { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) }
     );
+    const finalStatus = dispatch.status === 204 ? "running" : "failed";
+    await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?")
+      .bind(finalStatus, new Date().toISOString(), requestId).run().catch(() => undefined);
+    const auditEventId = await auditQuietly(env, {
+      event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed",
+      actor: requestedBy, subject: TARGET_SERVICE, outcome: finalStatus,
+      payload: { request_id: requestId, commit_sha: sha, workflow: WORKFLOW, github_status: dispatch.status }
+    });
+
     if (dispatch.status !== 204) {
       return json({
+        request_id: requestId,
         error: "production_dispatch_failed",
         status: dispatch.status,
         commit_sha: sha,
@@ -187,19 +272,35 @@ export default {
       }, 502);
     }
 
+    const advisory = url.searchParams.get("advisory") === "true"
+      ? await engineFor(env, SERVICE, [riskTask.name]).run(riskTask, {
+          commit_sha: sha,
+          target: TARGET_SERVICE,
+          checks: runs.map(({ name, conclusion }) => ({ name, conclusion })),
+          commit_status: statusData.state ?? "unknown"
+        }, requestId)
+      : undefined;
+
     return json({
+      request_id: requestId,
+      audit_event_id: auditEventId,
       status: "production_dispatch_accepted",
       repository: REPOSITORY,
       workflow: WORKFLOW,
       ref: "main",
       requested_commit_sha: sha,
-      production_deployment_triggered: true
+      production_deployment_triggered: true,
+      ...(advisory ? { advisory } : {})
     }, 202);
   }
 };
 
 export class DeploymentLock {
-  constructor(private state: DurableObjectStateLike) {}
+  private readonly state: DurableObjectStateLike;
+
+  constructor(state: DurableObjectStateLike) {
+    this.state = state;
+  }
 
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/claim") {

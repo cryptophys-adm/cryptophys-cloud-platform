@@ -5,7 +5,7 @@ Six separately deployed TypeScript Workers implement the logical control plane f
 | Worker | Capability | Status | Endpoints (all `/v1` need `Authorization: Bearer <ADMIN_TOKEN>`) |
 |---|---|---|---|
 | `cryptophys-platform-api` | Public API | Operational | `GET /health`, `/ready`, `/` |
-| `cryptophys-deployment-orchestrator` | Authenticated, CI-gated deployment dispatch | Operational | `POST /v1/deployments` (shared secret) |
+| `cryptophys-deployment-orchestrator` | Authenticated, CI-gated deployment dispatch, ledgered in `deployment_requests` and audited | Operational | `POST /v1/deployments` (shared secret; `?advisory=true` adds an AI risk summary) |
 | `cryptophys-platform-registry` | Desired inventory and ownership | Operational | `GET /v1/services`, `GET/PUT /v1/services/{id}`, `PUT /v1/services/{id}/desired-version` |
 | `cryptophys-policy-engine` | Deterministic policy decisions | Operational | `POST /v1/evaluate`, `GET /v1/decisions[/{id}]` |
 | `cryptophys-drift-detector` | Desired-vs-observed version and health | Operational, cron every 15 min | `POST /v1/observe`, `GET /v1/drift[/{service_id}]` |
@@ -24,7 +24,7 @@ All five services expose `GET /health` (includes the live `version.tag` = deploy
 
 ## AI engines
 
-Each of the five service Workers runs its own engine (`env.AI`, own task allow-list and output validators) per [AI-ENGINE-REQUIREMENT.md](../architecture/AI-ENGINE-REQUIREMENT.md). AI is opt-in per request with `?advisory=true`, returns `ok | unavailable | invalid_output`, is budgeted in D1, and never changes a decision or stored fact. The Deployment Orchestrator remains deterministic without an AI engine; adding one is a tracked follow-up.
+Each of the six control-plane Workers runs its own engine (`env.AI`, own task allow-list and output validators) per [AI-ENGINE-REQUIREMENT.md](../architecture/AI-ENGINE-REQUIREMENT.md). AI is opt-in per request with `?advisory=true`, returns `ok | unavailable | invalid_output`, is budgeted in D1, and never changes a decision or stored fact. The Orchestrator's engine runs only after its deterministic gate has dispatched; a red check blocks before any inference.
 
 ## Tests
 

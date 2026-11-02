@@ -96,22 +96,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          response="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
-          database_id="$(printf '%s' "$response" | jq -er --arg n "$D1_DATABASE_NAME" '
-            if .success != true then error("D1 list failed") else . end
-            | [.result[] | select(.name == $n)]
-            | if length == 1 then .[0].uuid else error("expected exactly one database named \($n), found \(length)") end')"
-          [[ "$database_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "::error::Unexpected D1 database id format"; exit 1; }
-          echo "::add-mask::$database_id"
-          for dir in $DEPLOY_ORDER; do
-            src="../$dir/wrangler.toml"
-            [[ "$(grep -c '__CONTROL_PLANE_D1_DATABASE_ID__' "$src")" == "1" ]] || { echo "::error::$src must contain the D1 placeholder exactly once"; exit 1; }
-            sed "s/__CONTROL_PLANE_D1_DATABASE_ID__/${database_id}/" "$src" > "../$dir/wrangler.deploy.toml"
-            if grep -q '__CONTROL_PLANE_D1_DATABASE_ID__' "../$dir/wrangler.deploy.toml"; then echo "::error::placeholder not replaced"; exit 1; fi
-          done
-          echo "Resolved ${D1_DATABASE_NAME} and rendered deploy configs for: ${DEPLOY_ORDER}"
+          dirs=()
+          for dir in $DEPLOY_ORDER; do dirs+=("../$dir"); done
+          "$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" "${dirs[@]}"
 
       - name: Record a D1 Time Travel restore point before migrating
         env:

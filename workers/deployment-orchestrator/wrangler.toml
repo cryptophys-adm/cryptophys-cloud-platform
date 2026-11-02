@@ -10,10 +10,25 @@ enabled = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
+# Dedicated Deployment Orchestrator AI engine (advisory only; AI-ENGINE-REQUIREMENT.md).
+[ai]
+binding = "AI"
+
 [vars]
 SERVICE_NAME = "cryptophys-deployment-orchestrator"
 SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
+AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+AI_DAILY_REQUEST_LIMIT = "80"
+AI_ACCOUNT_DAILY_REQUEST_LIMIT = "400"
+
+# Shared control-plane database: deployment ledger, audit log, AI budget. The
+# account-specific database_id is substituted at deploy time (ADR-0001).
+[[d1_databases]]
+binding = "DB"
+database_name = "cryptophys-control-plane"
+database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
+migrations_dir = "../control-plane-migrations"
 
 [[durable_objects.bindings]]
 name = "DEPLOYMENT_LOCK"

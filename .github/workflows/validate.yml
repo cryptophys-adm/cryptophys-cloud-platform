@@ -55,4 +55,6 @@ jobs:
       - name: Shellcheck
         run: shellcheck .github/scripts/*.sh
       - name: Run hermetic tests
-        run: bash .github/scripts/verify-worker-live.test.sh
+        run: |
+          bash .github/scripts/verify-worker-live.test.sh
+          bash .github/scripts/render-d1-config.test.sh

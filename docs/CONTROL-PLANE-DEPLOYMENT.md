@@ -13,6 +13,9 @@ Add two Environment secrets, each a distinct random value of at least 32 charact
 
 ## Deploy
 
+Order for a fresh commit: **Deploy Control Plane** (applies D1 migrations) → **Deploy Production Deployment Orchestrator** (refuses to deploy while `0003` is unapplied) → **Request Platform API Deployment**.
+
+
 1. Merge the reviewed change to `main` and wait for every check on the merge commit to pass.
 2. **Actions → Deploy Control Plane → Run workflow** on `main` with `DEPLOY` and the full `main` SHA.
 3. Approve the `production` Environment if reviewers are configured.
