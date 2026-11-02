@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: 22
       - name: Install TypeScript toolchain
-        run: npm install
+        run: npm ci
       - name: Type-check six Control Plane Workers
         run: npx tsc --noEmit -p ../control-plane-tsconfig.json
       - name: Test D1 migrations against isolated SQLite
