@@ -18,13 +18,13 @@ jobs:
         working-directory: workers/platform-api
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Type-check
         run: npm run typecheck
 
@@ -36,13 +36,13 @@ jobs:
         working-directory: workers/deployment-orchestrator
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Type-check
         run: npm run typecheck
 
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Shellcheck
         run: shellcheck .github/scripts/*.sh
       - name: Run hermetic tests
