@@ -106,8 +106,19 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
 }
 
 type CommitStatus = { state?: string; total_count?: number };
-type CheckRun = { name: string; status: string; conclusion: string | null };
-type CheckSuite = { status: string; conclusion: string | null };
+type WorkflowRun = { workflow_id: number; name: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+
+/** Latest run of each workflow: a superseded failed run does not block a later successful one. */
+export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
+  const latest = new Map<number, WorkflowRun>();
+  for (const run of runs) {
+    const seen = latest.get(run.workflow_id);
+    if (!seen || run.run_number > seen.run_number || (run.run_number === seen.run_number && (run.run_attempt ?? 1) > (seen.run_attempt ?? 1))) {
+      latest.set(run.workflow_id, run);
+    }
+  }
+  return [...latest.values()];
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -181,55 +192,48 @@ export default {
       return json({ error: "commit_not_current_main", expected_sha: refData.object?.sha ?? null }, 409);
     }
 
-    const [statusResponse, checkRunsResponse, checkSuitesResponse] = await Promise.all([
+    // CI gate (owner decision, option B): the combined commit status plus the latest GitHub
+    // Actions run of every workflow on this commit. Both are readable by a fine-grained PAT
+    // (Commit statuses: Read, Actions: Read); the Checks API is not.
+    const [statusResponse, workflowRunsResponse] = await Promise.all([
       gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
-      gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/check-runs?per_page=100"),
-      gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/check-suites?per_page=100")
+      gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&per_page=100")
     ]);
-    if (!statusResponse.ok || !checkRunsResponse.ok || !checkSuitesResponse.ok) {
+    if (!statusResponse.ok || !workflowRunsResponse.ok) {
       // Report which lookup failed and GitHub's status so a missing token permission is diagnosable.
       // The gate still fails closed; no token or response body is echoed.
       return json({
         error: "github_ci_lookup_failed",
         lookups: {
           commit_status: { http_status: statusResponse.status, required_permission: "Commit statuses: Read" },
-          check_runs: { http_status: checkRunsResponse.status, required_permission: "Checks: Read" },
-          check_suites: { http_status: checkSuitesResponse.status, required_permission: "Checks: Read" }
+          workflow_runs: { http_status: workflowRunsResponse.status, required_permission: "Actions: Read" }
         }
       }, 502);
     }
 
     const statusData = await statusResponse.json() as CommitStatus;
-    const checksData = await checkRunsResponse.json() as { total_count?: number; check_runs?: CheckRun[] };
-    const suitesData = await checkSuitesResponse.json() as { total_count?: number; check_suites?: CheckSuite[] };
-    const runs = checksData.check_runs ?? [];
-    const suites = suitesData.check_suites ?? [];
+    const runsData = await workflowRunsResponse.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
+    const allRuns = runsData.workflow_runs ?? [];
+    const runs = latestRunPerWorkflow(allRuns);
 
     const statusBlocked = (statusData.total_count ?? 0) > 0 && statusData.state !== "success";
     const runsBlocked =
       runs.length === 0 ||
-      (checksData.total_count ?? 0) > runs.length ||
+      (runsData.total_count ?? 0) > allRuns.length ||
       runs.some(run => run.status !== "completed" || run.conclusion !== "success");
-    const suitesBlocked =
-      suites.length === 0 ||
-      (suitesData.total_count ?? 0) > suites.length ||
-      suites.some(suite => suite.status !== "completed" || suite.conclusion !== "success");
 
-    if (statusBlocked || runsBlocked || suitesBlocked) {
+    if (statusBlocked || runsBlocked) {
       await auditQuietly(env, {
         event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "ci_not_green",
-        payload: { commit_sha: sha, commit_status: statusData.state ?? "unknown", blocking_checks: runs.filter((r) => r.status !== "completed" || r.conclusion !== "success").map((r) => r.name) }
+        payload: { commit_sha: sha, commit_status: statusData.state ?? "unknown", blocking_workflows: runs.filter((r) => r.status !== "completed" || r.conclusion !== "success").map((r) => r.name) }
       });
       return json({
         error: "ci_not_green",
         commit_status: statusData.state ?? "unknown",
         status_count: statusData.total_count ?? 0,
-        checks_reported: runs.length,
-        checks_total: checksData.total_count ?? 0,
-        checks: runs.map(({ name, status, conclusion }) => ({ name, status, conclusion })),
-        suites_reported: suites.length,
-        suites_total: suitesData.total_count ?? 0,
-        suites: suites.map(({ status, conclusion }) => ({ status, conclusion }))
+        workflow_runs_reported: allRuns.length,
+        workflow_runs_total: runsData.total_count ?? 0,
+        workflows: runs.map(({ name, status, conclusion }) => ({ name, status, conclusion }))
       }, 409);
     }
 
@@ -242,7 +246,7 @@ export default {
         `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'approved', NULL, ?, ?, ?, ?)`
       ).bind(requestId, TARGET_SERVICE, sha, requestedBy, sha,
-        JSON.stringify({ workflow: WORKFLOW, ref: "main", checks: runs.map(({ name, conclusion }) => ({ name, conclusion })) }),
+        JSON.stringify({ workflow: WORKFLOW, ref: "main", workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) }),
         createdAt, createdAt).run();
     } catch (err) {
       if (/UNIQUE constraint failed/i.test(String((err as Error)?.message ?? err))) {
@@ -291,7 +295,7 @@ export default {
       ? await engineFor(env, SERVICE, [riskTask.name]).run(riskTask, {
           commit_sha: sha,
           target: TARGET_SERVICE,
-          checks: runs.map(({ name, conclusion }) => ({ name, conclusion })),
+          workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })),
           commit_status: statusData.state ?? "unknown"
         }, requestId)
       : undefined;
