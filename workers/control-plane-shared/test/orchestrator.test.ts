@@ -26,7 +26,7 @@ function lockNamespace() {
 
 interface GithubState {
   mainSha: string;
-  runs: { workflow_id: number; name: string; status: string; conclusion: string | null; run_number: number }[];
+  runs: { workflow_id: number; name: string; path?: string; status: string; conclusion: string | null; run_number: number }[];
   dispatchStatus: number;
   dispatched: unknown[];
   actionsForbidden?: boolean;
