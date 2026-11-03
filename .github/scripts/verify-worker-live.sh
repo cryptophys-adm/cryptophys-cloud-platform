@@ -71,7 +71,7 @@ trap 'rm -rf "$workdir"' EXIT
 access_args=()
 if [[ -n "${CF_ACCESS_CLIENT_ID:-}" || -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
   [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]] || fail "Set both CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET"
-  (umask 077; printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$workdir/access-headers")
+  "$(dirname "${BASH_SOURCE[0]}")/access-headers.sh" "$workdir/access-headers" || fail "invalid Cloudflare Access service token secrets"
   access_args=(--header "@$workdir/access-headers")
 elif [[ "$require_access" == true ]]; then
   fail "--require-access needs CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET (Cloudflare Access service token)"
