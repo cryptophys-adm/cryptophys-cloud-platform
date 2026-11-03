@@ -99,7 +99,7 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
 }
 
 type CommitStatus = { state?: string; total_count?: number };
-type WorkflowRun = { workflow_id: number; name: string; path?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
 
 const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
 
@@ -113,6 +113,8 @@ export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
   for (const run of runs) {
     // `path` may carry an "@<ref>" suffix; compare the file path only.
     if (run.path?.split("@")[0] === REQUEST_WORKFLOW_PATH) continue;
+    // Scheduled runs (e.g. drift monitoring) observe production; they are not CI for the commit.
+    if (run.event === "schedule") continue;
     const seen = latest.get(run.workflow_id);
     if (!seen || run.run_number > seen.run_number || (run.run_number === seen.run_number && (run.run_attempt ?? 1) > (seen.run_attempt ?? 1))) {
       latest.set(run.workflow_id, run);

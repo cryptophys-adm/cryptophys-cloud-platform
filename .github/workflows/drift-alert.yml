@@ -1,0 +1,95 @@
+name: Drift Alert
+
+# Reads the Drift Detector's latest observations (it observes every 15 minutes) and keeps one
+# GitHub issue in step with them: opened when any Worker is drifted, unhealthy, unobserved or
+# stale, updated only when the problem set changes, and closed once everything is back in sync.
+# Read-only towards production; authenticated by the CI Cloudflare Access service token.
+# Scheduled runs are excluded from the Orchestrator's CI gate (they are not CI for a commit).
+
+on:
+  schedule:
+    - cron: "23,53 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: drift-alert
+  cancel-in-progress: false
+
+env:
+  ISSUE_TITLE: "Drift detected in production"
+
+jobs:
+  alert:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout main (scripts only)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Read the drift report
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          access="$(mktemp)"; trap 'rm -f "$access"' EXIT
+          .github/scripts/access-headers.sh "$access"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
+            --header "@${access}" "https://cryptophys-drift-detector.${subdomain}.workers.dev/v1/drift" \
+            --output "$RUNNER_TEMP/drift.json" --write-out '%{http_code}')"
+          [[ "$status" == "200" ]] || { echo "::error::Drift Detector returned HTTP ${status}"; exit 1; }
+          .github/scripts/drift-summary.sh "$RUNNER_TEMP/drift.json" "$(date +%s)" > "$RUNNER_TEMP/summary.json"
+          jq -r '"State: \(.state)\n\(.markdown)"' "$RUNNER_TEMP/summary.json"
+          jq -r '"### Drift\n\(.markdown)"' "$RUNNER_TEMP/summary.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/summary.json"
+          state="$(jq -r .state "$summary")"
+          fp="$(jq -r .fingerprint "$summary")"
+          # shellcheck disable=SC2016 # $t is a jq variable
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"${ISSUE_TITLE}\" in:title" --json number,title,body \
+            | jq -c --arg t "$ISSUE_TITLE" '[.[] | select(.title == $t)][0] // {}')"
+          number="$(jq -r '.number // empty' <<<"$issue")"
+          if [[ "$state" == "in_sync" ]]; then
+            if [[ -n "$number" ]]; then
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --reason completed \
+                --comment "Resolved: all Workers are healthy and at their desired versions. ${RUN_URL}"
+              echo "Closed drift issue #${number}"
+            else
+              echo "In sync; no open drift issue."
+            fi
+            exit 0
+          fi
+          body="$(jq -r --arg run "$RUN_URL" --arg fp "$fp" '
+            "The Drift Detector reports problems in production.\n\n\(.markdown)\n\n" +
+            "Reasons: `version_mismatch` (live version differs from the registry), `health_check_failed`/`rpc_failed`/`timeout` (unhealthy), " +
+            "`no_observation` (service not observed), `stale_observation` (no observation for 45 minutes: check the Drift Detector cron).\n\n" +
+            "Runbook: docs/OPERATIONS.md. Last checked: \($run)\n\n<!-- drift-fingerprint:\($fp) -->"' "$summary")"
+          if [[ -z "$number" ]]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body"
+          elif ! jq -e --arg fp "$fp" '.body | contains("drift-fingerprint:" + $fp)' <<<"$issue" >/dev/null; then
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "The drift changed:"$'\n\n'"$(jq -r .markdown "$summary")"$'\n\n'"${RUN_URL}"
+            echo "Updated drift issue #${number}"
+          else
+            echo "Drift unchanged; issue #${number} already describes it."
+          fi

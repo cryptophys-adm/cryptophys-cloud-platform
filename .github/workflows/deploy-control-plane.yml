@@ -28,7 +28,7 @@ concurrency:
 
 env:
   D1_DATABASE_NAME: cryptophys-control-plane
-  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager drift-detector"
+  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager signal-engine drift-detector"
 
 jobs:
   validate:
@@ -105,7 +105,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
           ACCESS_APP_NAME: cryptophys-cloud-platform
-          EXPECTED_WORKERS: "cryptophys-platform-registry cryptophys-policy-engine cryptophys-audit-ledger cryptophys-recovery-manager cryptophys-drift-detector"
+          EXPECTED_WORKERS: "cryptophys-platform-registry cryptophys-policy-engine cryptophys-audit-ledger cryptophys-recovery-manager cryptophys-signal-engine cryptophys-drift-detector"
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
 
       - name: Record a D1 Time Travel restore point before migrating

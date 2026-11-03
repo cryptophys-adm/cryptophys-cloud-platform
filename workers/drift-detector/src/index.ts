@@ -13,7 +13,18 @@ export interface HealthRpcBinding {
   health(): Promise<{ status?: string; version?: { id?: string; tag?: string | null } | null }>;
 }
 
+/** Plain service binding to an externally deployed Worker's fetch handler (no RPC entrypoint). */
+export interface FetchBinding {
+  fetch(input: Request | string, init?: RequestInit): Promise<Response>;
+}
+
 export interface Env extends BaseEnv {
+  SVC_SIGNAL_ENGINE: HealthRpcBinding;
+  /** xauusd Workers, deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005 decision 7). */
+  EXT_XAUUSD_AI: FetchBinding;
+  EXT_XAUUSD_NEWS: FetchBinding;
+  EXT_XAUUSD_PULL_ADAPTER: FetchBinding;
+  EXT_XAUUSD_NEXUS: FetchBinding;
   SVC_PLATFORM_API: HealthRpcBinding;
   SVC_DEPLOYMENT_ORCHESTRATOR: HealthRpcBinding;
   SVC_PLATFORM_REGISTRY: HealthRpcBinding;
@@ -34,10 +45,51 @@ export function targets(env: Env): Record<string, HealthRpcBinding | undefined> 
     "cryptophys-policy-engine": env.SVC_POLICY_ENGINE,
     "cryptophys-audit-ledger": env.SVC_AUDIT_LEDGER,
     "cryptophys-recovery-manager": env.SVC_RECOVERY_MANAGER,
+    "cryptophys-signal-engine": env.SVC_SIGNAL_ENGINE,
+  };
+}
+
+/** Externally deployed Workers observed over HTTP through service bindings. */
+export function externalTargets(env: Env): Record<string, FetchBinding | undefined> {
+  return {
+    "xauusd-ai-trading-assistant": env.EXT_XAUUSD_AI,
+    "xauusd-fundamental-news-ingestion": env.EXT_XAUUSD_NEWS,
+    "xauusd-tradingview-pull-adapter": env.EXT_XAUUSD_PULL_ADAPTER,
+    "xauusd-nexus-dashboard": env.EXT_XAUUSD_NEXUS,
   };
 }
 
 interface Probe { reachable: boolean; healthy: boolean; version_tag: string | null; error: string | null }
+
+async function withTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), PROBE_TIMEOUT_MS); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * HTTP health of an external Worker. `/health` must return JSON `status: "ok"`; any other
+ * path (a page without a health endpoint) must return 2xx. The version is not observable
+ * from outside the Worker, so external services are health-managed only.
+ */
+async function probeHttp(binding: FetchBinding, path: string): Promise<Probe> {
+  try {
+    const res = await withTimeout(binding.fetch(`https://drift-probe.internal${path}`, { headers: { accept: "application/json" } }));
+    let healthy = res.ok;
+    if (healthy && path === "/health") {
+      const body = await res.json().catch(() => null) as { status?: unknown } | null;
+      healthy = body?.status === "ok";
+    } else {
+      await res.body?.cancel();
+    }
+    return { reachable: true, healthy, version_tag: null, error: healthy ? null : res.ok ? "health_check_failed" : `http_${res.status}` };
+  } catch (err) {
+    return { reachable: false, healthy: false, version_tag: null, error: String((err as Error)?.message) === "timeout" ? "timeout" : "fetch_failed" };
+  }
+}
 
 async function probe(binding: HealthRpcBinding): Promise<Probe> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -71,14 +123,24 @@ export interface ServiceDrift {
   probe: Probe;
 }
 
-interface RegistryRow { service_id: string; desired_version: string | null; status: string }
+interface RegistryRow { service_id: string; desired_version: string | null; status: string; metadata_json: string | null }
+
+function healthPath(row: RegistryRow): string {
+  try {
+    const p = (JSON.parse(row.metadata_json ?? "{}") as { health_path?: unknown }).health_path;
+    return typeof p === "string" && /^\/[A-Za-z0-9._\/-]{0,100}$/.test(p) ? p : "/health";
+  } catch {
+    return "/health";
+  }
+}
 
 /** Compare desired (registry) with observed (live health/version) for every registered service. */
 export async function observe(env: Env, trigger: string, actor: string): Promise<{ run_id: string; observed_at: string; services: ServiceDrift[]; drifted: number }> {
   const runId = newId("drift");
   const observedAt = nowIso();
-  const rows = await env.DB.prepare("SELECT service_id, desired_version, status FROM service_registry ORDER BY service_id").all<RegistryRow>();
+  const rows = await env.DB.prepare("SELECT service_id, desired_version, status, metadata_json FROM service_registry ORDER BY service_id").all<RegistryRow>();
   const map = targets(env);
+  const external = externalTargets(env);
   const services: ServiceDrift[] = [];
   for (const row of rows.results) {
     let p: Probe;
@@ -86,6 +148,8 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
       p = { reachable: true, healthy: true, version_tag: env.CF_VERSION_METADATA?.tag ?? null, error: null };
     } else if (map[row.service_id]) {
       p = await probe(map[row.service_id]!);
+    } else if (external[row.service_id]) {
+      p = await probeHttp(external[row.service_id]!, healthPath(row));
     } else {
       p = { reachable: false, healthy: false, version_tag: null, error: "no_observation_binding" };
     }
@@ -151,7 +215,7 @@ export default {
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/health" || path === "/healthz") return healthResponse(env);
       if (path === "/ready" || path === "/readyz") {
-        const bindings = Object.values(targets(env)).every(Boolean);
+        const bindings = [...Object.values(targets(env)), ...Object.values(externalTargets(env))].every(Boolean);
         return readinessResponse(env, { observation_bindings: bindings });
       }
       if (path === "/") {

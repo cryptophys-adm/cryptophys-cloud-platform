@@ -11,6 +11,7 @@ Six separately deployed TypeScript Workers implement the logical control plane f
 | `cryptophys-drift-detector` | Desired-vs-observed version and health | Operational, cron every 15 min | `POST /v1/observe`, `GET /v1/drift[/{service_id}]` |
 | `cryptophys-audit-ledger` | Append-only hash-chained audit log | Operational | `POST /v1/events`, `GET /v1/events[/{id}]`, `GET /v1/verify` |
 | `cryptophys-recovery-manager` | Recovery plans, approval, recorded execution | Operational | `POST/GET /v1/plans`, `GET /v1/plans/{id}`, `POST /v1/plans/{id}/approve` (`APPROVER_IDENTITIES`), `/executions`, `/disable` |
+| `cryptophys-signal-engine` | Deterministic trend/volume indicators from public market data (ADR-0005; advisory only, cron every 15 min) | Operational | `GET /v1/signals?symbol=&timeframe=`, `GET /v1/signals/history`, `GET /v1/status`, `POST /v1/ingest` |
 
 Every Worker sits behind Cloudflare Access and also verifies the Access JWT itself before any route; there is no exception. Worker-to-Worker calls use RPC service bindings (`WorkerEntrypoint`): every Worker exports `HealthRpc.health()`, and the Policy Engine exports `PolicyRpc.evaluate()`. These are not reachable over HTTP. All five services expose `GET /health` (includes the live `version.tag` = deployed commit), `GET /ready` (503 unless schema migrated, secrets and Access configured, AI and service bindings present) and `GET /` (metadata).
 
