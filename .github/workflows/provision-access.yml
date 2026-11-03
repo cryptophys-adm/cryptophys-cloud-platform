@@ -1,0 +1,151 @@
+name: Provision Cloudflare Access
+
+# Creates or updates ONE self-hosted Cloudflare Access application that protects all
+# seven platform Workers (destination type `worker`, so workers.dev, previews and the
+# orchestrator custom domain are all covered), with exactly two policies:
+#   1. Service Auth for the CI service token (CF_ACCESS_CLIENT_ID), and
+#   2. Allow for the operator emails in the ACCESS_ALLOWED_EMAILS environment variable.
+# Idempotent: re-running converges the application to this definition.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: "Type PROVISION to change the production Access configuration"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-access-production
+  cancel-in-progress: false
+
+env:
+  ACCESS_APP_NAME: cryptophys-cloud-platform
+  PLATFORM_WORKERS: >-
+    cryptophys-platform-api cryptophys-deployment-orchestrator cryptophys-platform-registry
+    cryptophys-policy-engine cryptophys-drift-detector cryptophys-audit-ledger cryptophys-recovery-manager
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require main and explicit confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch from main only"; exit 1; }
+          [[ "$CONFIRM" == "PROVISION" ]] || { echo "::error::Exact confirmation PROVISION required"; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Create or update the Access application
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_ALLOWED_EMAILS: ${{ vars.ACCESS_ALLOWED_EMAILS }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID missing"; exit 1; }
+          test -n "$CLOUDFLARE_ACCESS_API_TOKEN" || { echo "::error::CLOUDFLARE_ACCESS_API_TOKEN missing"; exit 1; }
+          test -n "$CF_ACCESS_CLIENT_ID" || { echo "::error::CF_ACCESS_CLIENT_ID missing"; exit 1; }
+          emails="$(printf '%s' "$ACCESS_ALLOWED_EMAILS" | tr ', ' '\n' | sed '/^$/d' | sort -u)"
+          [[ -n "$emails" ]] || { echo "::error::Set the ACCESS_ALLOWED_EMAILS environment variable (comma-separated operator emails)"; exit 1; }
+          while read -r e; do [[ "$e" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || { echo "::error::Invalid email in ACCESS_ALLOWED_EMAILS"; exit 1; }; done <<< "$emails"
+
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}"
+          call() { # METHOD PATH [JSON]
+            local out status
+            local -a data=()
+            [[ $# -ge 3 ]] && data=(--data "$3")
+            out="$(mktemp)"
+            status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --request "$1" "${base}$2" \
+              --header "Authorization: Bearer ${CLOUDFLARE_ACCESS_API_TOKEN}" --header "Content-Type: application/json" \
+              "${data[@]}" --output "$out" --write-out '%{http_code}')"
+            if [[ ! "$status" =~ ^2 ]] || ! jq -e '.success == true' "$out" >/dev/null; then
+              echo "::error::$1 $2 returned HTTP ${status}: $(jq -c '[.errors[]? | {code, message}]' "$out" 2>/dev/null)" >&2
+              exit 1
+            fi
+            cat "$out"
+          }
+
+          token_id="$(call GET "/access/service_tokens?per_page=1000" | jq -er --arg c "$CF_ACCESS_CLIENT_ID" \
+            '[.result[] | select(.client_id == $c)] | if length == 1 then .[0].id else error("service token not found") end')"
+          scripts="$(call GET /workers/scripts)"
+          destinations="[]"
+          for name in $PLATFORM_WORKERS; do
+            tag="$(printf '%s' "$scripts" | jq -er --arg n "$name" '[.result[] | select(.id == $n)] | if length == 1 then .[0].tag else error("missing") end')" \
+              || { echo "::error::Worker ${name} not found"; exit 1; }
+            destinations="$(jq -c --arg t "$tag" '. + [{type: "worker", worker_id: $t}]' <<< "$destinations")"
+          done
+
+          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --argjson dest "$destinations" \
+            --argjson emails "$(jq -R . <<< "$emails" | jq -s .)" '{
+              name: $name,
+              type: "self_hosted",
+              destinations: $dest,
+              session_duration: "8h",
+              app_launcher_visible: false,
+              policies: [
+                {name: "ci-service-token", decision: "non_identity", precedence: 1, include: [{service_token: {token_id: $token}}]},
+                {name: "platform-operators", decision: "allow", precedence: 2, include: [$emails[] | {email: {email: .}}]}
+              ]
+            }')"
+
+          existing="$(call GET "/access/apps?per_page=1000" | jq -c --arg n "$ACCESS_APP_NAME" '[.result[] | select(.name == $n)]')"
+          case "$(jq length <<< "$existing")" in
+            0) result="$(call POST /access/apps "$body")"; action=created ;;
+            1) result="$(call PUT "/access/apps/$(jq -r '.[0].id' <<< "$existing")" "$body")"; action=updated ;;
+            *) echo "::error::More than one Access application named ${ACCESS_APP_NAME}; resolve manually"; exit 1 ;;
+          esac
+          jq -e --argjson n "$(wc -w <<< "$PLATFORM_WORKERS")" '.result.aud and (.result.destinations | length == $n)' <<< "$result" >/dev/null \
+            || { echo "::error::Access application response is missing its AUD or destinations"; exit 1; }
+          echo "Access application ${ACCESS_APP_NAME} ${action}: $(jq -r '.result.destinations | length' <<< "$result") Workers, $(wc -l <<< "$emails") operator email(s), CI service token policy."
+          {
+            echo "### Cloudflare Access"
+            echo "Application \`${ACCESS_APP_NAME}\` ${action}; protects: ${PLATFORM_WORKERS}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify Access is enforced at the edge
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$CF_ACCESS_CLIENT_SECRET" || { echo "::error::CF_ACCESS_CLIENT_SECRET missing"; exit 1; }
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          headers="$(mktemp)"; chmod 600 "$headers"; trap 'rm -f "$headers"' EXIT
+          printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$headers"
+          for name in $PLATFORM_WORKERS; do
+            url="https://${name}.${subdomain}.workers.dev/health"
+            for _ in $(seq 1 12); do
+              unauth="$(curl --silent --proto '=https' --max-time 20 --output /dev/null --write-out '%{http_code}' "$url" || true)"
+              [[ "$unauth" =~ ^(302|401|403)$ ]] && break
+              sleep 5
+            done
+            [[ "$unauth" =~ ^(302|401|403)$ ]] || { echo "::error::${name} answered HTTP ${unauth} without credentials"; exit 1; }
+            body="$(mktemp)"
+            authed="$(curl --silent --proto '=https' --max-time 20 --header "@$headers" --output "$body" --write-out '%{http_code}' "$url" || true)"
+            # The token must get past Access to the Worker: HTTP 200, or (before the Worker is redeployed
+            # with ACCESS_* vars) the Worker's own JSON 503 access_not_configured. Access's own denials are not JSON.
+            if [[ "$authed" == "200" ]] || { [[ "$authed" == "503" ]] && jq -e '.error == "access_not_configured"' "$body" >/dev/null 2>&1; }; then
+              :
+            else
+              echo "::error::${name}: service token was not admitted to the Worker (HTTP ${authed})"; exit 1
+            fi
+            echo "${name}: unauthenticated HTTP ${unauth}, service token HTTP ${authed}"
+          done

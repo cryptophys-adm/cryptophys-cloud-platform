@@ -64,9 +64,14 @@ jobs:
           COMMIT_SHA: ${{ inputs.commit_sha }}
           ORCHESTRATOR_URL: ${{ inputs.orchestrator_url }}
           ORCHESTRATOR_SHARED_SECRET: ${{ secrets.ORCHESTRATOR_SHARED_SECRET }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           [[ -n "$ORCHESTRATOR_SHARED_SECRET" ]] || { echo "::error::ORCHESTRATOR_SHARED_SECRET is not available to this workflow"; exit 1; }
+          [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]] || { echo "::error::Cloudflare Access service token is not available to this workflow"; exit 1; }
+          access_headers="$(mktemp)"; chmod 600 "$access_headers"; trap 'rm -f "$access_headers"' EXIT
+          printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$access_headers"
           body="$(jq -cn --arg sha "$COMMIT_SHA" '{commit_sha: $sha, confirm_production: "DEPLOY"}')"
           response="$(mktemp)"
           # Single attempt: a production request must not be replayed automatically.
@@ -74,6 +79,7 @@ jobs:
             --request POST "${ORCHESTRATOR_URL}/v1/deployments" \
             --header "Authorization: Bearer ${ORCHESTRATOR_SHARED_SECRET}" \
             --header "Content-Type: application/json" \
+            --header "@${access_headers}" \
             --data "$body" \
             --output "$response" --write-out '%{http_code}')"
           echo "Orchestrator HTTP status: ${status}"

@@ -23,7 +23,7 @@
 - Source: `workers/platform-api/src/index.ts`
 - Config: `workers/platform-api/wrangler.toml`
 - Deployment: GitHub Actions `workflow_dispatch`, requested through the authenticated Deployment Orchestrator, protected `production` environment.
-- Public routes/custom domains: none for the Platform API (workers.dev only).
+- Public routes/custom domains: none. The workers.dev hostname of every Worker is behind Cloudflare Access (ADR-0004).
 - Persistence bindings: none for the Platform API. Control-plane state is in D1 `cryptophys-control-plane` (see RESOURCE-OWNERSHIP.md and ADR-0004).
 
 ## Target logical control plane

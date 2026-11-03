@@ -148,8 +148,8 @@ test("audit ledger appends, redacts, lists, fetches and verifies events", async 
 
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "Bad Type", actor: "a", subject: "s", outcome: "o" }))).status, 400);
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "x", actor: "a", subject: "s", outcome: "o", payload: [1] }))).status, 400);
-  assert.equal((await call(audit, env, new Request("https://x.test/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "text/plain" }, body: "{}" }))).status, 415);
-  assert.equal((await call(audit, env, new Request("https://x.test/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" }, body: "{" }))).status, 400);
+  assert.equal((await call(audit, env, new Request("https://x.internal/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "text/plain" }, body: "{}" }))).status, 415);
+  assert.equal((await call(audit, env, new Request("https://x.internal/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" }, body: "{" }))).status, 400);
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "x", actor: "a", subject: "s", outcome: "o", payload: { big: "x".repeat(40000) } }))).status, 413);
 
   const list = await call(audit, env, req("GET", "/v1/events?subject=cryptophys-platform-api"));

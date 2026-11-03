@@ -58,3 +58,4 @@ jobs:
         run: |
           bash .github/scripts/verify-worker-live.test.sh
           bash .github/scripts/render-d1-config.test.sh
+          bash .github/scripts/resolve-access.test.sh

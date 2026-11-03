@@ -6,6 +6,7 @@ import {
 import { appendAuditEvent, canonicalJson, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
+import { accessGate } from "../../control-plane-shared/src/access.ts";
 
 export interface Env extends BaseEnv {
   SVC_PLATFORM_API: Fetcher;
@@ -139,6 +140,8 @@ const summaryTask: AiTask<Summary> = {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const blocked = await accessGate(request, env);
+    if (blocked) return blocked;
     const path = url.pathname;
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/health" || path === "/healthz") return healthResponse(env);

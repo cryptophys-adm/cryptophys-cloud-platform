@@ -19,12 +19,14 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
 # Minimal curl stand-in: honours --output/--write-out and the URL argument.
-out=/dev/stdout; fmt=""; url=""; auth=""
+out=/dev/stdout; fmt=""; url=""; auth=""; headers=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output) out="$2"; shift 2 ;;
     --write-out) fmt="$2"; shift 2 ;;
-    --header) auth="$2"; shift 2 ;;
+    --header)
+      if [[ "$2" == @* ]]; then headers+="$(cat "${2#@}")"$'\n'; else auth="$2"; headers+="$2"$'\n'; fi
+      shift 2 ;;
     --max-time|--retry|--retry-delay|--proto) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
@@ -34,7 +36,12 @@ case "$url" in
   https://api.cloudflare.test/*)
     [[ "$auth" == "Authorization: Bearer $EXPECTED_TOKEN" ]] || { echo '{"success":false}' >"$out"; printf 403; exit 0; } ;;
   https://*)
-    [[ -z "$auth" ]] || { echo "credential leaked to $url" >&2; exit 99; } ;;
+    [[ -z "$auth" ]] || { echo "credential leaked to $url" >&2; exit 99; }
+    [[ "$headers" != *"$EXPECTED_TOKEN"* ]] || { echo "API token leaked to $url" >&2; exit 99; }
+    if [[ "${FAKE_ACCESS:-0}" == 1 && "$url" == *workers.dev* ]] && \
+       [[ "$headers" != *"CF-Access-Client-Id: $ACCESS_ID"* || "$headers" != *"CF-Access-Client-Secret: $ACCESS_SECRET"* ]]; then
+      : >"$out"; [[ -n "$fmt" ]] && printf 302; exit 0
+    fi ;;
 esac
 key="$(printf '%s' "$url" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
 fixture="$FIXTURES/$key"
@@ -65,8 +72,11 @@ setup_green() {
   fx "$base/ready" '{"status":"ready","service":"svc"}'
 }
 
+access_id="client-id.access"
+access_secret="cfast_access-secret-must-never-be-printed"
+
 run_subject() {
-  PATH="$tmp/bin:$PATH" EXPECTED_TOKEN="$token" \
+  PATH="$tmp/bin:$PATH" EXPECTED_TOKEN="$token" ACCESS_ID="$access_id" ACCESS_SECRET="$access_secret" \
     CLOUDFLARE_ACCOUNT_ID="$account" CLOUDFLARE_API_TOKEN="$token" \
     CF_API_BASE="https://api.cloudflare.test/client/v4" \
     VERIFY_ATTEMPTS=2 VERIFY_DELAY_SECONDS=0 \
@@ -78,7 +88,7 @@ passed=0; failed=0
 expect() { # expect pass|fail NAME [grep-pattern]
   local want="$1" name="$2" pattern="${3:-}" got=pass
   run_subject "${extra_args[@]}" || got=fail
-  if grep -q "$token" "$tmp/out"; then echo "FAIL $name: token printed"; failed=$((failed+1)); return; fi
+  if grep -qE "$token|$access_secret" "$tmp/out"; then echo "FAIL $name: secret printed"; failed=$((failed+1)); return; fi
   if [[ "$got" != "$want" ]] || { [[ -n "$pattern" ]] && ! grep -q -- "$pattern" "$tmp/out"; }; then
     echo "FAIL $name (wanted $want, got $got)"; sed 's/^/    /' "$tmp/out"; failed=$((failed+1))
   else
@@ -135,6 +145,21 @@ echo "curl: (60) SSL: no alternative certificate subject name matches target hos
 fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
 extra_args=(--custom-domain custom.example.test)
 expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed TLS-verified request"
+extra_args=()
+
+setup_green access-ok
+export FAKE_ACCESS=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access)
+expect pass "Access-protected worker verifies with the service token" "Cloudflare Access rejects unauthenticated requests"
+unset CF_ACCESS_CLIENT_SECRET
+expect fail "only one Access credential set fails" "Set both"
+unset CF_ACCESS_CLIENT_ID
+expect fail "--require-access without a service token fails" "needs CF_ACCESS_CLIENT_ID"
+export FAKE_ACCESS=0 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+expect fail "worker that answers without credentials is not accepted as protected" "not protected by Cloudflare Access"
+export FAKE_ACCESS=1 CF_ACCESS_CLIENT_SECRET="wrong-secret"
+expect fail "wrong Access secret cannot reach health" "health check failed"
+unset FAKE_ACCESS CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
 extra_args=()
 
 if FIXTURES="$tmp/none" PATH="$tmp/bin:$PATH" CLOUDFLARE_ACCOUNT_ID="$account" CLOUDFLARE_API_TOKEN="" \

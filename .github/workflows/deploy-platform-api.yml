@@ -72,8 +72,15 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Resolve Cloudflare Access configuration (fails closed if the Workers are not protected)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          ACCESS_APP_NAME: cryptophys-cloud-platform
+          EXPECTED_WORKERS: cryptophys-platform-api
+        run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
       - name: Deploy Worker
-        run: npx wrangler deploy --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}"
+        run: npx wrangler deploy --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}"
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -84,11 +91,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
             --script cryptophys-platform-api \
             --commit "$COMMIT_SHA" \
+            --require-access \
             --health-filter '.status == "ok" and .service == "cryptophys-cloud-platform" and .environment == "production" and .contract_version == "v1"' \
             --ready-filter '.status == "ready" and .service == "cryptophys-cloud-platform" and (.dependencies | length == 0)'
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"

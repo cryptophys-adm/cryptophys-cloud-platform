@@ -2,6 +2,7 @@ import type { AiBinding, D1Database } from "../../control-plane-shared/src/types
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
+import { accessConfigured, accessGate } from "../../control-plane-shared/src/access.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -30,6 +31,8 @@ export interface Env {
   AI_MODEL?: string;
   AI_DAILY_REQUEST_LIMIT?: string;
   AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
 }
 
 const SERVICE = "cryptophys-deployment-orchestrator";
@@ -109,6 +112,8 @@ type CheckSuite = { status: string; conclusion: string | null };
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const blocked = await accessGate(request, env);
+    if (blocked) return blocked;
 
     if (request.method === "GET" && ["/health", "/healthz"].includes(url.pathname)) {
       return json({
@@ -127,7 +132,8 @@ export default {
         shared_secret_configured: Boolean(env.ORCHESTRATOR_SHARED_SECRET),
         deployment_lock_binding: Boolean(env.DEPLOYMENT_LOCK),
         database_schema: Boolean(env.DB) && await schemaReady(env as never),
-        ai_binding: Boolean(env.AI)
+        ai_binding: Boolean(env.AI),
+        access_configured: accessConfigured(env)
       };
       const ready = Object.values(checks).every(Boolean);
       return json({

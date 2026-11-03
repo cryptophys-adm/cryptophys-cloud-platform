@@ -73,21 +73,23 @@ function env(db = migratedDb()) {
     DB: db,
     AI: fakeAi({ response: '{"summary":"Routine API release.","risk_level":"low","notes":["All checks passed"]}' }),
     AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast",
+    ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com",
+    ACCESS_AUD: "test-audience-tag",
   };
 }
 
 const deploy = (body: unknown, token = SECRET, query = "") =>
-  new Request(`https://orchestrator.test/v1/deployments${query}`, {
+  new Request(`https://orchestrator.internal/v1/deployments${query}`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 
 test("readiness requires the migrated schema and AI binding in addition to secrets and lock", async () => {
-  assert.equal((await call(orchestrator, env(), new Request("https://o.test/ready"))).body.production_dispatch_enabled, true);
-  const noSchema = await call(orchestrator, env(migratedDb({ recordLedger: false })), new Request("https://o.test/ready"));
+  assert.equal((await call(orchestrator, env(), new Request("https://o.internal/ready"))).body.production_dispatch_enabled, true);
+  const noSchema = await call(orchestrator, env(migratedDb({ recordLedger: false })), new Request("https://o.internal/ready"));
   assert.deepEqual([noSchema.status, noSchema.body.checks.database_schema], [503, false]);
-  assert.equal((await call(orchestrator, { ...env(), AI: undefined }, new Request("https://o.test/ready"))).status, 503);
+  assert.equal((await call(orchestrator, { ...env(), AI: undefined }, new Request("https://o.internal/ready"))).status, 503);
 });
 
 test("authenticated, CI-green request is ledgered, audited, dispatched once and advised", async () => {

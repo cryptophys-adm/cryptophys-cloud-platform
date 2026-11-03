@@ -14,11 +14,16 @@
 #
 # Required environment: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
 # Optional environment: VERIFY_ATTEMPTS (default 10), VERIFY_DELAY_SECONDS (default 3),
-#                       CF_API_BASE (default https://api.cloudflare.com/client/v4)
+#                       CF_API_BASE (default https://api.cloudflare.com/client/v4),
+#                       CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (Cloudflare Access service token)
+#
+# --require-access: the Worker must sit behind Cloudflare Access. The service token is
+# then mandatory (sent from a 0600 header file, never on the command line), and an
+# unauthenticated GET /health must be rejected by Access (HTTP 302, 401 or 403).
 #
 # Usage:
 #   verify-worker-live.sh --script NAME --commit SHA \
-#     --health-filter JQ --ready-filter JQ [--custom-domain HOSTNAME]
+#     --health-filter JQ --ready-filter JQ [--require-access] [--custom-domain HOSTNAME]
 #
 # --custom-domain is advisory: it is probed with full TLS verification and its
 # Cloudflare registration is reported, but a failure there is surfaced as a
@@ -30,6 +35,7 @@ commit_sha=""
 health_filter=""
 ready_filter=""
 custom_domain=""
+require_access=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --health-filter) health_filter="${2:-}"; shift 2 ;;
     --ready-filter) ready_filter="${2:-}"; shift 2 ;;
     --custom-domain) custom_domain="${2:-}"; shift 2 ;;
+    --require-access) require_access=true; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -59,6 +66,16 @@ account_path="/accounts/${CLOUDFLARE_ACCOUNT_ID}"
 
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
+
+# Cloudflare Access service-token headers for requests to the Worker itself.
+access_args=()
+if [[ -n "${CF_ACCESS_CLIENT_ID:-}" || -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+  [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]] || fail "Set both CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET"
+  (umask 077; printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$workdir/access-headers")
+  access_args=(--header "@$workdir/access-headers")
+elif [[ "$require_access" == true ]]; then
+  fail "--require-access needs CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET (Cloudflare Access service token)"
+fi
 
 # cf_get PATH -> prints the JSON body on success; fails on non-200 or success != true.
 cf_get() {
@@ -104,7 +121,7 @@ http_check() {
   local name="$1" url="$2" filter="$3" body="$workdir/http.json" status="" i
   for ((i = 1; i <= attempts; i++)); do
     if status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
-        --output "$body" --write-out '%{http_code}' "$url")" \
+        "${access_args[@]}" --output "$body" --write-out '%{http_code}' "$url")" \
       && [[ "$status" == "200" ]] \
       && jq -e "$filter" "$body" >/dev/null 2>&1; then
       echo "${name} OK (HTTP ${status}): $(jq -c . "$body")"
@@ -118,6 +135,14 @@ http_check() {
   echo >&2
   fail "${name} check failed for ${url}"
 }
+
+if [[ "$require_access" == true ]]; then
+  # Without credentials, Cloudflare Access must stop the request before the Worker.
+  unauth="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+    --output /dev/null --write-out '%{http_code}' "${base_url}/health")" || fail "unauthenticated probe of ${base_url} failed to connect"
+  [[ "$unauth" =~ ^(302|401|403)$ ]] || fail "${base_url}/health answered HTTP ${unauth} without credentials; it is not protected by Cloudflare Access"
+  echo "Cloudflare Access rejects unauthenticated requests to ${base_url} (HTTP ${unauth})"
+fi
 
 http_check "health" "${base_url}/health" "$health_filter"
 http_check "readiness" "${base_url}/ready" "$ready_filter"
