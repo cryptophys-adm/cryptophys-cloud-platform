@@ -31,6 +31,7 @@ jobs:
           COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Production deployment must be dispatched against main."; exit 1; }
           if [[ "$CONFIRM_PRODUCTION" != "DEPLOY" ]]; then
             echo "Production deployment requires the exact input DEPLOY."
             exit 1
@@ -46,6 +47,7 @@ jobs:
 
   deploy:
     needs: validate-confirmation
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     defaults:
