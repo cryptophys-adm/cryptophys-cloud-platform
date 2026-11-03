@@ -16,9 +16,16 @@ placeholder="__CONTROL_PLANE_D1_DATABASE_ID__"
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 [[ $# -ge 1 ]] || { echo "usage: $0 <worker-dir>..." >&2; exit 2; }
 
-response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
-  --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
+body="$(mktemp)"
+trap 'rm -f "$body"' EXIT
+status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+  --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" --output "$body" --write-out '%{http_code}' \
+  "${CF_API_BASE:-https://api.cloudflare.com/client/v4}/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
+if [[ "$status" != "200" ]]; then
+  echo "::error::Cloudflare D1 API returned HTTP ${status}: $(jq -c '[.errors[]? | {code, message}]' "$body" 2>/dev/null || echo 'non-JSON response'). The token used for D1 needs Account > D1 > Edit on this account." >&2
+  exit 1
+fi
+response="$(cat "$body")"
 database_id="$(printf '%s' "$response" | jq -er --arg n "$D1_DATABASE_NAME" '
   if .success != true then error("D1 list failed") else . end
   | [.result[] | select(.name == $n)]

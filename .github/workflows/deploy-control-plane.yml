@@ -93,7 +93,7 @@ jobs:
       - name: Resolve the control-plane D1 database by exact name and render deploy configs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}  # D1 Edit (owner decision); Workers deploy keeps CLOUDFLARE_API_TOKEN
         run: |
           set -euo pipefail
           dirs=()
@@ -111,7 +111,7 @@ jobs:
       - name: Record a D1 Time Travel restore point before migrating
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}  # D1 Edit (owner decision); Workers deploy keeps CLOUDFLARE_API_TOKEN
         run: |
           set -euo pipefail
           info="$(npx wrangler d1 time-travel info "$D1_DATABASE_NAME" --json --config ../audit-ledger/wrangler.deploy.toml)"
@@ -124,7 +124,7 @@ jobs:
       - name: Apply D1 migrations
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}  # D1 Edit (owner decision); Workers deploy keeps CLOUDFLARE_API_TOKEN
         run: |
           set -euo pipefail
           npx wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml

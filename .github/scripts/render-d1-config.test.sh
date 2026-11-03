@@ -10,7 +10,12 @@ id="3f62fa1a-0000-4000-8000-000000000001"
 
 cat >"$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
-cat "$FAKE_RESPONSE"
+out=/dev/stdout; fmt=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --output) out="$2"; shift 2 ;; --write-out) fmt="$2"; shift 2 ;; *) shift ;; esac
+done
+cat "$FAKE_RESPONSE" >"$out"
+[[ -z "$fmt" ]] || cat "${FAKE_RESPONSE}.status" 2>/dev/null || printf 200
 FAKE
 chmod +x "$tmp/bin/curl"
 
@@ -50,6 +55,10 @@ if run "$tmp/w1"; then bad "API failure must fail"; else ok "API failure fails";
 printf '{"success":true,"result":[{"name":"cryptophys-control-plane","uuid":"%s"}]}' "$id" >"$tmp/response.json"
 printf 'name = "x"\n' >"$tmp/w2/wrangler.toml"
 if run "$tmp/w2"; then bad "config without placeholder must fail"; else ok "config without placeholder fails"; fi
+
+printf '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' >"$tmp/response.json"; printf 401 >"$tmp/response.json.status"
+if run "$tmp/w1"; then bad "HTTP 401 must fail"; elif grep -q 'HTTP 401.*Authentication error.*D1 > Edit' "$tmp/out"; then ok "HTTP 401 explains the missing D1 permission"; else bad "401 diagnosis"; fi
+rm -f "$tmp/response.json.status"
 
 echo "passed=$passed failed=$failed"
 [[ "$failed" -eq 0 ]]

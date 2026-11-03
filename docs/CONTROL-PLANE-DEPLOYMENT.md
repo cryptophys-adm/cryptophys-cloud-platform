@@ -7,7 +7,7 @@ Deploys `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-
 ### Cloudflare Access (all seven Workers sit behind it)
 
 1. **Zero Trust → Access → Service credentials → Service tokens:** create a token named `cryptophys-ci` and copy its Client ID and Client Secret (the secret is shown once).
-2. **API token** `CLOUDFLARE_ACCESS_API_TOKEN` (account-scoped): *Access: Apps and Policies Edit*, *Access: Service Tokens Read*, *Access: Organizations, Identity Providers, and Groups Read*, *Workers Scripts Read*.
+2. **API token** `CLOUDFLARE_ACCESS_API_TOKEN` (account-scoped): *Access: Apps and Policies Edit*, *Access: Service Tokens Read*, *Access: Organizations, Identity Providers, and Groups Read*, *Workers Scripts Read*, and *D1 Edit* (used for the D1 steps of the deploy workflows).
 3. In the GitHub `production` Environment add:
    - secrets `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` (the service token) and `CLOUDFLARE_ACCESS_API_TOKEN`;
    - variable `ACCESS_ALLOWED_EMAILS` (comma-separated operator emails).
@@ -22,7 +22,7 @@ Add two Environment secrets, each a distinct random value of at least 32 charact
 - `CONTROL_PLANE_ADMIN_TOKEN` — operator credential for every control-plane `/v1` endpoint.
 - `CONTROL_PLANE_APPROVER_TOKEN` — held only by recovery-plan approvers.
 
-`CLOUDFLARE_API_TOKEN` must allow **Workers Scripts: Edit** and **D1: Edit** on the approved account (D1 for migrations and Time Travel). Workers AI needs no extra token permission.
+`CLOUDFLARE_API_TOKEN` must allow **Workers Scripts: Edit** on the approved account. D1 operations (database lookup, Time Travel bookmark, migrations) use `CLOUDFLARE_ACCESS_API_TOKEN`, which therefore also needs **Account → D1 → Edit** (owner decision, 2026-11-03). Workers AI needs no extra token permission.
 
 ## Deploy
 
