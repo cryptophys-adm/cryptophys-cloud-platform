@@ -74,7 +74,7 @@ jobs:
           identities="${client_id}${emails:+,${emails}}"
           echo "::add-mask::${client_id}"
           echo "DEPLOY_ALLOWED_IDENTITIES=${identities}" >> "$GITHUB_ENV"
-          echo "Deployment allow-list: CI service token + $(printf '%s' "$emails" | tr ',' '\n' | sed '/^$/d' | wc -l) operator email(s)"
+          echo "Deployment allow-list: CI service token + $(printf '%s\n' "$emails" | tr ',' '\n' | sed '/^$/d' | wc -l) operator email(s)"
           npx wrangler whoami
       - name: Resolve the control-plane D1 database and render the deploy config
         env:
