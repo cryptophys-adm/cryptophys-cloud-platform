@@ -6,10 +6,9 @@
  * module verifies it (RS256 against the team's published keys, audience, issuer,
  * expiry) so that a misconfigured or bypassed edge policy still fails closed.
  *
- * Requests arriving through a service binding never pass the Access edge. They are
- * recognised by the `.internal` hostname that callers in this repository use; such
- * hostnames cannot be reached from the Internet because no route or custom domain
- * resolves to them.
+ * There is no exception: every HTTP request needs a valid JWT. Worker-to-Worker calls
+ * use RPC service bindings (`WorkerEntrypoint` classes), which are not reachable over
+ * HTTP at all.
  */
 
 export interface AccessEnv {
@@ -20,7 +19,7 @@ export interface AccessEnv {
 export interface AccessIdentity {
   /** Email for people, or the service token's common_name for automation. */
   subject: string;
-  type: "user" | "service_token" | "internal";
+  type: "user" | "service_token";
 }
 
 const CLOCK_SKEW_SECONDS = 60;
@@ -35,9 +34,6 @@ export function resetAccessKeyCache(): void {
   jwksCache = null;
 }
 
-export function isInternalRequest(request: Request): boolean {
-  return new URL(request.url).hostname.endsWith(".internal");
-}
 
 export function accessConfigured(env: AccessEnv): boolean {
   return Boolean(env.ACCESS_AUD && env.ACCESS_TEAM_DOMAIN && TEAM_DOMAIN.test(env.ACCESS_TEAM_DOMAIN));
@@ -124,19 +120,34 @@ const denied = (status: number, error: string) =>
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" },
   });
 
-/**
- * Returns a denial Response, or null when the request may proceed. Service-binding
- * requests (`*.internal`) proceed without a JWT; everything else needs a valid one.
- */
-export async function accessGate(request: Request, env: AccessEnv): Promise<Response | null> {
-  if (isInternalRequest(request)) return null;
-  if (!accessConfigured(env)) return denied(503, "access_not_configured");
+export type Authentication = { ok: true; identity: AccessIdentity } | { ok: false; response: Response };
+
+/** Verify the request's Access JWT and return the authenticated identity or a denial. */
+export async function authenticate(request: Request, env: AccessEnv): Promise<Authentication> {
+  if (!accessConfigured(env)) return { ok: false, response: denied(503, "access_not_configured") };
   const token = request.headers.get("cf-access-jwt-assertion");
-  if (!token) return denied(403, "access_denied");
+  if (!token) return { ok: false, response: denied(403, "access_denied") };
   const result = await verifyAccessJwt(token, env);
   if (!result.ok) {
     console.warn(JSON.stringify({ event: "access_denied", reason: result.reason }));
-    return denied(403, "access_denied");
+    return { ok: false, response: denied(403, "access_denied") };
   }
-  return null;
+  return { ok: true, identity: result.identity };
+}
+
+/** Returns a denial Response, or null when the request carries a valid Access JWT. */
+export async function accessGate(request: Request, env: AccessEnv): Promise<Response | null> {
+  const auth = await authenticate(request, env);
+  return auth.ok ? null : auth.response;
+}
+
+/**
+ * Is the verified identity in a comma-separated allow-list of service-token Client IDs
+ * and/or operator emails? Emails compare case-insensitively; an empty list allows nobody.
+ */
+export function identityAllowed(identity: AccessIdentity, allowList: string | undefined): boolean {
+  const allowed = (allowList ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+  return allowed.some((entry) => identity.type === "user"
+    ? entry.toLowerCase() === identity.subject.toLowerCase()
+    : entry === identity.subject);
 }

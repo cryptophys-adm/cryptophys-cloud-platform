@@ -1,5 +1,5 @@
 name = "cryptophys-drift-detector"
-main = "src/index.ts"
+main = "src/worker.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
 preview_urls = false
@@ -34,30 +34,36 @@ migrations_dir = "../control-plane-migrations"
 [triggers]
 crons = ["*/15 * * * *"]
 
-# Observation is performed over service bindings, not public routes.
+# Observation uses RPC service bindings (HealthRpc entrypoint), never HTTP routes.
 [[services]]
 binding = "SVC_PLATFORM_API"
 service = "cryptophys-platform-api"
+entrypoint = "HealthRpc"
 
 [[services]]
 binding = "SVC_DEPLOYMENT_ORCHESTRATOR"
 service = "cryptophys-deployment-orchestrator"
+entrypoint = "HealthRpc"
 
 [[services]]
 binding = "SVC_PLATFORM_REGISTRY"
 service = "cryptophys-platform-registry"
+entrypoint = "HealthRpc"
 
 [[services]]
 binding = "SVC_POLICY_ENGINE"
 service = "cryptophys-policy-engine"
+entrypoint = "HealthRpc"
 
 [[services]]
 binding = "SVC_AUDIT_LEDGER"
 service = "cryptophys-audit-ledger"
+entrypoint = "HealthRpc"
 
 [[services]]
 binding = "SVC_RECOVERY_MANAGER"
 service = "cryptophys-recovery-manager"
+entrypoint = "HealthRpc"
 
 # Secrets are provisioned by .github/workflows/deploy-control-plane.yml from GitHub
 # Environment secrets and are never stored in this file: ADMIN_TOKEN

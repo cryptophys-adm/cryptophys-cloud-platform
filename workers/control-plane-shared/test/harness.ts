@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { AiBinding, D1Database, D1PreparedStatement, D1Result, Fetcher } from "../src/types.ts";
+import type { AiBinding, D1Database, D1PreparedStatement, D1Result } from "../src/types.ts";
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "../../control-plane-migrations");
 
@@ -108,17 +108,54 @@ export function baseEnv(service: string, db: FakeD1, extra: Record<string, unkno
     AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast",
     ADMIN_TOKEN: ADMIN,
     CF_VERSION_METADATA: { id: "ver-self", tag: "abc1234def56" },
-    ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com",
-    ACCESS_AUD: "test-audience-tag",
+    ACCESS_TEAM_DOMAIN: ACCESS_TEAM,
+    ACCESS_AUD,
     ...extra,
   };
 }
 
-export function req(method: string, path: string, body?: unknown, token: string | null = ADMIN, headers: Record<string, string> = {}): Request {
+// ---------------------------------------------------------------- Cloudflare Access test identity
+// Every HTTP request in the tests carries a real RS256 Access JWT, so the production gate
+// runs unmodified. The team's certs endpoint is served from an in-process key pair.
+
+export const ACCESS_TEAM = "cryptophys.cloudflareaccess.com";
+export const ACCESS_AUD = "test-audience-tag";
+export const CI_CLIENT_ID = "ci-client.access";
+export const OPERATOR_EMAIL = "ops@cryptophys.work";
+
+const accessKeys = await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"],
+) as CryptoKeyPair;
+const accessJwk = { ...(await crypto.subtle.exportKey("jwk", accessKeys.publicKey)), kid: "harness" };
+
+export async function signAccessJwt(claims: Record<string, unknown>): Promise<string> {
+  const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const body = `${enc({ alg: "RS256", kid: "harness", typ: "JWT" })}.${enc({ aud: [ACCESS_AUD], iss: `https://${ACCESS_TEAM}`, iat: now, exp: now + 86400, ...claims })}`;
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", accessKeys.privateKey, new TextEncoder().encode(body));
+  return `${body}.${Buffer.from(sig).toString("base64url")}`;
+}
+
+export const CI_JWT = await signAccessJwt({ common_name: CI_CLIENT_ID });
+export const OPERATOR_JWT = await signAccessJwt({ email: OPERATOR_EMAIL });
+
+/** True when a fetch targets the Access certs endpoint; tests that stub fetch delegate these here. */
+export function isAccessCerts(url: string): boolean {
+  return url === `https://${ACCESS_TEAM}/cdn-cgi/access/certs`;
+}
+export function accessCertsResponse(): Response {
+  return new Response(JSON.stringify({ keys: [accessJwk] }));
+}
+const baseFetch = globalThis.fetch;
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+  isAccessCerts(String(input)) ? accessCertsResponse() : baseFetch(input, init)) as typeof fetch;
+
+export function req(method: string, path: string, body?: unknown, token: string | null = ADMIN, headers: Record<string, string> = {}, jwt: string | null = CI_JWT): Request {
   const h: Record<string, string> = { ...headers };
   if (token) h.authorization = `Bearer ${token}`;
+  if (jwt) h["cf-access-jwt-assertion"] = jwt;
   if (body !== undefined) h["content-type"] = "application/json";
-  return new Request(`https://svc.internal${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
+  return new Request(`https://svc.example.workers.dev${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
 export async function call(worker: { fetch(r: Request, e: never): Promise<Response> }, env: unknown, r: Request) {
@@ -133,7 +170,3 @@ export async function call(worker: { fetch(r: Request, e: never): Promise<Respon
   return { status: res.status, body };
 }
 
-/** Service binding that dispatches straight into another Worker module. */
-export function binding(worker: { fetch(r: Request, e: never): Promise<Response> }, env: unknown): Fetcher {
-  return { fetch: (input, init) => worker.fetch(new Request(input as string, init), env as never) };
-}

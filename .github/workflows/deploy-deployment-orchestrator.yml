@@ -56,19 +56,25 @@ jobs:
         run: npm ci
       - name: Type-check orchestrator
         run: npm run typecheck
-      - name: Verify Cloudflare credentials and the Orchestrator shared secret
+      - name: Verify Cloudflare credentials and build the deployment identity allow-list
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ORCHESTRATOR_SHARED_SECRET: ${{ secrets.ORCHESTRATOR_SHARED_SECRET }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_ALLOWED_EMAILS: ${{ vars.ACCESS_ALLOWED_EMAILS }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$CLOUDFLARE_API_TOKEN"
-          # GitHub is the source of truth for the shared secret: it is uploaded to the Worker on every
-          # deploy so the request workflow and the Worker always hold the same value.
-          (( ${#ORCHESTRATOR_SHARED_SECRET} >= 32 )) \
-            || { echo "::error::ORCHESTRATOR_SHARED_SECRET must be set in the production environment (>= 32 chars, e.g. openssl rand -hex 32)"; exit 1; }
+          # Production deployment requests are authorized by Cloudflare Access identity (ADR-0004):
+          # the CI service token's Client ID plus the operator emails. No shared secret exists.
+          client_id="$(printf '%s' "$CF_ACCESS_CLIENT_ID" | tr -d '\r\n' | sed -E 's/^[[:space:]]*([Cc][Ff]-[Aa]ccess-[Cc]lient-[Ii]d:)?[[:space:]]*//; s/[[:space:]]+$//')"
+          [[ -n "$client_id" ]] || { echo "::error::CF_ACCESS_CLIENT_ID is required"; exit 1; }
+          emails="$(printf '%s' "$ACCESS_ALLOWED_EMAILS" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)"
+          identities="${client_id}${emails:+,${emails}}"
+          echo "::add-mask::${client_id}"
+          echo "DEPLOY_ALLOWED_IDENTITIES=${identities}" >> "$GITHUB_ENV"
+          echo "Deployment allow-list: CI service token + $(printf '%s' "$emails" | tr ',' '\n' | sed '/^$/d' | wc -l) operator email(s)"
           npx wrangler whoami
       - name: Resolve the control-plane D1 database and render the deploy config
         env:
@@ -92,21 +98,36 @@ jobs:
           ACCESS_APP_NAME: cryptophys-cloud-platform
           EXPECTED_WORKERS: cryptophys-deployment-orchestrator
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
+      - name: Remove the retired ORCHESTRATOR_SHARED_SECRET from the Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Deployments never delete secrets, so remove it explicitly (before deploying, so the
+          # deployed version is the one annotated with this commit). Idempotent.
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/cryptophys-deployment-orchestrator"
+          if curl --fail --silent --show-error --max-time 20 --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${base}/settings" \
+              | jq -e '[.result.bindings[] | select(.name == "ORCHESTRATOR_SHARED_SECRET")] | length > 0' >/dev/null; then
+            curl --fail --silent --show-error --max-time 20 --request DELETE \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${base}/secrets/ORCHESTRATOR_SHARED_SECRET" \
+              | jq -e '.success == true' >/dev/null
+            echo "Removed ORCHESTRATOR_SHARED_SECRET from the Worker."
+          else
+            echo "ORCHESTRATOR_SHARED_SECRET is not present on the Worker."
+          fi
       - name: Deploy production orchestrator
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
-          ORCHESTRATOR_SHARED_SECRET: ${{ secrets.ORCHESTRATOR_SHARED_SECRET }}
         shell: bash
         run: |
           set -euo pipefail
-          # Upload the shared secret atomically with this version (never printed; file is 0600 and removed).
-          secrets_file="$RUNNER_TEMP/orchestrator-secrets.json"
-          trap 'rm -f "$secrets_file"' EXIT
-          (umask 077; jq -n --arg s "$ORCHESTRATOR_SHARED_SECRET" '{ORCHESTRATOR_SHARED_SECRET: $s}' > "$secrets_file")
           npx wrangler deploy --config wrangler.deploy.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" \
-            --secrets-file "$secrets_file" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}"
+            --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" \
+            --var "DEPLOY_ALLOWED_IDENTITIES:${DEPLOY_ALLOWED_IDENTITIES}"
       - name: Verify production bindings without exposing secrets
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -121,11 +142,11 @@ jobs:
             .success == true and
             ([.result.bindings[] | select(.name == "DEPLOYMENT_LOCK" and .type == "durable_object_namespace")] | length == 1) and
             ([.result.bindings[] | select(.name == "GH_ACTIONS_TOKEN" and .type == "secret_text")] | length == 1) and
-            ([.result.bindings[] | select(.name == "ORCHESTRATOR_SHARED_SECRET" and .type == "secret_text")] | length == 1) and
+            ([.result.bindings[] | select(.name == "ORCHESTRATOR_SHARED_SECRET")] | length == 0) and
             ([.result.bindings[] | select(.name == "DB" and .type == "d1")] | length == 1) and
             ([.result.bindings[] | select(.name == "AI" and .type == "ai")] | length == 1)
           ' >/dev/null
-          printf 'Durable Object, D1, AI and both required secret bindings are present; secret values were not read.\n'
+          printf 'Durable Object, D1, AI and GH_ACTIONS_TOKEN bindings are present and no shared secret remains; secret values were not read.\n'
       - name: Verify live health, readiness and active version
         shell: bash
         env:

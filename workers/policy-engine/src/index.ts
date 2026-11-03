@@ -70,35 +70,50 @@ const explainTask: AiTask<Explanation> = {
   },
 };
 
-async function evaluate(request: Request, env: Env, url: URL): Promise<Response> {
-  const body = await readJsonObject(request);
-  if (!body.ok) return body.response;
-  const b = body.value;
+export interface PolicyRequest { subject: string; action: string; resource: string; context: JsonObject }
+export interface PolicyDecision extends PolicyResult { decision_id: string; action: string; resource: string }
+
+/** Validate a policy request from any caller (HTTP body or RPC argument). */
+export function parsePolicyRequest(b: JsonObject): PolicyRequest | Error {
   const subject = stringField(b, "subject", 128);
   const action = stringField(b, "action", 40);
   const resource = stringField(b, "resource", 200);
-  for (const v of [subject, action, resource]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
-  if (!ACTOR.test(subject as string)) return errorResponse(400, "invalid_request", "subject contains unsupported characters");
+  for (const v of [subject, action, resource]) if (v instanceof Error) return v;
+  if (!ACTOR.test(subject as string)) return new Error("subject contains unsupported characters");
   const context = (b.context ?? {}) as JsonObject;
-  if (typeof context !== "object" || Array.isArray(context)) return errorResponse(400, "invalid_request", "context must be an object");
+  if (typeof context !== "object" || context === null || Array.isArray(context)) return new Error("context must be an object");
+  return { subject: subject as string, action: action as string, resource: resource as string, context };
+}
 
-  const result = await evaluatePolicy(env.DB, action as string, resource as string, context);
+/** Evaluate, persist the decision with its evidence, and append it to the audit chain. */
+export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecision> {
+  const result = await evaluatePolicy(env.DB, req.action, req.resource, req.context);
   const decisionId = newId("dec");
-  const evidence = { checks: result.checks, context: redact(context) };
+  const evidence = { checks: result.checks, context: redact(req.context) };
   await env.DB.prepare(
     `INSERT INTO policy_decisions (decision_id, subject, action, resource, decision, reason, evidence_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(decisionId, subject, action, resource, result.decision, result.reason, JSON.stringify(evidence), nowIso()).run();
+  ).bind(decisionId, req.subject, req.action, req.resource, result.decision, result.reason, JSON.stringify(evidence), nowIso()).run();
   await appendAuditEvent(env.DB, {
     event_type: "policy.decision",
-    actor: subject as string,
-    subject: resource as string,
+    actor: req.subject,
+    subject: req.resource,
     outcome: result.decision,
-    payload: { decision_id: decisionId, action, reason: result.reason },
+    payload: { decision_id: decisionId, action: req.action, reason: result.reason },
   });
-  const response: JsonObject = { decision_id: decisionId, action, resource, ...result };
+  return { decision_id: decisionId, action: req.action, resource: req.resource, ...result };
+}
+
+async function evaluate(request: Request, env: Env, url: URL): Promise<Response> {
+  const body = await readJsonObject(request);
+  if (!body.ok) return body.response;
+  const parsed = parsePolicyRequest(body.value);
+  if (parsed instanceof Error) return errorResponse(400, "invalid_request", parsed.message);
+  const decision = await decide(env, parsed);
+  const response: JsonObject = { ...decision };
   if (url.searchParams.get("advisory") === "true") {
-    response.advisory = await engineFor(env, SERVICE, [explainTask.name]).run(explainTask, { action, resource, ...result }, decisionId);
+    const { decision_id: _id, ...explained } = decision;
+    response.advisory = await engineFor(env, SERVICE, [explainTask.name]).run(explainTask, explained, decision.decision_id);
   }
   return json(response, 200);
 }

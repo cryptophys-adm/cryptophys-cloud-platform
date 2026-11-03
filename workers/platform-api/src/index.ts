@@ -19,6 +19,17 @@ function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data, null, 2), { status, headers: jsonHeaders });
 }
 
+/** Liveness payload, served over HTTP (/health) and over RPC (HealthRpc.health()). */
+export function platformHealth(env: Env) {
+  return {
+    status: "ok" as const,
+    service: env.PLATFORM_NAME,
+    environment: env.PLATFORM_ENVIRONMENT,
+    contract_version: env.API_CONTRACT_VERSION,
+    version: env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, tag: env.CF_VERSION_METADATA.tag ?? null } : null,
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -30,13 +41,7 @@ export default {
     }
 
     if (url.pathname === "/health" || url.pathname === "/healthz") {
-      return json({
-        status: "ok",
-        service: env.PLATFORM_NAME,
-        environment: env.PLATFORM_ENVIRONMENT,
-        contract_version: env.API_CONTRACT_VERSION,
-        version: env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, tag: env.CF_VERSION_METADATA.tag ?? null } : null,
-      });
+      return json(platformHealth(env));
     }
 
     if (url.pathname === "/ready" || url.pathname === "/readyz") {

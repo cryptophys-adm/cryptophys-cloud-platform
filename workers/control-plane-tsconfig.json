@@ -17,6 +17,7 @@
     "control-plane-shared/test/**/*.ts",
     "platform-registry/src/**/*.ts",
     "deployment-orchestrator/src/**/*.ts",
+    "platform-api/src/**/*.ts",
     "policy-engine/src/**/*.ts",
     "drift-detector/src/**/*.ts",
     "audit-ledger/src/**/*.ts",

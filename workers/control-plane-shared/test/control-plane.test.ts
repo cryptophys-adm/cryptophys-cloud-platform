@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ADMIN, APPROVER, baseEnv, binding, call, fakeAi, migratedDb, req } from "./harness.ts";
+import { ADMIN, APPROVER, CI_JWT, baseEnv, call, fakeAi, migratedDb, req } from "./harness.ts";
 import { AiEngine, extractJsonObject, type AiTask } from "../src/ai-engine.ts";
 import { appendAuditEvent, verifyAuditChain, GENESIS_HASH } from "../src/audit.ts";
 import { bearerMatches, redact } from "../src/http.ts";
 import audit from "../../audit-ledger/src/index.ts";
 import registry from "../../platform-registry/src/index.ts";
-import policy from "../../policy-engine/src/index.ts";
+import policy, { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import recovery from "../../recovery-manager/src/index.ts";
 import drift from "../../drift-detector/src/index.ts";
 
@@ -127,6 +127,7 @@ test("every /v1 endpoint rejects missing or wrong credentials", async () => {
     const env = baseEnv("svc", migratedDb());
     assert.equal((await call(worker as never, env, req(method, path, undefined, null))).status, 401, path);
     assert.equal((await call(worker as never, env, req(method, path, undefined, "wrong"))).status, 401, path);
+    assert.equal((await call(worker as never, env, req(method, path, undefined, ADMIN, {}, null))).status, 403, `${path}: admin token without an Access JWT`);
     assert.equal((await call(worker as never, { ...env, ADMIN_TOKEN: undefined }, req(method, path))).status, 503, path);
   }
 });
@@ -148,8 +149,8 @@ test("audit ledger appends, redacts, lists, fetches and verifies events", async 
 
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "Bad Type", actor: "a", subject: "s", outcome: "o" }))).status, 400);
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "x", actor: "a", subject: "s", outcome: "o", payload: [1] }))).status, 400);
-  assert.equal((await call(audit, env, new Request("https://x.internal/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "text/plain" }, body: "{}" }))).status, 415);
-  assert.equal((await call(audit, env, new Request("https://x.internal/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" }, body: "{" }))).status, 400);
+  assert.equal((await call(audit, env, new Request("https://x.example.workers.dev/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "cf-access-jwt-assertion": CI_JWT, "content-type": "text/plain" }, body: "{}" }))).status, 415);
+  assert.equal((await call(audit, env, new Request("https://x.example.workers.dev/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" }, body: "{" }))).status, 400);
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "x", actor: "a", subject: "s", outcome: "o", payload: { big: "x".repeat(40000) } }))).status, 413);
 
   const list = await call(audit, env, req("GET", "/v1/events?subject=cryptophys-platform-api"));
@@ -233,7 +234,14 @@ test("policy engine allows only fully compliant deployments and records every de
 test("recovery plans need a different approver and a policy allow before execution", async () => {
   const db = migratedDb();
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
-  const env = { ...baseEnv("cryptophys-recovery-manager", db), APPROVER_TOKEN: APPROVER, POLICY: binding(policy, policyEnv) };
+  const env = { ...baseEnv("cryptophys-recovery-manager", db), APPROVER_TOKEN: APPROVER, POLICY: {
+    // RPC binding (PolicyRpc.evaluate): same validation and persistence as production.
+    evaluate: async (input: Record<string, unknown>) => {
+      const parsed = parsePolicyRequest(input);
+      if (parsed instanceof Error) throw parsed;
+      return decide(policyEnv as never, parsed);
+    },
+  } };
   assert.equal((await call(recovery, env, req("GET", "/ready", undefined, null))).body.status, "ready");
   assert.equal((await call(recovery, { ...env, APPROVER_TOKEN: undefined }, req("GET", "/ready"))).status, 503);
 
@@ -273,13 +281,13 @@ test("recovery plans need a different approver and a policy allow before executi
 
 test("drift detector compares registry desired versions with live versions over service bindings", async () => {
   const db = migratedDb();
-  const healthy = (tag: string | null) => ({ fetch: async () => new Response(JSON.stringify({ status: "ok", version: tag ? { id: "v", tag } : null })) });
+  const healthy = (tag: string | null) => ({ health: async () => ({ status: "ok", version: tag ? { id: "v", tag } : null }) });
   const env: any = {
     ...baseEnv("cryptophys-drift-detector", db, { CF_VERSION_METADATA: { id: "self", tag: "aaaaaaaaaaaa" } }),
     SVC_PLATFORM_API: healthy("aaaaaaaaaaaa"),
     SVC_DEPLOYMENT_ORCHESTRATOR: healthy("bbbbbbbbbbbb"),
-    SVC_PLATFORM_REGISTRY: { fetch: async () => new Response("boom", { status: 500 }) },
-    SVC_POLICY_ENGINE: { fetch: async () => { throw new Error("network"); } },
+    SVC_PLATFORM_REGISTRY: { health: async () => ({ status: "degraded" }) },
+    SVC_POLICY_ENGINE: { health: async () => { throw new Error("network"); } },
     SVC_AUDIT_LEDGER: healthy(null),
     SVC_RECOVERY_MANAGER: healthy("aaaaaaaaaaaa"),
   };
@@ -292,7 +300,8 @@ test("drift detector compares registry desired versions with live versions over 
   assert.deepEqual([by["cryptophys-platform-api"].drifted, by["cryptophys-platform-api"].status], [false, "healthy"]);
   assert.deepEqual(by["cryptophys-deployment-orchestrator"].reasons, ["version_mismatch"]);
   assert.equal(by["cryptophys-platform-registry"].status, "unavailable");
-  assert.equal(by["cryptophys-policy-engine"].probe.error, "fetch_failed");
+  assert.equal(by["cryptophys-policy-engine"].probe.error, "rpc_failed");
+  assert.deepEqual(by["cryptophys-platform-registry"].reasons, ["health_check_failed", "observed_version_unavailable"]);
   assert.deepEqual(by["cryptophys-audit-ledger"].reasons, ["observed_version_unavailable"]);
   assert.deepEqual([by["cryptophys-recovery-manager"].drifted, by["cryptophys-recovery-manager"].managed], [false, false]);
   assert.equal(by["cryptophys-drift-detector"].drifted, false);
