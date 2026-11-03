@@ -58,7 +58,7 @@ jobs:
           workflow="$(jq -r .workflow "$request")"
           case "$workflow" in
             provision-access.yml|deploy-control-plane.yml|deploy-deployment-orchestrator.yml) ref=main ;;
-            request-platform-api-deployment.yml) ref="$OPERATOR_REF" ;;
+            request-platform-api-deployment.yml) ref=main ;;
             *) echo "::error::Workflow ${workflow} is not allow-listed"; exit 1 ;;
           esac
 
