@@ -30,7 +30,7 @@ The five control-plane Workers (Platform Registry, Policy Engine, Drift Detector
 ## Consequences
 
 - The control plane is operational and its correctness is covered by endpoint tests that run against the real migrations, plus a dry-run bundle of every Worker in CI.
-- Operators authenticate to Cloudflare Access individually (email policy). Inside the Workers, `/v1` authorization still uses the shared admin credential and a declared `actor`; binding `actor` to the Access identity is a follow-up.
+- Operators and the CI service token authenticate through Cloudflare Access. Each Worker verifies the Access JWT and authorizes the verified identity against `OPERATOR_IDENTITIES` (or `APPROVER_IDENTITIES` for recovery-plan approval). Audit actors come from the verified identity; client-supplied actor fields are ignored. No shared admin or approver bearer token is used by `/v1`.
 - The Deployment Orchestrator records every accepted request in `deployment_requests` (whose `(service_id, idempotency_key)` uniqueness backs up its Durable Object lock), audits dispatches and rejections, and has its own advisory AI engine. Its deploy therefore requires migration `0003`, so Deploy Control Plane runs first.
 - The deploy token needs `D1:Edit` in addition to `Workers Scripts:Edit` for migrations and Time Travel.
 
