@@ -27,6 +27,14 @@ Production has three protected `workflow_dispatch` workflows, all gated by the `
 | `deploy-deployment-orchestrator.yml` | `cryptophys-deployment-orchestrator` | Operator |
 | `deploy-control-plane.yml` | The five control-plane services | Operator — see [CONTROL-PLANE-DEPLOYMENT.md](CONTROL-PLANE-DEPLOYMENT.md) |
 
+### Ops dispatch (automation operator)
+
+The repository owner authorized the platform's automation operator to start these workflows (2026-11-03). Its GitHub integration cannot call the `workflow_dispatch` API, so it commits one request file per action to `ops/requests/` on its operator branch, `claude/gracious-brown-tkc4e8`. `.github/workflows/ops-dispatch.yml` then dispatches the requested workflow using the job's own `GITHUB_TOKEN` and follows the run to completion.
+
+- **Allowed workflows:** `provision-access.yml`, `deploy-control-plane.yml` and `deploy-deployment-orchestrator.yml` (all run on `main`), and `request-platform-api-deployment.yml` (runs from the operator branch).
+- **Allowed inputs:** `confirm_production`, `commit_sha` and `orchestrator_url`.
+- Every gate of the dispatched workflow still applies, and the request files form the audit trail.
+
 ### Platform API through the Orchestrator
 
 1. Merge reviewed changes to `main`; a merge alone does not deploy.

@@ -1,0 +1,91 @@
+name: Ops Dispatch
+
+# Lets the platform's automation operator start the protected production workflows
+# by committing a request file, because its GitHub integration cannot call the
+# workflow_dispatch API directly. Authorized by the repository owner (2026-11-03).
+#
+# - Runs only for pushes to the operator branch that add exactly one file under
+#   ops/requests/. Each request is therefore a reviewed-by-history Git commit.
+# - Dispatches only allow-listed workflows with allow-listed inputs. Deploy
+#   workflows always run on main and keep every gate (production Environment,
+#   DEPLOY confirmation, SHA must equal main, CI and Access checks).
+# - The Platform API is deployed only through the Orchestrator request workflow,
+#   which runs from this branch so it is not an in-progress check on main.
+# - Waits for the dispatched run and mirrors its result.
+#
+# Request file format (ops/requests/<UTC timestamp>-<name>.json):
+#   {"workflow": "deploy-control-plane.yml",
+#    "inputs": {"confirm_production": "DEPLOY", "commit_sha": "<40-hex main SHA>"}}
+
+on:
+  push:
+    branches: [claude/gracious-brown-tkc4e8]
+    paths: ["ops/requests/**.json"]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ops-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout request commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Dispatch the requested workflow and follow it to completion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATOR_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'ops/requests/*.json')
+          [[ ${#files[@]} -eq 1 ]] || { echo "::error::A request commit must add exactly one ops/requests/*.json file (found ${#files[@]})"; exit 1; }
+          request="${files[0]}"
+          echo "Request: ${request}"
+          jq -e 'type == "object" and (.workflow | type == "string") and ((.inputs // {}) | type == "object")' "$request" >/dev/null \
+            || { echo "::error::Malformed request"; exit 1; }
+
+          workflow="$(jq -r .workflow "$request")"
+          case "$workflow" in
+            provision-access.yml|deploy-control-plane.yml|deploy-deployment-orchestrator.yml) ref=main ;;
+            request-platform-api-deployment.yml) ref="$OPERATOR_REF" ;;
+            *) echo "::error::Workflow ${workflow} is not allow-listed"; exit 1 ;;
+          esac
+
+          args=()
+          while IFS=$'\t' read -r key value; do
+            case "$key" in
+              confirm_production) [[ "$value" =~ ^(DEPLOY|PROVISION)$ ]] || { echo "::error::invalid confirm_production"; exit 1; } ;;
+              commit_sha) [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid commit_sha"; exit 1; } ;;
+              orchestrator_url) [[ "$value" =~ ^https://cryptophys-deployment-orchestrator\.[a-z0-9-]+\.workers\.dev$ ]] || { echo "::error::invalid orchestrator_url"; exit 1; } ;;
+              *) echo "::error::Input ${key} is not allow-listed"; exit 1 ;;
+            esac
+            args+=(-f "${key}=${value}")
+          done < <(jq -r '(.inputs // {}) | to_entries[] | [.key, (.value | tostring)] | @tsv' "$request")
+
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$ref" "${args[@]}"
+          echo "Dispatched ${workflow} on ${ref}"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --event workflow_dispatch --branch "$ref" \
+              --limit 5 --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"${started}\")] | sort_by(.createdAt) | .[0].databaseId // empty")"
+            [[ -n "$run_id" ]] && break
+            sleep 4
+          done
+          [[ -n "$run_id" ]] || { echo "::error::Dispatched run did not appear"; exit 1; }
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+          echo "Run: ${url}"
+          echo "### Ops dispatch: \`${workflow}\` on \`${ref}\` → [run ${run_id}](${url})" >> "$GITHUB_STEP_SUMMARY"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --interval 15 --exit-status
