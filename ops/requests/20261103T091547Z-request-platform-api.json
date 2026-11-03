@@ -1,0 +1,1 @@
+{"workflow":"request-platform-api-deployment.yml","inputs":{"commit_sha":"e7d3bbdd0b16c7c25ee15e5bd1cf8fb8147b44aa","confirm_production":"DEPLOY","orchestrator_url":"https://cryptophys-deployment-orchestrator.afif-kw.workers.dev"}}
