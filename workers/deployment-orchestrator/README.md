@@ -5,7 +5,7 @@ This Worker coordinates production deployment of `.github/workflows/deploy-platf
 ## Required gates
 
 - `GH_ACTIONS_TOKEN`: least-privilege repository token stored as a Cloudflare Worker secret. Fine-grained PAT permissions: Actions: Read and write (read workflow runs for the CI gate, dispatch deployments), Commit statuses: Read, Contents: Read, Metadata: Read. The Checks API is not used because fine-grained PATs cannot be granted it.
-- `ORCHESTRATOR_SHARED_SECRET`: independent high-entropy bearer secret stored as a Cloudflare Worker secret. Never commit either secret.
+- `DEPLOY_ALLOWED_IDENTITIES` (var, set by the deploy workflow): Cloudflare Access identities allowed to `POST /v1/deployments` — the CI service token's Client ID and the operator emails. Callers authenticate through Cloudflare Access; the Worker verifies the Access JWT and checks the identity. There is no shared bearer secret. Never commit `GH_ACTIONS_TOKEN`.
 - `POST /v1/deployments` requires bearer authentication, `SERVICE_ENVIRONMENT=production`, a full lowercase 40-character SHA equal to current `main`, and exact `confirm_production=DEPLOY`.
 - Commit statuses, every check run, and every check suite must be complete and successful. Queued, in-progress, failed, cancelled, skipped, missing, or truncated results fail closed.
 - A Durable Object atomically claims each SHA to prevent duplicate production dispatches. Ambiguous failures require manual reconciliation; do not delete claims blindly.

@@ -1,5 +1,5 @@
 name = "cryptophys-recovery-manager"
-main = "src/index.ts"
+main = "src/worker.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
 preview_urls = false
@@ -35,6 +35,7 @@ migrations_dir = "../control-plane-migrations"
 [[services]]
 binding = "POLICY"
 service = "cryptophys-policy-engine"
+entrypoint = "PolicyRpc"
 
 # Secrets are provisioned by .github/workflows/deploy-control-plane.yml from GitHub
 # Environment secrets and are never stored in this file: ADMIN_TOKEN, APPROVER_TOKEN

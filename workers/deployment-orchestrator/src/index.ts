@@ -2,7 +2,8 @@ import type { AiBinding, D1Database } from "../../control-plane-shared/src/types
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
-import { accessConfigured, accessGate } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, authenticate, identityAllowed } from "../../control-plane-shared/src/access.ts";
+import { healthBody } from "../../control-plane-shared/src/http.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -21,7 +22,11 @@ export interface Env {
   SERVICE_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;
   GH_ACTIONS_TOKEN: string;
-  ORCHESTRATOR_SHARED_SECRET: string;
+  /**
+   * Comma-separated Cloudflare Access identities allowed to request production deployments:
+   * service-token Client IDs and/or operator emails. Replaces the former shared secret.
+   */
+  DEPLOY_ALLOWED_IDENTITIES?: string;
   DEPLOYMENT_LOCK: DurableObjectNamespaceLike;
   CF_VERSION_METADATA?: { id: string; tag?: string };
   /** Shared control-plane D1: deployment ledger, audit log and AI budget. */
@@ -37,7 +42,6 @@ export interface Env {
 
 const SERVICE = "cryptophys-deployment-orchestrator";
 const TARGET_SERVICE = "cryptophys-platform-api";
-const ACTOR = /^[A-Za-z0-9._@:-]{1,128}$/;
 
 interface RiskSummary { summary: string; risk_level: "low" | "medium" | "high"; notes: string[] }
 
@@ -80,17 +84,6 @@ const headers = {
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data, null, 2), { status, headers });
 
-async function authorized(request: Request, secret: string): Promise<boolean> {
-  const supplied = request.headers.get("authorization") ?? "";
-  if (!secret || !supplied.startsWith("Bearer ")) return false;
-  const a = new TextEncoder().encode(supplied.slice(7));
-  const b = new TextEncoder().encode(secret);
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
-}
-
 async function gh(token: string, path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(API + path, {
     ...init,
@@ -123,24 +116,18 @@ export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const blocked = await accessGate(request, env);
-    if (blocked) return blocked;
+    const auth = await authenticate(request, env);
+    if (!auth.ok) return auth.response;
 
     if (request.method === "GET" && ["/health", "/healthz"].includes(url.pathname)) {
-      return json({
-        status: "ok",
-        service: env.SERVICE_NAME,
-        environment: env.SERVICE_ENVIRONMENT,
-        contract_version: env.API_CONTRACT_VERSION,
-        version: env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, tag: env.CF_VERSION_METADATA.tag ?? null } : null
-      });
+      return json(healthBody(env));
     }
 
     if (request.method === "GET" && ["/ready", "/readyz"].includes(url.pathname)) {
       const checks = {
         production_environment: env.SERVICE_ENVIRONMENT === "production",
         github_token_configured: Boolean(env.GH_ACTIONS_TOKEN),
-        shared_secret_configured: Boolean(env.ORCHESTRATOR_SHARED_SECRET),
+        deploy_identities_configured: Boolean(env.DEPLOY_ALLOWED_IDENTITIES?.trim()),
         deployment_lock_binding: Boolean(env.DEPLOYMENT_LOCK),
         database_schema: Boolean(env.DB) && await schemaReady(env as never),
         ai_binding: Boolean(env.AI),
@@ -160,14 +147,15 @@ export default {
     if (env.SERVICE_ENVIRONMENT !== "production") {
       return json({ error: "production_worker_required", production_dispatch_enabled: false }, 503);
     }
-    if (!(await authorized(request, env.ORCHESTRATOR_SHARED_SECRET))) {
-      return json({ error: "unauthorized" }, 401);
+    // Authorization: the Access-verified identity must be on the deployment allow-list.
+    if (!identityAllowed(auth.identity, env.DEPLOY_ALLOWED_IDENTITIES)) {
+      return json({ error: "forbidden", detail: "this Access identity may not request production deployments" }, 403);
     }
     if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK || !env.DB) {
       return json({ error: "not_configured", operational: false }, 503);
     }
 
-    let body: { commit_sha?: unknown; confirm_production?: unknown; requested_by?: unknown };
+    let body: { commit_sha?: unknown; confirm_production?: unknown };
     try {
       body = await request.json() as typeof body;
     } catch {
@@ -179,8 +167,8 @@ export default {
     if (body.confirm_production !== "DEPLOY") {
       return json({ error: "production_confirmation_required" }, 400);
     }
-    const requestedBy = body.requested_by === undefined ? "orchestrator-client" : body.requested_by;
-    if (typeof requestedBy !== "string" || !ACTOR.test(requestedBy)) return json({ error: "invalid_requested_by" }, 400);
+    // Recorded actor is the verified Access identity, not a claim from the request body.
+    const requestedBy = auth.identity.subject.slice(0, 128);
 
     const refResponse = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/git/ref/heads/main");
     if (!refResponse.ok) {

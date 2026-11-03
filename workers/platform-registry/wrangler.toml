@@ -1,5 +1,5 @@
 name = "cryptophys-platform-registry"
-main = "src/index.ts"
+main = "src/worker.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
 preview_urls = false

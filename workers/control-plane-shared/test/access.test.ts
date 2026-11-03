@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, call, migratedDb, ADMIN } from "./harness.ts";
-import { accessGate, resetAccessKeyCache, verifyAccessJwt } from "../src/access.ts";
+import { accessGate, authenticate, identityAllowed, resetAccessKeyCache, verifyAccessJwt } from "../src/access.ts";
 import audit from "../../audit-ledger/src/index.ts";
 import platformApi from "../../platform-api/src/index.ts";
 import orchestrator from "../../deployment-orchestrator/src/index.ts";
@@ -71,12 +71,12 @@ test("forged, foreign, stale and mis-scoped tokens are rejected", async () => {
   assert.equal(await reason(t, { ACCESS_TEAM_DOMAIN: "evil.example.com", ACCESS_AUD: AUD }), "access_not_configured");
 });
 
-test("gate: public hostnames need a valid JWT, .internal service-binding calls do not", async () => {
+test("gate: every HTTP request needs a valid JWT; there is no hostname exception", async () => {
   const pub = (headers: Record<string, string> = {}) => new Request("https://cryptophys-audit-ledger.acme.workers.dev/health", { headers });
   assert.equal((await accessGate(pub(), env))!.status, 403);
   assert.equal((await accessGate(pub({ "cf-access-jwt-assertion": await sign({ email: "a@b" }, otherPair) }), env))!.status, 403);
   assert.equal(await accessGate(pub({ "cf-access-jwt-assertion": await sign({ email: "a@b" }) }), env), null);
-  assert.equal(await accessGate(new Request("https://cryptophys-policy-engine.internal/v1/evaluate"), env), null);
+  assert.equal((await accessGate(new Request("https://cryptophys-policy-engine.internal/v1/evaluate"), env))!.status, 403, "the former .internal exception is gone");
   assert.equal((await accessGate(pub(), {}))!.status, 503, "fails closed when Access is not configured");
   assert.equal((await accessGate(new Request("https://deploy-orchestrator.cryptophys.work/health"), env))!.status, 403, "custom domain without Access is closed");
 });
@@ -94,8 +94,20 @@ test("every Worker enforces the gate before any route, including /health", async
   const apiEnv = { PLATFORM_NAME: "cryptophys-cloud-platform", PLATFORM_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1", ...env };
   assert.equal((await call(platformApi, apiEnv, workersDev("cryptophys-platform-api", "/health"))).status, 403);
   assert.equal((await call(platformApi, apiEnv, workersDev("cryptophys-platform-api", "/health", await sign({ email: "a@b" })))).status, 200);
-  assert.equal((await call(platformApi, apiEnv, new Request("https://cryptophys-platform-api.internal/health"))).status, 200, "drift probe via service binding");
+  assert.equal((await call(platformApi, apiEnv, new Request("https://cryptophys-platform-api.internal/health"))).status, 403, "internal callers must use RPC, not HTTP");
 
   const orchEnv = { SERVICE_NAME: "cryptophys-deployment-orchestrator", SERVICE_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1", ...env };
   assert.equal((await call(orchestrator, orchEnv, new Request("https://cryptophys-deployment-orchestrator.acme.workers.dev/v1/deployments", { method: "POST" }))).status, 403);
+});
+
+test("authenticate returns the verified identity; allow-lists match Client IDs exactly and emails case-insensitively", async () => {
+  const auth = await authenticate(new Request("https://x.example.workers.dev/", { headers: { "cf-access-jwt-assertion": await sign({ common_name: "ci.access" }) } }), env);
+  assert.deepEqual(auth.ok && auth.identity, { subject: "ci.access", type: "service_token" });
+  const list = " ci.access , Ops@Cryptophys.Work ";
+  assert.equal(identityAllowed({ subject: "ci.access", type: "service_token" }, list), true);
+  assert.equal(identityAllowed({ subject: "CI.ACCESS", type: "service_token" }, list), false, "Client IDs are case-sensitive");
+  assert.equal(identityAllowed({ subject: "ops@cryptophys.work", type: "user" }, list), true);
+  assert.equal(identityAllowed({ subject: "ci.access", type: "user" }, "ci.access2"), false);
+  assert.equal(identityAllowed({ subject: "anyone@x", type: "user" }, undefined), false, "no allow-list admits nobody");
+  assert.equal(identityAllowed({ subject: "anyone@x", type: "user" }, " , "), false);
 });

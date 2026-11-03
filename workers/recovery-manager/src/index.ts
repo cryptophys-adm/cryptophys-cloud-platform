@@ -1,4 +1,4 @@
-import type { BaseEnv, Fetcher } from "../../control-plane-shared/src/types.ts";
+import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import {
   ACTOR, SERVICE_ID, bearerMatches, errorResponse, healthResponse, json, limitParam, newId, nowIso, readJsonObject,
   requireAdmin, serviceMetadata, stringField, type JsonObject,
@@ -8,11 +8,17 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate } from "../../control-plane-shared/src/access.ts";
 
+/** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
+export interface PolicyRpcBinding {
+  evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
+    Promise<{ decision: "allow" | "deny"; decision_id: string; reason: string }>;
+}
+
 export interface Env extends BaseEnv {
   /** Separate secret held by approvers; plan authors (ADMIN_TOKEN) cannot approve. */
   APPROVER_TOKEN?: string;
-  /** Service binding to cryptophys-policy-engine; execution requires its allow decision. */
-  POLICY: Fetcher;
+  /** RPC service binding to cryptophys-policy-engine (entrypoint PolicyRpc); execution requires its allow decision. */
+  POLICY: PolicyRpcBinding;
 }
 
 const SERVICE = "cryptophys-recovery-manager";
@@ -135,17 +141,18 @@ async function recordExecution(request: Request, env: Env, plan: PlanRow): Promi
 
   if (phase === "start") {
     // The Policy Engine is authoritative: no execution starts without its recorded allow decision.
-    const policy = await env.POLICY.fetch("https://policy-engine.internal/v1/evaluate", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${env.ADMIN_TOKEN}` },
-      body: JSON.stringify({
-        subject: executor, action: "recovery.execute", resource: plan.plan_id,
+    let decision: { decision: string; decision_id: string; reason: string };
+    try {
+      decision = await env.POLICY.evaluate({
+        subject: executor as string, action: "recovery.execute", resource: plan.plan_id,
         context: { operator_acknowledged: b.operator_acknowledged === true },
-      }),
-    });
-    const decision = await policy.json().catch(() => null) as { decision?: string; decision_id?: string; reason?: string } | null;
-    if (!policy.ok || decision?.decision !== "allow") {
-      return errorResponse(403, "policy_denied", decision?.reason ?? `policy engine returned HTTP ${policy.status}`, { decision_id: decision?.decision_id ?? null });
+      });
+    } catch {
+      // Fail closed: without a recorded allow decision nothing starts.
+      return errorResponse(503, "policy_unavailable", "the Policy Engine could not be reached");
+    }
+    if (decision?.decision !== "allow") {
+      return errorResponse(403, "policy_denied", decision?.reason ?? "policy denied", { decision_id: decision?.decision_id ?? null });
     }
     const execution = { phase: "start", executed_by: executor, policy_decision_id: decision.decision_id, started_at: nowIso(), notes: notes ?? null };
     const result = await env.DB.prepare(

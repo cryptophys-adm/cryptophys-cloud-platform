@@ -1,10 +1,9 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { call, fakeAi, migratedDb } from "./harness.ts";
+import { CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, OPERATOR_EMAIL, accessCertsResponse, call, fakeAi, isAccessCerts, migratedDb, signAccessJwt } from "./harness.ts";
 import orchestrator, { DeploymentLock } from "../../deployment-orchestrator/src/index.ts";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
-const SECRET = "orchestrator-shared-secret-0123456789";
 
 /** Durable Object namespace backed by real DeploymentLock instances with in-memory storage. */
 function lockNamespace() {
@@ -45,6 +44,7 @@ beforeEach(() => {
   };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (isAccessCerts(url)) return accessCertsResponse();
     const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
     assert.match(String((init?.headers as Record<string, string>)?.authorization), /^Bearer gh-token$/);
     if (url.endsWith("/git/ref/heads/main")) return reply({ object: { sha: github.mainSha } });
@@ -72,7 +72,7 @@ function env(db = migratedDb()) {
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     GH_ACTIONS_TOKEN: "gh-token",
-    ORCHESTRATOR_SHARED_SECRET: SECRET,
+    DEPLOY_ALLOWED_IDENTITIES: `${CI_CLIENT_ID}, ${OPERATOR_EMAIL.toUpperCase()}`,
     DEPLOYMENT_LOCK: lockNamespace(),
     DB: db,
     AI: fakeAi({ response: '{"summary":"Routine API release.","risk_level":"low","notes":["All checks passed"]}' }),
@@ -82,23 +82,26 @@ function env(db = migratedDb()) {
   };
 }
 
-const deploy = (body: unknown, token = SECRET, query = "") =>
-  new Request(`https://orchestrator.internal/v1/deployments${query}`, {
+const deploy = (body: unknown, jwt: string | null = CI_JWT, query = "") =>
+  new Request(`https://cryptophys-deployment-orchestrator.example.workers.dev/v1/deployments${query}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    headers: { ...(jwt ? { "cf-access-jwt-assertion": jwt } : {}), "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+const ready = () => new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/ready", { headers: { "cf-access-jwt-assertion": CI_JWT } });
 
 test("readiness requires the migrated schema and AI binding in addition to secrets and lock", async () => {
-  assert.equal((await call(orchestrator, env(), new Request("https://o.internal/ready"))).body.production_dispatch_enabled, true);
-  const noSchema = await call(orchestrator, env(migratedDb({ recordLedger: false })), new Request("https://o.internal/ready"));
+  assert.equal((await call(orchestrator, env(), ready())).body.production_dispatch_enabled, true);
+  const noSchema = await call(orchestrator, env(migratedDb({ recordLedger: false })), ready());
   assert.deepEqual([noSchema.status, noSchema.body.checks.database_schema], [503, false]);
-  assert.equal((await call(orchestrator, { ...env(), AI: undefined }, new Request("https://o.internal/ready"))).status, 503);
+  assert.equal((await call(orchestrator, { ...env(), AI: undefined }, ready())).status, 503);
+  const noIdentities = await call(orchestrator, { ...env(), DEPLOY_ALLOWED_IDENTITIES: " " }, ready());
+  assert.deepEqual([noIdentities.status, noIdentities.body.checks.deploy_identities_configured], [503, false]);
 });
 
 test("authenticated, CI-green request is ledgered, audited, dispatched once and advised", async () => {
   const e = env();
-  const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY", requested_by: "operator@cryptophys" }, SECRET, "?advisory=true"));
+  const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY", requested_by: "spoofed@evil" }, OPERATOR_JWT, "?advisory=true"));
   assert.equal(res.status, 202);
   assert.equal(res.body.status, "production_dispatch_accepted");
   assert.equal(res.body.advisory.status, "ok");
@@ -106,7 +109,7 @@ test("authenticated, CI-green request is ledgered, audited, dispatched once and 
   assert.deepEqual(github.dispatched, [{ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: SHA } }]);
 
   const row = e.DB.raw.prepare("SELECT status, requested_by, requested_version FROM deployment_requests WHERE request_id = ?").get(res.body.request_id) as any;
-  assert.deepEqual([row.status, row.requested_by, row.requested_version], ["running", "operator@cryptophys", SHA]);
+  assert.deepEqual([row.status, row.requested_by, row.requested_version], ["running", OPERATOR_EMAIL, SHA]);
   const evt = e.DB.raw.prepare("SELECT event_type, outcome FROM audit_events WHERE event_id = ?").get(res.body.audit_event_id) as any;
   assert.deepEqual([evt.event_type, evt.outcome], ["deployment.dispatched", "running"]);
 
@@ -118,7 +121,7 @@ test("authenticated, CI-green request is ledgered, audited, dispatched once and 
 test("AI is never consulted for the gate: a red check blocks even with a glowing advisory", async () => {
   const e = env();
   github.runs.push({ workflow_id: 2, name: "Validate Control Plane Workers", status: "completed", conclusion: "failure", run_number: 3 });
-  const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, SECRET, "?advisory=true"));
+  const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, CI_JWT, "?advisory=true"));
   assert.deepEqual([res.status, res.body.error], [409, "ci_not_green"]);
   assert.equal(github.dispatched.length, 0);
   assert.equal((e.AI as any).calls.length, 0);
@@ -129,10 +132,13 @@ test("AI is never consulted for the gate: a red check blocks even with a glowing
 
 test("stale SHA, bad auth, bad input and dispatch failures are handled without dispatching twice", async () => {
   const e = env();
-  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, "wrong"))).status, 401);
+  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, null))).status, 403, "no Access JWT");
+  const stranger = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, await signAccessJwt({ common_name: "other-token.access" })));
+  assert.deepEqual([stranger.status, stranger.body.error], [403, "forbidden"], "valid Access identity that is not on the allow-list");
+  const nobody = await call(orchestrator, { ...e, DEPLOY_ALLOWED_IDENTITIES: "" }, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
+  assert.equal(nobody.status, 403, "an empty allow-list admits nobody");
   assert.equal((await call(orchestrator, e, deploy({ commit_sha: "abc", confirm_production: "DEPLOY" }))).status, 400);
   assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "yes" }))).status, 400);
-  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY", requested_by: "a b" }))).status, 400);
 
   github.mainSha = "f".repeat(40);
   const stale = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));

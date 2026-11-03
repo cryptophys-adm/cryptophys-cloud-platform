@@ -113,12 +113,25 @@ export function serviceMetadata(env: BaseEnv, capability: string, endpoints: str
   });
 }
 
-export function healthResponse(env: BaseEnv): Response {
-  return json({
+export interface HealthBody {
+  status: "ok";
+  service: string;
+  environment: string;
+  contract_version: string;
+  version: { id: string; tag: string | null } | null;
+}
+
+/** Liveness payload, served over HTTP (/health) and over RPC (HealthRpc.health()). */
+export function healthBody(env: Pick<BaseEnv, "SERVICE_NAME" | "SERVICE_ENVIRONMENT" | "API_CONTRACT_VERSION" | "CF_VERSION_METADATA">): HealthBody {
+  return {
     status: "ok",
     service: env.SERVICE_NAME,
     environment: env.SERVICE_ENVIRONMENT,
     contract_version: env.API_CONTRACT_VERSION,
     version: env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, tag: env.CF_VERSION_METADATA.tag ?? null } : null,
-  });
+  };
+}
+
+export function healthResponse(env: BaseEnv): Response {
+  return json(healthBody(env));
 }

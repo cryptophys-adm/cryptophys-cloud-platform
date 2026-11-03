@@ -1,4 +1,4 @@
-import type { BaseEnv, ExecutionContextLike, Fetcher, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
+import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import {
   errorResponse, healthResponse, json, newId, nowIso, readJsonObject, requireAdmin, serviceMetadata, ACTOR, stringField,
   type JsonObject,
@@ -8,20 +8,25 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate } from "../../control-plane-shared/src/access.ts";
 
+/** RPC surface every platform Worker exports as `HealthRpc` (src/worker.ts). Not reachable over HTTP. */
+export interface HealthRpcBinding {
+  health(): Promise<{ status?: string; version?: { id?: string; tag?: string | null } | null }>;
+}
+
 export interface Env extends BaseEnv {
-  SVC_PLATFORM_API: Fetcher;
-  SVC_DEPLOYMENT_ORCHESTRATOR: Fetcher;
-  SVC_PLATFORM_REGISTRY: Fetcher;
-  SVC_POLICY_ENGINE: Fetcher;
-  SVC_AUDIT_LEDGER: Fetcher;
-  SVC_RECOVERY_MANAGER: Fetcher;
+  SVC_PLATFORM_API: HealthRpcBinding;
+  SVC_DEPLOYMENT_ORCHESTRATOR: HealthRpcBinding;
+  SVC_PLATFORM_REGISTRY: HealthRpcBinding;
+  SVC_POLICY_ENGINE: HealthRpcBinding;
+  SVC_AUDIT_LEDGER: HealthRpcBinding;
+  SVC_RECOVERY_MANAGER: HealthRpcBinding;
 }
 
 const SERVICE = "cryptophys-drift-detector";
 const PROBE_TIMEOUT_MS = 5000;
 
 /** Observation targets: service_id -> service binding (the detector observes itself directly). */
-export function targets(env: Env): Record<string, Fetcher | undefined> {
+export function targets(env: Env): Record<string, HealthRpcBinding | undefined> {
   return {
     "cryptophys-platform-api": env.SVC_PLATFORM_API,
     "cryptophys-deployment-orchestrator": env.SVC_DEPLOYMENT_ORCHESTRATOR,
@@ -32,25 +37,25 @@ export function targets(env: Env): Record<string, Fetcher | undefined> {
   };
 }
 
-interface Probe { reachable: boolean; healthy: boolean; http_status: number | null; version_tag: string | null; error: string | null }
+interface Probe { reachable: boolean; healthy: boolean; version_tag: string | null; error: string | null }
 
-async function probe(binding: Fetcher, serviceId: string): Promise<Probe> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+async function probe(binding: HealthRpcBinding): Promise<Probe> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const res = await binding.fetch(`https://${serviceId}.internal/health`, { signal: controller.signal });
-    const body = await res.json().catch(() => null) as { status?: string; version?: { tag?: string | null } | null } | null;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("timeout")), PROBE_TIMEOUT_MS);
+    });
+    const body = await Promise.race([binding.health(), timeout]);
     return {
       reachable: true,
-      healthy: res.ok && body?.status === "ok",
-      http_status: res.status,
+      healthy: body?.status === "ok",
       version_tag: typeof body?.version?.tag === "string" ? body.version.tag : null,
-      error: null,
+      error: body?.status === "ok" ? null : "health_check_failed",
     };
   } catch (err) {
-    return { reachable: false, healthy: false, http_status: null, version_tag: null, error: controller.signal.aborted ? "timeout" : "fetch_failed" };
+    return { reachable: false, healthy: false, version_tag: null, error: String((err as Error)?.message) === "timeout" ? "timeout" : "rpc_failed" };
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -78,14 +83,14 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
   for (const row of rows.results) {
     let p: Probe;
     if (row.service_id === SERVICE) {
-      p = { reachable: true, healthy: true, http_status: 200, version_tag: env.CF_VERSION_METADATA?.tag ?? null, error: null };
+      p = { reachable: true, healthy: true, version_tag: env.CF_VERSION_METADATA?.tag ?? null, error: null };
     } else if (map[row.service_id]) {
-      p = await probe(map[row.service_id]!, row.service_id);
+      p = await probe(map[row.service_id]!);
     } else {
-      p = { reachable: false, healthy: false, http_status: null, version_tag: null, error: "no_observation_binding" };
+      p = { reachable: false, healthy: false, version_tag: null, error: "no_observation_binding" };
     }
     const reasons: string[] = [];
-    if (!p.healthy) reasons.push(p.error ?? `health_check_failed_http_${p.http_status}`);
+    if (!p.healthy) reasons.push(p.error ?? "health_check_failed");
     const managed = Boolean(row.desired_version);
     if (!managed) reasons.push("desired_version_unset");
     else if (!p.version_tag) reasons.push("observed_version_unavailable");

@@ -1,7 +1,7 @@
 name: Request Platform API Deployment
 
-# Sends the authenticated POST /v1/deployments request to the Deployment
-# Orchestrator. The Orchestrator, not this workflow, decides whether the commit
+# Sends POST /v1/deployments to the Deployment Orchestrator, authenticated by the
+# Cloudflare Access CI service token (the Orchestrator authorizes that identity). The Orchestrator, not this workflow, decides whether the commit
 # may be deployed (current main, commit statuses and the latest run of every GitHub Actions workflow green,
 # deployment lock) and then dispatches deploy-platform-api.yml on main.
 #
@@ -68,12 +68,10 @@ jobs:
         env:
           COMMIT_SHA: ${{ inputs.commit_sha }}
           ORCHESTRATOR_URL: ${{ inputs.orchestrator_url }}
-          ORCHESTRATOR_SHARED_SECRET: ${{ secrets.ORCHESTRATOR_SHARED_SECRET }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          [[ -n "$ORCHESTRATOR_SHARED_SECRET" ]] || { echo "::error::ORCHESTRATOR_SHARED_SECRET is not available to this workflow"; exit 1; }
           [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]] || { echo "::error::Cloudflare Access service token is not available to this workflow"; exit 1; }
           access_headers="$(mktemp)"; trap 'rm -f "$access_headers"' EXIT
           "$GITHUB_WORKSPACE/.github/scripts/access-headers.sh" "$access_headers"
@@ -82,7 +80,6 @@ jobs:
           # Single attempt: a production request must not be replayed automatically.
           status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 60 \
             --request POST "${ORCHESTRATOR_URL}/v1/deployments" \
-            --header "Authorization: Bearer ${ORCHESTRATOR_SHARED_SECRET}" \
             --header "Content-Type: application/json" \
             --header "@${access_headers}" \
             --data "$body" \
