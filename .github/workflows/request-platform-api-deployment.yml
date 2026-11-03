@@ -55,10 +55,8 @@ jobs:
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Full lowercase commit SHA required"; exit 1; }
           [[ "$ORCHESTRATOR_URL" =~ ^https://cryptophys-deployment-orchestrator\.[a-z0-9]([a-z0-9-]*[a-z0-9])?\.workers\.dev$ ]] \
             || { echo "::error::orchestrator_url must be the Orchestrator workers.dev origin"; exit 1; }
-          if [[ "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_SHA" == "$COMMIT_SHA" ]]; then
-            echo "::error::Run this from a request ref, not main: this run would be an in-progress check on ${COMMIT_SHA}."
-            exit 1
-          fi
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Request workflow must run from main."; exit 1; }
+          [[ "$GITHUB_SHA" == "$COMMIT_SHA" ]] || { echo "::error::Request workflow commit must equal the requested main SHA."; exit 1; }
           main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           [[ "$main_sha" == "$COMMIT_SHA" ]] || { echo "::error::Requested ${COMMIT_SHA} but main is ${main_sha}"; exit 1; }
           echo "Requested commit is current main: ${COMMIT_SHA}"
