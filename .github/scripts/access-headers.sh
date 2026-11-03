@@ -12,7 +12,7 @@ file="${1:?usage: access-headers.sh FILE}"
 : "${CF_ACCESS_CLIENT_SECRET:?CF_ACCESS_CLIENT_SECRET is required}"
 
 clean() { # clean VALUE HEADER-NAME
-  printf '%s' "$1" | tr -d '\r\n' | sed -E "s/^[[:space:]]*($2:)?[[:space:]]*//I; s/[[:space:]]+\$//"
+  printf '%s' "$1" | tr -d '\r\n' | sed -E "s/^[[:space:]]*($2:)?[[:space:]]*//I; s/[[:space:]]+$//"
 }
 id="$(clean "$CF_ACCESS_CLIENT_ID" "CF-Access-Client-Id")"
 secret="$(clean "$CF_ACCESS_CLIENT_SECRET" "CF-Access-Client-Secret")"
