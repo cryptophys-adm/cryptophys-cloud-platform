@@ -187,7 +187,16 @@ export default {
       gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/check-suites?per_page=100")
     ]);
     if (!statusResponse.ok || !checkRunsResponse.ok || !checkSuitesResponse.ok) {
-      return json({ error: "github_ci_lookup_failed" }, 502);
+      // Report which lookup failed and GitHub's status so a missing token permission is diagnosable.
+      // The gate still fails closed; no token or response body is echoed.
+      return json({
+        error: "github_ci_lookup_failed",
+        lookups: {
+          commit_status: { http_status: statusResponse.status, required_permission: "Commit statuses: Read" },
+          check_runs: { http_status: checkRunsResponse.status, required_permission: "Checks: Read" },
+          check_suites: { http_status: checkSuitesResponse.status, required_permission: "Checks: Read" }
+        }
+      }, 502);
     }
 
     const statusData = await statusResponse.json() as CommitStatus;

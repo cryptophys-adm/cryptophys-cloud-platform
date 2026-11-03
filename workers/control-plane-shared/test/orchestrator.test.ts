@@ -30,6 +30,7 @@ interface GithubState {
   runs: { name: string; status: string; conclusion: string | null }[];
   dispatchStatus: number;
   dispatched: unknown[];
+  checksForbidden?: boolean;
 }
 
 let github: GithubState;
@@ -48,7 +49,10 @@ beforeEach(() => {
     assert.match(String((init?.headers as Record<string, string>)?.authorization), /^Bearer gh-token$/);
     if (url.endsWith("/git/ref/heads/main")) return reply({ object: { sha: github.mainSha } });
     if (url.endsWith("/status")) return reply({ state: "success", total_count: 0 });
-    if (url.includes("/check-runs")) return reply({ total_count: github.runs.length, check_runs: github.runs });
+    if (url.includes("/check-runs")) {
+      if (github.checksForbidden) return reply({ message: "Resource not accessible by personal access token" }, 403);
+      return reply({ total_count: github.runs.length, check_runs: github.runs });
+    }
     if (url.includes("/check-suites")) return reply({ total_count: 1, check_suites: [{ status: "completed", conclusion: github.runs.every((r) => r.conclusion === "success") ? "success" : "failure" }] });
     if (url.endsWith("/dispatches")) {
       github.dispatched.push(JSON.parse(String(init?.body)));
@@ -142,4 +146,15 @@ test("stale SHA, bad auth, bad input and dispatch failures are handled without d
   assert.equal(row.status, "failed");
   const types = e.DB.raw.prepare("SELECT event_type FROM audit_events ORDER BY rowid").all().map((r: any) => r.event_type);
   assert.deepEqual(types, ["deployment.rejected", "deployment.dispatch_failed"]);
+});
+
+test("a CI lookup the token may not read fails closed and names the missing permission", async () => {
+  const e = env();
+  github.checksForbidden = true;
+  const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
+  assert.deepEqual([res.status, res.body.error], [502, "github_ci_lookup_failed"]);
+  assert.deepEqual(res.body.lookups.check_runs, { http_status: 403, required_permission: "Checks: Read" });
+  assert.equal(res.body.lookups.commit_status.http_status, 200);
+  assert.equal(github.dispatched.length, 0);
+  assert.doesNotMatch(JSON.stringify(res.body), /gh-token/);
 });
