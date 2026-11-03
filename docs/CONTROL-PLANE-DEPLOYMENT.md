@@ -32,6 +32,8 @@ The retired secrets are removed from the Workers by the deploy workflows (`ADMIN
 
 ## Deploy
 
+A **new** platform Worker (for example `cryptophys-signal-engine`) first needs **Provision Cloudflare Access**: it creates the Worker as a private 503 stub with workers.dev disabled, then adds it to the Access application, so the Worker is protected before its first real deploy.
+
 Order for a fresh commit (after Access is provisioned once): **Deploy Control Plane** (applies D1 migrations) → **Deploy Production Deployment Orchestrator** (refuses to deploy while `0003` is unapplied) → **Request Platform API Deployment**.
 
 

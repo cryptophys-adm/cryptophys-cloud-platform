@@ -16,13 +16,13 @@ svc() { # svc ID DRIFTED OBSERVED_AT [REASON]
 }
 one_drifted() {
   for s in "${all[@]}"; do
-    if [[ $s == platform-api ]]; then svc "cryptophys-$s" true "$at" version_mismatch; else svc "cryptophys-$s" false "$at"; fi
+    if [[ $s == cryptophys-platform-api ]]; then svc "$s" true "$at" version_mismatch; else svc "$s" false "$at"; fi
   done
 }
-all=(audit-ledger deployment-orchestrator drift-detector platform-api platform-registry policy-engine recovery-manager)
+all=(cryptophys-audit-ledger cryptophys-deployment-orchestrator cryptophys-drift-detector cryptophys-platform-api cryptophys-platform-registry cryptophys-policy-engine cryptophys-recovery-manager cryptophys-signal-engine xauusd-ai-trading-assistant xauusd-fundamental-news-ingestion xauusd-nexus-dashboard xauusd-tradingview-pull-adapter)
 report() { jq -s '{services: .}' > "$tmp/r.json"; }
 
-for s in "${all[@]}"; do svc "cryptophys-$s" false "$at"; done | report
+for s in "${all[@]}"; do svc "$s" false "$at"; done | report
 ok="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
 check "in sync" '.state == "in_sync" and (.problems | length) == 0' "$ok"
 
@@ -32,13 +32,13 @@ check "version drift" '.state == "drift" and .problems == [{service_id: "cryptop
 # shellcheck disable=SC2016 # backticks are Markdown inside a jq filter
 check "markdown table" '.markdown | test("`cryptophys-platform-api` \\| version_mismatch")' "$drift"
 
-{ for s in "${all[@]}"; do [[ $s == recovery-manager ]] || svc "cryptophys-$s" false "$at"; done; } | report
+{ for s in "${all[@]}"; do [[ $s == cryptophys-recovery-manager ]] || svc "$s" false "$at"; done; } | report
 missing="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
 check "missing service" '.state == "drift" and .problems[0] == {service_id: "cryptophys-recovery-manager", problem: "no_observation"}' "$missing"
 
-for s in "${all[@]}"; do svc "cryptophys-$s" false "$old"; done | report
+for s in "${all[@]}"; do svc "$s" false "$old"; done | report
 stale="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
-check "stale observations" '.state == "drift" and (.problems | length) == 7 and all(.problems[]; .problem == "stale_observation")' "$stale"
+check "stale observations" '.state == "drift" and (.problems | length) == 12 and all(.problems[]; .problem == "stale_observation")' "$stale"
 
 [[ "$(jq -r .fingerprint <<<"$drift")" != "$(jq -r .fingerprint <<<"$missing")" ]] || { echo "::error::fingerprints must differ" >&2; fail=$((fail + 1)); }
 one_drifted | report

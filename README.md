@@ -16,12 +16,13 @@ Git is the source of truth for platform design and code. This repository contain
 
 ## Implemented and deployed to production
 
-- Seven Workers, each deployed by its own manually dispatched workflow from an exact `main` commit and verified live:
+- Eight platform Workers, each deployed by a manually dispatched workflow from an exact `main` commit and verified live. The four live xauusd Workers are registered and health-monitored, without changes to their repository (ADR-0005):
   - `cryptophys-platform-api`: health and readiness API.
   - `cryptophys-deployment-orchestrator`: CI-gated, locked (Durable Object) and audited Platform API deployments.
   - `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-drift-detector`: the control plane (ADR-0004).
 - D1 database `cryptophys-control-plane` with reviewed migrations and Time Travel restore points before every migration.
 - A hash-chained, append-only audit ledger.
+- `cryptophys-signal-engine`: the apps-gitops trend and volume engines migrated off Kubernetes, with pandas_ta parity fixtures (ADR-0005; inventory in docs/TRANSFORMATION-INVENTORY.md).
 - Drift detection of every Worker's version and health over RPC service bindings, every 15 minutes.
 - Cloudflare Access in front of every Worker, with the JWT verified inside each Worker. Authorization is by verified identity: operators and recovery approvers are allow-lists of Access identities, and there are no shared bearer tokens.
 - An advisory Workers AI engine per service, with daily budgets. AI never makes authoritative decisions.
