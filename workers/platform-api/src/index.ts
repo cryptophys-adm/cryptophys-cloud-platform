@@ -1,8 +1,12 @@
+import { accessGate } from "../../control-plane-shared/src/access.ts";
+
 export interface Env {
   PLATFORM_NAME: string;
   PLATFORM_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;
   CF_VERSION_METADATA?: { id: string; tag?: string };
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
 }
 
 const jsonHeaders = {
@@ -18,6 +22,8 @@ function json(data: unknown, status = 200): Response {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const blocked = await accessGate(request, env);
+    if (blocked) return blocked;
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       return json({ error: "method_not_allowed" }, 405);

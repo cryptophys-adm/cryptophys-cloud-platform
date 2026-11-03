@@ -50,6 +50,8 @@ export interface ScheduledEventLike {
 
 /** Bindings every control-plane service Worker declares. */
 export interface BaseEnv {
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
   SERVICE_NAME: string;
   SERVICE_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;

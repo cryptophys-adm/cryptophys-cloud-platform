@@ -2,7 +2,20 @@
 
 Deploys `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager` and `cryptophys-drift-detector` from one reviewed `main` commit with `.github/workflows/deploy-control-plane.yml`.
 
-## One-time configuration (GitHub → Settings → Environments → `production`)
+## One-time configuration
+
+### Cloudflare Access (all seven Workers sit behind it)
+
+1. **Zero Trust → Access → Service credentials → Service tokens:** create a token named `cryptophys-ci` and copy its Client ID and Client Secret (the secret is shown once).
+2. **API token** `CLOUDFLARE_ACCESS_API_TOKEN` (account-scoped): *Access: Apps and Policies Edit*, *Access: Service Tokens Read*, *Access: Organizations, Identity Providers, and Groups Read*, *Workers Scripts Read*.
+3. In the GitHub `production` Environment add:
+   - secrets `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` (the service token) and `CLOUDFLARE_ACCESS_API_TOKEN`;
+   - variable `ACCESS_ALLOWED_EMAILS` (comma-separated operator emails).
+4. Run **Actions → Provision Cloudflare Access** on `main` with `PROVISION`. It creates/updates the application `cryptophys-cloud-platform`, then proves that each Worker rejects unauthenticated requests and admits the service token. Re-run it after adding a Worker or changing operators.
+
+Operators open the Worker URLs in a browser and sign in through Access. Scripts send `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers, in addition to the `/v1` bearer token.
+
+### Control-plane secrets (GitHub → Settings → Environments → `production`)
 
 Add two Environment secrets, each a distinct random value of at least 32 characters (for example `openssl rand -hex 32`, generated on your own machine):
 
@@ -13,7 +26,7 @@ Add two Environment secrets, each a distinct random value of at least 32 charact
 
 ## Deploy
 
-Order for a fresh commit: **Deploy Control Plane** (applies D1 migrations) → **Deploy Production Deployment Orchestrator** (refuses to deploy while `0003` is unapplied) → **Request Platform API Deployment**.
+Order for a fresh commit (after Access is provisioned once): **Deploy Control Plane** (applies D1 migrations) → **Deploy Production Deployment Orchestrator** (refuses to deploy while `0003` is unapplied) → **Request Platform API Deployment**.
 
 
 1. Merge the reviewed change to `main` and wait for every check on the merge commit to pass.
@@ -38,10 +51,12 @@ The job then, failing closed at every step:
 ## Operating the services
 
 ```bash
-curl -s -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" "https://cryptophys-audit-ledger.<subdomain>.workers.dev/v1/verify"
+curl -s -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" "https://cryptophys-audit-ledger.<subdomain>.workers.dev/v1/verify"
 ```
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"actor":"operator"}' "https://cryptophys-drift-detector.<subdomain>.workers.dev/v1/observe"
 ```

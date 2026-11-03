@@ -108,6 +108,8 @@ export function baseEnv(service: string, db: FakeD1, extra: Record<string, unkno
     AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast",
     ADMIN_TOKEN: ADMIN,
     CF_VERSION_METADATA: { id: "ver-self", tag: "abc1234def56" },
+    ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com",
+    ACCESS_AUD: "test-audience-tag",
     ...extra,
   };
 }
@@ -116,7 +118,7 @@ export function req(method: string, path: string, body?: unknown, token: string 
   const h: Record<string, string> = { ...headers };
   if (token) h.authorization = `Bearer ${token}`;
   if (body !== undefined) h["content-type"] = "application/json";
-  return new Request(`https://svc.example.test${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
+  return new Request(`https://svc.internal${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
 export async function call(worker: { fetch(r: Request, e: never): Promise<Response> }, env: unknown, r: Request) {

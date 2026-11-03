@@ -2,8 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-02
-- **Deploy order:** Deploy Control Plane (applies migrations) → Deploy Production Deployment Orchestrator → Request Platform API Deployment.
-- **Supersedes:** the "scaffold only" status in `docs/CONTROL-PLANE-WORKERS.md`, and — **only when this ADR is approved** — the ADR-0001 consequence "Initial deployment has no public route or custom domain" insofar as it forbids `workers.dev` hostnames (decision 5). Custom domains and zone routes remain governed by BASELINE rule 4.
+- **Deploy order:** Provision Cloudflare Access → Deploy Control Plane (applies migrations) → Deploy Production Deployment Orchestrator → Request Platform API Deployment.
+- **Supersedes:** the "scaffold only" status in `docs/CONTROL-PLANE-WORKERS.md`. ADR-0001's no-public-route consequence is kept: every hostname is behind Cloudflare Access (decision 5).
 
 ## Context
 
@@ -15,8 +15,11 @@ The five control-plane Workers (Platform Registry, Policy Engine, Drift Detector
 2. **Account identifiers stay out of Git (ADR-0001).** `wrangler.toml` carries the placeholder `__CONTROL_PLANE_D1_DATABASE_ID__`; the deploy job resolves the ID from the Cloudflare API by exact database name, requires exactly one match, masks it, and renders `wrangler.deploy.toml` on the runner only.
 3. **Recovery point.** Every deploy records a D1 Time Travel bookmark before migrating and writes it to the job summary.
 4. **Authentication.** Every `/v1` endpoint requires `Authorization: Bearer <ADMIN_TOKEN>` (constant-time comparison; 503 when unset). Recovery plan approval requires a separate `APPROVER_TOKEN`, and the approver identity must differ from the plan author. Both secrets come from the GitHub `production` Environment (`CONTROL_PLANE_ADMIN_TOKEN`, `CONTROL_PLANE_APPROVER_TOKEN`) and are uploaded atomically with each version via `wrangler deploy --secrets-file`; they are never written to Git or printed.
-5. **Exposure (requires explicit approval; supersedes part of ADR-0001).** The services and the Platform API are reachable on their `workers.dev` hostnames so deploy jobs can verify the live version, health and readiness from outside Cloudflare, and operators can call the authenticated APIs. No custom domain or zone route is added (BASELINE rule 4). Unauthenticated callers can reach only `/`, `/health` and `/ready`, which expose no data; every `/v1` endpoint requires a bearer credential. `preview_urls` is disabled.
-   *Rejected alternative:* `workers_dev = false` with verification limited to Cloudflare deployment metadata (as proposed in PR #6). It cannot prove the deployed code answers correctly and leaves operators no way to reach the APIs without adding a route, which BASELINE rule 4 also gates. A non-public alternative is Cloudflare Access in front of workers.dev with a service token for CI; adopting it needs an Access application owned by this platform and is a follow-up.
+5. **Exposure: every Worker behind Cloudflare Access (owner decision, 2026-11-03).** A public `workers.dev` endpoint was rejected. One self-hosted Access application, `cryptophys-cloud-platform`, has a `worker` destination for each of the seven Workers, so their workers.dev URLs, preview URLs and the orchestrator custom domain are all covered. It has exactly two policies: Service Auth for the CI service token, and Allow for the operator emails in `ACCESS_ALLOWED_EMAILS`. It is created and converged only by `.github/workflows/provision-access.yml`.
+   - **Defence in depth:** every Worker also verifies the `Cf-Access-Jwt-Assertion` JWT itself (RS256 against the team's published keys, plus AUD, issuer and expiry), before any route including `/health`. If the edge policy is misconfigured or bypassed, requests still fail closed. Without `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD`, a Worker answers 503.
+   - **Internal calls:** service-binding calls (`https://<worker>.internal/...`) never traverse the edge, so they are the only requests accepted without a JWT. No Internet route resolves to `.internal`.
+   - **CI:** deploy jobs resolve the team domain and AUD at deploy time (`resolve-access.sh`), refuse to deploy unless the Access application protects the target Worker, and pass both as `--var`. They then prove protection live: an unauthenticated `/health` must be rejected by Access (302/401/403), and the service token must reach the Worker.
+   - **Scope:** ADR-0001's "no public route" consequence is therefore retained: nothing is reachable without an Access identity. Custom domains and routes remain governed by BASELINE rule 4.
 6. **Audit integrity.** `audit_events` is a SHA-256 hash chain over canonical JSON. A UNIQUE index on `previous_hash` makes concurrent writers retry instead of forking; triggers reject UPDATE and DELETE. `GET /v1/verify` recomputes the whole chain. Secret-shaped keys and token values are redacted before persistence.
 7. **Policy.** Decisions are deterministic code in the Policy Engine and are persisted with their evidence. The Recovery Manager cannot start an execution without an `allow` decision obtained from the Policy Engine over a service binding. Recovery steps are executed by an operator and recorded (start/finish); no automatic destructive remediation exists (BASELINE).
 8. **Drift.** The Drift Detector reads each Worker's live version tag from `/health` (`version_metadata` binding) over service bindings, compares it with `service_registry.desired_version` (set by the deploy workflow), writes `drift_observations`, updates observed state, and appends an audit event. It runs every 15 minutes and on demand.
@@ -25,7 +28,7 @@ The five control-plane Workers (Platform Registry, Policy Engine, Drift Detector
 ## Consequences
 
 - The control plane is operational and its correctness is covered by endpoint tests that run against the real migrations, plus a dry-run bundle of every Worker in CI.
-- A single shared admin credential identifies operators only by the `actor` they declare; per-operator identity (e.g. Cloudflare Access) is a follow-up.
+- Operators authenticate to Cloudflare Access individually (email policy). Inside the Workers, `/v1` authorization still uses the shared admin credential and a declared `actor`; binding `actor` to the Access identity is a follow-up.
 - The Deployment Orchestrator records every accepted request in `deployment_requests` (whose `(service_id, idempotency_key)` uniqueness backs up its Durable Object lock), audits dispatches and rejections, and has its own advisory AI engine. Its deploy therefore requires migration `0003`, so Deploy Control Plane runs first.
 - The deploy token needs `D1:Edit` in addition to `Workers Scripts:Edit` for migrations and Time Travel.
 

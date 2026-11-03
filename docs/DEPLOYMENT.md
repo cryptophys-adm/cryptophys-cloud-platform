@@ -34,7 +34,7 @@ Production has three protected `workflow_dispatch` workflows, all gated by the `
 3. The Orchestrator authenticates the request, requires the SHA to be current `main`, requires every status, check run and check suite on it to be successful, claims a one-time deployment lock, and dispatches `deploy-platform-api.yml`.
 4. The workflow re-checks confirmation and SHA, type-checks, deploys with `--tag <sha12>`, and verifies the active version and `/health` + `/ready` on workers.dev.
 
-Every deploy workflow verifies the live Worker with `.github/scripts/verify-worker-live.sh`: active version annotated with the commit, HTTP 200 and JSON contract for health and readiness, TLS verification always on.
+All Workers are behind Cloudflare Access (`provision-access.yml`, run once before the first deploy). Every deploy workflow refuses to deploy unless the Access application protects the target Worker, passes the Access team domain and AUD to the Worker, and verifies it live with `.github/scripts/verify-worker-live.sh --require-access`. The verification checks that an unauthenticated request is rejected by Access, that the active version is annotated with the commit, and that health and readiness return HTTP 200 and their JSON contract through the CI service token. TLS verification is always on.
 
 ## Infrastructure state and recovery
 

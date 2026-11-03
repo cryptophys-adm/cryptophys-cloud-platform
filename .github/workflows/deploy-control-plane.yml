@@ -100,6 +100,14 @@ jobs:
           for dir in $DEPLOY_ORDER; do dirs+=("../$dir"); done
           "$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" "${dirs[@]}"
 
+      - name: Resolve Cloudflare Access configuration (fails closed if the Workers are not protected)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          ACCESS_APP_NAME: cryptophys-cloud-platform
+          EXPECTED_WORKERS: "cryptophys-platform-registry cryptophys-policy-engine cryptophys-audit-ledger cryptophys-recovery-manager cryptophys-drift-detector"
+        run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
+
       - name: Record a D1 Time Travel restore point before migrating
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -129,6 +137,8 @@ jobs:
           CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
           CONTROL_PLANE_APPROVER_TOKEN: ${{ secrets.CONTROL_PLANE_APPROVER_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           tag="${COMMIT_SHA:0:12}"
@@ -143,11 +153,12 @@ jobs:
               jq -n --arg a "$CONTROL_PLANE_ADMIN_TOKEN" '{ADMIN_TOKEN: $a}' > "$secrets_file"
             fi
             echo "::group::Deploy ${name}"
-            npx wrangler deploy --config "../${dir}/wrangler.deploy.toml" --tag "$tag" --message "commit ${COMMIT_SHA}" --secrets-file "$secrets_file"
+            npx wrangler deploy --config "../${dir}/wrangler.deploy.toml" --tag "$tag" --message "commit ${COMMIT_SHA}" --secrets-file "$secrets_file" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}"
             rm -f "$secrets_file"
             "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
               --script "$name" \
               --commit "$COMMIT_SHA" \
+              --require-access \
               --health-filter ".status == \"ok\" and .service == \"${name}\" and .environment == \"production\" and .contract_version == \"v1\" and .version.tag == \"${tag}\"" \
               --ready-filter ".status == \"ready\" and .service == \"${name}\" and .production_ready == true and ([.checks[]] | all)"
             echo "::endgroup::"
@@ -159,9 +170,13 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           tag="${COMMIT_SHA:0:12}"
+          access_headers="$(mktemp)"; chmod 600 "$access_headers"; trap 'rm -f "$access_headers"' EXIT
+          printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$access_headers"
           subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
             --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
@@ -174,7 +189,7 @@ jobs:
             out="$(mktemp)"
             status="$(curl --silent --show-error --proto '=https' --max-time 30 --request "$1" "$2" \
               --header "Authorization: Bearer ${CONTROL_PLANE_ADMIN_TOKEN}" \
-              --header "Content-Type: application/json" "${data[@]}" \
+              --header "Content-Type: application/json" --header "@${access_headers}" "${data[@]}" \
               --output "$out" --write-out '%{http_code}')"
             [[ "$status" =~ ^2 ]] || { echo "::error::$1 $2 returned HTTP $status: $(head -c 1000 "$out")"; exit 1; }
             cat "$out"

@@ -12,7 +12,7 @@ Six separately deployed TypeScript Workers implement the logical control plane f
 | `cryptophys-audit-ledger` | Append-only hash-chained audit log | Operational | `POST /v1/events`, `GET /v1/events[/{id}]`, `GET /v1/verify` |
 | `cryptophys-recovery-manager` | Recovery plans, approval, recorded execution | Operational | `POST/GET /v1/plans`, `GET /v1/plans/{id}`, `POST /v1/plans/{id}/approve` (approver token), `/executions`, `/disable` |
 
-All five services expose `GET /health` (includes the live `version.tag` = deployed commit), `GET /ready` (503 unless schema migrated, secrets configured, AI and service bindings present) and `GET /` (metadata).
+Every Worker sits behind Cloudflare Access and also verifies the Access JWT itself, before any route; only service-binding calls (`*.internal`) skip it. All five services expose `GET /health` (includes the live `version.tag` = deployed commit), `GET /ready` (503 unless schema migrated, secrets and Access configured, AI and service bindings present) and `GET /` (metadata).
 
 ## Behaviour guarantees
 
