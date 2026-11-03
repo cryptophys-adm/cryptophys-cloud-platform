@@ -1,0 +1,43 @@
+name = "cryptophys-signal-engine"
+main = "src/worker.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
+
+[observability]
+enabled = true
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+# Closed candles are final a few minutes after the hour; four runs an hour keep 1h/4h
+# series current at ~2.9k invocations and ~29k public market-data subrequests a month.
+[triggers]
+crons = ["4,19,34,49 * * * *"]
+
+# Dedicated Workers AI engine for this Worker (architecture/AI-ENGINE-REQUIREMENT.md).
+[ai]
+binding = "AI"
+
+[vars]
+SERVICE_NAME = "cryptophys-signal-engine"
+SERVICE_ENVIRONMENT = "production"
+API_CONTRACT_VERSION = "v1"
+AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+AI_DAILY_REQUEST_LIMIT = "40"
+AI_ACCOUNT_DAILY_REQUEST_LIMIT = "400"
+# Public market data only (ADR-0005): no exchange account, no API keys, no orders.
+MARKET_DATA_URL = "https://data-api.binance.vision"
+SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,ARBUSDT"
+TIMEFRAMES = "1h,4h"
+
+# The account-specific database_id is kept out of Git (ADR-0001). The deploy workflow
+# resolves it from the Cloudflare API by exact database name and substitutes it.
+[[d1_databases]]
+binding = "DB"
+database_name = "cryptophys-control-plane"
+database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
+migrations_dir = "../control-plane-migrations"
+
+# No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
+# deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.

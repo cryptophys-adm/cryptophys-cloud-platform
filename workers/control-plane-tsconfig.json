@@ -21,6 +21,7 @@
     "policy-engine/src/**/*.ts",
     "drift-detector/src/**/*.ts",
     "audit-ledger/src/**/*.ts",
-    "recovery-manager/src/**/*.ts"
+    "recovery-manager/src/**/*.ts",
+    "signal-engine/src/**/*.ts"
   ]
 }

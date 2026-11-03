@@ -65,5 +65,29 @@ binding = "SVC_RECOVERY_MANAGER"
 service = "cryptophys-recovery-manager"
 entrypoint = "HealthRpc"
 
+[[services]]
+binding = "SVC_SIGNAL_ENGINE"
+service = "cryptophys-signal-engine"
+entrypoint = "HealthRpc"
+
+# xauusd Workers are deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005
+# decision 7). Plain service bindings reach their fetch handler for a /health probe only;
+# they never leave Cloudflare and need no route, token or change in that repository.
+[[services]]
+binding = "EXT_XAUUSD_AI"
+service = "xauusd-ai-trading-assistant"
+
+[[services]]
+binding = "EXT_XAUUSD_NEWS"
+service = "xauusd-fundamental-news-ingestion"
+
+[[services]]
+binding = "EXT_XAUUSD_PULL_ADAPTER"
+service = "xauusd-tradingview-pull-adapter"
+
+[[services]]
+binding = "EXT_XAUUSD_NEXUS"
+service = "xauusd-nexus-dashboard"
+
 # No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
 # deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.
