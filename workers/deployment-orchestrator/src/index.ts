@@ -181,7 +181,9 @@ export default {
     }
 
     // CI gate (owner decision, option B): the combined commit status plus the latest GitHub
-    // Actions run of every workflow on this commit. Both are readable by a fine-grained PAT
+    // Actions run of every validation/deployment workflow on this commit. The trusted
+    // request workflow is excluded because its own in-progress run is the caller of this
+    // endpoint, not a CI result. Both lookups are readable by a fine-grained PAT
     // (Commit statuses: Read, Actions: Read); the Checks API is not.
     const [statusResponse, workflowRunsResponse] = await Promise.all([
       gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
