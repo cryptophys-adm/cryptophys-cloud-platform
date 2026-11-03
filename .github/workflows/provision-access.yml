@@ -142,6 +142,16 @@ jobs:
           headers="$(mktemp)"; trap 'rm -f "$headers"' EXIT
           "$GITHUB_WORKSPACE/.github/scripts/access-headers.sh" "$headers"
           for name in $PLATFORM_WORKERS; do
+            # A Worker with workers.dev disabled (a bootstrap stub before its first deploy) has no
+            # public hostname to probe; its deploy workflow verifies Access live once it is exposed.
+            exposed="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${name}/subdomain" \
+              | jq -er '.result.enabled')"
+            if [[ "$exposed" == "false" ]]; then
+              echo "${name}: workers.dev disabled (not publicly reachable); verified live by its first deploy"
+              continue
+            fi
             url="https://${name}.${subdomain}.workers.dev/health"
             for _ in $(seq 1 12); do
               unauth="$(curl --silent --proto '=https' --max-time 20 --output /dev/null --write-out '%{http_code}' "$url" || true)"
