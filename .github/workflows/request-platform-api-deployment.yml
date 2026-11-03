@@ -2,7 +2,7 @@ name: Request Platform API Deployment
 
 # Sends the authenticated POST /v1/deployments request to the Deployment
 # Orchestrator. The Orchestrator, not this workflow, decides whether the commit
-# may be deployed (current main, all statuses/check runs/check suites green,
+# may be deployed (current main, commit statuses and the latest run of every GitHub Actions workflow green,
 # deployment lock) and then dispatches deploy-platform-api.yml on main.
 #
 # Dispatch this workflow from a dedicated request ref, never from main: a run on

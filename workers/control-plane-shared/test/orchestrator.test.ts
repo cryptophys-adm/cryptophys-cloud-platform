@@ -27,10 +27,10 @@ function lockNamespace() {
 
 interface GithubState {
   mainSha: string;
-  runs: { name: string; status: string; conclusion: string | null }[];
+  runs: { workflow_id: number; name: string; status: string; conclusion: string | null; run_number: number }[];
   dispatchStatus: number;
   dispatched: unknown[];
-  checksForbidden?: boolean;
+  actionsForbidden?: boolean;
 }
 
 let github: GithubState;
@@ -39,7 +39,7 @@ const realFetch = globalThis.fetch;
 beforeEach(() => {
   github = {
     mainSha: SHA,
-    runs: [{ name: "Type-check platform API", status: "completed", conclusion: "success" }],
+    runs: [{ workflow_id: 1, name: "Validate", status: "completed", conclusion: "success", run_number: 7 }],
     dispatchStatus: 204,
     dispatched: [],
   };
@@ -49,11 +49,11 @@ beforeEach(() => {
     assert.match(String((init?.headers as Record<string, string>)?.authorization), /^Bearer gh-token$/);
     if (url.endsWith("/git/ref/heads/main")) return reply({ object: { sha: github.mainSha } });
     if (url.endsWith("/status")) return reply({ state: "success", total_count: 0 });
-    if (url.includes("/check-runs")) {
-      if (github.checksForbidden) return reply({ message: "Resource not accessible by personal access token" }, 403);
-      return reply({ total_count: github.runs.length, check_runs: github.runs });
+    if (url.includes("/actions/runs?head_sha=")) {
+      assert.ok(url.includes(`head_sha=${SHA}`));
+      if (github.actionsForbidden) return reply({ message: "Resource not accessible by personal access token" }, 403);
+      return reply({ total_count: github.runs.length, workflow_runs: github.runs });
     }
-    if (url.includes("/check-suites")) return reply({ total_count: 1, check_suites: [{ status: "completed", conclusion: github.runs.every((r) => r.conclusion === "success") ? "success" : "failure" }] });
     if (url.endsWith("/dispatches")) {
       github.dispatched.push(JSON.parse(String(init?.body)));
       return new Response(null, { status: github.dispatchStatus });
@@ -117,14 +117,14 @@ test("authenticated, CI-green request is ledgered, audited, dispatched once and 
 
 test("AI is never consulted for the gate: a red check blocks even with a glowing advisory", async () => {
   const e = env();
-  github.runs.push({ name: "Validate", status: "completed", conclusion: "failure" });
+  github.runs.push({ workflow_id: 2, name: "Validate Control Plane Workers", status: "completed", conclusion: "failure", run_number: 3 });
   const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, SECRET, "?advisory=true"));
   assert.deepEqual([res.status, res.body.error], [409, "ci_not_green"]);
   assert.equal(github.dispatched.length, 0);
   assert.equal((e.AI as any).calls.length, 0);
   const evt = e.DB.raw.prepare("SELECT outcome, payload_json FROM audit_events WHERE event_type = 'deployment.rejected'").get() as any;
   assert.equal(evt.outcome, "ci_not_green");
-  assert.match(evt.payload_json, /Validate/);
+  assert.match(evt.payload_json, /Validate Control Plane Workers/);
 });
 
 test("stale SHA, bad auth, bad input and dispatch failures are handled without dispatching twice", async () => {
@@ -150,11 +150,35 @@ test("stale SHA, bad auth, bad input and dispatch failures are handled without d
 
 test("a CI lookup the token may not read fails closed and names the missing permission", async () => {
   const e = env();
-  github.checksForbidden = true;
+  github.actionsForbidden = true;
   const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
   assert.deepEqual([res.status, res.body.error], [502, "github_ci_lookup_failed"]);
-  assert.deepEqual(res.body.lookups.check_runs, { http_status: 403, required_permission: "Checks: Read" });
+  assert.deepEqual(res.body.lookups.workflow_runs, { http_status: 403, required_permission: "Actions: Read" });
   assert.equal(res.body.lookups.commit_status.http_status, 200);
   assert.equal(github.dispatched.length, 0);
   assert.doesNotMatch(JSON.stringify(res.body), /gh-token/);
+});
+
+test("gate uses the latest run of each workflow, requires runs, and blocks in-progress work", async () => {
+  // A failed deploy attempt superseded by a later successful run of the same workflow does not block.
+  github.runs = [
+    { workflow_id: 1, name: "Validate", status: "completed", conclusion: "success", run_number: 7 },
+    { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "failure", run_number: 2 },
+    { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "success", run_number: 3 },
+  ];
+  assert.equal((await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }))).status, 202);
+
+  // ...but a failure in the latest run of a workflow blocks.
+  github.runs = [
+    { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "success", run_number: 3 },
+    { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "failure", run_number: 4 },
+  ];
+  const latestFailed = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
+  assert.deepEqual([latestFailed.status, latestFailed.body.error], [409, "ci_not_green"]);
+
+  github.runs = [{ workflow_id: 1, name: "Validate", status: "in_progress", conclusion: null, run_number: 8 }];
+  assert.equal((await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }))).status, 409);
+
+  github.runs = [];
+  assert.equal((await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }))).status, 409, "no CI at all is not green");
 });

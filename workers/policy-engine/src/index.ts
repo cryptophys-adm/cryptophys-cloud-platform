@@ -30,7 +30,7 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     checks.push(check("production_environment", svc?.environment === "production", "registry environment must be production"));
     checks.push(check("commit_sha_valid", typeof context.commit_sha === "string" && COMMIT_SHA.test(context.commit_sha), "full lowercase 40-character commit SHA"));
     checks.push(check("explicit_confirmation", context.confirm_production === "DEPLOY", "confirm_production must equal DEPLOY"));
-    checks.push(check("ci_green", context.ci_green === true, "all commit statuses, check runs and check suites must be successful"));
+    checks.push(check("ci_green", context.ci_green === true, "commit statuses and the latest run of every GitHub Actions workflow must be successful"));
   } else if (action === "recovery.execute") {
     const plan = await db.prepare("SELECT status, created_by, approved_by FROM recovery_plans WHERE plan_id = ?")
       .bind(resource).first<{ status: string; created_by: string | null; approved_by: string | null }>();
