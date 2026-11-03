@@ -9,20 +9,24 @@ Canonical source of truth for the Cloudflare-native Cryptophys platform.
 - Resource ownership: architecture/RESOURCE-OWNERSHIP.md
 - Deployment runbook: docs/DEPLOYMENT.md
 - Operations runbook: docs/OPERATIONS.md
-- Initial Worker: workers/platform-api/
+- Workers: workers/ (Platform API, Deployment Orchestrator and five control-plane services)
+- Control plane: docs/CONTROL-PLANE-WORKERS.md, docs/CONTROL-PLANE-DEPLOYMENT.md, ADR-0004
 
 Git is the source of truth for platform design and code. This repository contains no production secrets. Merging code does not deploy production infrastructure; production deployment is manually triggered and gated by the GitHub production Environment.
 
-## Implemented in this revision
+## Implemented and deployed to production
 
-- Initial architecture and security baselines.
-- Dedicated TypeScript Cloudflare Worker named cryptophys-platform-api.
-- Health/readiness API routes.
-- Pull-request/push validation workflow.
-- Manually triggered production deployment workflow.
-- Deployment and incident runbooks.
-- Dependabot configuration.
+- Seven Workers, each deployed by its own manually dispatched workflow from an exact `main` commit and verified live:
+  - `cryptophys-platform-api`: health and readiness API.
+  - `cryptophys-deployment-orchestrator`: CI-gated, locked (Durable Object) and audited Platform API deployments.
+  - `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-drift-detector`: the control plane (ADR-0004).
+- D1 database `cryptophys-control-plane` with reviewed migrations and Time Travel restore points before every migration.
+- A hash-chained, append-only audit ledger.
+- Drift detection of every Worker's version and health over RPC service bindings, every 15 minutes.
+- Cloudflare Access in front of every Worker, with the JWT verified inside each Worker. Authorization is by verified identity: operators and recovery approvers are allow-lists of Access identities, and there are no shared bearer tokens.
+- An advisory Workers AI engine per service, with daily budgets. AI never makes authoritative decisions.
+- Validation CI, SHA-pinned actions and Dependabot.
 
 ## Not yet provisioned or implemented
 
-D1, KV, R2, Queues, Durable Objects, Workflows, custom domains, DNS, identity/authentication, administrative mutation endpoints, and the remaining control-plane services are not provisioned by this revision. Add them in reviewed increments with explicit ownership, account-specific configuration, tests, and recovery plans. No production deployment has been performed by these commits.
+KV, R2, Queues, Workflows, DNS automation and a remote IaC state backend (see STATE-AND-RECOVERY.md). Add them in reviewed increments with explicit ownership, account-specific configuration, tests and recovery plans.

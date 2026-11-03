@@ -51,6 +51,6 @@ See [State and Recovery Contract](../architecture/STATE-AND-RECOVERY.md). The cu
 ## Current limitations
 
 - The Platform API has no storage and no mutation endpoints; the control-plane services own D1 state.
-- Operator identity on control-plane APIs is a shared bearer credential plus a declared `actor`; per-person identity is a follow-up.
+- Control-plane `/v1` APIs are authorized by verified Cloudflare Access identity (`OPERATOR_IDENTITIES`, `APPROVER_IDENTITIES`); the identity is the recorded actor.
 - No Cloudflare account/resource identifiers are committed; the D1 ID is resolved at deploy time.
 - `workflow_dispatch` is the only production deployment trigger.
