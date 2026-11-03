@@ -31,14 +31,14 @@ Production has three protected `workflow_dispatch` workflows, all gated by the `
 
 The repository owner authorized the platform's automation operator to start these workflows (2026-11-03). Its GitHub integration cannot call the `workflow_dispatch` API, so it commits one request file per action to `ops/requests/` on its operator branch, `claude/gracious-brown-tkc4e8`. `.github/workflows/ops-dispatch.yml` then dispatches the requested workflow using the job's own `GITHUB_TOKEN` and follows the run to completion.
 
-- **Allowed workflows:** `provision-access.yml`, `deploy-control-plane.yml` and `deploy-deployment-orchestrator.yml` (all run on `main`), and `request-platform-api-deployment.yml` (runs from the operator branch).
+- **Allowed workflows:** `provision-access.yml`, `deploy-control-plane.yml` and `deploy-deployment-orchestrator.yml` (all run on `main`), and `request-platform-api-deployment.yml`. All of them run from `main`: no workflow definition that receives production secrets is ever loaded from the operator branch, so the `production` Environment no longer needs to allow that branch.
 - **Allowed inputs:** `confirm_production`, `commit_sha` and `orchestrator_url`.
 - Every gate of the dispatched workflow still applies, and the request files form the audit trail.
 
 ### Platform API through the Orchestrator
 
 1. Merge reviewed changes to `main`; a merge alone does not deploy.
-2. Run **Request Platform API Deployment** from a request ref (not `main`) with the current `main` SHA, `DEPLOY` and the Orchestrator workers.dev URL. Running it from `main` would make it an in-progress check on the commit, and the Orchestrator would refuse the request.
+2. Run **Request Platform API Deployment** on `main` with the current `main` SHA, `DEPLOY` and the Orchestrator workers.dev URL. The Orchestrator excludes this exact workflow path from its CI gate (it is necessarily in progress while asking), and still requires at least one other green validation workflow on the commit.
 3. The Orchestrator authenticates the request, requires the SHA to be current `main`, requires the combined commit status and the latest run of every GitHub Actions workflow on it to be successful (owner decision: the Checks API is not readable by the fine-grained `GH_ACTIONS_TOKEN`, so checks posted by non-Actions apps are not part of the gate), claims a one-time deployment lock, and dispatches `deploy-platform-api.yml`.
 4. The workflow re-checks confirmation and SHA, type-checks, deploys with `--tag <sha12>`, and verifies the active version and `/health` + `/ready` on workers.dev.
 

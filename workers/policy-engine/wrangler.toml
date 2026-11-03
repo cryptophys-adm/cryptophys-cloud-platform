@@ -31,5 +31,5 @@ database_name = "cryptophys-control-plane"
 database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
 migrations_dir = "../control-plane-migrations"
 
-# Secrets are provisioned by .github/workflows/deploy-control-plane.yml from GitHub
-# Environment secrets and are never stored in this file: ADMIN_TOKEN
+# No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
+# deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.

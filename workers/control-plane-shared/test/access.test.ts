@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { baseEnv, call, migratedDb, ADMIN } from "./harness.ts";
+import { baseEnv, call, migratedDb } from "./harness.ts";
 import { accessGate, authenticate, identityAllowed, resetAccessKeyCache, verifyAccessJwt } from "../src/access.ts";
 import audit from "../../audit-ledger/src/index.ts";
 import platformApi from "../../platform-api/src/index.ts";
@@ -88,8 +88,8 @@ test("every Worker enforces the gate before any route, including /health", async
   assert.equal((await call(audit, auditEnv, workersDev("cryptophys-audit-ledger", "/health"))).status, 403);
   const ok = await call(audit, auditEnv, workersDev("cryptophys-audit-ledger", "/ready", await sign({ common_name: "ci" })));
   assert.deepEqual([ok.status, ok.body.checks.access_configured], [200, true]);
-  const withAdminButNoJwt = new Request("https://cryptophys-audit-ledger.acme.workers.dev/v1/verify", { headers: { authorization: `Bearer ${ADMIN}` } });
-  assert.equal((await call(audit, auditEnv, withAdminButNoJwt)).status, 403, "admin token alone is not enough on a public hostname");
+  const bearerOnly = new Request("https://cryptophys-audit-ledger.acme.workers.dev/v1/verify", { headers: { authorization: "Bearer anything" } });
+  assert.equal((await call(audit, auditEnv, bearerOnly)).status, 403, "a bearer token alone is never enough");
 
   const apiEnv = { PLATFORM_NAME: "cryptophys-cloud-platform", PLATFORM_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1", ...env };
   assert.equal((await call(platformApi, apiEnv, workersDev("cryptophys-platform-api", "/health"))).status, 403);

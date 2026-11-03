@@ -74,9 +74,6 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
   return new FakeD1(raw);
 }
 
-export const ADMIN = "admin-token-0123456789abcdef";
-export const APPROVER = "approver-token-fedcba9876543210";
-
 export interface FakeAi extends AiBinding {
   calls: { model: string; input: Record<string, unknown> }[];
   reply: unknown;
@@ -106,7 +103,7 @@ export function baseEnv(service: string, db: FakeD1, extra: Record<string, unkno
     DB: db,
     AI: fakeAi(),
     AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast",
-    ADMIN_TOKEN: ADMIN,
+    OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`,
     CF_VERSION_METADATA: { id: "ver-self", tag: "abc1234def56" },
     ACCESS_TEAM_DOMAIN: ACCESS_TEAM,
     ACCESS_AUD,
@@ -122,6 +119,7 @@ export const ACCESS_TEAM = "cryptophys.cloudflareaccess.com";
 export const ACCESS_AUD = "test-audience-tag";
 export const CI_CLIENT_ID = "ci-client.access";
 export const OPERATOR_EMAIL = "ops@cryptophys.work";
+export const APPROVER_EMAIL = "approver@cryptophys.work";
 
 const accessKeys = await crypto.subtle.generateKey(
   { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"],
@@ -137,7 +135,10 @@ export async function signAccessJwt(claims: Record<string, unknown>): Promise<st
 }
 
 export const CI_JWT = await signAccessJwt({ common_name: CI_CLIENT_ID });
-export const OPERATOR_JWT = await signAccessJwt({ email: OPERATOR_EMAIL });
+// Emails arrive in whatever case the IdP returns; recorded actors are normalized to lower case.
+export const OPERATOR_JWT = await signAccessJwt({ email: "Ops@Cryptophys.Work" });
+export const APPROVER_JWT = await signAccessJwt({ email: APPROVER_EMAIL });
+export const OUTSIDER_JWT = await signAccessJwt({ email: "someone@example.com" });
 
 /** True when a fetch targets the Access certs endpoint; tests that stub fetch delegate these here. */
 export function isAccessCerts(url: string): boolean {
@@ -150,9 +151,9 @@ const baseFetch = globalThis.fetch;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
   isAccessCerts(String(input)) ? accessCertsResponse() : baseFetch(input, init)) as typeof fetch;
 
-export function req(method: string, path: string, body?: unknown, token: string | null = ADMIN, headers: Record<string, string> = {}, jwt: string | null = CI_JWT): Request {
+/** A request authenticated as `jwt` (default: the CI service token); pass null for no Access JWT. */
+export function req(method: string, path: string, body?: unknown, jwt: string | null = CI_JWT, headers: Record<string, string> = {}): Request {
   const h: Record<string, string> = { ...headers };
-  if (token) h.authorization = `Bearer ${token}`;
   if (jwt) h["cf-access-jwt-assertion"] = jwt;
   if (body !== undefined) h["content-type"] = "application/json";
   return new Request(`https://svc.example.workers.dev${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });

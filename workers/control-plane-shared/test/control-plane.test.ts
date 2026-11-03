@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ADMIN, APPROVER, CI_JWT, baseEnv, call, fakeAi, migratedDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, migratedDb, req } from "./harness.ts";
 import { AiEngine, extractJsonObject, type AiTask } from "../src/ai-engine.ts";
 import { appendAuditEvent, verifyAuditChain, GENESIS_HASH } from "../src/audit.ts";
-import { bearerMatches, redact } from "../src/http.ts";
+import { redact } from "../src/http.ts";
 import audit from "../../audit-ledger/src/index.ts";
 import registry from "../../platform-registry/src/index.ts";
 import policy, { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
@@ -13,15 +13,6 @@ import drift from "../../drift-detector/src/index.ts";
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
 // ---------------------------------------------------------------- shared library
-
-test("bearer comparison is exact and fails closed without a secret", () => {
-  const r = (h: string) => new Request("https://x.test", { headers: { authorization: h } });
-  assert.equal(bearerMatches(r(`Bearer ${ADMIN}`), ADMIN), true);
-  assert.equal(bearerMatches(r(`Bearer ${ADMIN}x`), ADMIN), false);
-  assert.equal(bearerMatches(r(`Bearer ${ADMIN.slice(0, -1)}`), ADMIN), false);
-  assert.equal(bearerMatches(r(ADMIN), ADMIN), false);
-  assert.equal(bearerMatches(r("Bearer "), undefined), false);
-});
 
 test("redaction removes secret-shaped keys and token values", () => {
   const out = redact({ api_token: "x", nested: { Authorization: "Bearer abcdefghijkl" }, note: "use Bearer abcdefghijklmnop now", ok: 1 }) as any;
@@ -101,34 +92,39 @@ const services = [
   ["cryptophys-policy-engine", policy],
 ] as const;
 
-test("health is public; readiness requires schema, admin token and AI binding", async () => {
+test("readiness requires schema, operator identities and AI binding", async () => {
   for (const [name, worker] of services) {
     const db = migratedDb();
     const env = baseEnv(name, db);
-    const health = await call(worker, env, req("GET", "/health", undefined, null));
+    const health = await call(worker, env, req("GET", "/health"));
     assert.equal(health.status, 200);
     assert.deepEqual(health.body.version, { id: "ver-self", tag: "abc1234def56" });
-    assert.equal((await call(worker, env, req("GET", "/ready", undefined, null))).body.status, "ready");
+    assert.equal((await call(worker, env, req("GET", "/ready"))).body.status, "ready");
     assert.equal((await call(worker, baseEnv(name, migratedDb({ recordLedger: false })), req("GET", "/ready"))).status, 503);
-    const noToken = await call(worker, { ...env, ADMIN_TOKEN: undefined }, req("GET", "/ready"));
-    assert.equal(noToken.status, 503);
-    assert.equal(noToken.body.checks.admin_token_configured, false);
+    const noOperators = await call(worker, { ...env, OPERATOR_IDENTITIES: " , " }, req("GET", "/ready"));
+    assert.equal(noOperators.status, 503);
+    assert.equal(noOperators.body.checks.operator_identities_configured, false);
     assert.equal((await call(worker, { ...env, AI: undefined }, req("GET", "/ready"))).status, 503);
     assert.equal((await call(worker, { ...env, SERVICE_ENVIRONMENT: "development" }, req("GET", "/ready"))).status, 503);
   }
 });
 
-test("every /v1 endpoint rejects missing or wrong credentials", async () => {
+test("every /v1 endpoint requires an Access identity in OPERATOR_IDENTITIES; bearer tokens confer nothing", async () => {
   const paths: [unknown, string, string][] = [
     [audit, "GET", "/v1/events"], [audit, "GET", "/v1/verify"], [registry, "GET", "/v1/services"],
     [policy, "POST", "/v1/evaluate"], [recovery, "GET", "/v1/plans"], [drift, "GET", "/v1/drift"],
   ];
   for (const [worker, method, path] of paths) {
     const env = baseEnv("svc", migratedDb());
-    assert.equal((await call(worker as never, env, req(method, path, undefined, null))).status, 401, path);
-    assert.equal((await call(worker as never, env, req(method, path, undefined, "wrong"))).status, 401, path);
-    assert.equal((await call(worker as never, env, req(method, path, undefined, ADMIN, {}, null))).status, 403, `${path}: admin token without an Access JWT`);
-    assert.equal((await call(worker as never, { ...env, ADMIN_TOKEN: undefined }, req(method, path))).status, 503, path);
+    const body = method === "POST" ? { subject: "x", action: "deploy", resource: "r" } : undefined;
+    assert.equal((await call(worker as never, env, req(method, path, body, null, { authorization: "Bearer anything" }))).status, 403, `${path}: no Access JWT`);
+    const outsider = await call(worker as never, env, req(method, path, body, OUTSIDER_JWT));
+    assert.deepEqual([outsider.status, outsider.body.error], [403, "forbidden"], `${path}: authenticated but not an operator`);
+    assert.equal((await call(worker as never, env, req(method, path, body, APPROVER_JWT))).status, 403, `${path}: approvers are not operators`);
+    const unset = await call(worker as never, { ...env, OPERATOR_IDENTITIES: undefined }, req(method, path, body));
+    assert.deepEqual([unset.status, unset.body.error], [503, "operator_identities_not_configured"], path);
+    assert.ok((await call(worker as never, env, req(method, path, body, OPERATOR_JWT))).status < 400, `${path}: operator email (any case) is allowed`);
+    assert.ok((await call(worker as never, env, req(method, path, body))).status < 400, `${path}: CI service token is allowed`);
   }
 });
 
@@ -143,14 +139,15 @@ test("audit ledger appends, redacts, lists, fetches and verifies events", async 
     payload: { commit: SHA, api_token: "should-not-persist" },
   }));
   assert.equal(created.status, 201);
+  assert.equal(created.body.event.actor, CI_CLIENT_ID, "the verified identity is recorded; a self-declared actor is ignored");
   assert.equal(created.body.event.payload.api_token, "[redacted]");
   assert.equal(created.body.advisory.status, "ok");
   assert.equal(created.body.advisory.data.category, "deployment");
 
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "Bad Type", actor: "a", subject: "s", outcome: "o" }))).status, 400);
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "x", actor: "a", subject: "s", outcome: "o", payload: [1] }))).status, 400);
-  assert.equal((await call(audit, env, new Request("https://x.example.workers.dev/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "cf-access-jwt-assertion": CI_JWT, "content-type": "text/plain" }, body: "{}" }))).status, 415);
-  assert.equal((await call(audit, env, new Request("https://x.example.workers.dev/v1/events", { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" }, body: "{" }))).status, 400);
+  assert.equal((await call(audit, env, new Request("https://x.example.workers.dev/v1/events", { method: "POST", headers: { "cf-access-jwt-assertion": CI_JWT, "content-type": "text/plain" }, body: "{}" }))).status, 415);
+  assert.equal((await call(audit, env, new Request("https://x.example.workers.dev/v1/events", { method: "POST", headers: { "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" }, body: "{" }))).status, 400);
   assert.equal((await call(audit, env, req("POST", "/v1/events", { event_type: "x", actor: "a", subject: "s", outcome: "o", payload: { big: "x".repeat(40000) } }))).status, 413);
 
   const list = await call(audit, env, req("GET", "/v1/events?subject=cryptophys-platform-api"));
@@ -183,7 +180,9 @@ test("registry exposes the seeded inventory and enforces ownership metadata", as
   assert.equal(updated.body.service.status, "disabled");
   assert.equal((await call(registry, env, req("PUT", "/v1/services/Bad_ID", base))).status, 400);
 
-  const dv = await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "github-actions" }));
+  const dv = await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "spoofed" }, OPERATOR_JWT));
+  const dvEvent = db.raw.prepare("SELECT actor FROM audit_events WHERE event_type = 'registry.desired_version_set' ORDER BY rowid DESC LIMIT 1").get() as { actor: string };
+  assert.equal(dvEvent.actor, OPERATOR_EMAIL, "operator email recorded in lower case");
   assert.equal(dv.body.service.desired_version, "823108ad3da4");
   assert.equal((await call(registry, env, req("PUT", "/v1/services/unknown-svc/desired-version", { desired_version: "823108ad3da4", actor: "a" }))).status, 404);
   assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "main", actor: "a" }))).status, 400);
@@ -234,7 +233,7 @@ test("policy engine allows only fully compliant deployments and records every de
 test("recovery plans need a different approver and a policy allow before execution", async () => {
   const db = migratedDb();
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
-  const env = { ...baseEnv("cryptophys-recovery-manager", db), APPROVER_TOKEN: APPROVER, POLICY: {
+  const env = { ...baseEnv("cryptophys-recovery-manager", db), APPROVER_IDENTITIES: `${OPERATOR_EMAIL},${APPROVER_EMAIL}`, POLICY: {
     // RPC binding (PolicyRpc.evaluate): same validation and persistence as production.
     evaluate: async (input: Record<string, unknown>) => {
       const parsed = parsePolicyRequest(input);
@@ -242,32 +241,45 @@ test("recovery plans need a different approver and a policy allow before executi
       return decide(policyEnv as never, parsed);
     },
   } };
-  assert.equal((await call(recovery, env, req("GET", "/ready", undefined, null))).body.status, "ready");
-  assert.equal((await call(recovery, { ...env, APPROVER_TOKEN: undefined }, req("GET", "/ready"))).status, 503);
+  assert.equal((await call(recovery, env, req("GET", "/ready"))).body.status, "ready");
+  const noApprovers = await call(recovery, { ...env, APPROVER_IDENTITIES: undefined }, req("GET", "/ready"));
+  assert.deepEqual([noApprovers.status, noApprovers.body.checks.approver_identities_configured], [503, false]);
 
   const plan = { service_id: "cryptophys-platform-api", plan_version: "1", title: "Roll back Platform API", rationale: "Bad release",
-    created_by: "alice", steps: [{ action: "rollback_worker_version", description: "Roll back to the previous version" }] };
+    created_by: "spoofed", steps: [{ action: "rollback_worker_version", description: "Roll back to the previous version" }] };
   assert.equal((await call(recovery, env, req("POST", "/v1/plans", { ...plan, steps: [{ action: "rm -rf", description: "x" }] }))).status, 400);
   assert.equal((await call(recovery, env, req("POST", "/v1/plans", { ...plan, service_id: "ghost-svc" }))).status, 404);
-  const created = await call(recovery, env, req("POST", "/v1/plans", plan));
+  // The operator who is also an approver authors the plan.
+  const created = await call(recovery, env, req("POST", "/v1/plans", plan, OPERATOR_JWT));
   assert.equal(created.status, 201);
+  assert.equal(created.body.plan.created_by, OPERATOR_EMAIL, "author is the verified identity");
   const id = created.body.plan.plan_id;
 
-  const start = { executed_by: "carol", phase: "start", operator_acknowledged: true };
+  const start = { phase: "start", operator_acknowledged: true };
   assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/executions`, start))).status, 403, "draft plan cannot execute");
-  assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, { approved_by: "bob" }, ADMIN))).status, 401, "admin token cannot approve");
-  assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, { approved_by: "alice" }, APPROVER))).status, 403, "author cannot approve");
-  const approved = await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, { approved_by: "bob" }, APPROVER));
+  const byCi = await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, {}));
+  assert.deepEqual([byCi.status, byCi.body.error], [403, "forbidden"], "an operator who is not an approver cannot approve");
+  assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, {}, OUTSIDER_JWT))).status, 403);
+  assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, {}, null))).status, 403);
+  const unset = await call(recovery, { ...env, APPROVER_IDENTITIES: "" }, req("POST", `/v1/plans/${id}/approve`, {}, APPROVER_JWT));
+  assert.deepEqual([unset.status, unset.body.error], [503, "approver_identities_not_configured"]);
+  const self = await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, { approved_by: "someone-else" }, OPERATOR_JWT));
+  assert.deepEqual([self.status, self.body.error], [403, "separation_of_duties"], "the author cannot approve, whatever the body claims");
+  assert.equal((await call(recovery, env, req("POST", "/v1/plans/plan_00000000-0000-0000-0000-000000000000/approve", {}, APPROVER_JWT))).status, 404);
+  assert.equal((await call(recovery, env, req("POST", "/v1/plans", plan, APPROVER_JWT))).status, 403, "approvers are not operators");
+  const approved = await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
-  assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, { approved_by: "bob" }, APPROVER))).status, 409);
+  assert.equal(approved.body.plan.approved_by, APPROVER_EMAIL);
+  assert.equal((await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, {}, APPROVER_JWT))).status, 409);
 
   const noAck = await call(recovery, env, req("POST", `/v1/plans/${id}/executions`, { ...start, operator_acknowledged: false }));
   assert.equal(noAck.status, 403);
   assert.match(noAck.body.detail, /operator_acknowledged/);
   const started = await call(recovery, env, req("POST", `/v1/plans/${id}/executions`, start));
   assert.equal(started.body.plan.status, "executing");
+  assert.equal(started.body.plan.last_execution.executed_by, CI_CLIENT_ID);
   assert.ok(started.body.plan.last_execution.policy_decision_id.startsWith("dec_"));
-  const finished = await call(recovery, env, req("POST", `/v1/plans/${id}/executions`, { executed_by: "carol", phase: "finish", outcome: "completed" }));
+  const finished = await call(recovery, env, req("POST", `/v1/plans/${id}/executions`, { phase: "finish", outcome: "completed" }));
   assert.equal(finished.body.plan.status, "completed");
 
   const trail = db.raw.prepare("SELECT event_type FROM audit_events WHERE subject = ? AND event_type LIKE 'recovery.%' ORDER BY rowid").all(id).map((r: any) => r.event_type);
@@ -291,7 +303,7 @@ test("drift detector compares registry desired versions with live versions over 
     SVC_AUDIT_LEDGER: healthy(null),
     SVC_RECOVERY_MANAGER: healthy("aaaaaaaaaaaa"),
   };
-  assert.equal((await call(drift, env, req("GET", "/ready", undefined, null))).body.status, "ready");
+  assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
   assert.equal((await call(drift, { ...env, SVC_POLICY_ENGINE: undefined }, req("GET", "/ready"))).status, 503);
   db.raw.exec("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id <> 'cryptophys-recovery-manager'");
 

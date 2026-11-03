@@ -168,7 +168,7 @@ test("a CI lookup the token may not read fails closed and names the missing perm
 test("trusted main request workflow is excluded from its own CI gate", async () => {
   github.runs = [
     { workflow_id: 1, name: "Validate", path: ".github/workflows/validate.yml", status: "completed", conclusion: "success", run_number: 7 },
-    { workflow_id: 405003375, name: "Request Platform API Deployment", path: ".github/workflows/request-platform-api-deployment.yml", status: "in_progress", conclusion: null, run_number: 5 },
+    { workflow_id: 405003375, name: "Request Platform API Deployment", path: ".github/workflows/request-platform-api-deployment.yml@refs/heads/main", status: "in_progress", conclusion: null, run_number: 5 },
   ];
   const res = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
   assert.equal(res.status, 202, "the trusted request workflow must not self-block the deployment gate");
