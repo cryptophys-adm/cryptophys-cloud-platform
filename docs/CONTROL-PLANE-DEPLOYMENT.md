@@ -21,6 +21,7 @@ Add two Environment secrets, each a distinct random value of at least 32 charact
 
 - `CONTROL_PLANE_ADMIN_TOKEN` — operator credential for every control-plane `/v1` endpoint.
 - `CONTROL_PLANE_APPROVER_TOKEN` — held only by recovery-plan approvers.
+- `ORCHESTRATOR_SHARED_SECRET` — bearer secret for `POST /v1/deployments` on the Orchestrator. GitHub is its source of truth: Deploy Production Deployment Orchestrator uploads it to the Worker on every deploy, and Request Platform API Deployment sends it. To rotate, change the GitHub secret and redeploy the Orchestrator.
 
 `CLOUDFLARE_API_TOKEN` must allow **Workers Scripts: Edit** on the approved account. D1 operations (database lookup, Time Travel bookmark, migrations) use `CLOUDFLARE_ACCESS_API_TOKEN`, which therefore also needs **Account → D1 → Edit** (owner decision, 2026-11-03). Workers AI needs no extra token permission.
 
