@@ -151,3 +151,35 @@ export function identityAllowed(identity: AccessIdentity, allowList: string | un
     ? entry.toLowerCase() === identity.subject.toLowerCase()
     : entry === identity.subject);
 }
+
+/** The audit/actor name of a verified identity: emails normalized to lower case, Client IDs verbatim. */
+export function actorOf(identity: AccessIdentity): string {
+  return identity.type === "user" ? identity.subject.toLowerCase() : identity.subject;
+}
+
+export type Authorization = { ok: true; identity: AccessIdentity; actor: string } | { ok: false; response: Response };
+
+/**
+ * Authenticate the Access JWT and require the identity to be in `allowList`. There is
+ * no shared bearer token: the verified identity is both the credential and the actor
+ * recorded in the audit chain. An unset list fails closed with 503.
+ */
+export async function authorize(request: Request, env: AccessEnv, allowList: string | undefined, listName: string): Promise<Authorization> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return auth;
+  if (!listConfigured(allowList)) return { ok: false, response: denied(503, `${listName.toLowerCase()}_not_configured`) };
+  if (!identityAllowed(auth.identity, allowList)) {
+    console.warn(JSON.stringify({ event: "identity_not_authorized", list: listName, type: auth.identity.type }));
+    return { ok: false, response: denied(403, "forbidden") };
+  }
+  return { ok: true, identity: auth.identity, actor: actorOf(auth.identity) };
+}
+
+export function listConfigured(allowList: string | undefined): boolean {
+  return (allowList ?? "").split(",").some((v) => v.trim().length > 0);
+}
+
+/** Operators of the control-plane /v1 APIs: the CI service token's Client ID plus operator emails. */
+export function requireOperator(request: Request, env: AccessEnv & { OPERATOR_IDENTITIES?: string }): Promise<Authorization> {
+  return authorize(request, env, env.OPERATOR_IDENTITIES, "OPERATOR_IDENTITIES");
+}

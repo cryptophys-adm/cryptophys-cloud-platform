@@ -55,11 +55,11 @@ jobs:
         working-directory: workers/platform-api
     steps:
       - name: Checkout validated commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.commit_sha }}
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
       - name: Install dependencies
@@ -104,3 +104,12 @@ jobs:
             --health-filter '.status == "ok" and .service == "cryptophys-cloud-platform" and .environment == "production" and .contract_version == "v1"' \
             --ready-filter '.status == "ready" and .service == "cryptophys-cloud-platform" and (.dependencies | length == 0)'
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+      - name: Record the desired version in the Platform Registry (drift baseline)
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/record-desired-version.sh" cryptophys-platform-api "$COMMIT_SHA"'

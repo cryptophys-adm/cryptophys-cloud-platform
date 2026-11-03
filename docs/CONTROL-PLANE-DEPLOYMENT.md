@@ -13,15 +13,20 @@ Deploys `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-
    - variable `ACCESS_ALLOWED_EMAILS` (comma-separated operator emails).
 4. Run **Actions → Provision Cloudflare Access** on `main` with `PROVISION`. It creates/updates the application `cryptophys-cloud-platform`, then proves that each Worker rejects unauthenticated requests and admits the service token. Re-run it after adding a Worker or changing operators.
 
-Operators open the Worker URLs in a browser and sign in through Access. Scripts send `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers, in addition to the `/v1` bearer token.
+Operators open the Worker URLs in a browser and sign in through Access. Scripts send `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers. That Access identity is the only credential: there is no bearer token.
 
-### Control-plane secrets (GitHub → Settings → Environments → `production`)
+### Authorization by Access identity (no shared tokens)
 
-Add two Environment secrets, each a distinct random value of at least 32 characters (for example `openssl rand -hex 32`, generated on your own machine):
+Every `/v1` call is authorized by the caller's verified Cloudflare Access identity, and that identity is the actor recorded in the audit chain (a self-declared `actor`, `created_by`, `approved_by` or `executed_by` in a request body is ignored). The deploy workflows derive the lists from existing configuration with `.github/scripts/access-identities.sh`:
 
-- `CONTROL_PLANE_ADMIN_TOKEN` — operator credential for every control-plane `/v1` endpoint.
-- `CONTROL_PLANE_APPROVER_TOKEN` — held only by recovery-plan approvers.
-- No Orchestrator secret is needed: `POST /v1/deployments` is authorized by the caller's verified Cloudflare Access identity (the CI service token, or an email in `ACCESS_ALLOWED_EMAILS`). The former `ORCHESTRATOR_SHARED_SECRET` is removed from the Worker by the Orchestrator deploy workflow and can be deleted from GitHub.
+| List | Members | Grants |
+| --- | --- | --- |
+| `OPERATOR_IDENTITIES` (all five services; `DEPLOY_ALLOWED_IDENTITIES` on the Orchestrator) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint; `POST /v1/deployments` |
+| `APPROVER_IDENTITIES` (Recovery Manager) | `ACCESS_ALLOWED_EMAILS` | `POST /v1/plans/{id}/approve` only, never for a plan the same identity authored |
+
+Emails are compared and recorded in lower case; Client IDs exactly. An unset list fails closed (`503 …_not_configured`); an identity outside a list gets `403 forbidden`. Automation can operate but can never approve a recovery plan.
+
+The retired secrets are removed from the Workers by the deploy workflows (`ADMIN_TOKEN`, `APPROVER_TOKEN`, `ORCHESTRATOR_SHARED_SECRET`); the GitHub secrets `CONTROL_PLANE_ADMIN_TOKEN`, `CONTROL_PLANE_APPROVER_TOKEN` and `ORCHESTRATOR_SHARED_SECRET` are unused and can be deleted.
 
 `CLOUDFLARE_API_TOKEN` must allow **Workers Scripts: Edit** on the approved account. D1 operations (database lookup, Time Travel bookmark, migrations) use `CLOUDFLARE_ACCESS_API_TOKEN`, which therefore also needs **Account → D1 → Edit** (owner decision, 2026-11-03). Workers AI needs no extra token permission.
 
@@ -37,12 +42,12 @@ Order for a fresh commit (after Access is provisioned once): **Deploy Control Pl
 The job then, failing closed at every step:
 
 1. type-checks, runs the endpoint tests and the migration tests;
-2. verifies credentials and that both control-plane secrets exist and differ;
+2. verifies credentials and builds the operator and approver identity lists;
 3. resolves the D1 database ID by exact name (never committed) and renders runner-only configs;
 4. records a D1 Time Travel bookmark (shown in the job summary) as the restore point;
 5. applies pending D1 migrations;
-6. deploys each Worker in dependency order with `--tag <sha12>` and its secrets uploaded atomically, then verifies the active version is that commit and `/health` + `/ready` pass over workers.dev;
-7. records `desired_version` in the registry, runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI.
+6. removes the retired shared tokens, deploys each Worker in dependency order with `--tag <sha12>` and its identity lists, proves no retired token is bound, then verifies the active version is that commit and `/health` + `/ready` pass over workers.dev;
+7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all seven Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI.
 
 ## Rollback
 
@@ -53,11 +58,10 @@ The job then, failing closed at every step:
 
 ```bash
 curl -s -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" "https://cryptophys-audit-ledger.<subdomain>.workers.dev/v1/verify"
+  "https://cryptophys-audit-ledger.<subdomain>.workers.dev/v1/verify"
 ```
 
 ```bash
 curl -s -X POST -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"actor":"operator"}' "https://cryptophys-drift-detector.<subdomain>.workers.dev/v1/observe"
+  "https://cryptophys-drift-detector.<subdomain>.workers.dev/v1/observe"
 ```

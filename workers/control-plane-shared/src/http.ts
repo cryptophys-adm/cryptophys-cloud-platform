@@ -43,31 +43,13 @@ export async function readJsonObject(request: Request, maxBytes = MAX_BODY_BYTES
   return { ok: true, value: value as JsonObject };
 }
 
-/** Constant-time comparison of a presented bearer token with the configured secret. */
-export function bearerMatches(request: Request, secret: string | undefined): boolean {
-  const supplied = request.headers.get("authorization") ?? "";
-  if (!secret || !supplied.startsWith("Bearer ")) return false;
-  const a = new TextEncoder().encode(supplied.slice(7));
-  const b = new TextEncoder().encode(secret);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
-}
-
-/** Returns an error Response when the request is not authorized as an administrator, otherwise null. */
-export function requireAdmin(request: Request, env: BaseEnv): Response | null {
-  if (!env.ADMIN_TOKEN) return errorResponse(503, "not_configured", "ADMIN_TOKEN secret is not configured");
-  if (!bearerMatches(request, env.ADMIN_TOKEN)) return errorResponse(401, "unauthorized");
-  return null;
-}
-
 export const nowIso = (): string => new Date().toISOString();
 export const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID()}`;
 
 export const SERVICE_ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
 export const COMMIT_SHA = /^[0-9a-f]{40}$/;
 export const VERSION_TAG = /^[0-9a-f]{7,40}$/;
-export const ACTOR = /^[A-Za-z0-9._@:-]{1,128}$/;
+export const ACTOR = /^[A-Za-z0-9._@:+-]{1,128}$/;
 
 export function stringField(body: JsonObject, key: string, max: number, required = true): string | undefined | Error {
   const value = body[key];
@@ -108,7 +90,7 @@ export function serviceMetadata(env: BaseEnv, capability: string, endpoints: str
     contract_version: env.API_CONTRACT_VERSION,
     capability,
     status: "operational",
-    authentication: "Authorization: Bearer <ADMIN_TOKEN> required for every /v1 endpoint",
+    authentication: "Cloudflare Access identity listed in OPERATOR_IDENTITIES required for every /v1 endpoint; the identity is the recorded actor",
     endpoints,
   });
 }

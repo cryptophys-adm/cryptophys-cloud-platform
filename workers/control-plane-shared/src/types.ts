@@ -60,6 +60,7 @@ export interface BaseEnv {
   AI_MODEL?: string;
   AI_DAILY_REQUEST_LIMIT?: string;
   AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string;
-  ADMIN_TOKEN?: string;
+  /** Comma-separated Access identities (service-token Client IDs, emails) allowed to call /v1. */
+  OPERATOR_IDENTITIES?: string;
   CF_VERSION_METADATA?: VersionMetadata;
 }

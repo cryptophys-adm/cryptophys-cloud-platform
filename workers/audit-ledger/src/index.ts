@@ -1,11 +1,11 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import {
-  ACTOR, errorResponse, healthResponse, json, limitParam, newId, readJsonObject, requireAdmin, serviceMetadata, stringField,
+  errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata, stringField,
 } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent, verifyAuditChain, type AuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate } from "../../control-plane-shared/src/access.ts";
+import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 
 export type Env = BaseEnv;
 
@@ -40,23 +40,22 @@ function present(row: AuditEvent): Record<string, unknown> {
   return { ...row, payload_json: undefined, payload };
 }
 
-async function appendEvent(request: Request, env: Env, url: URL): Promise<Response> {
+async function appendEvent(request: Request, env: Env, url: URL, actor: string): Promise<Response> {
   const body = await readJsonObject(request);
   if (!body.ok) return body.response;
   const b = body.value;
   const eventType = stringField(b, "event_type", 64);
-  const actor = stringField(b, "actor", 128);
+  // The actor is the verified Access identity; any "actor" in the body is ignored.
   const subject = stringField(b, "subject", 200);
   const outcome = stringField(b, "outcome", 64);
-  for (const v of [eventType, actor, subject, outcome]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
+  for (const v of [eventType, subject, outcome]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
   if (!EVENT_TYPE.test(eventType as string)) return errorResponse(400, "invalid_request", "event_type must match ^[a-z0-9][a-z0-9_.-]{0,63}$");
-  if (!ACTOR.test(actor as string)) return errorResponse(400, "invalid_request", "actor contains unsupported characters");
   if (b.payload !== undefined && (typeof b.payload !== "object" || b.payload === null || Array.isArray(b.payload))) {
     return errorResponse(400, "invalid_request", "payload must be a JSON object");
   }
   const event = await appendAuditEvent(env.DB, {
     event_type: eventType as string,
-    actor: actor as string,
+    actor,
     subject: subject as string,
     outcome: outcome as string,
     payload: b.payload ?? {},
@@ -104,10 +103,10 @@ export default {
       }
     }
     if (!path.startsWith("/v1/")) return errorResponse(404, "not_found");
-    const denied = requireAdmin(request, env);
-    if (denied) return denied;
+    const operator = await requireOperator(request, env);
+    if (!operator.ok) return operator.response;
     try {
-      if (path === "/v1/events" && request.method === "POST") return await appendEvent(request, env, url);
+      if (path === "/v1/events" && request.method === "POST") return await appendEvent(request, env, url, operator.actor);
       if (path === "/v1/events" && request.method === "GET") return await listEvents(env, url);
       if (path === "/v1/verify" && request.method === "GET") return json(await verifyAuditChain(env.DB));
       const match = /^\/v1\/events\/(evt_[0-9a-f-]{36})$/.exec(path);

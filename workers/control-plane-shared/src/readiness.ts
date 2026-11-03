@@ -1,6 +1,6 @@
 import type { BaseEnv } from "./types.ts";
 import { json } from "./http.ts";
-import { accessConfigured } from "./access.ts";
+import { accessConfigured, listConfigured } from "./access.ts";
 
 /** The newest schema migration every service requires before it reports ready. */
 export const REQUIRED_MIGRATION = "0003_control_plane_services.sql";
@@ -25,7 +25,7 @@ export async function readinessResponse(env: BaseEnv, extra: Checks = {}): Promi
   const checks: Checks = {
     production_environment: env.SERVICE_ENVIRONMENT === "production",
     database_schema: await schemaReady(env),
-    admin_token_configured: Boolean(env.ADMIN_TOKEN),
+    operator_identities_configured: listConfigured(env.OPERATOR_IDENTITIES),
     ai_binding: Boolean(env.AI),
     access_configured: accessConfigured(env),
     ...extra,
