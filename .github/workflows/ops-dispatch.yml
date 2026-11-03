@@ -9,8 +9,9 @@ name: Ops Dispatch
 # - Dispatches only allow-listed workflows with allow-listed inputs. Deploy
 #   workflows always run on main and keep every gate (production Environment,
 #   DEPLOY confirmation, SHA must equal main, CI and Access checks).
-# - The Platform API is deployed only through the Orchestrator request workflow,
-#   which runs from this branch so it is not an in-progress check on main.
+# - The Platform API request workflow runs from main, never from this unprotected
+#   operator branch. Its own in-progress run is excluded by exact workflow path
+#   from the Orchestrator's CI gate.
 # - Waits for the dispatched run and mirrors its result.
 #
 # Request file format (ops/requests/<UTC timestamp>-<name>.json):
@@ -45,7 +46,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          OPERATOR_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mapfile -t files < <(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'ops/requests/*.json')
