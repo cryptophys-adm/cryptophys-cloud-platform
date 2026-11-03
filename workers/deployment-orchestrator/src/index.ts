@@ -99,12 +99,19 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
 }
 
 type CommitStatus = { state?: string; total_count?: number };
-type WorkflowRun = { workflow_id: number; name: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type WorkflowRun = { workflow_id: number; name: string; path?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
 
-/** Latest run of each workflow: a superseded failed run does not block a later successful one. */
+const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
+
+/**
+ * Latest run of each validation/deployment workflow. The request workflow is
+ * excluded because it runs from trusted main and is necessarily in progress
+ * while it asks this gate to evaluate the same commit.
+ */
 export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
   const latest = new Map<number, WorkflowRun>();
   for (const run of runs) {
+    if (run.path === REQUEST_WORKFLOW_PATH) continue;
     const seen = latest.get(run.workflow_id);
     if (!seen || run.run_number > seen.run_number || (run.run_number === seen.run_number && (run.run_attempt ?? 1) > (seen.run_attempt ?? 1))) {
       latest.set(run.workflow_id, run);
