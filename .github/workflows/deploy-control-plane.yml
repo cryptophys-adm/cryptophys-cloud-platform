@@ -175,8 +175,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${COMMIT_SHA:0:12}"
-          access_headers="$(mktemp)"; chmod 600 "$access_headers"; trap 'rm -f "$access_headers"' EXIT
-          printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$access_headers"
+          access_headers="$(mktemp)"; trap 'rm -f "$access_headers"' EXIT
+          "$GITHUB_WORKSPACE/.github/scripts/access-headers.sh" "$access_headers"
           subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
             --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
