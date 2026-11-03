@@ -16,7 +16,7 @@ Git is the source of truth for platform design and code. This repository contain
 
 ## Implemented and deployed to production
 
-- Seven Workers, each deployed by its own manually dispatched workflow from an exact `main` commit and verified live:
+- Seven Workers are deployed from exact `main` commits through three manually dispatched production workflows (Platform API, Deployment Orchestrator, and the five-service Control Plane deployment); each deployed Worker is verified live:
   - `cryptophys-platform-api`: health and readiness API.
   - `cryptophys-deployment-orchestrator`: CI-gated, locked (Durable Object) and audited Platform API deployments.
   - `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-drift-detector`: the control plane (ADR-0004).
@@ -24,7 +24,7 @@ Git is the source of truth for platform design and code. This repository contain
 - A hash-chained, append-only audit ledger.
 - Drift detection of every Worker's version and health over RPC service bindings, every 15 minutes.
 - Cloudflare Access in front of every Worker, with the JWT verified inside each Worker. Authorization is by verified identity: operators and recovery approvers are allow-lists of Access identities, and there are no shared bearer tokens.
-- An advisory Workers AI engine per service, with daily budgets. AI never makes authoritative decisions.
+- Each of the six control-plane Workers (Deployment Orchestrator plus five control-plane services) has its own advisory Workers AI binding and daily budget; the Platform API has no AI binding. AI never makes authoritative decisions.
 - Validation CI, SHA-pinned actions and Dependabot.
 
 ## Not yet provisioned or implemented
