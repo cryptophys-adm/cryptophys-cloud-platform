@@ -5,9 +5,11 @@ name: Request Platform API Deployment
 # may be deployed (current main, commit statuses and the latest run of every GitHub Actions workflow green,
 # deployment lock) and then dispatches deploy-platform-api.yml on main.
 #
-# Dispatch this workflow from a dedicated request ref, never from main: a run on
-# main is itself an in-progress check on the main commit, so the Orchestrator
-# would correctly refuse the request as ci_not_green.
+# Dispatch this workflow from main only. The Orchestrator excludes this exact
+# request workflow path from its CI gate because the caller is necessarily
+# in_progress while it asks the Orchestrator to evaluate all other workflows.
+# The workflow and scripts therefore always come from the trusted main commit,
+# never from the unprotected operator branch.
 
 on:
   workflow_dispatch:
@@ -37,9 +39,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Checkout request ref (scripts only; deployment code comes from main)
+      - name: Checkout exact trusted main commit (scripts only; deployment code comes from main)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ inputs.commit_sha }}
           persist-credentials: false
 
       - name: Validate request inputs
@@ -55,10 +58,8 @@ jobs:
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Full lowercase commit SHA required"; exit 1; }
           [[ "$ORCHESTRATOR_URL" =~ ^https://cryptophys-deployment-orchestrator\.[a-z0-9]([a-z0-9-]*[a-z0-9])?\.workers\.dev$ ]] \
             || { echo "::error::orchestrator_url must be the Orchestrator workers.dev origin"; exit 1; }
-          if [[ "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_SHA" == "$COMMIT_SHA" ]]; then
-            echo "::error::Run this from a request ref, not main: this run would be an in-progress check on ${COMMIT_SHA}."
-            exit 1
-          fi
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Request workflow must run from main."; exit 1; }
+          [[ "$GITHUB_SHA" == "$COMMIT_SHA" ]] || { echo "::error::Request workflow commit must equal the requested main SHA."; exit 1; }
           main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           [[ "$main_sha" == "$COMMIT_SHA" ]] || { echo "::error::Requested ${COMMIT_SHA} but main is ${main_sha}"; exit 1; }
           echo "Requested commit is current main: ${COMMIT_SHA}"
