@@ -9,8 +9,9 @@ name: Ops Dispatch
 # - Dispatches only allow-listed workflows with allow-listed inputs. Deploy
 #   workflows always run on main and keep every gate (production Environment,
 #   DEPLOY confirmation, SHA must equal main, CI and Access checks).
-# - The Platform API is deployed only through the Orchestrator request workflow,
-#   which runs from this branch so it is not an in-progress check on main.
+# - The Platform API request workflow also runs on main. Its trusted definition and
+#   scripts must never be loaded from this unprotected operator branch; the
+#   Orchestrator excludes that request workflow from its own CI gate.
 # - Waits for the dispatched run and mirrors its result.
 #
 # Request file format (ops/requests/<UTC timestamp>-<name>.json):
@@ -45,7 +46,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          OPERATOR_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mapfile -t files < <(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'ops/requests/*.json')
@@ -58,7 +58,7 @@ jobs:
           workflow="$(jq -r .workflow "$request")"
           case "$workflow" in
             provision-access.yml|deploy-control-plane.yml|deploy-deployment-orchestrator.yml) ref=main ;;
-            request-platform-api-deployment.yml) ref="$OPERATOR_REF" ;;
+            request-platform-api-deployment.yml) ref=main ;;
             *) echo "::error::Workflow ${workflow} is not allow-listed"; exit 1 ;;
           esac
 
