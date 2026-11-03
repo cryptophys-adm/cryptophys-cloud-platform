@@ -26,7 +26,7 @@ function lockNamespace() {
 
 interface GithubState {
   mainSha: string;
-  runs: { workflow_id: number; name: string; path?: string; status: string; conclusion: string | null; run_number: number }[];
+  runs: { workflow_id: number; name: string; path?: string; event?: string; status: string; conclusion: string | null; run_number: number }[];
   dispatchStatus: number;
   dispatched: unknown[];
   actionsForbidden?: boolean;
@@ -163,6 +163,21 @@ test("a CI lookup the token may not read fails closed and names the missing perm
   assert.equal(res.body.lookups.commit_status.http_status, 200);
   assert.equal(github.dispatched.length, 0);
   assert.doesNotMatch(JSON.stringify(res.body), /gh-token/);
+});
+
+test("scheduled monitoring runs neither block nor satisfy the CI gate", async () => {
+  github.runs = [
+    { workflow_id: 1, name: "Validate", path: ".github/workflows/validate.yml", event: "push", status: "completed", conclusion: "success", run_number: 8 },
+    { workflow_id: 77, name: "Drift Alert", path: ".github/workflows/drift-alert.yml", event: "schedule", status: "completed", conclusion: "failure", run_number: 3 },
+    { workflow_id: 77, name: "Drift Alert", path: ".github/workflows/drift-alert.yml", event: "schedule", status: "in_progress", conclusion: null, run_number: 4 },
+  ];
+  const ok = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
+  assert.equal(ok.status, 202, "a scheduled run on main must not block a deployment");
+  const dispatchedBefore = github.dispatched.length;
+  github.runs = [{ workflow_id: 77, name: "Drift Alert", path: ".github/workflows/drift-alert.yml", event: "schedule", status: "completed", conclusion: "success", run_number: 5 }];
+  const onlyScheduled = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
+  assert.deepEqual([onlyScheduled.status, onlyScheduled.body.error], [409, "ci_not_green"], "a scheduled run alone is not CI evidence");
+  assert.equal(github.dispatched.length, dispatchedBefore);
 });
 
 test("trusted main request workflow is excluded from its own CI gate", async () => {

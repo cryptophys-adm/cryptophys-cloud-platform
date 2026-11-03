@@ -19,6 +19,7 @@
 
 - Audit integrity: `GET /v1/verify` on the Audit Ledger must return `"valid": true`.
 - Drift: the Drift Detector runs every 15 minutes; `GET /v1/drift` shows the latest observation per Worker. A Worker is `degraded` when its live version tag differs from the registry `desired_version`, and `unavailable` when its health check fails.
+- Drift alerting: `.github/workflows/drift-alert.yml` reads `/v1/drift` every 30 minutes and keeps one issue, "Drift detected in production", open while any Worker is drifted, unhealthy, unobserved or has no observation for 45 minutes; it closes the issue when everything is back in sync.
 - Readiness of every control-plane Worker lists the individual checks that failed.
 
 ## Recovery posture

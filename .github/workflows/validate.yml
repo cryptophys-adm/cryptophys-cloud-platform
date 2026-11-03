@@ -64,3 +64,4 @@ jobs:
           bash .github/scripts/find-service-token.test.sh
           bash .github/scripts/access-headers.test.sh
           bash .github/scripts/access-identities.test.sh
+          bash .github/scripts/drift-summary.test.sh
