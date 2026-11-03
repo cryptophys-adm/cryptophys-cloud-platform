@@ -5,7 +5,7 @@ name: Ops Dispatch
 # workflow_dispatch API directly. Authorized by the repository owner (2026-11-03).
 #
 # - Runs only for pushes to the operator branch that add exactly one file under
-#   ops/requests/. Each request is therefore a reviewed-by-history Git commit.
+#   ops/requests/. Each request is therefore an auditable Git commit.
 # - Dispatches only allow-listed workflows with allow-listed inputs. Deploy
 #   workflows always run on main and keep every gate (production Environment,
 #   DEPLOY confirmation, SHA must equal main, CI and Access checks).
