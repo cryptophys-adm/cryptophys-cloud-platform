@@ -1,12 +1,12 @@
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
 import {
   ACTOR, COMMIT_SHA, SERVICE_ID, errorResponse, healthResponse, json, limitParam, newId, nowIso, readJsonObject, redact,
-  requireAdmin, serviceMetadata, stringField, type JsonObject,
+  serviceMetadata, stringField, type JsonObject,
 } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate } from "../../control-plane-shared/src/access.ts";
+import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 
 export type Env = BaseEnv;
 
@@ -104,10 +104,11 @@ export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecisi
   return { decision_id: decisionId, action: req.action, resource: req.resource, ...result };
 }
 
-async function evaluate(request: Request, env: Env, url: URL): Promise<Response> {
+async function evaluate(request: Request, env: Env, url: URL, actor: string): Promise<Response> {
   const body = await readJsonObject(request);
   if (!body.ok) return body.response;
-  const parsed = parsePolicyRequest(body.value);
+  // Over HTTP the subject is the verified Access identity, never a self-declared name.
+  const parsed = parsePolicyRequest({ ...body.value, subject: actor });
   if (parsed instanceof Error) return errorResponse(400, "invalid_request", parsed.message);
   const decision = await decide(env, parsed);
   const response: JsonObject = { ...decision };
@@ -134,10 +135,10 @@ export default {
       }
     }
     if (!path.startsWith("/v1/")) return errorResponse(404, "not_found");
-    const denied = requireAdmin(request, env);
-    if (denied) return denied;
+    const operator = await requireOperator(request, env);
+    if (!operator.ok) return operator.response;
     try {
-      if (path === "/v1/evaluate") return request.method === "POST" ? await evaluate(request, env, url) : errorResponse(405, "method_not_allowed");
+      if (path === "/v1/evaluate") return request.method === "POST" ? await evaluate(request, env, url, operator.actor) : errorResponse(405, "method_not_allowed");
       if (path === "/v1/decisions" && request.method === "GET") {
         const filters: string[] = [];
         const params: unknown[] = [];

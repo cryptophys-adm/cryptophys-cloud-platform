@@ -1,12 +1,12 @@
 import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import {
-  errorResponse, healthResponse, json, newId, nowIso, readJsonObject, requireAdmin, serviceMetadata, ACTOR, stringField,
+  errorResponse, healthResponse, json, newId, nowIso, serviceMetadata,
   type JsonObject,
 } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent, canonicalJson, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate } from "../../control-plane-shared/src/access.ts";
+import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 
 /** RPC surface every platform Worker exports as `HealthRpc` (src/worker.ts). Not reachable over HTTP. */
 export interface HealthRpcBinding {
@@ -161,15 +161,12 @@ export default {
       }
     }
     if (!path.startsWith("/v1/")) return errorResponse(404, "not_found");
-    const denied = requireAdmin(request, env);
-    if (denied) return denied;
+    const operator = await requireOperator(request, env);
+    if (!operator.ok) return operator.response;
     try {
       if (path === "/v1/observe" && request.method === "POST") {
-        const body = await readJsonObject(request);
-        if (!body.ok) return body.response;
-        const actor = stringField(body.value, "actor", 128);
-        if (actor instanceof Error || !ACTOR.test(actor as string)) return errorResponse(400, "invalid_request", "actor is required");
-        const report = await observe(env, "manual", actor as string);
+        // The actor is the verified Access identity; the request body is not needed.
+        const report = await observe(env, "manual", operator.actor);
         const response: JsonObject = { ...report };
         if (url.searchParams.get("advisory") === "true") {
           response.advisory = await engineFor(env, SERVICE, [summaryTask.name]).run(summaryTask, report, report.run_id);

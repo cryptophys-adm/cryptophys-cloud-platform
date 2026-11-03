@@ -65,5 +65,5 @@ binding = "SVC_RECOVERY_MANAGER"
 service = "cryptophys-recovery-manager"
 entrypoint = "HealthRpc"
 
-# Secrets are provisioned by .github/workflows/deploy-control-plane.yml from GitHub
-# Environment secrets and are never stored in this file: ADMIN_TOKEN
+# No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
+# deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.

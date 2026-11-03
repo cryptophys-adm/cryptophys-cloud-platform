@@ -56,12 +56,12 @@ jobs:
         working-directory: workers/control-plane-shared
     steps:
       - name: Checkout exact commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.commit_sha }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
 
@@ -75,19 +75,19 @@ jobs:
           npm test
           python3 ../control-plane-migrations/test_migrations.py
 
-      - name: Verify credentials and required secrets without printing them
+      - name: Verify credentials and build the Access identity allow-lists
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
-          CONTROL_PLANE_APPROVER_TOKEN: ${{ secrets.CONTROL_PLANE_APPROVER_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_ALLOWED_EMAILS: ${{ vars.ACCESS_ALLOWED_EMAILS }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID missing"; exit 1; }
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN missing"; exit 1; }
-          (( ${#CONTROL_PLANE_ADMIN_TOKEN} >= 32 )) || { echo "::error::CONTROL_PLANE_ADMIN_TOKEN must be set in the production environment (>= 32 chars)"; exit 1; }
-          (( ${#CONTROL_PLANE_APPROVER_TOKEN} >= 32 )) || { echo "::error::CONTROL_PLANE_APPROVER_TOKEN must be set in the production environment (>= 32 chars)"; exit 1; }
-          [[ "$CONTROL_PLANE_ADMIN_TOKEN" != "$CONTROL_PLANE_APPROVER_TOKEN" ]] || { echo "::error::Admin and approver tokens must differ"; exit 1; }
+          # /v1 is authorized by Cloudflare Access identity (ADR-0004 decision 4): operators are the
+          # CI service token + operator emails; recovery approvers are the operator emails.
+          "$GITHUB_WORKSPACE/.github/scripts/access-identities.sh" "$GITHUB_ENV"
           npx wrangler whoami
 
       - name: Resolve the control-plane D1 database by exact name and render deploy configs
@@ -130,31 +130,28 @@ jobs:
           npx wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml
           npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml
 
-      - name: Deploy, provision secrets and verify each Worker live
+      - name: Deploy and verify each Worker live
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
-          CONTROL_PLANE_APPROVER_TOKEN: ${{ secrets.CONTROL_PLANE_APPROVER_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           tag="${COMMIT_SHA:0:12}"
-          secrets_file="$RUNNER_TEMP/control-plane-secrets.json"
-          trap 'rm -f "$secrets_file"' EXIT
           for dir in $DEPLOY_ORDER; do
             name="cryptophys-${dir}"
-            umask 077
-            if [[ "$dir" == "recovery-manager" ]]; then
-              jq -n --arg a "$CONTROL_PLANE_ADMIN_TOKEN" --arg b "$CONTROL_PLANE_APPROVER_TOKEN" '{ADMIN_TOKEN: $a, APPROVER_TOKEN: $b}' > "$secrets_file"
-            else
-              jq -n --arg a "$CONTROL_PLANE_ADMIN_TOKEN" '{ADMIN_TOKEN: $a}' > "$secrets_file"
-            fi
+            vars=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}")
+            [[ "$dir" == "recovery-manager" ]] && vars+=(--var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}")
             echo "::group::Deploy ${name}"
-            npx wrangler deploy --config "../${dir}/wrangler.deploy.toml" --tag "$tag" --message "commit ${COMMIT_SHA}" --secrets-file "$secrets_file" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}"
-            rm -f "$secrets_file"
+            # Retired shared tokens: the code no longer reads them and deploys never delete secrets.
+            "$GITHUB_WORKSPACE/.github/scripts/remove-worker-secrets.sh" "$name" ADMIN_TOKEN APPROVER_TOKEN
+            npx wrangler deploy --config "../${dir}/wrangler.deploy.toml" --tag "$tag" --message "commit ${COMMIT_SHA}" "${vars[@]}"
+            curl --fail --silent --show-error --proto '=https' --max-time 20 --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${name}/settings" \
+              | jq -e '[.result.bindings[] | select(.name == "ADMIN_TOKEN" or .name == "APPROVER_TOKEN")] | length == 0' >/dev/null \
+              || { echo "::error::${name} still has a retired shared token bound"; exit 1; }
             "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
               --script "$name" \
               --commit "$COMMIT_SHA" \
@@ -168,7 +165,6 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CONTROL_PLANE_ADMIN_TOKEN: ${{ secrets.CONTROL_PLANE_ADMIN_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
@@ -188,7 +184,6 @@ jobs:
             [[ $# -ge 3 ]] && data=(--data "$3")
             out="$(mktemp)"
             status="$(curl --silent --show-error --proto '=https' --max-time 30 --request "$1" "$2" \
-              --header "Authorization: Bearer ${CONTROL_PLANE_ADMIN_TOKEN}" \
               --header "Content-Type: application/json" --header "@${access_headers}" "${data[@]}" \
               --output "$out" --write-out '%{http_code}')"
             [[ "$status" =~ ^2 ]] || { echo "::error::$1 $2 returned HTTP $status: $(head -c 1000 "$out")"; exit 1; }
@@ -197,12 +192,12 @@ jobs:
           registry="$(url platform-registry)"
           for dir in $DEPLOY_ORDER; do
             api PUT "${registry}/v1/services/cryptophys-${dir}/desired-version" \
-              "$(jq -cn --arg v "$tag" '{desired_version: $v, actor: "github-actions"}')" \
+              "$(jq -cn --arg v "$tag" '{desired_version: $v}')" \
               | jq -e --arg v "$tag" '.service.desired_version == $v' >/dev/null
           done
           echo "Desired version ${tag} recorded for: ${DEPLOY_ORDER}"
 
-          report="$(api POST "$(url drift-detector)/v1/observe" '{"actor":"github-actions"}')"
+          report="$(api POST "$(url drift-detector)/v1/observe" '{}')"
           printf '%s' "$report" | jq '{run_id, drifted, services: [.services[] | {service_id, desired_version, observed_version, drifted, reasons, status}]}'
           for dir in $DEPLOY_ORDER; do
             printf '%s' "$report" | jq -e --arg s "cryptophys-${dir}" --arg v "$tag" \
@@ -211,12 +206,12 @@ jobs:
           done
 
           api POST "$(url audit-ledger)/v1/events" "$(jq -cn --arg sha "$COMMIT_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg order "$DEPLOY_ORDER" \
-            '{event_type: "deployment.control_plane_completed", actor: "github-actions", subject: "control-plane", outcome: "success", payload: {commit_sha: $sha, workflow_run: $run, workers: ($order | split(" "))}}')" \
+            '{event_type: "deployment.control_plane_completed", subject: "control-plane", outcome: "success", payload: {commit_sha: $sha, workflow_run: $run, workers: ($order | split(" "))}}')" \
             | jq '{event_id: .event.event_id, event_hash: .event.event_hash}'
           api GET "$(url audit-ledger)/v1/verify" | tee /dev/stderr | jq -e '.valid == true and .events_checked > 0' >/dev/null
 
           policy="$(api POST "$(url policy-engine)/v1/evaluate" "$(jq -cn --arg sha "$COMMIT_SHA" \
-            '{subject: "github-actions", action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false}}')")"
+            '{action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false}}')")"
           printf '%s' "$policy" | jq -e '.decision == "deny" and (.reason | test("ci_green"))' >/dev/null \
             || { echo "::error::Policy Engine did not deny a deployment with failing CI"; exit 1; }
           echo "Control plane ${tag} deployed, registered, observed in sync, audited and policy-verified."

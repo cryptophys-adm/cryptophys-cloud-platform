@@ -1,12 +1,12 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import {
-  ACTOR, SERVICE_ID, VERSION_TAG, errorResponse, healthResponse, json, newId, nowIso, readJsonObject, requireAdmin,
+  SERVICE_ID, VERSION_TAG, errorResponse, healthResponse, json, newId, nowIso, readJsonObject,
   serviceMetadata, stringField, type JsonObject,
 } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate } from "../../control-plane-shared/src/access.ts";
+import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 
 export type Env = BaseEnv;
 
@@ -60,7 +60,7 @@ function present(row: ServiceRow): JsonObject {
 const getService = (env: Env, id: string) =>
   env.DB.prepare("SELECT * FROM service_registry WHERE service_id = ?").bind(id).first<ServiceRow>();
 
-async function upsertService(request: Request, env: Env, id: string, url: URL): Promise<Response> {
+async function upsertService(request: Request, env: Env, id: string, url: URL, actor: string): Promise<Response> {
   const body = await readJsonObject(request);
   if (!body.ok) return body.response;
   const b = body.value;
@@ -68,12 +68,10 @@ async function upsertService(request: Request, env: Env, id: string, url: URL): 
   const environment = stringField(b, "environment", 20);
   const status = stringField(b, "status", 20);
   const endpoint = stringField(b, "endpoint", 300, false);
-  const actor = stringField(b, "actor", 128);
-  for (const v of [displayName, environment, status, endpoint, actor]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
+  for (const v of [displayName, environment, status, endpoint]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
   if (!ENVIRONMENTS.includes(environment as string)) return errorResponse(400, "invalid_request", `environment must be one of ${ENVIRONMENTS.join(", ")}`);
   if (!STATUSES.includes(status as string)) return errorResponse(400, "invalid_request", `status must be one of ${STATUSES.join(", ")}`);
   if (endpoint && !/^https:\/\/[A-Za-z0-9.-]+(\/[\w./-]*)?$/.test(endpoint as string)) return errorResponse(400, "invalid_request", "endpoint must be an https URL");
-  if (!ACTOR.test(actor as string)) return errorResponse(400, "invalid_request", "actor contains unsupported characters");
 
   const metadata = b.metadata;
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return errorResponse(400, "invalid_request", "metadata object is required");
@@ -98,7 +96,7 @@ async function upsertService(request: Request, env: Env, id: string, url: URL): 
   ).bind(id, displayName, endpoint ?? null, environment, status, metadataJson, now, now).run();
   await appendAuditEvent(env.DB, {
     event_type: existing ? "registry.service_updated" : "registry.service_registered",
-    actor: actor as string,
+    actor,
     subject: id,
     outcome: "success",
     payload: { environment, status, endpoint: endpoint ?? null, metadata },
@@ -111,21 +109,19 @@ async function upsertService(request: Request, env: Env, id: string, url: URL): 
   return json(response, existing ? 200 : 201);
 }
 
-async function setDesiredVersion(request: Request, env: Env, id: string): Promise<Response> {
+async function setDesiredVersion(request: Request, env: Env, id: string, actor: string): Promise<Response> {
   const body = await readJsonObject(request);
   if (!body.ok) return body.response;
   const version = stringField(body.value, "desired_version", 40);
-  const actor = stringField(body.value, "actor", 128);
-  for (const v of [version, actor]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
+  if (version instanceof Error) return errorResponse(400, "invalid_request", version.message);
   if (!VERSION_TAG.test(version as string)) return errorResponse(400, "invalid_request", "desired_version must be a lowercase hex commit identifier (7-40 chars)");
-  if (!ACTOR.test(actor as string)) return errorResponse(400, "invalid_request", "actor contains unsupported characters");
   const existing = await getService(env, id);
   if (!existing) return errorResponse(404, "service_not_registered");
   await env.DB.prepare("UPDATE service_registry SET desired_version = ?, updated_at = ? WHERE service_id = ?")
     .bind(version, nowIso(), id).run();
   await appendAuditEvent(env.DB, {
     event_type: "registry.desired_version_set",
-    actor: actor as string,
+    actor,
     subject: id,
     outcome: "success",
     payload: { previous: existing.desired_version, desired_version: version },
@@ -151,8 +147,8 @@ export default {
       }
     }
     if (!path.startsWith("/v1/")) return errorResponse(404, "not_found");
-    const denied = requireAdmin(request, env);
-    if (denied) return denied;
+    const operator = await requireOperator(request, env);
+    if (!operator.ok) return operator.response;
     try {
       if (path === "/v1/services" && request.method === "GET") {
         const rows = await env.DB.prepare("SELECT * FROM service_registry ORDER BY service_id").all<ServiceRow>();
@@ -163,13 +159,13 @@ export default {
       const id = decodeURIComponent(match[1]);
       if (!SERVICE_ID.test(id)) return errorResponse(400, "invalid_service_id");
       if (match[2]) {
-        return request.method === "PUT" ? await setDesiredVersion(request, env, id) : errorResponse(405, "method_not_allowed");
+        return request.method === "PUT" ? await setDesiredVersion(request, env, id, operator.actor) : errorResponse(405, "method_not_allowed");
       }
       if (request.method === "GET") {
         const row = await getService(env, id);
         return row ? json({ service: present(row) }) : errorResponse(404, "service_not_registered");
       }
-      if (request.method === "PUT") return await upsertService(request, env, id, url);
+      if (request.method === "PUT") return await upsertService(request, env, id, url, operator.actor);
       return errorResponse(405, "method_not_allowed");
     } catch (err) {
       const id = newId("err");

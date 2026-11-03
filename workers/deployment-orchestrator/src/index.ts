@@ -2,7 +2,7 @@ import type { AiBinding, D1Database } from "../../control-plane-shared/src/types
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
-import { accessConfigured, authenticate, identityAllowed } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, actorOf, authenticate, identityAllowed } from "../../control-plane-shared/src/access.ts";
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 
 interface DurableObjectStorageLike {
@@ -168,7 +168,7 @@ export default {
       return json({ error: "production_confirmation_required" }, 400);
     }
     // Recorded actor is the verified Access identity, not a claim from the request body.
-    const requestedBy = auth.identity.subject.slice(0, 128);
+    const requestedBy = actorOf(auth.identity).slice(0, 128);
 
     const refResponse = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/git/ref/heads/main");
     if (!refResponse.ok) {
