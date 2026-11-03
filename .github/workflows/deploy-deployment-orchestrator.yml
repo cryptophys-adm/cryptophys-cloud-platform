@@ -30,12 +30,14 @@ jobs:
           COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Production deployment must be dispatched against main."; exit 1; }
           [[ "$CONFIRM_PRODUCTION" == "DEPLOY" ]] || { echo "Exact confirmation DEPLOY required"; exit 1; }
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Full lowercase commit SHA required"; exit 1; }
           [[ "$COMMIT_SHA" == "$GITHUB_SHA" ]] || { echo "Commit SHA must equal the workflow dispatch ref"; exit 1; }
 
   deploy:
     needs: validate
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     defaults:
