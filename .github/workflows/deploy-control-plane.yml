@@ -217,5 +217,31 @@ jobs:
             '{action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false}}')")"
           printf '%s' "$policy" | jq -e '.decision == "deny" and (.reason | test("ci_green"))' >/dev/null \
             || { echo "::error::Policy Engine did not deny a deployment with failing CI"; exit 1; }
+
+          # Recovery lifecycle Workflow end to end (ADR-0006). CI is an operator, never an approver:
+          # it can only create and disable a plan, so this proves the instance is started and
+          # terminated in production without approving or executing anything.
+          plan="$(api POST "$(url recovery-manager)/v1/plans" "$(jq -cn --arg sha "$COMMIT_SHA" \
+            '{service_id: "cryptophys-recovery-manager", plan_version: $sha[0:12], title: "Deploy verification: recovery lifecycle Workflow",
+              rationale: "Created and disabled by the deploy workflow to verify the lifecycle Workflow. Never approved or executed.",
+              steps: [{action: "manual", description: "No action: verification plan"}]}')")"
+          plan_id="$(printf '%s' "$plan" | jq -er '.plan.plan_id')"
+          instance="$(printf '%s' "$plan" | jq -er --arg id "$plan_id" '.plan | select(.workflow_instance_id == $id and (.approve_by | type == "string")) | .workflow_instance_id')" \
+            || { echo "::error::Plan ${plan_id} has no lifecycle Workflow instance or deadline"; exit 1; }
+          wf_status() {
+            curl --fail --silent --show-error --proto '=https' --max-time 20 \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workflows/cryptophys-recovery-lifecycle/instances/${instance}" \
+              | jq -er '.result.status'
+          }
+          state=""
+          for _ in $(seq 1 10); do state="$(wf_status || true)"; [[ "$state" =~ ^(running|waiting)$ ]] && break; sleep 3; done
+          [[ "$state" =~ ^(running|waiting)$ ]] || { echo "::error::Lifecycle instance ${instance} is '${state}', expected running or waiting"; exit 1; }
+          echo "Lifecycle instance ${instance} is ${state}"
+          api POST "$(url recovery-manager)/v1/plans/${plan_id}/disable" '{}' \
+            | jq -e '.plan.status == "disabled" and .plan.disabled_reason == "operator"' >/dev/null
+          for _ in $(seq 1 10); do state="$(wf_status || true)"; [[ "$state" == "terminated" ]] && break; sleep 3; done
+          [[ "$state" == "terminated" ]] || { echo "::error::Lifecycle instance ${instance} is '${state}' after disable, expected terminated"; exit 1; }
+          echo "Recovery lifecycle verified: plan ${plan_id} started instance ${instance}, disabling it terminated the instance."
           echo "Control plane ${tag} deployed, registered, observed in sync, audited and policy-verified."
           echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

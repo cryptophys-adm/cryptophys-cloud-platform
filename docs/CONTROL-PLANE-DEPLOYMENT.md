@@ -49,7 +49,7 @@ The job then, failing closed at every step:
 4. records a D1 Time Travel bookmark (shown in the job summary) as the restore point;
 5. applies pending D1 migrations;
 6. removes the retired shared tokens, deploys each Worker in dependency order with `--tag <sha12>` and its identity lists, proves no retired token is bound, then verifies the active version is that commit and `/health` + `/ready` pass over workers.dev;
-7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all seven Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI.
+7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all seven Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI. It then verifies the recovery lifecycle Workflow end to end (ADR-0006): as an operator (never an approver) it creates a verification plan, requires its `cryptophys-recovery-lifecycle` instance to be running or waiting in the Cloudflare API, disables the plan and requires the instance to be terminated. Nothing is approved or executed.
 
 ## Rollback
 
