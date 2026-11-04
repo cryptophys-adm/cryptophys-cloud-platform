@@ -26,9 +26,10 @@ API_CONTRACT_VERSION = "v1"
 AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 AI_DAILY_REQUEST_LIMIT = "40"
 AI_ACCOUNT_DAILY_REQUEST_LIMIT = "400"
-# Public market data only (ADR-0005): no exchange account, no API keys, no orders.
-MARKET_DATA_URL = "https://data-api.binance.vision"
-SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,ARBUSDT"
+# Public market data only (ADR-0005): no exchange account, no API keys, no orders. Binance
+# refuses Cloudflare Worker egress (HTTP 403 in every production run), so Kraken is used.
+MARKET_DATA_PROVIDER = "kraken"
+SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
 TIMEFRAMES = "1h,4h"
 
 # The account-specific database_id is kept out of Git (ADR-0001). The deploy workflow

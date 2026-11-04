@@ -18,31 +18,87 @@ export interface Env extends BaseEnv {
   SYMBOLS?: string;
   /** Comma-separated timeframes from TIMEFRAMES_ALLOWED. */
   TIMEFRAMES?: string;
-  /** Public market-data origin (no credentials). */
-  MARKET_DATA_URL?: string;
+  /** Public, keyless market-data provider: "kraken" (default) or "binance". */
+  MARKET_DATA_PROVIDER?: string;
 }
 
 const SERVICE = "cryptophys-signal-engine";
 const SYMBOL = /^[A-Z0-9]{5,20}$/;
 export const TIMEFRAMES_ALLOWED = ["15m", "1h", "4h", "1d"] as const;
-const DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,ARBUSDT"; // apps-gitops signal-market-feed SYMBOLS
+const DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT";
 const DEFAULT_TIMEFRAMES = "1h,4h";
-const DEFAULT_MARKET_DATA_URL = "https://data-api.binance.vision";
+const TIMEFRAME_MS: Record<string, number> = { "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000 };
+
+interface StoredCandle extends Candle { close_time: number }
+
+/**
+ * A keyless, read-only public market-data source. Binance refuses Cloudflare Worker egress
+ * (every production run in signal_ingest_runs returned HTTP 403), so Kraken is the default.
+ * Candles from different venues are never mixed in one series: the provider is recorded per
+ * candle in `source`, and a series only accepts candles from the configured provider.
+ */
+export interface Provider {
+  name: string;
+  origin: string;
+  url(symbol: string, timeframe: string, sinceOpenTime: number | null, backfill: boolean): string;
+  parse(body: unknown, timeframe: string, now: number): StoredCandle[] | Error;
+}
+
+function candle(openTime: number, closeTime: number, o: number, h: number, l: number, c: number, v: number, now: number): StoredCandle | Error | null {
+  if (![openTime, o, h, l, c, v, closeTime].every(Number.isFinite)) return new Error("candle has non-numeric fields");
+  if (!(closeTime > openTime && h >= Math.max(o, c, l) && l <= Math.min(o, c) && v >= 0)) return new Error("candle is inconsistent");
+  return closeTime >= now ? null : { open_time: openTime, close_time: closeTime, o, h, l, c, v }; // forming: never stored
+}
+
+export const PROVIDERS: Record<string, Provider> = {
+  binance: {
+    name: "binance",
+    origin: "https://data-api.binance.vision",
+    url: (symbol, timeframe, _since, backfill) => `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${backfill ? WINDOW + 1 : 5}`,
+    parse: (body, _tf, now) => parseKlines(body, now),
+  },
+  kraken: {
+    name: "kraken",
+    origin: "https://api.kraken.com",
+    // Kraken names bitcoin XBT; intervals are minutes; `since` (seconds) returns committed candles after it.
+    url: (symbol, timeframe, since) =>
+      `https://api.kraken.com/0/public/OHLC?pair=${symbol.replace(/^BTC/, "XBT")}&interval=${TIMEFRAME_MS[timeframe] / 60_000}` +
+      (since === null ? "" : `&since=${Math.floor(since / 1000)}`),
+    parse: (body, timeframe, now) => parseKrakenOhlc(body, TIMEFRAME_MS[timeframe], now),
+  },
+};
+
+/** Parse a Kraken /0/public/OHLC response: rows are [time(s), open, high, low, close, vwap, volume, count]. */
+export function parseKrakenOhlc(body: unknown, intervalMs: number, now: number): StoredCandle[] | Error {
+  const b = body as { error?: unknown; result?: Record<string, unknown> };
+  if (!b || typeof b !== "object") return new Error("ohlc response is not an object");
+  if (Array.isArray(b.error) && b.error.length) return new Error(`provider_error: ${String(b.error[0]).slice(0, 80)}`);
+  const key = Object.keys(b.result ?? {}).find((k) => k !== "last");
+  const rows = key ? b.result![key] : undefined;
+  if (!Array.isArray(rows)) return new Error("ohlc response has no candle array");
+  const out: StoredCandle[] = [];
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 7) return new Error("ohlc row is malformed");
+    const openTime = Number(row[0]) * 1000;
+    const k = candle(openTime, openTime + intervalMs - 1, Number(row[1]), Number(row[2]), Number(row[3]), Number(row[4]), Number(row[6]), now);
+    if (k instanceof Error) return k;
+    if (k) out.push(k);
+  }
+  return out;
+}
 const FETCH_TIMEOUT_MS = 10_000;
 const RETENTION_DAYS = 400;
 
-export function config(env: Env): { symbols: string[]; timeframes: string[]; origin: string } | Error {
+export function config(env: Env): { symbols: string[]; timeframes: string[]; provider: string } | Error {
   const list = (v: string | undefined, d: string) => (v ?? d).split(",").map((s) => s.trim()).filter(Boolean);
   const symbols = list(env.SYMBOLS, DEFAULT_SYMBOLS);
   const timeframes = list(env.TIMEFRAMES, DEFAULT_TIMEFRAMES);
-  const origin = env.MARKET_DATA_URL ?? DEFAULT_MARKET_DATA_URL;
+  const provider = env.MARKET_DATA_PROVIDER ?? "kraken";
   if (!symbols.length || symbols.length > 20 || !symbols.every((s) => SYMBOL.test(s))) return new Error("SYMBOLS is invalid");
   if (!timeframes.length || !timeframes.every((t) => (TIMEFRAMES_ALLOWED as readonly string[]).includes(t))) return new Error("TIMEFRAMES is invalid");
-  if (!/^https:\/\/[a-z0-9.-]+$/.test(origin)) return new Error("MARKET_DATA_URL must be an https origin");
-  return { symbols, timeframes, origin };
+  if (!PROVIDERS[provider]) return new Error(`MARKET_DATA_PROVIDER must be one of ${Object.keys(PROVIDERS).join(", ")}`);
+  return { symbols, timeframes, provider };
 }
-
-interface StoredCandle extends Candle { close_time: number }
 
 /** Parse a Binance /api/v3/klines response, keeping only closed, internally consistent candles. */
 export function parseKlines(body: unknown, now: number): StoredCandle[] | Error {
@@ -51,10 +107,9 @@ export function parseKlines(body: unknown, now: number): StoredCandle[] | Error 
   for (const row of body) {
     if (!Array.isArray(row) || row.length < 7) return new Error("kline row is malformed");
     const [openTime, o, h, l, c, v, closeTime] = [row[0], row[1], row[2], row[3], row[4], row[5], row[6]].map(Number);
-    if (![openTime, o, h, l, c, v, closeTime].every(Number.isFinite)) return new Error("kline row has non-numeric fields");
-    if (!(closeTime > openTime && h >= Math.max(o, c, l) && l <= Math.min(o, c) && v >= 0)) return new Error("kline row is inconsistent");
-    if (closeTime >= now) continue; // still forming: never stored
-    out.push({ open_time: openTime, close_time: closeTime, o, h, l, c, v });
+    const k = candle(openTime, closeTime, o, h, l, c, v, now);
+    if (k instanceof Error) return k;
+    if (k) out.push(k);
   }
   return out;
 }
@@ -70,30 +125,35 @@ export interface SeriesResult {
   error?: string;
 }
 
-async function ingestSeries(env: Env, origin: string, symbol: string, timeframe: string, now: number): Promise<SeriesResult> {
-  const have = await env.DB.prepare("SELECT COUNT(*) AS n FROM market_candles WHERE symbol = ? AND timeframe = ?")
-    .bind(symbol, timeframe).first<{ n: number }>();
-  const limit = (have?.n ?? 0) < WINDOW ? WINDOW + 1 : 5;
+async function ingestSeries(env: Env, provider: Provider, symbol: string, timeframe: string, now: number): Promise<SeriesResult> {
+  const have = await env.DB.prepare(
+    "SELECT COUNT(*) AS n, MAX(open_time) AS latest, SUM(source <> ?) AS foreign_rows FROM market_candles WHERE symbol = ? AND timeframe = ?",
+  ).bind(provider.origin, symbol, timeframe).first<{ n: number; latest: number | null; foreign_rows: number | null }>();
+  if ((have?.foreign_rows ?? 0) > 0) return { symbol, timeframe, status: "error", error: "series_has_other_provider_candles" };
+  const backfill = (have?.n ?? 0) < WINDOW;
   let body: unknown;
   try {
-    const res = await fetch(`${origin}/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`, {
+    const res = await fetch(provider.url(symbol, timeframe, backfill ? null : have?.latest ?? null, backfill), {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { accept: "application/json" },
+      headers: { accept: "application/json", "user-agent": "cryptophys-signal-engine (advisory; github.com/cryptophys-adm/cryptophys-cloud-platform)" },
     });
     if (!res.ok) return { symbol, timeframe, status: "error", error: `market_data_http_${res.status}` };
     body = await res.json();
   } catch (err) {
     return { symbol, timeframe, status: "error", error: (err as Error)?.name === "TimeoutError" ? "market_data_timeout" : "market_data_unreachable" };
   }
-  const candles = parseKlines(body, now);
-  if (candles instanceof Error) return { symbol, timeframe, status: "error", error: candles.message };
+  const parsed = provider.parse(body, timeframe, now);
+  if (parsed instanceof Error) return { symbol, timeframe, status: "error", error: parsed.message };
+  // Only candles newer than the stored tail are written; the provider may resend history.
+  const candles = parsed.filter((k) => have?.latest == null || k.open_time > have.latest).slice(-1000);
 
   const ingestedAt = nowIso();
   const inserts = candles.map((k) => env.DB.prepare(
     `INSERT OR IGNORE INTO market_candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume, source, ingested_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(symbol, timeframe, k.open_time, k.close_time, k.o, k.h, k.l, k.c, k.v, origin, ingestedAt));
-  const results = inserts.length ? await env.DB.batch(inserts) : [];
+  ).bind(symbol, timeframe, k.open_time, k.close_time, k.o, k.h, k.l, k.c, k.v, provider.origin, ingestedAt));
+  let results: Awaited<ReturnType<typeof env.DB.batch>> = [];
+  for (let i = 0; i < inserts.length; i += 100) results = results.concat(await env.DB.batch(inserts.slice(i, i + 100)));
   const inserted = results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 
   const rows = await env.DB.prepare(
@@ -127,7 +187,7 @@ export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | 
   for (const symbol of cfg.symbols) {
     for (const timeframe of cfg.timeframes) {
       try {
-        series.push(await ingestSeries(env, cfg.origin, symbol, timeframe, now));
+        series.push(await ingestSeries(env, PROVIDERS[cfg.provider], symbol, timeframe, now));
       } catch (err) {
         series.push({ symbol, timeframe, status: "error", error: "storage_failed" });
         console.error(JSON.stringify({ service: SERVICE, event: "series_failed", symbol, timeframe, message: String((err as Error)?.message ?? err) }));
