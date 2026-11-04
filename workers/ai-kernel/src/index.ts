@@ -40,7 +40,7 @@ export default {
           approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES),
           policy_binding: Boolean(env.POLICY), recovery_binding: Boolean(env.RECOVERY), signals_binding: Boolean(env.SIGNALS),
           supervisor_binding: Boolean(env.SUPERVISOR),
-          signal_analyst_binding: "SIGNAL_ANALYST" in env ? Boolean(env.SIGNAL_ANALYST) : Boolean(env.SUPERVISOR),
+          signal_analyst_binding: Boolean(env.SIGNAL_ANALYST),
         });
       }
       if (path === "/") {
