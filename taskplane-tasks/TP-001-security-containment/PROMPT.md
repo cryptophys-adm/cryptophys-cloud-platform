@@ -1,32 +1,64 @@
-# TP-001 — Contain leaked credentials (OWNER GATES)
+# TP-001: Contain leaked credentials (revised 2026-11-05)
 
-**Why:** ADR-0005 §Security found the following.
-- `cryptophys-work/platform-gitops` is publicly readable and commits three Vault unseal shares in `platform/infrastructure/vault-system/vault__unseal-keys-secret.yaml`.
-- `cryptophys-work/apps-gitops` history contains:
-  - `apps/user/03-execution-swarms/omega/core/vault/genesis.key`, a 64-hex value that is likely a wallet private key;
-  - `.../omega/core/vault/binance_hmac.json`, a Binance API key and secret;
-  - a NATS literal password (`risk_guard` / `trading_brain` users). The committed literal is a 14-character env-var-style name, not a random secret; confirm that the NATS server does not accept it.
-  - an ArgoCD `cryptophys.work/reconcile-token` annotation.
-- *(Corrected 2026-11-04 after the worker's inventory, PR #46.)* The `PAGERDUTY_ROUTINGKEY` in the draft PR `cryptophys-work/apps-gitops#110` is a placeholder, not a real key. It is not part of this task.
+**Worker:** pi agent on the VPS (read-only steps only). **Owner:** every revoke, move, delete or archive.
 
-All of these values must be treated as public.
+## Why this plan changed
+
+The owner decided on 2026-11-04 that the Talos/Kubernetes cluster is **deprecated** and its data is not kept.
+
+- **Containment by retirement.** Secrets that only ever lived *inside* the cluster (Vault unseal shares, NATS users, ArgoCD reconcile tokens) are contained by turning the cluster off for good and destroying its disks. Rekeying Vault or rotating NATS and ArgoCD on a cluster that is being destroyed adds risk and no value.
+- **External credentials stay live.** What remains dangerous are credentials that work **outside** the cluster: the Binance API key, the `genesis.key` wallet, and any credential Vault held that is valid at an external issuer.
+- **History still matters.** Both gitops repositories are now private, but they were readable before, so every value in their history must be treated as public, whatever happens to the repositories.
+
+The read-only inventory from the first version (PR #46) remains valid evidence. Its findings are reused below.
 
 ## Steps
 
-1. **Read-only inventory.** Confirm each item above still exists. Report its path, commit and `sha256[:8]` only. For Vault, record `vault status` (sealed, threshold, shares, version) without unsealing anything.
-2. **OWNER GATE: make `cryptophys-work/platform-gitops` private.** This needs org-admin rights. If your `gh` token has them, run `gh repo edit cryptophys-work/platform-gitops --visibility private --accept-visibility-change-consequences`. Otherwise set `State: awaiting_owner` and give the owner that exact command. Verify with an unauthenticated `git ls-remote https://github.com/cryptophys-work/platform-gitops HEAD`; it must fail.
-3. **OWNER GATE: Vault rekey.** Follow `platform/docs/runbooks/vault-unseal-procedure.md` from platform-gitops.
-   - Run `vault operator rekey -init` with new shares and threshold that the owner chooses.
-   - Deliver the new shares only to the owner's chosen holders, out of band. They must never be written to git, a ticket or a log.
-   - Then delete the in-cluster `vault-system/vault-unseal-keys` Secret, and the auto-unseal controller's dependency on it, with the owner's approval.
-   - Evidence: `vault status` before and after, showing the new key count and threshold. No shares.
-4. **Rotate dependent secrets.** Do this in Vault and in the systems themselves:
-   - NATS users;
-   - the ArgoCD `reconcile-token` annotations.
-   Evidence: the name and `sha256[:8]` of the old and new values, plus a successful consumer health check after rotation.
-5. **OWNER GATE: Binance and wallet.**
-   - **Binance:** the owner revokes the API key in the Binance account. You only confirm with a single unauthenticated-equivalent check that the old key is rejected, or state that you cannot.
-   - **`genesis.key`:** derive the public address locally, without printing the key, and report the address and its on-chain balance using a public read-only RPC. Moving funds is the owner's action, never yours.
-6. **History purge (optional, OWNER GATE).** Propose a `git filter-repo` plan for both repositories. Do not run it. Rewriting history is irreversible and needs every clone re-cut.
+### A. Worker: read-only (no gate; open a PR from a fresh branch on `main`)
 
-**Done when:** `platform-gitops` is not anonymously readable, Vault is rekeyed, the leaked credentials are revoked or rotated with evidence, and `STATUS.md` lists any item that only the owner can finish.
+1. **Masked Binance key identifier.**
+   - From `binance_hmac.json` in apps-gitops history (commit `48e2d2293^` or earlier), report only the API key's first 4 and last 4 characters and `sha256[:8]` of the file.
+   - **Never output the secret.** Never call any Binance endpoint with this key, signed or unsigned.
+   - Purpose: so the owner can recognise the key in Binance API Management.
+2. **Wallet address and balance** (`genesis.key`, `sha256[:8]` `c302d918`).
+   - Derive the secp256k1/EVM address locally in memory, using a pinned library such as `eth-account` in a throwaway venv. Never print, store or transmit the key.
+   - Report the address, plus the native balance and transaction count on Ethereum, BNB Smart Chain, Polygon, Arbitrum and Base. Use public read-only RPCs and `eth_getBalance` / `eth_getTransactionCount` only.
+   - If the value is not a valid secp256k1 key, report that and stop. Do not try other chains or formats.
+   - Never sign, send, approve or import the key into any wallet.
+3. **Inventory of what Vault and the cluster held.**
+   - From the two repositories' current tree and history, list every secret **name and path**, never values: `ExternalSecret` / `SecretStore` refs, Vault paths, Kubernetes `Secret` names, and env vars that look like credentials (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`).
+   - For each, name the **issuer**: Cloudflare, GitHub, Binance, an exchange, email/SMTP, a cloud provider, an LLM provider, cluster-internal only, or unknown.
+   - Write a table to `taskplane-tasks/TP-001-security-containment/credential-issuers.md`.
+   - Items marked cluster-internal only are closed by step B3. Every other item is an owner rotation in B4.
+4. **History purge plan, written only.** Since the repositories are deprecated, the recommended plan is **archive, or delete after a final local backup that the owner keeps offline**, instead of `git filter-repo`. Write both options with their consequences. Run neither.
+
+### B. Owner: actions (OWNER GATES; record each in `APPROVAL.md`)
+
+1. **Binance, today.**
+   - In Binance, open API Management and delete the key matching A1. Also delete any other API key you do not actively use.
+   - Check that no withdrawal address whitelist entry, sub-account or device was added that you do not recognise.
+   - Change the account password and 2FA if anything looks unfamiliar.
+2. **Wallet.**
+   - If A2 shows any balance, tokens or recent transactions, the key is compromised: move everything to a **new** wallet you generate offline (a hardware wallet is preferred).
+   - Revoke token approvals for the old address, for example with a revoke tool on each chain.
+   - If everything is zero and has no history, simply never use the address again.
+3. **Cluster retirement (replaces the Vault rekey and the NATS/ArgoCD rotation).**
+   - Power off every Talos node, and delete or wipe their disks and volumes at the provider. That includes Longhorn and MinIO volumes and Vault storage.
+   - Delete any load balancer or DNS record that pointed at the cluster.
+   - Evidence for `STATUS.md`: a provider screenshot or console output showing that the nodes and volumes are deleted.
+4. **Rotate at external issuers.** For every non-internal item in A3, revoke the old credential at its issuer, even if it is unused now.
+5. **Repositories.** Archive `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops`, which keeps them private and read-only, or delete them after an offline backup. Their logic already lives in this repository (`tools/parity/legacy`, ADR-0005).
+
+### C. Worker: verification, after the owner records B1 to B5
+
+- A2 balances again, if B2 moved funds: confirm that the old address is empty.
+- An anonymous `git ls-remote` against both repositories fails.
+- `gh repo view` shows archived (or not found if deleted).
+- Update `STATUS.md` with `State: done`.
+
+**Done when:**
+- the Binance key is deleted, confirmed by the owner;
+- the wallet is empty or confirmed unused;
+- the cluster is destroyed, with evidence;
+- every external issuer item is rotated;
+- both gitops repositories are archived or deleted.
