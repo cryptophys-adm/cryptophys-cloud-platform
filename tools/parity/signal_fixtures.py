@@ -6,15 +6,16 @@ the library they import (pandas_ta_classic), on deterministic synthetic candles.
 
 Deviations from the Python source, both deliberate:
 - `forecast_next_5` is omitted: its module (forecasting.py) is not in apps-gitops.
-- Ichimoku is read by column name. The source indexes `ich[0]` and reads columns by position,
-  which raises on pandas_ta_classic 0.9.0 (it returns one DataFrame) and would mislabel
-  span A/B as tenkan/kijun on the old tuple API.
+- Ichimoku is read by column name. The source reads `ich[0]` columns by position, which on
+  the pinned 0.4.47 publishes span A/B under the tenkan/kijun names; the port labels them correctly.
 
 Usage: python3 signal_fixtures.py > workers/control-plane-shared/test/fixtures/signal-parity.json
-Requires: pandas, pandas_ta_classic==0.9.0
+Requires: pandas, pandas_ta_classic==0.4.47 (the version pinned in signal-edge/requirements.txt)
 """
+import ast
 import json
 import math
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,55 @@ import pandas_ta_classic as ta
 
 def r(x, d):
     return None if x is None or (isinstance(x, float) and math.isnan(x)) else round(float(x), d)
+
+
+LEGACY = pathlib.Path(__file__).resolve().parent / "legacy" / "signal-edge"
+
+
+def legacy(file, names, extra=None):
+    """Load named top-level functions/constants from a recovered engine without its NATS runtime."""
+    tree = ast.parse((LEGACY / file).read_text())
+    keep = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in names)
+            or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in names for t in n.targets))]
+    ns = {"pd": pd, "ta": ta, "np": np, **(extra or {})}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), file, "exec"), ns)
+    return ns
+
+
+momentum_compute = legacy("momentum_engine.py", {"_compute"})["_compute"]
+structure_compute = legacy("structure_engine.py", {"SWING_LOOKBACK", "_swing_highs_lows", "_detect_fvg",
+                                                   "_detect_order_blocks", "_detect_bos_choch", "_compute"})["_compute"]
+
+
+def volatility(df):
+    """volatility_engine._compute with columns read by name: the source reads BBL/KCL as "upper"."""
+    close, high, low = df["c"], df["h"], df["l"]
+    out = {}
+    bb = ta.bbands(close, length=20, std=2)
+    if bb is not None and not bb.empty:
+        row = bb.iloc[-1]
+        out.update(bb_upper=r(row["BBU_20_2.0"], 6), bb_mid=r(row["BBM_20_2.0"], 6), bb_lower=r(row["BBL_20_2.0"], 6),
+                   bb_bandwidth=r(row["BBB_20_2.0"], 6), bb_percent=r(row["BBP_20_2.0"], 6))
+    a = ta.atr(high, low, close, length=14)
+    out["atr_14"] = r(a.iloc[-1], 6) if a is not None and not a.empty else None
+    kc = ta.kc(high, low, close, length=20, scalar=2)
+    if kc is not None and not kc.empty:
+        row = kc.iloc[-1]
+        out.update(kc_upper=r(row["KCUe_20_2.0"], 6), kc_basis=r(row["KCBe_20_2.0"], 6), kc_lower=r(row["KCLe_20_2.0"], 6))
+    vals = [out.get(k) for k in ("bb_upper", "bb_lower", "kc_upper", "kc_lower")]
+    if all(v is not None for v in vals):
+        out["squeeze"] = bool(vals[0] <= vals[2] and vals[1] >= vals[3])
+    return out
+
+
+def nan_to_none(x):
+    if isinstance(x, float) and math.isnan(x):
+        return None
+    if isinstance(x, dict):
+        return {k: nan_to_none(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [nan_to_none(v) for v in x]
+    return x
 
 
 def trend(df):
@@ -45,6 +95,8 @@ def trend(df):
     else:
         out["supertrend"], out["supertrend_direction"] = None, None
     ich = ta.ichimoku(high, low, close)
+    if isinstance(ich, tuple):  # pandas_ta_classic < 0.5 returns (frame, span_frame)
+        ich = ich[0]
     if ich is not None and not ich.empty:
         row = ich.iloc[-1]
         out["ichimoku_tenkan"] = r(row["ITS_9"], 6)
@@ -87,6 +139,8 @@ for name, candles in [
     ("flat_tail", series(7, 120, flat_from=95)),
 ]:
     df = pd.DataFrame(candles)
-    cases.append({"name": name, "candles": candles, "trend": trend(df), "volume": volume(df)})
+    cases.append({"name": name, "candles": candles, "trend": trend(df), "volume": volume(df),
+                  "momentum": nan_to_none(momentum_compute(candles)), "volatility": nan_to_none(volatility(df)),
+                  "structure": nan_to_none(structure_compute(candles))})
 
 json.dump({"generator": "tools/parity/signal_fixtures.py", "pandas_ta_classic": ta.version, "pandas": pd.__version__, "cases": cases}, __import__("sys").stdout, separators=(",", ":"))
