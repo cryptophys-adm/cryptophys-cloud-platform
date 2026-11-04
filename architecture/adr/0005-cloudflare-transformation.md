@@ -86,6 +86,18 @@
      - an "entanglement" that is cosine similarity.
      Its formulas depend on scale (energy clamps to 1 for BTC), it needs order-book depth that is not ingested, and it has no specification or tests.
 
+10. **Revised Mizan and decision formulas (owner decision 2026-11-04: "All").** The faithful ports stay in `mizan.ts` with their parity tests. Production uses `revised.ts` (`mizan-revised/1`), which makes four changes:
+    1. **KWW recency.** The memory weight is `exp(-(lag/τ)^β)`, where lag 0 is the newest close. The source gave the oldest close weight 1.
+    2. **Regime entropy.** Entropy is computed over log returns, not price levels. The gate is the per-symbol 95th percentile of rolling 100-candle entropies over the stored 1h history (628 windows on 2026-11-04). With fewer than 30 windows it falls back to the source's 0.92. If no regime is available, the score is 0 rather than the source's free 1.0.
+    3. **phi per symbol.** `phi = Σ(w_tf · dim_tf) / Σ w_tf × regime_score`, using the source timeframe weights as mixing weights. The source multiplied each timeframe's dim by its weight, which capped phi at 0.40.
+    4. **Symmetric decision.** BUY ≥ 62 / SELL ≤ 38 are applied to the raw confluence score. The 0.65 base rate stays only as the BUY win probability in EV/Kelly; the source also scaled the score by it.
+    - **Before and after on production data (2026-11-04 07:10Z):**
+      - **Regime score:** 0 → 0.28 for ETH and 0 → 0.42 for SOL. Both had been gated to "chaotic" by price-level entropy. BTC stayed at 0.33.
+      - **KWW direction:** SOL flipped from down to up after its latest candles.
+      - **Decision:** BTC at 42.7 and ETH at 53.3 moved from SELL to NEUTRAL. SOL at 34.5 stayed SELL.
+      - **phi:** rose from 0–0.015 to 0.05–0.09.
+    - **Remaining finding, not changed.** phi still cannot reach the signal threshold in ordinary markets, because the router's momentum and volume dimensions are `|Δkww| / price` and `volume / (volume + price)`. These sit near 1e-4, so `dim_score` stays near 0.23 of a 0.67 maximum, and advisory risk levels are not produced. Rescaling those dimensions would redesign Mizan and needs a separate owner decision.
+
 ## Security
 
 `cryptophys-work/platform-gitops` is publicly readable and commits `platform/infrastructure/vault-system/vault__unseal-keys-secret.yaml`. That file holds three high-entropy values in Vault Shamir share format (33 bytes each). They must be treated as compromised:

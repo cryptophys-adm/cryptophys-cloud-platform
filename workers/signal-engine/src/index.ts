@@ -8,9 +8,10 @@ import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 import {
   IMPLEMENTATION, MIN_HISTORY, WINDOW, momentumIndicators, structureIndicators, trendIndicators, volatilityIndicators,
-  volumeIndicators, type Candle, type Indicators,
+  round, volumeIndicators, type Candle, type Indicators,
 } from "./indicators.ts";
-import { CATEGORIES, REGIME, decision, mizan, regime, tfConfluence } from "./mizan.ts";
+import { CATEGORIES, REGIME, tfConfluence } from "./mizan.ts";
+import { FORMULAS, decisionRevised, mizanSymbol, mizanTimeframe, regimeRevised } from "./revised.ts";
 import { MACRO_SOURCES, parseFearGreed, parseGlobal } from "./macro.ts";
 
 const ENGINES: [string, number, (c: Candle[]) => Indicators][] = [
@@ -231,18 +232,22 @@ async function ingestSeries(env: Env, provider: Provider, symbol: string, timefr
 
 /**
  * Cross-series engines for one symbol, after its candles and per-series engines are stored:
- * Mizan (regime from the 1h closes, as mizan-regime subscribed to 1h KWW only) on each
- * timeframe's latest candle, then the signal-edge multi-timeframe confluence and decision bias.
+ * the signal-edge multi-timeframe confluence and decision, and Mizan. Both use the revised
+ * formulas (ADR-0005 decision 10); the faithful ports stay in mizan.ts for reference.
  */
 async function deriveSymbol(env: Env, symbol: string, timeframes: string[], now: number): Promise<void> {
-  const closesOf = async (tf: string) => (await env.DB.prepare(
+  const closesOf = async (tf: string, limit: number) => (await env.DB.prepare(
     "SELECT open_time, close_time, close, volume FROM market_candles WHERE symbol = ? AND timeframe = ? ORDER BY open_time DESC LIMIT ?",
-  ).bind(symbol, tf, REGIME.WINDOW).all<{ open_time: number; close_time: number; close: number; volume: number }>()).results.reverse();
-  const regime1h = timeframes.includes("1h") ? regime((await closesOf("1h")).map((r) => r.close)) : null;
+  ).bind(symbol, tf, limit).all<{ open_time: number; close_time: number; close: number; volume: number }>()).results.reverse();
+  // The regime reads the 1h series; its entropy gate is calibrated on all stored 1h history.
+  const history1h = timeframes.includes("1h") ? await closesOf("1h", 1000) : [];
+  const regime = history1h.length ? regimeRevised(history1h.map((r) => r.close)) : null;
   const state: Record<string, Record<string, { ts: number; indicators: Indicators }>> = {};
+  const perTf: Record<string, ReturnType<typeof mizanTimeframe>> = {};
+  let reference: { close: number; atr14: number | null } | null = null;
   const writes = [];
   for (const tf of timeframes) {
-    const rows = await closesOf(tf);
+    const rows = await closesOf(tf, REGIME.WINDOW);
     const latest = rows.at(-1);
     if (!latest) continue;
     const ind = await env.DB.prepare("SELECT engine, indicators_json FROM signal_indicators WHERE symbol = ? AND timeframe = ? AND open_time = ?")
@@ -255,19 +260,25 @@ async function deriveSymbol(env: Env, symbol: string, timeframes: string[], now:
       (state[cat] ??= {})[tf] = { ts: latest.close_time, indicators };
     }
     const atr14 = (byEngine.volatility?.atr_14 as number | null | undefined) ?? null;
-    const m = mizan(rows.map((r) => r.close), latest.volume, tf, regime1h, latest.close, atr14);
+    if (tf === "1h" || !reference) reference = { close: latest.close, atr14 };
+    const m = mizanTimeframe(rows.map((r) => r.close), latest.volume, tf);
+    perTf[tf] = m;
     writes.push(env.DB.prepare(
       `INSERT OR IGNORE INTO signal_indicators (symbol, timeframe, open_time, engine, implementation, window_size, indicators_json, computed_at)
        VALUES (?, ?, ?, 'mizan', ?, ?, ?, ?)`,
-    ).bind(symbol, tf, latest.open_time, IMPLEMENTATION, rows.length, JSON.stringify(m), nowIso()));
+    ).bind(symbol, tf, latest.open_time, IMPLEMENTATION, rows.length, JSON.stringify({
+      formulas: FORMULAS, ...Object.fromEntries(Object.entries(m).map(([k, v]) => [k, round(v, 8)])),
+    }), nowIso()));
   }
   const conf = tfConfluence(state, now);
   if (conf) {
     const basis = Math.max(...Object.values(state).flatMap((byTf) => Object.values(byTf).map((e) => e.ts)));
+    const mz = mizanSymbol(perTf, regime, reference?.close ?? null, reference?.atr14 ?? null);
     writes.push(env.DB.prepare(
-      `INSERT OR IGNORE INTO signal_confluence (symbol, basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, computed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(symbol, basis, IMPLEMENTATION, conf.confluence_score, JSON.stringify(conf.tf_scores), JSON.stringify(decision(conf.confluence_score)), nowIso()));
+      `INSERT OR IGNORE INTO signal_confluence (symbol, basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, mizan_json, computed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(symbol, basis, IMPLEMENTATION, conf.confluence_score, JSON.stringify(conf.tf_scores),
+      JSON.stringify(decisionRevised(conf.confluence_score)), JSON.stringify(mz), nowIso()));
   }
   if (writes.length) await env.DB.batch(writes);
 }
@@ -369,11 +380,15 @@ async function latestSignals(env: Env, symbol: string, timeframe: string): Promi
     engines[r.engine] = { implementation: r.implementation, window_size: r.window_size, computed_at: r.computed_at, indicators: JSON.parse(r.indicators_json) };
   }
   const confluence = await env.DB.prepare(
-    "SELECT basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, computed_at FROM signal_confluence WHERE symbol = ? ORDER BY basis_close_time DESC LIMIT 1",
-  ).bind(symbol).first<{ tf_scores_json: string; decision_json: string } & JsonObject>();
+    "SELECT basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, mizan_json, computed_at FROM signal_confluence WHERE symbol = ? ORDER BY basis_close_time DESC LIMIT 1",
+  ).bind(symbol).first<{ tf_scores_json: string; decision_json: string; mizan_json: string | null } & JsonObject>();
   return {
     symbol, timeframe, candle, engines, advisory_only: true, macro: await latestMacro(env),
-    confluence: confluence ? { ...confluence, tf_scores_json: undefined, decision_json: undefined, tf_scores: JSON.parse(confluence.tf_scores_json), decision: JSON.parse(confluence.decision_json) } : null,
+    confluence: confluence ? {
+      ...confluence, tf_scores_json: undefined, decision_json: undefined, mizan_json: undefined,
+      tf_scores: JSON.parse(confluence.tf_scores_json), decision: JSON.parse(confluence.decision_json),
+      mizan: confluence.mizan_json ? JSON.parse(confluence.mizan_json) : null,
+    } : null,
   };
 }
 
