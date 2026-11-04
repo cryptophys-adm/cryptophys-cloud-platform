@@ -16,10 +16,11 @@ The read-only inventory from the first version (PR #46) remains valid evidence. 
 
 ### A. Worker: read-only (no gate; open a PR from a fresh branch on `main`)
 
-1. **Masked Binance key identifier.**
-   - From `binance_hmac.json` in apps-gitops history (commit `48e2d2293^` or earlier), report only the API key's first 4 and last 4 characters and `sha256[:8]` of the file.
-   - **Never output the secret.** Never call any Binance endpoint with this key, signed or unsigned.
-   - Purpose: so the owner can recognise the key in Binance API Management.
+1. **Non-revealing Binance key identifier.**
+   - From `binance_hmac.json` in apps-gitops history (commit `48e2d2293^` or earlier), identify the API-key value field without assuming its name. If the field is ambiguous, stop and report the ambiguity.
+   - Report only the field name, source path/commit, and the first 8 hex characters of `sha256(API-key value)`. Do not report any prefix, suffix, substring, encoded form, or full value of the key or its paired secret.
+   - **Never output the secret or any part of either credential.** Never call any Binance endpoint with either value, signed or unsigned.
+   - Purpose: provide a non-reversible evidence fingerprint for the owner; the owner must identify/revoke the key in Binance API Management.
 2. **Wallet address and balance** (`genesis.key`, `sha256[:8]` `c302d918`).
    - Derive the secp256k1/EVM address locally in memory, using a pinned library such as `eth-account` in a throwaway venv. Never print, store or transmit the key.
    - Report the address, plus the native balance and transaction count on Ethereum, BNB Smart Chain, Polygon, Arbitrum and Base. Use public read-only RPCs and `eth_getBalance` / `eth_getTransactionCount` only.
