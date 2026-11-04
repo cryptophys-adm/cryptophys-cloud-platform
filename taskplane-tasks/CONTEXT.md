@@ -1,0 +1,56 @@
+# Cryptophys Cloud Platform — Worker Context
+
+**Last Updated:** 2026-11-04
+**Status:** Active
+**Next Task ID:** TP-006
+**Roles:** orchestrator and validator = Claude (cloud session); worker = pi agent on the VPS; owner = repository owner (human).
+
+---
+
+## Where the deployment stands
+
+Cloudflare production is live and verified at `main`, deployed by GitHub Actions only.
+- **8 platform Workers** behind Cloudflare Access: Platform API, Deployment Orchestrator, Platform Registry, Policy Engine, Audit Ledger, Recovery Manager, Drift Detector and Signal Engine.
+- **D1** `cryptophys-control-plane`, with migrations up to `0008`.
+- **Drift:** 12 of 12 services are healthy, including the 4 xauusd Workers, which are watched for health only.
+- **Decisions:** ADR-0005 and `docs/TRANSFORMATION-INVENTORY.md`.
+
+What remains is outside Cloudflare, on the legacy Talos/Kubernetes estate (`cryptophys-work/platform-gitops`, `cryptophys-work/apps-gitops`). That is what the worker on the VPS can reach.
+
+## Hard rules for the worker (apply to every task)
+
+1. **Never print, log, commit or paste a secret value.** That includes keys, tokens, passwords, kubeconfigs, Vault output and unseal shares. To prove you handled a secret, report its name, where it lives, and the first 8 hex characters of `sha256(value)`.
+2. **Never deploy or change Cloudflare production.** Production changes go only through this repository's GitHub workflows, which the orchestrator dispatches. Do not run `wrangler deploy`, `wrangler secret`, `wrangler d1 execute --remote` or Cloudflare API writes.
+3. **Never merge.** Work on a branch named `worker/TP-xxx-<slug>` and open a PR. The orchestrator validates and merges.
+4. **Never execute trades or touch funds.** If you find a wallet or exchange credential, report it; do not use it.
+5. **Respect the gates.** Any step marked **OWNER GATE** stops until the owner confirms in writing, in the PR or the task `STATUS.md`. **Destructive** steps (delete, scale to zero, rekey, revoke) run only after an orchestrator `VALIDATED` comment on the preceding read-only step.
+6. **Do not modify** `cryptophys-adm/xauusd-ai-trading-assistant`.
+7. **Report outcomes faithfully.** If a command fails or a step is skipped, say so with the redacted output. Never claim something you did not observe.
+
+## Reporting protocol (the orchestrator validates from this)
+
+Each task directory gets a `STATUS.md` that the worker fills in, containing:
+- `State`: one of `in_progress | blocked | awaiting_owner | done`.
+- `Evidence`: commands run and their redacted output. Prefer machine-readable output (JSON, `kubectl -o json` filtered with `jq`).
+- `Changes`: what changed, where, and how to revert it.
+- `Open questions`.
+
+Commit `STATUS.md` and any reports to the task branch and open a PR titled `TP-xxx: <title>`. The orchestrator replies `VALIDATED`, or `CHANGES REQUESTED` with reasons.
+
+## Key files
+
+| Category | Path |
+|---|---|
+| Tasks | `taskplane-tasks/TP-*/PROMPT.md` |
+| Decisions | `architecture/adr/0005-cloudflare-transformation.md` |
+| Inventory | `docs/TRANSFORMATION-INVENTORY.md` (regenerate with `tools/inventory/inventory.py`) |
+| Recovered legacy sources | `tools/parity/legacy/` |
+
+## Task order
+
+TP-001 and TP-002 can run in parallel. TP-003 must be validated before TP-004, and TP-004 before TP-005.
+
+## Technical debt / future work
+
+_Workers log discoveries here through their PR._
+- An owner decision is pending on rescaling the Mizan momentum and volume dimensions (ADR-0005 decision 10, "Remaining finding").
