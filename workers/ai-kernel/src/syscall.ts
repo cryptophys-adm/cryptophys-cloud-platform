@@ -11,6 +11,7 @@ import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
 import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
+import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { publishReport } from "./reports.ts";
 
 export interface PolicyRpcBinding {
@@ -24,6 +25,7 @@ export interface SyscallEnv extends BaseEnv {
   POLICY: PolicyRpcBinding;
   RECOVERY: RecoveryRpcBinding;
   SIGNALS: SignalRpcBinding;
+  MEMORY?: VectorizeBinding;
 }
 
 export type SyscallResult =
@@ -164,16 +166,18 @@ export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonO
   };
 }
 
-const TIER0_HANDLERS: Record<string, (env: BaseEnv, input: JsonObject) => Promise<JsonObject>> = {
+const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentId: string) => Promise<JsonObject>> = {
   "platform.observe": (env) => observe(env),
   "signals.observe": (env) => observeSignals(env),
   "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
+  "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
 };
 
 async function dispatch(env: SyscallEnv, capability: string, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
   switch (capability) {
     case "recovery.propose": return { plan: await env.RECOVERY.propose(agentId, decisionId, input) };
     case "reports.publish": return { report: await publishReport(env.DB, agentId, decisionId, input) };
+    case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
     case "signals.reingest": return { run: await env.SIGNALS.reingest(agentId, decisionId) };
     default: throw new Error("capability_not_dispatchable");
   }
@@ -200,7 +204,11 @@ export async function syscall(env: SyscallEnv, agentId: string, capability: stri
     const failed = (await agentSyscallChecks(env.DB, `agent:${agentId}`, capability)).filter((c) => !c.passed).map((c) => c.id);
     if (!handler) failed.push("tier0_handler_missing");
     if (failed.length) return { outcome: "denied", capability, tier, decision_id: null, reason: `failed: ${failed.join(", ")}` };
-    return { outcome: "succeeded", capability, tier, decision_id: null, result: await handler!(env, input) };
+    try {
+      return { outcome: "succeeded", capability, tier, decision_id: null, result: await handler!(env, input, agentId) };
+    } catch (err) {
+      return { outcome: "failed", capability, tier, decision_id: null, reason: String((err as Error)?.message ?? err).slice(0, 300) };
+    }
   }
   let decision: { decision: string; decision_id: string; reason: string };
   try {

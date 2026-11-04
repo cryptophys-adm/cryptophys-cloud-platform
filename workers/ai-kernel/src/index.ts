@@ -43,6 +43,7 @@ export default {
           supervisor_binding: Boolean(env.SUPERVISOR),
           signal_analyst_binding: Boolean(env.SIGNAL_ANALYST),
           auditor_binding: Boolean(env.AUDITOR),
+          memory_binding: Boolean(env.MEMORY),
         });
       }
       if (path === "/") {

@@ -69,6 +69,9 @@ function auditorEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) 
       get: () => ({ cycle: (t: "scheduled" | "operator") => runAuditCycle(env as never, audMem, t), status: async () => (await audMem.get("last_cycle")) ?? null }),
     };
   }
+  if (!("MEMORY" in extra)) {
+    env.MEMORY = { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) };
+  }
   return { env, db, supMem, sigMem, audMem };
 }
 
@@ -107,7 +110,7 @@ test("tampered audit chain produces a critical report with deterministic valid:f
   });
   assert.equal(CAPABILITIES["audit.verify"].tier, 0);
   const seeded = db.raw.prepare("SELECT tier_max, status, capabilities_json FROM agents WHERE agent_id = ?").get(AUDITOR_ID) as any;
-  assert.deepEqual([seeded.tier_max, seeded.status, JSON.parse(seeded.capabilities_json)], [1, "enabled", ["audit.verify", "reports.publish"]]);
+  assert.deepEqual([seeded.tier_max, seeded.status, JSON.parse(seeded.capabilities_json)], [1, "enabled", ["audit.verify", "reports.publish", "memory.recall", "memory.remember"]]);
 
   const e1 = await appendAuditEvent(db, { event_type: "test.one", actor: "op@example.com", subject: "svc", outcome: "ok", payload: { step: 1 } });
   await appendAuditEvent(db, { event_type: "test.two", actor: "op@example.com", subject: "svc", outcome: "ok", payload: { step: 2 } });

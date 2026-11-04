@@ -11,6 +11,7 @@
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
+import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall } from "./syscall.ts";
 import type { CycleReport, KernelEnv, Memory } from "./supervisor.ts";
 import type { ReportSeverity } from "./reports.ts";
@@ -164,8 +165,15 @@ export async function runSignalCycle(
   }
 
   const severity: ReportSeverity = obs.symbols.some((s) => flippedBuySell(prevActions[s.symbol], s.action)) ? "warning" : "info";
+  const recalled = await recallContextForAgent(
+    env,
+    SIGNAL_ANALYST_ID,
+    `signals ${obs.symbols.map((s) => `${s.symbol}:${s.action}`).join(" ")}`,
+    report,
+  );
   const task = draftSignalDigestTask(obs.symbols);
-  const ai = await engineFor(env, SERVICE, [task.name]).run(task, obs, `${SIGNAL_ANALYST_ID}:${now}`);
+  const aiInput = recalled && recalled.length > 0 ? { ...obs, context: recalled } : obs;
+  const ai = await engineFor(env, SERVICE, [task.name]).run(task, aiInput, `${SIGNAL_ANALYST_ID}:${now}`);
   const draft = ai.status === "ok" ? ai.data : templateDigest(obs);
   const sourceBasisCloseTimes = Object.fromEntries(obs.symbols.map((s) => [s.symbol, s.basis_close_time]));
 
@@ -198,6 +206,8 @@ export async function runSignalCycle(
     const nextActions = Object.fromEntries(obs.symbols.map((s) => [s.symbol, s.action]));
     await memory.put("last_actions", nextActions);
     await memory.put("last_digest_at", now);
+    const reportId = String(((published.result.report as JsonObject | undefined)?.report_id) ?? "");
+    await rememberOutcomeForAgent(env, SIGNAL_ANALYST_ID, "signal_digest", draft.headline, reportId || null, report);
   }
   await memory.put("last_cycle", report);
   return report;

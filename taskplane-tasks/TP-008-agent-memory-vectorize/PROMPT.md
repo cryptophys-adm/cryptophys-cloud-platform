@@ -8,7 +8,7 @@ Agents remember what they reported or proposed and recall similar past situation
 
 ## Files
 
-- `workers/control-plane-migrations/0013_agent_memories.sql` (new)
+- `workers/control-plane-migrations/0014_agent_memories.sql` (new; sequenced after `0011_agent_syscall_consumptions.sql`, `0012_agent_reports.sql`, and `0013_auditor_agent.sql`)
 - `workers/control-plane-shared/src/capabilities.ts`
 - `workers/control-plane-shared/src/ai-engine.ts`: add `embed()` only.
 - `workers/control-plane-shared/src/readiness.ts`
@@ -29,7 +29,7 @@ Agents remember what they reported or proposed and recall similar past situation
    - Idempotent: create the index and its metadata index only if missing, using `npx wrangler vectorize create|create-metadata-index|list --json`.
    - Never deletes anything. Prints no secrets.
    - The test uses a fake `npx` on `PATH`, like the other `.github/scripts/*.test.sh` files.
-3. **Migration 0013.**
+3. **Migration 0014.**
    - `agent_memories`: `memory_id PK`, `agent_id REFERENCES agents`, `kind`, `text` (≤1000 characters, CHECK), `source_ref`, `created_at`.
    - Grant `memory.recall` and `memory.remember` to `supervisor`, `signal-analyst` and `auditor`. Write this as an `UPDATE agents SET capabilities_json = json_insert(...)` that is idempotent.
 4. **Capabilities.**
