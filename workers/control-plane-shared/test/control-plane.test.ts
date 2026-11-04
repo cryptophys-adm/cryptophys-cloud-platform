@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, migratedDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, fakeWorkflow, migratedDb, req } from "./harness.ts";
 import { AiEngine, extractJsonObject, type AiTask } from "../src/ai-engine.ts";
 import { appendAuditEvent, verifyAuditChain, GENESIS_HASH } from "../src/audit.ts";
 import { redact } from "../src/http.ts";
@@ -233,7 +233,7 @@ test("policy engine allows only fully compliant deployments and records every de
 test("recovery plans need a different approver and a policy allow before execution", async () => {
   const db = migratedDb();
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
-  const env = { ...baseEnv("cryptophys-recovery-manager", db), APPROVER_IDENTITIES: `${OPERATOR_EMAIL},${APPROVER_EMAIL}`, POLICY: {
+  const env = { ...baseEnv("cryptophys-recovery-manager", db), RECOVERY_LIFECYCLE: fakeWorkflow().binding, APPROVER_IDENTITIES: `${OPERATOR_EMAIL},${APPROVER_EMAIL}`, POLICY: {
     // RPC binding (PolicyRpc.evaluate): same validation and persistence as production.
     evaluate: async (input: Record<string, unknown>) => {
       const parsed = parsePolicyRequest(input);

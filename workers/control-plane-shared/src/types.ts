@@ -48,6 +48,32 @@ export interface ScheduledEventLike {
   scheduledTime: number;
 }
 
+/**
+ * The subset of the Cloudflare Workflows API the platform uses. The step functions run the
+ * Workflow logic, which is written against these interfaces so it can be tested in Node.
+ */
+export type WorkflowDuration = string | number;
+export interface WorkflowStepConfigLike {
+  retries?: { limit: number; delay: WorkflowDuration; backoff?: "constant" | "linear" | "exponential" };
+  timeout?: WorkflowDuration;
+}
+export interface WorkflowStepContextLike { attempt: number }
+export interface WorkflowStepLike {
+  do<T>(name: string, callback: (ctx: WorkflowStepContextLike) => Promise<T>): Promise<T>;
+  do<T>(name: string, config: WorkflowStepConfigLike, callback: (ctx: WorkflowStepContextLike) => Promise<T>): Promise<T>;
+  waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: WorkflowDuration }): Promise<{ payload: T; timestamp: Date; type: string }>;
+}
+export interface WorkflowInstanceLike {
+  id: string;
+  sendEvent(event: { type: string; payload?: unknown }): Promise<void>;
+  terminate(): Promise<void>;
+  status(): Promise<{ status: string; error?: unknown; output?: unknown }>;
+}
+export interface WorkflowBindingLike<P = unknown> {
+  create(options?: { id?: string; params?: P }): Promise<WorkflowInstanceLike>;
+  get(id: string): Promise<WorkflowInstanceLike>;
+}
+
 /** Bindings every control-plane service Worker declares. */
 export interface BaseEnv {
   ACCESS_TEAM_DOMAIN?: string;

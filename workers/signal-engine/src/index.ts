@@ -1,4 +1,4 @@
-import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
+import type { BaseEnv, ExecutionContextLike, ScheduledEventLike, WorkflowBindingLike } from "../../control-plane-shared/src/types.ts";
 import {
   errorResponse, healthResponse, json, limitParam, newId, nowIso, serviceMetadata, type JsonObject,
 } from "../../control-plane-shared/src/http.ts";
@@ -27,7 +27,11 @@ const ENGINES: [string, number, (c: Candle[]) => Indicators][] = [
  * migrated from NATS consumers on Kubernetes to one Worker with a Cron Trigger and D1.
  * Advisory only: public, read-only market data, no account keys, no orders.
  */
+export interface IngestParams { now: number; trigger: "scheduled" | "manual" }
+
 export interface Env extends BaseEnv {
+  /** Workflow binding for SignalIngestWorkflow (ADR-0006); without it the cron runs inline. */
+  INGEST_WORKFLOW?: WorkflowBindingLike<IngestParams>;
   /** Comma-separated exchange symbols, e.g. "BTCUSDT,ETHUSDT". */
   SYMBOLS?: string;
   /** Comma-separated timeframes from TIMEFRAMES_ALLOWED. */
@@ -327,47 +331,74 @@ async function latestMacro(env: Env): Promise<JsonObject | null> {
   ).first<JsonObject>();
 }
 
-/** One ingestion pass over every configured series; a failing series never blocks the others. */
-export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | "manual" = "scheduled"): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
-  const startedAt = nowIso();
+/** A provider failure worth retrying later in the same run (Workflow step retries). */
+export const TRANSIENT_ERRORS = /^(market_data_timeout|market_data_unreachable|market_data_http_(429|5\d\d))$|too many requests|rate limit/i;
+
+/** Stage: one series. A failure is returned as data so it is recorded with the run. */
+export async function ingestSeriesStage(env: Env, symbol: string, timeframe: string, now: number): Promise<SeriesResult> {
   const cfg = config(env);
   if (cfg instanceof Error) throw cfg;
-  const series: SeriesResult[] = [];
-  for (const symbol of cfg.symbols) {
-    for (const timeframe of cfg.timeframes) {
-      try {
-        series.push(await ingestSeries(env, PROVIDERS[cfg.provider], symbol, timeframe, now));
-      } catch (err) {
-        series.push({ symbol, timeframe, status: "error", error: "storage_failed" });
-        console.error(JSON.stringify({ service: SERVICE, event: "series_failed", symbol, timeframe, message: String((err as Error)?.message ?? err) }));
-      }
-    }
-    try {
-      await deriveSymbol(env, symbol, cfg.timeframes, now);
-    } catch (err) {
-      console.error(JSON.stringify({ service: SERVICE, event: "derive_failed", symbol, message: String((err as Error)?.message ?? err) }));
-    }
-  }
   try {
-    const macro = await ingestMacro(env, now);
-    if (macro) series.push(macro);
+    return await ingestSeries(env, PROVIDERS[cfg.provider], symbol, timeframe, now);
   } catch (err) {
-    series.push({ symbol: "MACRO", timeframe: "1h", status: "error", error: "storage_failed" });
-    console.error(JSON.stringify({ service: SERVICE, event: "macro_failed", message: String((err as Error)?.message ?? err) }));
+    console.error(JSON.stringify({ service: SERVICE, event: "series_failed", symbol, timeframe, message: String((err as Error)?.message ?? err) }));
+    return { symbol, timeframe, status: "error", error: "storage_failed" };
   }
+}
+
+/** Stage: cross-series engines for one symbol. Never throws; failures are logged. */
+export async function deriveStage(env: Env, symbol: string, timeframes: string[], now: number): Promise<{ symbol: string; ok: boolean }> {
+  try {
+    await deriveSymbol(env, symbol, timeframes, now);
+    return { symbol, ok: true };
+  } catch (err) {
+    console.error(JSON.stringify({ service: SERVICE, event: "derive_failed", symbol, message: String((err as Error)?.message ?? err) }));
+    return { symbol, ok: false };
+  }
+}
+
+/** Stage: hourly macro context. */
+export async function macroStage(env: Env, now: number): Promise<SeriesResult | null> {
+  try {
+    return await ingestMacro(env, now);
+  } catch (err) {
+    console.error(JSON.stringify({ service: SERVICE, event: "macro_failed", message: String((err as Error)?.message ?? err) }));
+    return { symbol: "MACRO", timeframe: "1h", status: "error", error: "storage_failed" };
+  }
+}
+
+/** Stage: retention and the persisted run record. */
+export async function recordRunStage(
+  env: Env, now: number, startedAt: string, trigger: string, series: SeriesResult[], workflowInstanceId: string | null = null,
+): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
   await env.DB.prepare("DELETE FROM market_candles WHERE open_time < ?").bind(now - RETENTION_DAYS * 86_400_000).run();
   await env.DB.prepare("DELETE FROM macro_context WHERE observed_hour < ?").bind(now - RETENTION_DAYS * 86_400_000).run();
   const failed = series.filter((s) => s.status === "error").length;
   const runId = newId("sig");
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(runId, trigger, startedAt, nowIso(), series.length, failed, JSON.stringify(series)),
+      `INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json, workflow_instance_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(runId, trigger, startedAt, nowIso(), series.length, failed, JSON.stringify(series), workflowInstanceId),
     env.DB.prepare("DELETE FROM signal_ingest_runs WHERE started_at < ?").bind(new Date(now - 30 * 86_400_000).toISOString()),
   ]);
-  console.log(JSON.stringify({ service: SERVICE, event: "ingest", run_id: runId, series: series.length, failed }));
+  console.log(JSON.stringify({ service: SERVICE, event: "ingest", run_id: runId, series: series.length, failed, workflow_instance_id: workflowInstanceId }));
   return { run_id: runId, series, failed };
+}
+
+/** One inline ingestion pass (POST /v1/ingest, or the cron fallback without the Workflow binding). */
+export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | "manual" = "scheduled"): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
+  const startedAt = nowIso();
+  const cfg = config(env);
+  if (cfg instanceof Error) throw cfg;
+  const series: SeriesResult[] = [];
+  for (const symbol of cfg.symbols) {
+    for (const timeframe of cfg.timeframes) series.push(await ingestSeriesStage(env, symbol, timeframe, now));
+    await deriveStage(env, symbol, cfg.timeframes, now);
+  }
+  const macro = await macroStage(env, now);
+  if (macro) series.push(macro);
+  return recordRunStage(env, now, startedAt, trigger, series);
 }
 
 interface IndicatorRow { open_time: number; engine: string; implementation: string; window_size: number; indicators_json: string; computed_at: string }
@@ -417,6 +448,21 @@ const summaryTask: AiTask<Summary> = {
   },
 };
 
+/**
+ * Cron entry: one Workflow instance per cron firing. The instance id is derived from the
+ * scheduled time, so a duplicate firing cannot start a second run over the same candles.
+ */
+export async function scheduleIngest(env: Env, scheduledTime: number): Promise<string> {
+  if (!env.INGEST_WORKFLOW) return (await ingest(env, scheduledTime)).run_id;
+  const id = `ingest-${new Date(scheduledTime).toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    return (await env.INGEST_WORKFLOW.create({ id, params: { now: scheduledTime, trigger: "scheduled" } })).id;
+  } catch (err) {
+    if (/already exists|duplicate/i.test(String((err as Error)?.message ?? err))) return id;
+    throw err;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -425,7 +471,7 @@ export default {
     const path = url.pathname;
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/health" || path === "/healthz") return healthResponse(env);
-      if (path === "/ready" || path === "/readyz") return readinessResponse(env, { market_config_valid: !(config(env) instanceof Error) });
+      if (path === "/ready" || path === "/readyz") return readinessResponse(env, { market_config_valid: !(config(env) instanceof Error), ingest_workflow: Boolean(env.INGEST_WORKFLOW) });
       if (path === "/") {
         return serviceMetadata(env, "Deterministic trend and volume indicators from public market data (advisory only; every 15 minutes)", [
           "GET /v1/signals?symbol=&timeframe=", "GET /v1/signals/history?symbol=&timeframe=&limit=", "GET /v1/status", "GET /v1/macro", "POST /v1/ingest",
@@ -496,8 +542,8 @@ export default {
     }
   },
 
-  async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
-    ctx.waitUntil(ingest(env).then(() => undefined, (err) => {
+  async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    ctx.waitUntil(scheduleIngest(env, event.scheduledTime).catch((err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "scheduled_ingest_failed", message: String((err as Error)?.message ?? err) }));
     }));
   },

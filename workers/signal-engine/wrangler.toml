@@ -42,3 +42,14 @@ migrations_dir = "../control-plane-migrations"
 
 # No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
 # deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.
+
+# The cron creates one Workflow instance per firing (ADR-0006); each series is a durable step
+# with retries. About 12 steps a run, ~35k a month, inside the Workers Paid included 500k.
+[[workflows]]
+name = "cryptophys-signal-ingest"
+binding = "INGEST_WORKFLOW"
+class_name = "SignalIngestWorkflow"
+
+[workflows.default_retention]
+success_retention = "3 days"
+error_retention = "14 days"
