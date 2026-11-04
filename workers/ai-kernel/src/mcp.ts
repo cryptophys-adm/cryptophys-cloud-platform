@@ -1,12 +1,14 @@
 /**
  * MCP front door of the AI Worker OS (ADR-0007): JSON-RPC 2.0 over streamable HTTP (single
- * JSON responses, no SSE). It sits behind Cloudflare Access and the operator allow-list; the
- * caller's verified identity is the actor. Tools are the operator's view of the OS. No tool
- * can approve, deploy, rotate secrets or touch funds, and re-enabling agents needs an approver.
+ * JSON responses, no SSE). It sits behind Cloudflare Access:
+ *  - Operator sessions (identities in OPERATOR_IDENTITIES) see the operator tools. No tool
+ *    can approve, deploy, rotate secrets or touch funds, and re-enabling agents needs an approver.
+ *  - Agent sessions (service tokens bound in agent_principals, TP-009) see only agent_whoami,
+ *    agent_observe (tier 0) and agent_syscall (tier <= 1, gated by Policy Engine and external_tier_limit).
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
-import { CAPABILITIES } from "../../control-plane-shared/src/capabilities.ts";
-import { observe } from "./syscall.ts";
+import { CAPABILITIES, getAgent } from "../../control-plane-shared/src/capabilities.ts";
+import { observe, syscall } from "./syscall.ts";
 import { listAgents, listActions, setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv } from "./kernel.ts";
 import { listReports } from "./reports.ts";
 
@@ -30,11 +32,54 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: { enabled: { type: "boolean" } }, required: ["enabled"] } },
 ];
 
+export const AGENT_TOOLS: Tool[] = [
+  {
+    name: "agent_whoami",
+    description: "Return this external agent session's agent_id, tier_max, and granted capabilities with tiers.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "agent_observe",
+    description: "Invoke a tier-0 read-only capability granted to this agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        capability: str("tier-0 capability name (e.g. platform.observe, signals.observe, audit.verify, memory.recall)"),
+        input: { type: "object", description: "optional capability input" },
+      },
+      required: ["capability"],
+    },
+  },
+  {
+    name: "agent_syscall",
+    description: "Invoke a policy-gated capability (tier <= 1) as this agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        capability: str("capability name (tier <= 1)"),
+        input: { type: "object", description: "capability input object" },
+      },
+      required: ["capability"],
+    },
+  },
+];
+
+export interface AgentSession {
+  agentId: string;
+  accessIdentity: string;
+}
+
 const rpc = (id: unknown, result: unknown) => Response.json({ jsonrpc: "2.0", id, result });
 const rpcError = (id: unknown, code: number, message: string) => Response.json({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 const text = (value: unknown, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }], isError });
 
-export async function handleMcp(request: Request, env: KernelHttpEnv, actor: string, isApprover: boolean): Promise<Response> {
+export async function handleMcp(
+  request: Request,
+  env: KernelHttpEnv,
+  actor: string,
+  isApprover: boolean,
+  agentSession?: AgentSession,
+): Promise<Response> {
   if (request.method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
   let msg: JsonObject;
   try { msg = (await request.json()) as JsonObject; } catch { return rpcError(null, -32700, "parse error"); }
@@ -43,18 +88,22 @@ export async function handleMcp(request: Request, env: KernelHttpEnv, actor: str
   // Notifications (no id) get 202 Accepted with no body.
   if (id === undefined) return new Response(null, { status: 202 });
   const params = (msg.params ?? {}) as JsonObject;
+  const activeTools = agentSession ? AGENT_TOOLS : TOOLS;
   switch (msg.method) {
     case "initialize":
       return rpc(id, { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "cryptophys-ai-kernel", version: "1.0.0" },
         instructions: "AI Worker OS for the cryptophys platform. Advisory: agents observe, propose and take bounded reversible actions under policy; humans approve the rest." });
     case "ping": return rpc(id, {});
-    case "tools/list": return rpc(id, { tools: TOOLS.map(({ approverOnly: _a, ...t }) => t) });
+    case "tools/list": return rpc(id, { tools: activeTools.map(({ approverOnly: _a, ...t }) => t) });
     case "tools/call": {
       const name = params.name as string;
       const args = (params.arguments ?? {}) as JsonObject;
-      const tool = TOOLS.find((t) => t.name === name);
+      const tool = activeTools.find((t) => t.name === name);
       if (!tool) return rpcError(id, -32602, `unknown tool ${String(name)}`);
       try {
+        if (agentSession) {
+          return rpc(id, await callAgentTool(env, tool, args, agentSession));
+        }
         return rpc(id, await callTool(env, tool, args, actor, isApprover));
       } catch (err) {
         return rpc(id, text({ error: String((err as Error)?.message ?? err) }, true));
@@ -62,6 +111,41 @@ export async function handleMcp(request: Request, env: KernelHttpEnv, actor: str
     }
     default: return rpcError(id, -32601, `method not found: ${msg.method}`);
   }
+}
+
+async function callAgentTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, session: AgentSession) {
+  switch (tool.name) {
+    case "agent_whoami": {
+      const agent = await getAgent(env.DB, session.agentId);
+      if (!agent) return text({ error: "agent_not_registered" }, true);
+      const capabilities = JSON.parse(agent.capabilities_json) as string[];
+      return text({
+        agent_id: agent.agent_id,
+        display_name: agent.display_name,
+        status: agent.status,
+        tier_max: agent.tier_max,
+        access_identity: session.accessIdentity,
+        capabilities: capabilities.map((c) => ({ capability: c, tier: CAPABILITIES[c]?.tier ?? null })),
+      });
+    }
+    case "agent_observe": {
+      const capability = String(args.capability ?? "");
+      const cap = Object.hasOwn(CAPABILITIES, capability) ? CAPABILITIES[capability] : undefined;
+      if (!cap || cap.tier !== 0) {
+        return text({ outcome: "denied", capability, reason: "agent_observe_requires_tier_0" }, true);
+      }
+      const input = args.input && typeof args.input === "object" && !Array.isArray(args.input) ? (args.input as JsonObject) : {};
+      const res = await syscall(env, session.agentId, capability, input);
+      return text(res, res.outcome !== "succeeded");
+    }
+    case "agent_syscall": {
+      const capability = String(args.capability ?? "");
+      const input = args.input && typeof args.input === "object" && !Array.isArray(args.input) ? (args.input as JsonObject) : {};
+      const res = await syscall(env, session.agentId, capability, input);
+      return text(res, res.outcome !== "succeeded");
+    }
+  }
+  return text({ error: "unknown tool" }, true);
 }
 
 async function callTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, actor: string, isApprover: boolean) {

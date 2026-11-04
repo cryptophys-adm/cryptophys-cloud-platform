@@ -8,7 +8,7 @@ An external AI agent (for example an IDE agent or another Claude session) connec
 
 ## Files
 
-- `workers/control-plane-migrations/0014_agent_principals.sql` (new)
+- `workers/control-plane-migrations/0015_agent_principals.sql` (new; sequenced after `0011..0014`)
 - `workers/control-plane-shared/src/capabilities.ts`
 - `workers/control-plane-shared/src/readiness.ts`
 - `workers/ai-kernel/src/mcp.ts`, `kernel.ts`, `index.ts`, `syscall.ts`
@@ -19,7 +19,7 @@ The Access policy and service-token creation are **owner and orchestrator work**
 
 ## Specification
 
-1. **Migration 0014.**
+1. **Migration 0015.**
    - `agent_principals`:
      - `access_identity TEXT PRIMARY KEY` (the service token Client ID, as `actorOf()` returns it);
      - `agent_id TEXT NOT NULL REFERENCES agents`;
