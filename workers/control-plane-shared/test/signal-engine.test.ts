@@ -193,6 +193,25 @@ test("Kraken provider: XBT naming, minute intervals, since-based tail, forming c
   assert.equal(mixed.series[0].error, "series_has_other_provider_candles");
 });
 
+test("Pacer serializes concurrent turns within one Worker isolate", async () => {
+  let now = 0;
+  const pendingSleeps: Array<{ ms: number; resolve: () => void }> = [];
+  const pacer = new Pacer((ms) => new Promise<void>((resolve) => { pendingSleeps.push({ ms, resolve }); }), () => now);
+  const pending = Promise.all([pacer.turn(1_100), pacer.turn(1_100), pacer.turn(1_100)]);
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+  await flush();
+  assert.deepEqual(pendingSleeps.map((x) => x.ms), [1_100], "only one concurrent caller may reserve the next slot");
+  now = 1_100;
+  pendingSleeps.shift()!.resolve();
+  await flush();
+  assert.deepEqual(pendingSleeps.map((x) => x.ms), [1_100], "the third caller waits for the second turn");
+  now = 2_200;
+  pendingSleeps.shift()!.resolve();
+  await pending;
+  assert.equal(now, 2_200);
+});
+
 test("Kraken calls are spaced and a rate-limited series is retried once after a back-off", async () => {
   const db = migratedDb();
   const e = env(db, { MARKET_DATA_PROVIDER: "kraken", SYMBOLS: "BTCUSDT,SOLUSDT" });
