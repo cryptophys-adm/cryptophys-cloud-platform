@@ -4,12 +4,14 @@ import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { CAPABILITIES, agentsEnabled, getAgent, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";
 import { AGENT_ID, type CycleReport, type KernelEnv } from "./supervisor.ts";
+import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 
 export interface SupervisorStub { cycle(trigger: "scheduled" | "operator"): Promise<CycleReport>; status(): Promise<CycleReport | null> }
 export interface SupervisorNamespace { idFromName(name: string): unknown; get(id: unknown): SupervisorStub }
 
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
+  SIGNAL_ANALYST?: SupervisorNamespace;
   APPROVER_IDENTITIES?: string;
 }
 
@@ -21,7 +23,7 @@ export function present(a: AgentRow): JsonObject {
 }
 
 export async function listAgents(env: KernelHttpEnv): Promise<JsonObject> {
-  const rows = await env.DB.prepare("SELECT * FROM agents ORDER BY agent_id").all<AgentRow>();
+  const rows = await env.DB.prepare("SELECT * FROM agents ORDER BY tier_max DESC, agent_id").all<AgentRow>();
   return { agents_enabled: await agentsEnabled(env.DB), agents: rows.results.map(present) };
 }
 
@@ -33,16 +35,25 @@ export async function listActions(env: KernelHttpEnv, agentId: string, limit: nu
 }
 
 const supervisor = (env: KernelHttpEnv) => env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID));
+const signalAnalyst = (env: KernelHttpEnv) => {
+  if (!env.SIGNAL_ANALYST) throw new Error("signal_analyst_binding_missing");
+  return env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID));
+};
 
 export async function wakeAgent(env: KernelHttpEnv, agentId: string): Promise<CycleReport | JsonObject> {
-  if (agentId !== AGENT_ID) throw new Error("only the supervisor agent runs cycles");
-  return supervisor(env).cycle("operator");
+  if (agentId === AGENT_ID) return supervisor(env).cycle("operator");
+  if (agentId === SIGNAL_ANALYST_ID) return signalAnalyst(env).cycle("operator");
+  throw new Error("unknown runnable agent");
 }
 
 export async function agentStatus(env: KernelHttpEnv, agentId: string): Promise<JsonObject | null> {
   const agent = AGENT_ID_RE.test(agentId) ? await getAgent(env.DB, agentId) : null;
   if (!agent) return null;
-  const last = agentId === AGENT_ID ? await supervisor(env).status() : null;
+  const last = agentId === AGENT_ID
+    ? await supervisor(env).status()
+    : agentId === SIGNAL_ANALYST_ID && env.SIGNAL_ANALYST
+      ? await signalAnalyst(env).status()
+      : null;
   return { agent: present(agent), last_cycle: last as unknown as JsonObject };
 }
 

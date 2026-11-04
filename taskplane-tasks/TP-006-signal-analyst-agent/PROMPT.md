@@ -8,7 +8,7 @@ This task adds a second agent process, `signal-analyst` (tier_max **1**), hosted
 
 ## Files
 
-- `workers/control-plane-migrations/0011_agent_reports.sql` (new)
+- `workers/control-plane-migrations/0012_agent_reports.sql` (new; sequenced after `0011_agent_syscall_consumptions.sql`)
 - `workers/control-plane-shared/src/capabilities.ts`
 - `workers/control-plane-shared/src/readiness.ts` (`REQUIRED_MIGRATION`)
 - `workers/ai-kernel/src/syscall.ts`, `kernel.ts`, `mcp.ts`, `index.ts`, `worker.ts`
@@ -16,12 +16,12 @@ This task adds a second agent process, `signal-analyst` (tier_max **1**), hosted
 - `workers/ai-kernel/src/reports.ts` (new)
 - `workers/ai-kernel/wrangler.toml`
 - `workers/control-plane-shared/test/signal-analyst.test.ts` (new)
-- `workers/control-plane-shared/test/control-plane.test.ts`: only if a count assertion must change.
+- `workers/control-plane-shared/test/ai-kernel.test.ts`, `workers/control-plane-shared/test/control-plane.test.ts`: only if a readiness or count assertion must change.
 - `taskplane-tasks/TP-006-signal-analyst-agent/STATUS.md` (new)
 
 ## Specification
 
-1. **Migration 0011.**
+1. **Migration 0012.**
    - `agent_reports`:
      - `report_id TEXT PK`;
      - `agent_id TEXT NOT NULL REFERENCES agents`;

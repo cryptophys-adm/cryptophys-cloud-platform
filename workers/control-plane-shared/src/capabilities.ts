@@ -16,7 +16,9 @@ export interface Capability { tier: Tier; reversible: boolean; description: stri
 
 export const CAPABILITIES: Record<string, Capability> = {
   "platform.observe": { tier: 0, reversible: true, description: "Read drift, signal ingestion, recovery plans and agent state" },
+  "signals.observe": { tier: 0, reversible: true, description: "Read the latest Signal Engine confluence, decision, Mizan and macro context" },
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
+  "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
   "signals.reingest": { tier: 2, reversible: true, description: "Run one extra Signal Engine ingestion pass (idempotent writes)", max_per_hour: 2 },
   "deploy.release": { tier: 3, reversible: false, description: "Deploy a new Worker version (GitHub Actions with human gates only)" },
   "secrets.rotate": { tier: 3, reversible: false, description: "Rotate or replace a secret (human only)" },

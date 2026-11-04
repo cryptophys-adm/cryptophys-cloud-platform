@@ -17,12 +17,15 @@ import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
 type Db = ReturnType<typeof migratedDb>;
 const SUB = "agent:supervisor";
 
-test("readiness requires the atomic syscall-consumption migration", async () => {
+test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0011_agent_syscall_consumptions.sql");
+  assert.equal(REQUIRED_MIGRATION, "0012_agent_reports.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
-  db.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(REQUIRED_MIGRATION);
+  db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
+  const db2 = migratedDb();
+  db2.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(REQUIRED_MIGRATION);
+  assert.equal(await schemaReady({ DB: db2 } as never), false);
 });
 
 function memory() {
@@ -62,6 +65,9 @@ function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
     ...extra,
   };
   env.SUPERVISOR = { idFromName: (n: string) => n, get: () => ({ cycle: (t: "scheduled" | "operator") => runCycle(env as never, mem, t), status: async () => (await mem.get("last_cycle")) ?? null }) };
+  if (!("SIGNAL_ANALYST" in extra)) {
+    env.SIGNAL_ANALYST = { idFromName: (n: string) => n, get: () => ({ cycle: async () => ({ agent_id: "signal-analyst", trigger: "scheduled", ran_at: new Date().toISOString(), findings: [] }), status: async () => null }) };
+  }
   return { env, db, reingests, mem };
 }
 

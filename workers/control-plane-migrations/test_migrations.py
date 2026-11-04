@@ -216,7 +216,7 @@ print("PASS: initial schema, forward migration, data preservation, indexes, CHEC
 full_db = sqlite3.connect(":memory:")
 full_db.execute("PRAGMA foreign_keys = ON")
 for migration in sorted(ROOT.glob("*.sql")):
-    if migration.name == "0011_agent_syscall_consumptions.sql":
+    if migration.name >= "0011_agent_syscall_consumptions.sql":
         continue
     full_db.executescript(migration.read_text(encoding="utf-8"))
 
@@ -230,7 +230,10 @@ full_db.executemany(
         ("act-denied", "dec-denied", "denied", "2026-11-04T15:02:00.000Z"),
     ],
 )
-full_db.executescript((ROOT / "0011_agent_syscall_consumptions.sql").read_text(encoding="utf-8"))
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0011_agent_syscall_consumptions.sql":
+        continue
+    full_db.executescript(migration.read_text(encoding="utf-8"))
 consumed = {
     row[0] for row in full_db.execute("SELECT decision_id FROM agent_syscall_consumptions")
 }
