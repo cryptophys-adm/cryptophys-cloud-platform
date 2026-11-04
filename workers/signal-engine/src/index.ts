@@ -54,7 +54,7 @@ interface StoredCandle extends Candle { close_time: number }
 export interface Provider {
   name: string;
   origin: string;
-  /** Minimum spacing between requests to this provider within one ingestion pass. */
+  /** Minimum spacing between requests to this provider within one Worker isolate. */
   minIntervalMs: number;
   url(symbol: string, timeframe: string, sinceOpenTime: number | null, backfill: boolean): string;
   parse(body: unknown, timeframe: string, now: number): StoredCandle[] | Error;
@@ -147,9 +147,10 @@ export interface SeriesResult {
 
 const RATE_LIMIT_BACKOFF_MS = 3_000;
 
-/** Spaces provider calls within one pass; `sleep` is injectable so tests do not wait. */
+/** Serializes provider calls within this Worker isolate; separate isolates are not coordinated. */
 export class Pacer {
   private last = -Infinity;
+  private queue: Promise<void> = Promise.resolve();
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly clock: () => number;
   constructor(sleep?: (ms: number) => Promise<void>, clock?: () => number) {
@@ -157,10 +158,15 @@ export class Pacer {
     this.clock = clock ?? (() => Date.now());
   }
   async wait(ms: number): Promise<void> { if (ms > 0) await this.sleep(ms); }
-  async turn(minIntervalMs: number): Promise<void> {
-    const gap = this.last + minIntervalMs - this.clock();
-    if (gap > 0) await this.sleep(gap);
-    this.last = this.clock();
+  turn(minIntervalMs: number): Promise<void> {
+    const next = this.queue.then(async () => {
+      const gap = this.last + minIntervalMs - this.clock();
+      if (gap > 0) await this.sleep(gap);
+      this.last = this.clock();
+    });
+    // Preserve queue progress after one failed sleep, while returning the failure to its caller.
+    this.queue = next.catch(() => undefined);
+    return next;
   }
 }
 let pace = new Pacer();
