@@ -1,6 +1,6 @@
 # Cryptophys Cloud Platform — Worker Context
 
-**Last Updated:** 2026-11-04
+**Last Updated:** 2026-11-05
 **Status:** Active
 **Next Task ID:** TP-010
 **Roles:** orchestrator and validator = Claude (cloud session); code worker = Antigravity (TP-006 to TP-009, see `ANTIGRAVITY.md`); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
@@ -9,12 +9,20 @@
 
 ## Where the deployment stands
 
-Cloudflare production is live and verified at `main`, deployed by GitHub Actions only.
-- **9 platform Workers** behind Cloudflare Access, every one with its own AI engine: Platform API (OS gateway), Deployment Orchestrator, Platform Registry, Policy Engine, Audit Ledger, Recovery Manager, Drift Detector, Signal Engine and AI Kernel.
-- **AI Worker OS (ADR-0007):** the kernel runs the `supervisor`, `signal-analyst`, and `auditor` agents (Durable Objects), Vectorize-backed semantic agent memory (`cryptophys-agent-memory`), external agent sessions over MCP via `agent_principals`, policy-gated syscalls by tier, and the MCP front door. **Workflows (ADR-0006):** recovery lifecycle and signal ingest.
-- **D1** `cryptophys-control-plane`, with migrations up to `0015`.
-- **Drift:** 13 of 13 services are healthy, including the 4 xauusd Workers, which are watched for health only.
+**Observed production state (read-only verification, 2026-11-04 20:23 UTC). Do not infer production state from `main` alone.**
+
+- Repository `main` is at `56f52bf62f59c31b8437e328a7fb5775bcbff347`. Production is **not fully reconciled** to this commit.
+- D1 `cryptophys-control-plane` has migrations through `0015_agent_principals.sql` applied. The tables `agent_syscall_consumptions`, `agent_reports`, `agent_memories`, and `agent_principals` exist.
+- The latest deployments of Policy Engine, Audit Ledger, Platform Registry, Recovery Manager, Signal Engine, Platform API, and Deployment Orchestrator are annotated with commit `56f52bf62f59c31b8437e328a7fb5775bcbff347`.
+- AI Kernel and Drift Detector are still on commit `59db4cf695fa7a7c689a07506c429a1f522270ba`. The deployed AI Kernel currently exposes only `SupervisorAgent`, `HealthRpc`, and `KernelRpc`; it does **not** expose the Signal Analyst or Auditor Durable Object handlers added by PRs #61 and #62.
+- The D1 agent registry contains enabled rows for `supervisor`, `signal-analyst`, and `auditor`, but this does not prove their newer Worker code is deployed. Read-only row counts were: `agent_syscall_consumptions=5`, `agent_reports=0`, `agent_memories=0`, and `agent_principals=0`.
+- The connected production account's Vectorize v2 index list is empty. The `cryptophys-agent-memory` index and its `agent_id` metadata index are therefore **not verified as provisioned**. Vectorize-backed memory and external MCP principals must not be described as operational yet.
+- A separate Cloudflare Worker `cryptophys-github-actions-mcp` remains deployed; its latest deployment is dated `2026-11-01T05:58:17Z`. ADR-0007 identifies this shared-bearer GitHub-token MCP connector as superseded by the Access-protected kernel MCP and leaves retirement to the owner. This inventory does not inspect or disclose its token, establish current reachability, or authorize deletion.
+- The last Control Plane rollout (#41883619698) applied D1 migrations 0011–0015 and updated five Workers, then failed at AI Kernel when the deployment token received Cloudflare API authentication error 10000 for Vectorize. This left production partially updated. PR #66 adds a fail-fast Vectorize preflight before D1 or Worker mutations; it is still open and has not been deployed.
+- **Drift/health:** do not claim 13/13 services healthy from deployment metadata alone. Verify the live health/readiness endpoints and record the check time before asserting that state.
 - **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
+
+The next production rollout requires the owner to resolve the existing production deployment token's Vectorize access, followed by a separately approved manual deployment and per-Worker verification. This status note authorizes no production change.
 
 The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `ANTIGRAVITY.md`.
 
