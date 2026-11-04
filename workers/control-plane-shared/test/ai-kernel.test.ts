@@ -12,9 +12,18 @@ import recovery, { proposeFromAgent } from "../../recovery-manager/src/index.ts"
 import kernel from "../../ai-kernel/src/index.ts";
 import { runCycle, SerialCycleQueue, templateProposal } from "../../ai-kernel/src/supervisor.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
+import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
 
 type Db = ReturnType<typeof migratedDb>;
 const SUB = "agent:supervisor";
+
+test("readiness requires the atomic syscall-consumption migration", async () => {
+  const db = migratedDb();
+  assert.equal(REQUIRED_MIGRATION, "0011_agent_syscall_consumptions.sql");
+  assert.equal(await schemaReady({ DB: db } as never), true);
+  db.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(REQUIRED_MIGRATION);
+  assert.equal(await schemaReady({ DB: db } as never), false);
+});
 
 function memory() {
   const m = new Map<string, unknown>();
