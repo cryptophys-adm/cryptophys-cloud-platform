@@ -1,6 +1,6 @@
 # TP-002 GitHub Cleanup — STATUS
 
-State: awaiting_owner
+State: done
 
 ## Evidence
 
@@ -37,12 +37,17 @@ Result: exit code 1 (no matches)
 - Corrected the report to list variable names only; the prior commit included the allow-list email values, which are now omitted from the current file.
 - No secrets, branches, Environment deployment policies, permissions, rulesets, or branch protection were changed.
 
-## Open questions / OWNER GATE
+## Step 2 (executed)
 
-- The read-only inventory is complete, but cleanup is destructive. No step 2 action has been taken.
-- TP-002 step 2 would delete three Environment secrets, delete a branch, and change the production Environment deployment-branch policy. Do not proceed from this report without explicit owner authorization that supersedes the current instruction not to change secrets.
-- The orchestrator is not issuing a VALIDATED handoff for destructive step 2. Await written owner authorization before any such work.
+Owner approval: confirmed by owner to orchestrator, 2026-11-04 (see APPROVAL.md)
 
-## Worker note
+Before:
+- Environment secrets: CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET, CLOUDFLARE_ACCESS_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CONTROL_PLANE_ADMIN_TOKEN, CONTROL_PLANE_APPROVER_TOKEN, ORCHESTRATOR_SHARED_SECRET
+- Deployment-branch policies: main, claude/gracious-brown-tkc4e8
+- Branches included: ops/platform-api-deploy-request
 
-Step 2 remains unexecuted pending orchestrator `VALIDATED` on PR #47 and written owner authorization.
+After:
+- Environment secrets: CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET, CLOUDFLARE_ACCESS_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
+- Deployment-branch policies: main
+- Branch ops/platform-api-deploy-request: deleted
+- Branch claude/gracious-brown-tkc4e8: retained (not deleted)
