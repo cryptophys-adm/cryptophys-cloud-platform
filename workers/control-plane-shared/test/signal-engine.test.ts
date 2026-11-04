@@ -95,8 +95,11 @@ test("ingest backfills the window, stores immutable candles and computes both en
   assert.equal(typeof latest.body.engines.volume.indicators.mfi_14, "number");
   assert.match(latest.body.engines.trend.implementation, /pandas_ta_classic 0\.4\.47/);
   assert.equal(typeof latest.body.engines.momentum.indicators.rsi_14, "number");
-  assert.equal(latest.body.engines.mizan.indicators.signal_tier, "neutral");
-  assert.equal(latest.body.engines.mizan.indicators.advisory_risk_levels, null);
+  assert.match(latest.body.engines.mizan.indicators.formulas, /mizan-revised/);
+  assert.equal(typeof latest.body.engines.mizan.indicators.dim_score, "number");
+  assert.match(latest.body.confluence.mizan.formulas, /mizan-revised/, "phi is computed per symbol across timeframes");
+  assert.ok(["neutral", "weak", "standard", "strong", "extreme"].includes(latest.body.confluence.mizan.signal_tier));
+  assert.deepEqual(latest.body.confluence.decision.thresholds, { buy: 62, sell: 38 });
   assert.ok(["bullish", "bearish", "neutral"].includes(latest.body.confluence.decision.bias));
   const history = await call(signal, e, req("GET", "/v1/signals/history?symbol=ETHUSDT&timeframe=1h&limit=10"));
   assert.equal(history.body.rows.length, 6);

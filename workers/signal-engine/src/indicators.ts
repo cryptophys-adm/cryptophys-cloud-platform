@@ -12,7 +12,7 @@
 
 export interface Candle { open_time: number; o: number; h: number; l: number; c: number; v: number }
 
-export const IMPLEMENTATION = "signal-engine/2 (pandas_ta_classic 0.4.47 parity)";
+export const IMPLEMENTATION = "signal-engine/3 (pandas_ta_classic 0.4.47 parity; revised Mizan/decision, ADR-0005 decision 10)";
 
 type Series = number[];
 const nan = (n: number): Series => new Array<number>(n).fill(NaN);
