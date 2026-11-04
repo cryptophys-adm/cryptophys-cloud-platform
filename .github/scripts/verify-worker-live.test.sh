@@ -49,6 +49,8 @@ if [[ -f "$fixture.err" ]]; then cat "$fixture.err" >&2; exit 60; fi
 if [[ ! -f "$fixture" ]]; then echo '{"success":false,"errors":[{"code":404,"message":"no fixture"}]}' >"$out"; [[ -n "$fmt" ]] && printf 404; exit 0; fi
 cat "$fixture" >"$out"
 [[ -n "$fmt" ]] && printf '%s' "$(cat "$fixture.status" 2>/dev/null || echo 200)"
+# A one-shot ".then" fixture replaces this one after the first read (eventual consistency).
+if [[ -f "$fixture.then" ]]; then mv "$fixture.then" "$fixture"; fi
 exit 0
 FAKE
 chmod +x "$tmp/bin/curl"
@@ -122,6 +124,14 @@ expect fail "split deployment fails" "single version at 100%"
 setup_green stale-version
 fx "$api/scripts/svc/versions/v1" "{\"success\":true,\"result\":{\"id\":\"v1\",\"annotations\":{\"workers/message\":\"commit $other_sha\"}}}"
 expect fail "version for another commit fails" "not annotated with commit"
+
+setup_green lagging-deployments
+fx "$api/scripts/svc/versions/v0" "{\"success\":true,\"result\":{\"id\":\"v0\",\"annotations\":{\"workers/message\":\"commit $other_sha\"}}}"
+fx "$api/scripts/svc/deployments" '{"success":true,"result":{"deployments":[{"versions":[{"version_id":"v1","percentage":100}]}]}}'
+mv "$FIXTURES/api_cloudflare_test_client_v4_accounts_${account}_workers_scripts_svc_deployments" \
+   "$FIXTURES/api_cloudflare_test_client_v4_accounts_${account}_workers_scripts_svc_deployments.then"
+fx "$api/scripts/svc/deployments" '{"success":true,"result":{"deployments":[{"versions":[{"version_id":"v0","percentage":100}]}]}}'
+expect pass "deployments list that lags one read behind converges" "Active Cloudflare version for svc: v1"
 
 setup_green health-500
 fx "$base/health" '{"status":"error"}' 500
