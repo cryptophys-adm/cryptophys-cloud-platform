@@ -147,7 +147,7 @@ jobs:
             exposed="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
               --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
               "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${name}/subdomain" \
-              | jq -er '.result.enabled')"
+              | jq -r '.result.enabled | if type == "boolean" then tostring else error("subdomain.enabled is not a boolean") end')"
             if [[ "$exposed" == "false" ]]; then
               echo "${name}: workers.dev disabled (not publicly reachable); verified live by its first deploy"
               continue
