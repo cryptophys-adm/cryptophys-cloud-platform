@@ -16,7 +16,7 @@ Git is the source of truth for platform design and code. This repository contain
 
 ## Implemented and deployed to production
 
-- Eight platform Workers are deployed from exact `main` commits through three manually dispatched production workflows (Platform API, Deployment Orchestrator, and the six-Worker Control Plane workflow), with each Worker verified live. The four live xauusd Workers are registered and health-monitored, without changes to their repository (ADR-0005):
+- Eight platform Workers are deployed from exact `main` commits through three manually dispatched production workflows (Platform API, Deployment Orchestrator, and the Control Plane workflow deploying five control-plane services plus Signal Engine), with each Worker verified live. The four live xauusd Workers are registered and health-monitored, without changes to their repository (ADR-0005):
   - `cryptophys-platform-api`: health and readiness API.
   - `cryptophys-deployment-orchestrator`: CI-gated, locked (Durable Object) and audited Platform API deployments.
   - `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-drift-detector`: the control plane (ADR-0004).
