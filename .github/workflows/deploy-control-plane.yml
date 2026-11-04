@@ -1,8 +1,11 @@
 name: Deploy Control Plane
 
-# Production deployment of the five control-plane service Workers from one reviewed
-# main commit: Platform Registry, Policy Engine, Audit Ledger, Recovery Manager and
-# Drift Detector. The Deployment Orchestrator and Platform API keep their own workflows.
+# Production deployment of the five control-plane service Workers plus Signal Engine
+# from one exact main commit; type-check, tests and migration validation run before
+# production credentials are used.
+# Platform Registry, Policy Engine, Audit Ledger, Recovery Manager and Drift Detector
+# are the five control-plane services; Signal Engine is deployed in this same workflow.
+# The Deployment Orchestrator and Platform API keep their own workflows.
 #
 # Order matters: service bindings require their targets to exist, so the Policy
 # Engine deploys before the Recovery Manager and the Drift Detector deploys last.
@@ -145,7 +148,7 @@ jobs:
             vars=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}")
             [[ "$dir" == "recovery-manager" ]] && vars+=(--var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}")
             echo "::group::Deploy ${name}"
-            # Retired shared tokens: the code no longer reads them and deploys never delete secrets.
+            # Wrangler preserves secret bindings; remove only the retired shared-token names that the current identity-auth code no longer reads.
             "$GITHUB_WORKSPACE/.github/scripts/remove-worker-secrets.sh" "$name" ADMIN_TOKEN APPROVER_TOKEN
             npx wrangler deploy --config "../${dir}/wrangler.deploy.toml" --tag "$tag" --message "commit ${COMMIT_SHA}" "${vars[@]}"
             curl --fail --silent --show-error --proto '=https' --max-time 20 --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
