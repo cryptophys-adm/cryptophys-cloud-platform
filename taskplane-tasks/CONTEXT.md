@@ -2,20 +2,21 @@
 
 **Last Updated:** 2026-11-04
 **Status:** Active
-**Next Task ID:** TP-006
-**Roles:** orchestrator and validator = Claude (cloud session); worker = pi agent on the VPS; owner = repository owner (human).
+**Next Task ID:** TP-010
+**Roles:** orchestrator and validator = Claude (cloud session); code worker = Antigravity (TP-006 to TP-009, see `ANTIGRAVITY.md`); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
 
 ---
 
 ## Where the deployment stands
 
 Cloudflare production is live and verified at `main`, deployed by GitHub Actions only.
-- **8 platform Workers** behind Cloudflare Access: Platform API, Deployment Orchestrator, Platform Registry, Policy Engine, Audit Ledger, Recovery Manager, Drift Detector and Signal Engine.
-- **D1** `cryptophys-control-plane`, with migrations up to `0008`.
-- **Drift:** 12 of 12 services are healthy, including the 4 xauusd Workers, which are watched for health only.
-- **Decisions:** ADR-0005 and `docs/TRANSFORMATION-INVENTORY.md`.
+- **9 platform Workers** behind Cloudflare Access, every one with its own AI engine: Platform API (OS gateway), Deployment Orchestrator, Platform Registry, Policy Engine, Audit Ledger, Recovery Manager, Drift Detector, Signal Engine and AI Kernel.
+- **AI Worker OS (ADR-0007):** the kernel runs the `supervisor` agent (Durable Object), policy-gated syscalls by tier, and the MCP front door. **Workflows (ADR-0006):** recovery lifecycle and signal ingest.
+- **D1** `cryptophys-control-plane`, with migrations up to `0010`.
+- **Drift:** 13 of 13 services are healthy, including the 4 xauusd Workers, which are watched for health only.
+- **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
 
-What remains is outside Cloudflare, on the legacy Talos/Kubernetes estate (`cryptophys-work/platform-gitops`, `cryptophys-work/apps-gitops`). That is what the worker on the VPS can reach.
+The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `ANTIGRAVITY.md`.
 
 ## Hard rules for the worker (apply to every task)
 
@@ -52,7 +53,7 @@ Commit `STATUS.md` and any reports to the task branch and open a PR titled `TP-x
 
 ## Task order
 
-TP-001 and TP-002 can run in parallel. TP-003 must be validated before TP-004, and TP-004 before TP-005.
+Code tasks: TP-006 → TP-007 → TP-008 → TP-009, one PR each, each merged before the next starts. TP-001 is deferred by the owner; TP-003 to TP-005 are cancelled.
 
 ## Technical debt / future work
 
@@ -63,4 +64,5 @@ _Workers log discoveries here through their PR._
 
 - TP-001 security containment: step 2 done; remaining owner gates **deferred by the owner**. Do not continue without a new APPROVAL.md entry.
 - TP-002 GitHub cleanup: **done**.
+- TP-006 to TP-009 (AI Worker OS: Signal Analyst agent, Auditor agent, Vectorize memory, external agents through MCP): **ready for the Antigravity worker**.
 - TP-003, TP-004, TP-005 (cluster inventory, export, decommission): **cancelled** by the owner. The cluster is deprecated, its data is not kept, and the platform no longer needs cluster access. See each task's STATUS.md.
