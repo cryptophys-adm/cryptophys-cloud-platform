@@ -16,6 +16,7 @@ import { CAPABILITIES } from "../../control-plane-shared/src/capabilities.ts";
 import { agentStatus, listActions, listAgents, setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv } from "./kernel.ts";
 import { handleMcp } from "./mcp.ts";
 import { listReports } from "./reports.ts";
+import { AUDITOR_ID } from "./auditor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
@@ -41,6 +42,7 @@ export default {
           policy_binding: Boolean(env.POLICY), recovery_binding: Boolean(env.RECOVERY), signals_binding: Boolean(env.SIGNALS),
           supervisor_binding: Boolean(env.SUPERVISOR),
           signal_analyst_binding: Boolean(env.SIGNAL_ANALYST),
+          auditor_binding: Boolean(env.AUDITOR),
         });
       }
       if (path === "/") {
@@ -84,7 +86,7 @@ export default {
       if (verb === "actions") return request.method === "GET" ? json(await listActions(env, agentId, limitParam(url))) : errorResponse(405, "method_not_allowed");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       if (verb === "wake") {
-        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID) return errorResponse(404, "not_found");
+        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID && agentId !== AUDITOR_ID) return errorResponse(404, "not_found");
         return json(await wakeAgent(env, agentId));
       }
       if (verb === "suspend") {
@@ -106,9 +108,15 @@ export default {
     ctx.waitUntil(env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID)).cycle("scheduled").then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "supervisor_cycle_failed", message: String((err as Error)?.message ?? err) }));
     }));
-    if (new Date(event.scheduledTime).getUTCMinutes() === 7 && env.SIGNAL_ANALYST) {
+    const minute = new Date(event.scheduledTime).getUTCMinutes();
+    if (minute === 7 && env.SIGNAL_ANALYST) {
       ctx.waitUntil(env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID)).cycle("scheduled").then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "signal_analyst_cycle_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
+    if (minute === 37 && env.AUDITOR) {
+      ctx.waitUntil(env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID)).cycle("scheduled").then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "auditor_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
   },

@@ -8,13 +8,14 @@ This task adds the `auditor` agent (tier_max **1**) in `cryptophys-ai-kernel`. O
 
 ## Files
 
-- `workers/control-plane-migrations/0012_auditor_agent.sql` (new; seed only)
+- `workers/control-plane-migrations/0013_auditor_agent.sql` (new; seed only, sequenced after `0012_agent_reports.sql`)
 - `workers/control-plane-shared/src/capabilities.ts`
 - `workers/control-plane-shared/src/readiness.ts`
 - `workers/ai-kernel/src/syscall.ts`, `index.ts`, `worker.ts`, `kernel.ts`, `mcp.ts`
 - `workers/ai-kernel/src/auditor.ts` (new)
 - `workers/ai-kernel/wrangler.toml`
 - `workers/control-plane-shared/test/auditor.test.ts` (new)
+- `workers/control-plane-shared/test/ai-kernel.test.ts`, `workers/control-plane-shared/test/signal-analyst.test.ts`: only if a readiness or binding helper must change.
 - `taskplane-tasks/TP-007-auditor-agent/STATUS.md` (new)
 
 ## Specification

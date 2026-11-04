@@ -82,6 +82,12 @@ function analystEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) 
     idFromName: (n: string) => n,
     get: () => ({ cycle: (t: "scheduled" | "operator") => runSignalCycle(env as never, sigMem, t), status: async () => (await sigMem.get("last_cycle")) ?? null }),
   };
+  if (!("AUDITOR" in extra)) {
+    env.AUDITOR = {
+      idFromName: (n: string) => n,
+      get: () => ({ cycle: async () => ({ agent_id: "auditor", trigger: "scheduled", ran_at: new Date().toISOString(), findings: [] }), status: async () => null }),
+    };
+  }
   return { env, db, supMem, sigMem };
 }
 

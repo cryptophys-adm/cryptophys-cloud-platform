@@ -5,6 +5,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { CAPABILITIES, agentsEnabled, getAgent, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";
 import { AGENT_ID, type CycleReport, type KernelEnv } from "./supervisor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
+import { AUDITOR_ID } from "./auditor.ts";
 
 export interface SupervisorStub { cycle(trigger: "scheduled" | "operator"): Promise<CycleReport>; status(): Promise<CycleReport | null> }
 export interface SupervisorNamespace { idFromName(name: string): unknown; get(id: unknown): SupervisorStub }
@@ -12,6 +13,7 @@ export interface SupervisorNamespace { idFromName(name: string): unknown; get(id
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
   SIGNAL_ANALYST?: SupervisorNamespace;
+  AUDITOR?: SupervisorNamespace;
   APPROVER_IDENTITIES?: string;
 }
 
@@ -39,10 +41,15 @@ const signalAnalyst = (env: KernelHttpEnv) => {
   if (!env.SIGNAL_ANALYST) throw new Error("signal_analyst_binding_missing");
   return env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID));
 };
+const auditor = (env: KernelHttpEnv) => {
+  if (!env.AUDITOR) throw new Error("auditor_binding_missing");
+  return env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID));
+};
 
 export async function wakeAgent(env: KernelHttpEnv, agentId: string): Promise<CycleReport | JsonObject> {
   if (agentId === AGENT_ID) return supervisor(env).cycle("operator");
   if (agentId === SIGNAL_ANALYST_ID) return signalAnalyst(env).cycle("operator");
+  if (agentId === AUDITOR_ID) return auditor(env).cycle("operator");
   throw new Error("unknown runnable agent");
 }
 
@@ -53,7 +60,9 @@ export async function agentStatus(env: KernelHttpEnv, agentId: string): Promise<
     ? await supervisor(env).status()
     : agentId === SIGNAL_ANALYST_ID && env.SIGNAL_ANALYST
       ? await signalAnalyst(env).status()
-      : null;
+      : agentId === AUDITOR_ID && env.AUDITOR
+        ? await auditor(env).status()
+        : null;
   return { agent: present(agent), last_cycle: last as unknown as JsonObject };
 }
 

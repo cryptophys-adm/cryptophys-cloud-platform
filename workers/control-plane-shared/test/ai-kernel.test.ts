@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0012_agent_reports.sql");
+  assert.equal(REQUIRED_MIGRATION, "0013_auditor_agent.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -67,6 +67,9 @@ function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
   env.SUPERVISOR = { idFromName: (n: string) => n, get: () => ({ cycle: (t: "scheduled" | "operator") => runCycle(env as never, mem, t), status: async () => (await mem.get("last_cycle")) ?? null }) };
   if (!("SIGNAL_ANALYST" in extra)) {
     env.SIGNAL_ANALYST = { idFromName: (n: string) => n, get: () => ({ cycle: async () => ({ agent_id: "signal-analyst", trigger: "scheduled", ran_at: new Date().toISOString(), findings: [] }), status: async () => null }) };
+  }
+  if (!("AUDITOR" in extra)) {
+    env.AUDITOR = { idFromName: (n: string) => n, get: () => ({ cycle: async () => ({ agent_id: "auditor", trigger: "scheduled", ran_at: new Date().toISOString(), findings: [] }), status: async () => null }) };
   }
   return { env, db, reingests, mem };
 }
