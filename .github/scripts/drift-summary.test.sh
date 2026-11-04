@@ -19,7 +19,7 @@ one_drifted() {
     if [[ $s == cryptophys-platform-api ]]; then svc "$s" true "$at" version_mismatch; else svc "$s" false "$at"; fi
   done
 }
-all=(cryptophys-audit-ledger cryptophys-deployment-orchestrator cryptophys-drift-detector cryptophys-platform-api cryptophys-platform-registry cryptophys-policy-engine cryptophys-recovery-manager cryptophys-signal-engine xauusd-ai-trading-assistant xauusd-fundamental-news-ingestion xauusd-nexus-dashboard xauusd-tradingview-pull-adapter)
+all=(cryptophys-ai-kernel cryptophys-audit-ledger cryptophys-deployment-orchestrator cryptophys-drift-detector cryptophys-platform-api cryptophys-platform-registry cryptophys-policy-engine cryptophys-recovery-manager cryptophys-signal-engine xauusd-ai-trading-assistant xauusd-fundamental-news-ingestion xauusd-nexus-dashboard xauusd-tradingview-pull-adapter)
 report() { jq -s '{services: .}' > "$tmp/r.json"; }
 
 for s in "${all[@]}"; do svc "$s" false "$at"; done | report
@@ -38,7 +38,7 @@ check "missing service" '.state == "drift" and .problems[0] == {service_id: "cry
 
 for s in "${all[@]}"; do svc "$s" false "$old"; done | report
 stale="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
-check "stale observations" '.state == "drift" and (.problems | length) == 12 and all(.problems[]; .problem == "stale_observation")' "$stale"
+check "stale observations" '.state == "drift" and (.problems | length) == 13 and all(.problems[]; .problem == "stale_observation")' "$stale"
 
 [[ "$(jq -r .fingerprint <<<"$drift")" != "$(jq -r .fingerprint <<<"$missing")" ]] || { echo "::error::fingerprints must differ" >&2; fail=$((fail + 1)); }
 one_drifted | report

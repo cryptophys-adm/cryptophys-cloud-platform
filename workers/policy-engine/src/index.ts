@@ -7,11 +7,12 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { agentSyscallChecks } from "../../control-plane-shared/src/capabilities.ts";
 
 export type Env = BaseEnv;
 
 const SERVICE = "cryptophys-policy-engine";
-export const ACTIONS = ["deploy", "recovery.execute", "registry.update"] as const;
+export const ACTIONS = ["deploy", "recovery.execute", "registry.update", "agent.syscall"] as const;
 export type PolicyAction = (typeof ACTIONS)[number];
 
 export interface PolicyCheck { id: string; passed: boolean; detail: string }
@@ -45,6 +46,10 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     for (const key of ["owner", "purpose", "data_classification"]) {
       checks.push(check(`metadata_${key}`, typeof m[key] === "string" && Boolean((m[key] as string).trim()), `metadata.${key} is mandatory`));
     }
+  } else if (action === "agent.syscall") {
+    // AI Worker OS (ADR-0007): the resource is the capability; the subject must be agent:<id>.
+    // Over HTTP the subject is the caller's Access identity, so a person cannot pose as an agent.
+    checks.push(...(await agentSyscallChecks(db, String(context.__subject ?? ""), resource)));
   } else {
     checks.push(check("known_action", false, `action must be one of ${ACTIONS.join(", ")}`));
   }
@@ -87,7 +92,8 @@ export function parsePolicyRequest(b: JsonObject): PolicyRequest | Error {
 
 /** Evaluate, persist the decision with its evidence, and append it to the audit chain. */
 export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecision> {
-  const result = await evaluatePolicy(env.DB, req.action, req.resource, req.context);
+  // The subject is passed to the agent rules out of band; it is never read from caller context.
+  const result = await evaluatePolicy(env.DB, req.action, req.resource, { ...req.context, __subject: req.subject });
   const decisionId = newId("dec");
   const evidence = { checks: result.checks, context: redact(req.context) };
   await env.DB.prepare(
@@ -129,7 +135,7 @@ export default {
       if (path === "/health" || path === "/healthz") return healthResponse(env);
       if (path === "/ready" || path === "/readyz") return readinessResponse(env);
       if (path === "/") {
-        return serviceMetadata(env, "Deterministic deployment, recovery and registry policy decisions", [
+        return serviceMetadata(env, "Deterministic deployment, recovery, registry and agent syscall policy decisions", [
           "POST /v1/evaluate", "GET /v1/decisions", "GET /v1/decisions/{decision_id}",
         ]);
       }

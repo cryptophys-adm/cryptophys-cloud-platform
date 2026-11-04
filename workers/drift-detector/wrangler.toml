@@ -70,6 +70,11 @@ binding = "SVC_SIGNAL_ENGINE"
 service = "cryptophys-signal-engine"
 entrypoint = "HealthRpc"
 
+[[services]]
+binding = "SVC_AI_KERNEL"
+service = "cryptophys-ai-kernel"
+entrypoint = "HealthRpc"
+
 # xauusd Workers are deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005
 # decision 7). Plain service bindings reach their fetch handler for a /health probe only;
 # they never leave Cloudflare and need no route, token or change in that repository.

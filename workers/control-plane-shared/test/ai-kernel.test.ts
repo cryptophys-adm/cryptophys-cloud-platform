@@ -1,0 +1,266 @@
+// AI Worker OS (ADR-0007): capability catalog, policy syscall gate, syscall targets'
+// decision re-verification, the supervisor agent cycle, the kernel HTTP API and MCP.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, fakeWorkflow, migratedDb, req,
+} from "./harness.ts";
+import { verifyAuditChain } from "../src/audit.ts";
+import { CAPABILITIES, agentSyscallChecks, verifySyscallDecision } from "../src/capabilities.ts";
+import policy, { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
+import recovery, { proposeFromAgent } from "../../recovery-manager/src/index.ts";
+import kernel from "../../ai-kernel/src/index.ts";
+import { runCycle, templateProposal } from "../../ai-kernel/src/supervisor.ts";
+import { syscall } from "../../ai-kernel/src/syscall.ts";
+
+type Db = ReturnType<typeof migratedDb>;
+const SUB = "agent:supervisor";
+
+function memory() {
+  const m = new Map<string, unknown>();
+  return { m, async get<T>(k: string) { return m.get(k) as T | undefined; }, async put(k: string, v: unknown) { m.set(k, structuredClone(v)); } };
+}
+
+/** The kernel env wired like production: real Policy Engine decisions, real Recovery Manager writes. */
+function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
+  const policyEnv = baseEnv("cryptophys-policy-engine", db);
+  const recoveryEnv = { ...baseEnv("cryptophys-recovery-manager", db), RECOVERY_LIFECYCLE: fakeWorkflow().binding };
+  const reingests: string[] = [];
+  const mem = memory();
+  const env: Record<string, unknown> = {
+    ...baseEnv("cryptophys-ai-kernel", db, { OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`, APPROVER_IDENTITIES: APPROVER_EMAIL }),
+    POLICY: {
+      evaluate: async (input: Record<string, unknown>) => {
+        const parsed = parsePolicyRequest(input);
+        if (parsed instanceof Error) throw parsed;
+        return decide(policyEnv as never, parsed);
+      },
+    },
+    // Same as RecoveryRpc.propose / SignalRpc.reingest in the Workers' worker.ts.
+    RECOVERY: {
+      propose: async (agentId: string, decisionId: string, input: Record<string, unknown>) => {
+        await verifySyscallDecision(db, decisionId, agentId, "recovery.propose");
+        return proposeFromAgent(recoveryEnv as never, agentId, input);
+      },
+    },
+    SIGNALS: {
+      reingest: async (agentId: string, decisionId: string) => {
+        await verifySyscallDecision(db, decisionId, agentId, "signals.reingest");
+        reingests.push(decisionId);
+        return { run_id: "sig_test", series: 6, failed: 0 };
+      },
+    },
+    ...extra,
+  };
+  env.SUPERVISOR = { idFromName: (n: string) => n, get: () => ({ cycle: (t: "scheduled" | "operator") => runCycle(env as never, mem, t), status: async () => (await mem.get("last_cycle")) ?? null }) };
+  return { env, db, reingests, mem };
+}
+
+function drift(db: Db, serviceId: string, drifted: boolean, minutesAgo: number, reasons = ["version_mismatch"]) {
+  const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+    VALUES (?, ?, 'd', 'o', ?, ?, ?)`).run(`obs_${serviceId}_${minutesAgo}`, serviceId, drifted ? 1 : 0,
+    JSON.stringify({ reasons: drifted ? reasons : [], desired_version: "aaaaaaaaaaaa", probe: { version_tag: drifted ? "bbbbbbbbbbbb" : "aaaaaaaaaaaa" } }), at);
+}
+function ingestRun(db: Db, minutesAgo: number, failed: number, total = 6) {
+  const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  db.raw.prepare(`INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES (?, 'scheduled', ?, ?, ?, ?, '[]')`)
+    .run(`sig_${minutesAgo}`, at, at, total, failed);
+}
+const AI_PLAN = { response: JSON.stringify({ title: "Redeploy Platform API", rationale: "Observed version differs from desired twice.",
+  steps: [{ action: "redeploy_commit", description: "Redeploy the desired commit." }, { action: "manual", description: "Verify drift." }] }) };
+
+// ---------------------------------------------------------------- catalog and policy
+
+test("migration 0010 seeds the supervisor at tier 2, the kill switch on, and the kernel in the registry", () => {
+  const db = migratedDb();
+  const a = db.raw.prepare("SELECT tier_max, status, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;
+  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [2, "enabled", ["platform.observe", "recovery.propose", "signals.reingest"]]);
+  assert.equal((db.raw.prepare("SELECT value FROM kernel_controls").get() as any).value, "1");
+  assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
+  assert.throws(() => db.raw.prepare("UPDATE agents SET tier_max = 3 WHERE agent_id = 'supervisor'").run(), /CHECK/, "no agent can ever hold tier 3");
+  db.raw.prepare("INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES ('r', 'agent', 't', 't', 0, 0, '[]')").run();
+});
+
+test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and rate limit", async () => {
+  const db = migratedDb();
+  const failed = async (subject: string, cap: string) => (await agentSyscallChecks(db, subject, cap)).filter((c) => !c.passed).map((c) => c.id);
+  assert.deepEqual(await failed(SUB, "recovery.propose"), []);
+  assert.deepEqual(await failed(SUB, "signals.reingest"), []);
+  assert.ok((await failed(SUB, "deploy.release")).includes("not_human_only"));
+  assert.ok((await failed(SUB, "deploy.release")).includes("capability_granted"));
+  assert.ok((await failed(SUB, "trade.execute_order")).includes("capability_not_prohibited"));
+  assert.ok((await failed(SUB, "__proto__")).includes("capability_known"));
+  assert.ok((await failed("agent:ghost", "platform.observe")).includes("agent_registered"));
+  assert.ok((await failed(OPERATOR_EMAIL, "platform.observe")).includes("subject_is_agent"));
+  db.raw.prepare("UPDATE agents SET tier_max = 1").run();
+  assert.ok((await failed(SUB, "signals.reingest")).includes("tier_within_agent_limit"));
+  db.raw.prepare("UPDATE agents SET tier_max = 2, status = 'suspended'").run();
+  assert.ok((await failed(SUB, "platform.observe")).includes("agent_enabled"));
+  db.raw.prepare("UPDATE agents SET status = 'enabled'").run();
+  db.raw.prepare("UPDATE kernel_controls SET value = '0'").run();
+  assert.ok((await failed(SUB, "platform.observe")).includes("agents_enabled"));
+  db.raw.prepare("UPDATE kernel_controls SET value = '1'").run();
+  for (const i of [1, 2]) {
+    db.raw.prepare(`INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at)
+      VALUES (?, 'supervisor', 'signals.reingest', 2, NULL, 'succeeded', '{}', '{}', ?)`).run(`act_${i}`, new Date().toISOString());
+  }
+  assert.ok((await failed(SUB, "signals.reingest")).includes("rate_limit"), `max ${CAPABILITIES["signals.reingest"].max_per_hour}/h`);
+});
+
+test("Policy Engine decides agent.syscall; over HTTP a person can never act as an agent", async () => {
+  const db = migratedDb();
+  const env = baseEnv("cryptophys-policy-engine", db);
+  const allow = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "recovery.propose", context: {} });
+  assert.equal(allow.decision, "allow");
+  const spoof = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "deploy.release", context: { __subject: "x" } });
+  assert.equal(spoof.decision, "deny");
+  const http = await call(policy, env, req("POST", "/v1/evaluate", { subject: SUB, action: "agent.syscall", resource: "recovery.propose" }));
+  assert.equal(http.body.decision, "deny", "the HTTP subject is the caller's identity");
+  assert.match(http.body.reason, /subject_is_agent/);
+});
+
+test("syscall targets accept only a fresh, matching, unused allow decision", async () => {
+  const db = migratedDb();
+  const env = baseEnv("cryptophys-policy-engine", db);
+  const ok = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "signals.reingest", context: {} });
+  await verifySyscallDecision(db, ok.decision_id, "supervisor", "signals.reingest");
+  await assert.rejects(verifySyscallDecision(db, undefined, "supervisor", "signals.reingest"), /policy_decision_required/);
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "recovery.propose"), /policy_decision_invalid/);
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "other-agent", "signals.reingest"), /policy_decision_invalid/);
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "signals.reingest", Date.now() + 301_000), /policy_decision_invalid/);
+  const denied = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "deploy.release", context: {} });
+  await assert.rejects(verifySyscallDecision(db, denied.decision_id, "supervisor", "deploy.release"), /policy_decision_invalid/);
+  db.raw.prepare(`INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at)
+    VALUES ('act_x', 'supervisor', 'signals.reingest', 2, ?, 'succeeded', '{}', '{}', ?)`).run(ok.decision_id, new Date().toISOString());
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "signals.reingest"), /already_used/);
+});
+
+test("denied syscalls are recorded and audited; tier 3 never dispatches", async () => {
+  const { env, db } = kernelEnv();
+  const r = await syscall(env as never, "supervisor", "deploy.release", { commit: "x" });
+  assert.equal(r.outcome, "denied");
+  const row = db.raw.prepare("SELECT outcome, tier FROM agent_actions WHERE capability = 'deploy.release'").get() as any;
+  assert.deepEqual([row.outcome, row.tier], ["denied", 3]);
+  const noPolicy = await syscall({ ...env, POLICY: { evaluate: async () => { throw new Error("down"); } } } as never, "supervisor", "signals.reingest");
+  assert.deepEqual([noPolicy.outcome, (noPolicy as any).reason], ["denied", "policy_unavailable"], "fails closed");
+  assert.equal((await verifyAuditChain(db)).valid, true);
+});
+
+// ---------------------------------------------------------------- supervisor agent
+
+test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can approve; failing ingest -> tier 2 re-run", async () => {
+  const { env, db, reingests } = kernelEnv(migratedDb(), { AI: fakeAi(AI_PLAN) });
+  drift(db, "cryptophys-platform-api", true, 20);
+  drift(db, "cryptophys-platform-api", true, 5);
+  drift(db, "cryptophys-policy-engine", false, 20);
+  drift(db, "cryptophys-policy-engine", true, 5); // transient: not persistent
+  ingestRun(db, 20, 6);
+  ingestRun(db, 5, 6);
+
+  const report = await runCycle(env as never, kernelEnv().mem, "scheduled");
+  const kinds = report.findings.map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
+  assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded", "ingest::signals.reingest:succeeded"]);
+  assert.equal(reingests.length, 1);
+  const plan = db.raw.prepare("SELECT plan_id, status, created_by, steps_json FROM recovery_plans").get() as any;
+  assert.deepEqual([JSON.parse(plan.steps_json).title, plan.status, plan.created_by], ["Redeploy Platform API", "draft", "agent:supervisor"]);
+
+  // Only a person can approve, and separation of duties holds against the agent author.
+  const recoveryEnv = { ...baseEnv("cryptophys-recovery-manager", db), APPROVER_IDENTITIES: APPROVER_EMAIL, RECOVERY_LIFECYCLE: fakeWorkflow().binding, POLICY: {} };
+  const approved = await call(recovery, recoveryEnv, req("POST", `/v1/plans/${plan.plan_id}/approve`, {}, APPROVER_JWT));
+  assert.equal(approved.body.plan.status, "approved");
+  const trail = db.raw.prepare("SELECT event_type, actor FROM audit_events WHERE event_type = 'agent.action' ORDER BY rowid").all().map((r: any) => r.actor);
+  assert.deepEqual(trail, [SUB, SUB]);
+  assert.equal((await verifyAuditChain(db)).valid, true);
+});
+
+test("supervisor: no duplicate proposals, re-run cooldown, template when AI is unavailable, nothing when suspended", async () => {
+  const k = kernelEnv(migratedDb(), { AI: fakeAi({ response: "not json" }) });
+  drift(k.db, "cryptophys-audit-ledger", true, 20, ["health_check_failed"]);
+  drift(k.db, "cryptophys-audit-ledger", true, 5, ["health_check_failed"]);
+  const first = await runCycle(k.env as never, k.mem, "scheduled");
+  assert.equal(first.findings[0].outcome, "succeeded");
+  assert.equal(first.findings[0].ai, "invalid_output");
+  const plan = k.db.raw.prepare("SELECT steps_json FROM recovery_plans").get() as any;
+  assert.deepEqual(JSON.parse(plan.steps_json).steps.map((s: any) => s.action), ["manual", "rollback_worker_version"], "template proposal");
+  assert.deepEqual(templateProposal({ service_id: "x", drifted: true, persistent: true, reasons: ["version_mismatch"], desired_version: "a", observed_version: "b" }).steps[0].action, "redeploy_commit");
+
+  // Ingest has no runs at all (stale) -> one re-run; the next cycle is within the cooldown.
+  assert.equal(k.reingests.length, 1);
+  const second = await runCycle(k.env as never, k.mem, "scheduled");
+  assert.equal(k.reingests.length, 1);
+  assert.equal((k.db.raw.prepare("SELECT COUNT(*) AS n FROM recovery_plans").get() as any).n, 1, "open plan -> no duplicate");
+  assert.deepEqual(second.findings.map((f) => f.action), ["none", "none"]);
+
+  k.db.raw.prepare("UPDATE agents SET status = 'suspended'").run();
+  assert.equal((await runCycle(k.env as never, k.mem, "scheduled")).skipped, "agent_suspended");
+  k.db.raw.prepare("UPDATE agents SET status = 'enabled'").run();
+  k.db.raw.prepare("UPDATE kernel_controls SET value = '0'").run();
+  assert.equal((await runCycle(k.env as never, k.mem, "scheduled")).skipped, "agents_disabled");
+});
+
+// ---------------------------------------------------------------- HTTP and MCP
+
+test("kernel HTTP: readiness, agents, suspension by any operator, resumption and kill switch only by an approver", async () => {
+  const { env } = kernelEnv();
+  assert.equal((await call(kernel, env, req("GET", "/ready"))).body.status, "ready");
+  assert.equal((await call(kernel, env, req("GET", "/v1/agents", undefined, OUTSIDER_JWT))).status, 403);
+  const agents = await call(kernel, env, req("GET", "/v1/agents"));
+  assert.deepEqual(agents.body.agents[0].capabilities.map((c: any) => c.tier), [0, 1, 2]);
+  const suspended = await call(kernel, env, req("POST", "/v1/agents/supervisor/suspend", { reason: "test" }, OPERATOR_JWT));
+  assert.equal(suspended.body.agent.status, "suspended");
+  assert.equal((await call(kernel, env, req("POST", "/v1/agents/supervisor/resume", {}, OPERATOR_JWT))).status, 403);
+  assert.equal((await call(kernel, env, req("POST", "/v1/agents/supervisor/resume", {}, APPROVER_JWT))).body.agent.status, "enabled");
+  assert.equal((await call(kernel, env, req("POST", "/v1/kernel/agents-enabled", { enabled: false }))).body.agents_enabled, false);
+  assert.equal((await call(kernel, env, req("POST", "/v1/kernel/agents-enabled", { enabled: true }))).status, 403);
+  assert.equal((await call(kernel, env, req("POST", "/v1/kernel/agents-enabled", { enabled: true }, APPROVER_JWT))).body.agents_enabled, true);
+  const woke = await call(kernel, env, req("POST", "/v1/agents/supervisor/wake", {}));
+  assert.equal(woke.body.trigger, "operator");
+  assert.equal((await call(kernel, env, req("GET", "/v1/agents/supervisor"))).body.last_cycle.trigger, "operator");
+  assert.equal((await call(kernel, env, req("POST", "/v1/agents/ghost/suspend", { reason: "x" }))).status, 404);
+});
+
+test("MCP: initialize, tools/list, tools/call; approver-only tools refuse operators", async () => {
+  const { env } = kernelEnv();
+  const rpc = (body: unknown, jwt = OPERATOR_JWT) => call(kernel, env, req("POST", "/mcp", body, jwt));
+  const init = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {} } });
+  assert.equal(init.body.result.serverInfo.name, "cryptophys-ai-kernel");
+  assert.equal((await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
+  const tools = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.ok(tools.body.result.tools.some((t: any) => t.name === "platform_status"));
+  assert.ok(tools.body.result.tools.every((t: any) => !/deploy|secret|trade|approve/.test(t.name)), "no tool approves, deploys, rotates or trades");
+  const status = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "platform_status", arguments: {} } });
+  assert.equal(JSON.parse(status.body.result.content[0].text).agents_enabled, true);
+  const resume = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "resume_agent", arguments: { agent_id: "supervisor" } } });
+  assert.equal(resume.body.result.isError, true);
+  const on = await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "set_agents_enabled", arguments: { enabled: true } } });
+  assert.equal(on.body.result.isError, true);
+  assert.equal((await rpc({ jsonrpc: "2.0", id: 6, method: "nope" })).body.error.code, -32601);
+  assert.equal((await call(kernel, env, req("POST", "/mcp", { jsonrpc: "2.0", id: 7, method: "tools/list" }, OUTSIDER_JWT))).status, 403);
+});
+
+// ---------------------------------------------------------------- Platform API gateway
+
+test("Platform API gateway: readiness needs its AI, D1 and kernel bindings; overview with an AI summary", async () => {
+  const { env: kEnv, db } = kernelEnv();
+  const { default: api } = await import("../../platform-api/src/index.ts");
+  const { observe } = await import("../../ai-kernel/src/syscall.ts");
+  const apiEnv: any = {
+    PLATFORM_NAME: "cryptophys-cloud-platform", PLATFORM_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1",
+    ACCESS_TEAM_DOMAIN: (kEnv as any).ACCESS_TEAM_DOMAIN, ACCESS_AUD: (kEnv as any).ACCESS_AUD, OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`,
+    DB: db, AI: fakeAi({ response: JSON.stringify({ summary: "All services in sync.", attention: [] }) }),
+    KERNEL: { overview: () => observe(kEnv as never) },
+  };
+  const ready = await call(api, apiEnv, req("GET", "/ready"));
+  assert.equal(ready.body.status, "ready");
+  assert.equal((await call(api, { ...apiEnv, KERNEL: undefined }, req("GET", "/ready"))).status, 503);
+  assert.equal((await call(api, { ...apiEnv, AI: undefined }, req("GET", "/ready"))).status, 503);
+  assert.equal((await call(api, apiEnv, req("GET", "/v1/overview", undefined, OUTSIDER_JWT))).status, 403);
+  const plain = await call(api, apiEnv, req("GET", "/v1/overview"));
+  assert.equal(plain.body.overview.agents_enabled, true);
+  assert.equal(plain.body.advisory, undefined);
+  const advised = await call(api, apiEnv, req("GET", "/v1/overview?advisory=true"));
+  assert.deepEqual([advised.body.advisory.status, advised.body.advisory.data.summary], ["ok", "All services in sync."]);
+  const down = await call(api, { ...apiEnv, KERNEL: { overview: async () => { throw new Error("x"); } } }, req("GET", "/v1/overview"));
+  assert.equal(down.status, 503);
+});

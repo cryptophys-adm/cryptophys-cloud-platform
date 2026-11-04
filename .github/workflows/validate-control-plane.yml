@@ -44,6 +44,6 @@ jobs:
       - name: Bundle every control-plane Worker (dry run, no credentials)
         run: |
           set -euo pipefail
-          for dir in platform-registry policy-engine audit-ledger recovery-manager signal-engine drift-detector; do
+          for dir in platform-registry policy-engine audit-ledger recovery-manager signal-engine ai-kernel drift-detector platform-api; do
             npx wrangler deploy --dry-run --config "../${dir}/wrangler.toml" --outdir "$RUNNER_TEMP/dry-run-${dir}"
           done

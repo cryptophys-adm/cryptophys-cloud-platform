@@ -7,6 +7,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authorize, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
@@ -26,7 +27,7 @@ export interface Env extends BaseEnv, LifecycleEnv {
 }
 
 const SERVICE = "cryptophys-recovery-manager";
-const STEP_ACTIONS = ["rollback_worker_version", "redeploy_commit", "disable_service", "restore_d1_bookmark", "rotate_secret", "manual"];
+const STEP_ACTIONS: readonly string[] = RECOVERY_STEP_ACTIONS;
 
 interface PlanRow {
   plan_id: string;
@@ -96,8 +97,41 @@ async function createPlan(request: Request, env: Env, url: URL, createdBy: strin
   if (!SERVICE_ID.test(serviceId as string)) return errorResponse(400, "invalid_request", "service_id is invalid");
   const steps = validateSteps(b.steps);
   if (steps instanceof Error) return errorResponse(400, "invalid_request", steps.message);
+  const saved = await insertPlan(env, { service_id: serviceId as string, plan_version: planVersion as string, title: title as string, rationale: rationale as string, steps }, createdBy);
+  if (saved instanceof Error) return errorResponse(404, saved.message);
+  const response: JsonObject = { plan: present(saved) };
+  if (url.searchParams.get("advisory") === "true") {
+    response.advisory = await engineFor(env, SERVICE, [draftTask.name]).run(draftTask, present(saved), saved.plan_id);
+  }
+  return json(response, 201);
+}
+
+export interface PlanInput { service_id: string; plan_version: string; title: string; rationale: string; steps: { action: string; description: string }[] }
+
+/**
+ * Validates an agent's proposal (RecoveryRpc.propose, ADR-0007 tier 1). The author is
+ * agent:<id>, so only a human approver can ever approve it (separation of duties).
+ */
+export async function proposeFromAgent(env: Env, agentId: string, input: Record<string, unknown>): Promise<JsonObject> {
+  if (!/^[a-z0-9-]{2,40}$/.test(agentId)) throw new Error("invalid_request: agent_id");
+  const b = input as JsonObject;
+  const serviceId = stringField(b, "service_id", 63);
+  const planVersion = stringField(b, "plan_version", 40);
+  const title = stringField(b, "title", 160);
+  const rationale = stringField(b, "rationale", 2000);
+  for (const v of [serviceId, planVersion, title, rationale]) if (v instanceof Error) throw new Error(`invalid_request: ${v.message}`);
+  if (!SERVICE_ID.test(serviceId as string)) throw new Error("invalid_request: service_id is invalid");
+  const steps = validateSteps(b.steps);
+  if (steps instanceof Error) throw new Error(`invalid_request: ${steps.message}`);
+  const saved = await insertPlan(env, { service_id: serviceId as string, plan_version: planVersion as string, title: title as string, rationale: rationale as string, steps }, `agent:${agentId}`);
+  if (saved instanceof Error) throw saved;
+  return present(saved);
+}
+
+async function insertPlan(env: Env, input: PlanInput, createdBy: string): Promise<PlanRow | Error> {
+  const { service_id: serviceId, plan_version: planVersion, title, rationale, steps } = input;
   const svc = await env.DB.prepare("SELECT 1 AS ok FROM service_registry WHERE service_id = ?").bind(serviceId).first();
-  if (!svc) return errorResponse(404, "service_not_registered");
+  if (!svc) return new Error("service_not_registered");
 
   const planId = newId("plan");
   const now = nowIso();
@@ -122,12 +156,7 @@ async function createPlan(request: Request, env: Env, url: URL, createdBy: strin
     event_type: "recovery.plan_created", actor: createdBy, subject: planId, outcome: "draft",
     payload: { service_id: serviceId, plan_version: planVersion, step_actions: steps.map((s) => s.action), approve_by: approveBy, workflow_instance_id: instanceId },
   });
-  const saved = (await getPlan(env, planId))!;
-  const response: JsonObject = { plan: present(saved) };
-  if (url.searchParams.get("advisory") === "true") {
-    response.advisory = await engineFor(env, SERVICE, [draftTask.name]).run(draftTask, present(saved), planId);
-  }
-  return json(response, 201);
+  return (await getPlan(env, planId))!;
 }
 
 async function approvePlan(env: Env, plan: PlanRow, approver: string): Promise<Response> {

@@ -387,7 +387,7 @@ export async function recordRunStage(
 }
 
 /** One inline ingestion pass (POST /v1/ingest, or the cron fallback without the Workflow binding). */
-export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | "manual" = "scheduled"): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
+export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | "manual" | "agent" = "scheduled"): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
   const startedAt = nowIso();
   const cfg = config(env);
   if (cfg instanceof Error) throw cfg;

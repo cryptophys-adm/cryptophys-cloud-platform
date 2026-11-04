@@ -5,6 +5,11 @@ declare module "cloudflare:workers" {
     protected ctx: unknown;
     constructor(ctx: unknown, env: Env);
   }
+  export abstract class DurableObject<Env = unknown> {
+    protected env: Env;
+    protected ctx: { storage: { get<T = unknown>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> } };
+    constructor(ctx: unknown, env: Env);
+  }
   export abstract class WorkflowEntrypoint<Env = unknown, Params = unknown> {
     protected env: Env;
     protected ctx: unknown;
