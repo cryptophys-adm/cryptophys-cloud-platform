@@ -210,3 +210,30 @@ assert not failure_db.execute("PRAGMA foreign_key_list(deployment_requests)").fe
 failure_db.close()
 
 print("PASS: initial schema, forward migration, data preservation, indexes, CHECK constraints, foreign keys, service-scoped idempotency, and fail-closed rollback")
+
+
+# Migration 0011: one-time agent syscall consumption and continuous rate-limit backfill.
+full_db = sqlite3.connect(":memory:")
+full_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name == "0011_agent_syscall_consumptions.sql":
+        continue
+    full_db.executescript(migration.read_text(encoding="utf-8"))
+
+full_db.executemany(
+    """INSERT INTO agent_actions
+       (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at)
+       VALUES (?, 'supervisor', 'signals.reingest', 2, ?, ?, '{}', '{}', ?)""",
+    [
+        ("act-success", "dec-success", "succeeded", "2026-11-04T15:00:00.000Z"),
+        ("act-failed", "dec-failed", "failed", "2026-11-04T15:01:00.000Z"),
+        ("act-denied", "dec-denied", "denied", "2026-11-04T15:02:00.000Z"),
+    ],
+)
+full_db.executescript((ROOT / "0011_agent_syscall_consumptions.sql").read_text(encoding="utf-8"))
+consumed = {
+    row[0] for row in full_db.execute("SELECT decision_id FROM agent_syscall_consumptions")
+}
+assert consumed == {"dec-success", "dec-failed"}, f"unexpected consumption backfill: {consumed}"
+assert full_db.execute("PRAGMA foreign_key_check").fetchall() == []
+full_db.close()
