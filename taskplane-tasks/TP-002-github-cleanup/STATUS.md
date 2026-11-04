@@ -35,7 +35,7 @@ Result: exit code 1 (no matches)
 ## Changes
 
 - Corrected the report to list variable names only; the prior commit included the allow-list email values, which are now omitted from the current file.
-- No secrets, branches, Environment deployment policies, permissions, rulesets, or branch protection were changed.
+- The read-only inventory itself made no resource changes. The separately authorized Step 2 actions are recorded below; no permissions, rulesets, or branch-protection settings were changed.
 
 ## Step 2 (executed)
 
