@@ -77,7 +77,7 @@ The deploy workflow verifies the MCP endpoint, the agent registry, and a supervi
 
 TP-003, TP-004 and TP-005 are cancelled. No kubectl or Vault access is granted, and no data is exported. Credential revocation stays in TP-001, which the owner has deferred.
 
-`cryptophys-github-actions-mcp` (deployed 2026-11-01, outside this pipeline) is a shared-bearer MCP connector holding a GitHub token. It is superseded by the kernel's Access-protected MCP endpoint and should be retired. Deleting it is the owner's decision.
+`cryptophys-github-actions-mcp` (deployed 2026-11-01, outside this pipeline) was a shared-bearer MCP connector holding a GitHub token, superseded by the kernel's Access-protected MCP endpoint. **Retired 2026-11-05:** the owner revoked its token and deleted the Worker; its source was removed from the repository.
 
 ## Usage against the Workers Paid included quotas
 

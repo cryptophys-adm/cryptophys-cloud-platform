@@ -1,14 +1,14 @@
 name: Deploy Control Plane
 
-# Production deployment of the five control-plane service Workers plus Signal Engine
-# from one exact main commit; type-check, tests and migration validation run before
-# production credentials are used.
-# Platform Registry, Policy Engine, Audit Ledger, Recovery Manager and Drift Detector
-# are the five control-plane services; Signal Engine is deployed in this same workflow.
+# Production deployment of the five control-plane service Workers, Signal Engine,
+# and AI Kernel from one exact main commit; type-check, tests and migration validation
+# run before production credentials are used.
+# The five control-plane services are Platform Registry, Policy Engine, Audit Ledger,
+# Recovery Manager and Drift Detector. Signal Engine and AI Kernel also deploy here.
 # The Deployment Orchestrator and Platform API keep their own workflows.
 #
-# Order matters: service bindings require their targets to exist, so the Policy
-# Engine deploys before the Recovery Manager and the Drift Detector deploys last.
+# Order matters: service bindings require their targets to exist. Policy Engine deploys
+# before Recovery Manager; AI Kernel deploys before Drift Detector, which deploys last.
 
 on:
   workflow_dispatch:
@@ -103,7 +103,7 @@ jobs:
           for dir in $DEPLOY_ORDER; do dirs+=("../$dir"); done
           "$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" "${dirs[@]}"
 
-      - name: Ensure the agent-memory Vectorize index exists (ADR-0007, TP-008; never modifies or deletes)
+      - name: Preflight and ensure the agent-memory Vectorize index before D1 migrations or Worker deployment (never modifies or deletes)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ACCESS_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}

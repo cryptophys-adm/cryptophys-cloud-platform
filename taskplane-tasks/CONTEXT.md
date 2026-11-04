@@ -1,6 +1,6 @@
 # Cryptophys Cloud Platform — Worker Context
 
-**Last Updated:** 2026-11-04
+**Last Updated:** 2026-11-05
 **Status:** Active
 **Next Task ID:** TP-010
 **Roles:** orchestrator and validator = Claude (cloud session); code worker = Antigravity (TP-006 to TP-009, see `ANTIGRAVITY.md`); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
@@ -9,11 +9,18 @@
 
 ## Where the deployment stands
 
-Cloudflare production is live and verified at `main`, deployed by GitHub Actions only.
-- **9 platform Workers** behind Cloudflare Access, every one with its own AI engine: Platform API (OS gateway), Deployment Orchestrator, Platform Registry, Policy Engine, Audit Ledger, Recovery Manager, Drift Detector, Signal Engine and AI Kernel.
-- **AI Worker OS (ADR-0007):** the kernel runs the `supervisor`, `signal-analyst`, and `auditor` agents (Durable Objects), Vectorize-backed semantic agent memory (`cryptophys-agent-memory`), external agent sessions over MCP via `agent_principals`, policy-gated syscalls by tier, and the MCP front door. **Workflows (ADR-0006):** recovery lifecycle and signal ingest.
-- **D1** `cryptophys-control-plane`, with migrations up to `0015`.
-- **Drift:** 13 of 13 services are healthy, including the 4 xauusd Workers, which are watched for health only.
+**Verified production state (orchestrator, 2026-11-04 23:21 UTC). Do not infer production state from `main` alone; re-verify before asserting it.**
+
+- Deploy Control Plane runs 41931114234 (`56f52bf`) and 41932785364 (`0effe17`) succeeded end to end:
+  - every Worker's active version matches the commit, and health and readiness pass (the AI Kernel's `/ready` includes `supervisor_binding`, `signal_analyst_binding`, `auditor_binding`, `memory_binding`);
+  - the MCP front door, the agent registry and a supervisor cycle are verified;
+  - the recovery lifecycle Workflow is verified, and the audit chain is valid.
+- **Vectorize:** the explicit preflight step creates the index `cryptophys-agent-memory` (384d, cosine, metadata index `agent_id`) or verifies an existing one, and fails closed otherwise. The Workers deploy token lacks Vectorize access (Cloudflare error 10000, run 41883619698), so the step tries the D1/Access token first.
+- **D1:** migrations through `0015_agent_principals.sql`. Agents: `supervisor` (tier 2), `signal-analyst` (tier 1), `auditor` (tier 1), all enabled. No external principals are registered yet.
+- **Drift:** 13 of 13 healthy at 23:15 UTC.
+  - The 5 recovery drafts the supervisor proposed at 18:37 (audit-ledger, platform-registry, policy-engine, recovery-manager, signal-engine) were correct detections of the partial rollout from run 41883619698. They are now stale.
+  - Do not approve them. They expire automatically (`approval_expired`) after 72 h.
+- `cryptophys-github-actions-mcp` was **retired by the owner (2026-11-05)**: its GitHub token was revoked, and the Worker was deleted, verified absent from the account. Its source was removed from the repository.
 - **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
 
 The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `ANTIGRAVITY.md`.
@@ -76,3 +83,4 @@ Merged by the owner's account (#61 to #64) and deployed in run 41931114234 at `5
   - Commit `56f52bf` was pushed straight to `main`. It wired Vectorize provisioning into `render-d1-config.sh` and `remove-worker-secrets.sh` as hidden side effects, working around the rule against editing workflows.
   - The orchestrator replaced those side effects with an explicit, visible step in `deploy-control-plane.yml`.
   - Workers must not push to `main`, dispatch deployments or add side effects to unrelated scripts. They open a PR and stop; the orchestrator merges and deploys.
+- **Owner ratification (2026-11-05):** "lanjutkan validasi untuk accept semua commit dan PR yang dikerjakan oleh akun saya" (continue validating, to accept all commits and PRs made by my account). The owner accepts the work done from the owner account (#53, #57, #59, #61 to #64, `56f52bf`, #66, #67) after the orchestrator's validation recorded above. #66 and #67 were integrated by the orchestrator, merged with #68. Going forward, the process rule above applies.
