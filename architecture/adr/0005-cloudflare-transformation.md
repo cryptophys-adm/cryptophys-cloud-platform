@@ -71,6 +71,21 @@
      - **Mizan regime** uses a 10-bin histogram entropy of *price levels*. This sits close to `ENTROPY_MAX` 0.92 for ordinary series: synthetic random walks exceeded it in the parity fixtures (`regime_score` 0), while live BTCUSDT 1h on 2026-11-04 read 0.903 (`regime_score` 0.41). The regime gate therefore switches on and off with the shape of the price distribution rather than with persistence.
      - **The decision engine** multiplies the 0–100 confluence by 0.65 before comparing it with BUY ≥ 62 and SELL ≤ 38. BUY needs a confluence of at least 95.4, while SELL triggers at 58.5 or below, which is a strong bearish bias.
 
+9. **Assessment of corpus, omega, aether-edge and risk-engine (2026-11-04).** Their source was recovered from `apps-gitops` history and read before deciding.
+   - **corpus: partly migrated.** Of 18 sources, only the keyless Fear & Greed index (`api.alternative.me`) and global market data (`api.coinlore.com`) are migrated, as hourly macro context in `cryptophys-signal-engine` (migration `0007`, `GET /v1/macro`). The rest:
+     - **Dead:** the DEX sources on The Graph's hosted service.
+     - **Need keys:** news, Twitter, FRED and Etherscan.
+     - **Duplicate or blocked from Cloudflare:** Binance, Bybit and OKX.
+     - **Deviation:** the source returned invented values on failure (`fng=50`, `dxy=103.5`, `vix=14.5`, with `confidence: 0.98`). The port stores nothing and records the failure.
+     - `Macro_Score` is not computed, because 40% of its weight came from DXY/VIX scraped from an unofficial Yahoo endpoint.
+   - **omega: prohibited, not migrated.** It contains order execution, request signing and MEV sandwich bundles against other users' transactions (`victim_tx_hash`, Flashbots relay).
+   - **risk-engine: retired.** It is an execution gate whose "Z3 proof" uses hard-coded constants and whose crisis check always returns `False`. It needs live positions, which an advisory-only platform never has.
+   - **aether-edge: retired.** It consists of physics metaphors in at least three overlapping versions:
+     - the Lorentz factor of price velocity;
+     - a "wave function";
+     - an "entanglement" that is cosine similarity.
+     Its formulas depend on scale (energy clamps to 1 for BTC), it needs order-book depth that is not ingested, and it has no specification or tests.
+
 ## Security
 
 `cryptophys-work/platform-gitops` is publicly readable and commits `platform/infrastructure/vault-system/vault__unseal-keys-secret.yaml`. That file holds three high-entropy values in Vault Shamir share format (33 bytes each). They must be treated as compromised:
@@ -79,6 +94,12 @@
 2. `vault operator rekey`.
 3. Rotate every secret held in that Vault, at minimum the Binance and NATS credentials used by `apps-gitops`.
 4. Purge the file from history.
+
+The recovered `apps-gitops` history also holds credentials that must be treated as compromised and rotated or abandoned:
+- `apps/user/03-execution-swarms/omega/core/vault/genesis.key`: a 64-hex-character value, likely a private key, so any wallet it controls must be emptied;
+- `omega/core/vault/binance_hmac.json`: a Binance HMAC API key and secret;
+- a NATS password in `trading-decision`;
+- a `reconcile-token` annotation in `aether-edge/argocd-app.yaml`.
 
 None of these secrets is carried into Cloudflare. The equivalents are new Worker secrets.
 
