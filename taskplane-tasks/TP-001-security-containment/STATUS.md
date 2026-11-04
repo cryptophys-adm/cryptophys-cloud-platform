@@ -70,6 +70,8 @@ Tooling:
 
 ## Step 2 (OWNER GATE) — completed by worker
 
+Owner approval: confirmed by owner to orchestrator, 2026-11-04
+
 - Command: `gh repo edit cryptophys-work/platform-gitops --visibility private`
 - Result: visibility now `private`.
 - Anonymous verification: `git ls-remote https://github.com/cryptophys-work/platform-gitops HEAD` → failed (no anonymous access).
