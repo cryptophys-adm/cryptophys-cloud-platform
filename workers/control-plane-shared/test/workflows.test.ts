@@ -10,7 +10,7 @@ import recovery from "../../recovery-manager/src/index.ts";
 import { runLifecycle, windows } from "../../recovery-manager/src/lifecycle.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { Pacer, scheduleIngest, setPacer } from "../../signal-engine/src/index.ts";
-import { SERIES_RETRIES, runIngest } from "../../signal-engine/src/ingest-workflow.ts";
+import { MACRO_RETRIES, SERIES_RETRIES, runIngest } from "../../signal-engine/src/ingest-workflow.ts";
 
 // ---------------------------------------------------------------- recovery lifecycle
 
@@ -221,6 +221,53 @@ test("ingest Workflow: after the last retry the failure is recorded, and non-tra
   const results = JSON.parse((db.raw.prepare("SELECT results_json FROM signal_ingest_runs").get() as any).results_json);
   assert.deepEqual(results.filter((r: any) => r.symbol !== "MACRO").map((r: any) => r.error),
     ["market_data_http_404", "provider_error: EGeneral:Too many requests"]);
+});
+
+test("ingest Workflow retries transient macro 5xx failures and records success", async () => {
+  const db = migratedDb();
+  market((url) => Response.json({ error: [], result: { [url.searchParams.get("pair")!]: [krakenRow(298), krakenRow(299), krakenRow(300)], last: 0 } }));
+  const baseFetch = globalThis.fetch;
+  let macroCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.alternative.me" && macroCalls++ < 2) return new Response("temporary", { status: 503 });
+    return baseFetch(input, init);
+  }) as typeof fetch;
+  const step = fakeWorkflow().step("ingest-macro-retry");
+  const out = await runIngest(signalEnv(db) as never, { now: NOW, trigger: "scheduled" }, "ingest-macro-retry", step as never);
+  assert.equal(step.attempts.macro, MACRO_RETRIES.limit + 1);
+  assert.equal(macroCalls, 3);
+  assert.equal(out.failed, 0);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM macro_context").get() as any).n, 1);
+});
+
+test("ingest Workflow records a final transient macro failure after retries and does not retry permanent errors", async () => {
+  const db = migratedDb();
+  market((url) => Response.json({ error: [], result: { [url.searchParams.get("pair")!]: [krakenRow(298), krakenRow(299), krakenRow(300)], last: 0 } }));
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.alternative.me") return new Response("unavailable", { status: 503 });
+    return baseFetch(input, init);
+  }) as typeof fetch;
+  const transientStep = fakeWorkflow().step("ingest-macro-final-failure");
+  const transientOut = await runIngest(signalEnv(db) as never, { now: NOW, trigger: "scheduled" }, "ingest-macro-final-failure", transientStep as never);
+  assert.equal(transientStep.attempts.macro, MACRO_RETRIES.limit + 1);
+  assert.equal(transientOut.failed, 1);
+  const transientResults = JSON.parse((db.raw.prepare("SELECT results_json FROM signal_ingest_runs ORDER BY rowid DESC LIMIT 1").get() as any).results_json);
+  assert.ok(transientResults.some((r: any) => r.symbol === "MACRO" && r.error === "macro_http_503"));
+
+  const db2 = migratedDb();
+  const permanentFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.alternative.me") return new Response("not found", { status: 404 });
+    return permanentFetch(input, init);
+  }) as typeof fetch;
+  const permanentStep = fakeWorkflow().step("ingest-macro-permanent-failure");
+  const permanentOut = await runIngest(signalEnv(db2) as never, { now: NOW, trigger: "scheduled" }, "ingest-macro-permanent-failure", permanentStep as never);
+  assert.equal(permanentStep.attempts.macro, 1);
+  assert.equal(permanentOut.failed, 1);
 });
 
 test("the cron creates one instance per firing; duplicates are ignored; without the binding it runs inline", async () => {
