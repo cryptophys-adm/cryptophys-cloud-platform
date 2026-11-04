@@ -489,5 +489,5 @@ export function structureIndicators(candles: Candle[]): Indicators {
 }
 
 /** Minimum history before an engine publishes, as in the Python services. */
-export const MIN_HISTORY = { trend: 20, volume: 21, momentum: 20, volatility: 20, structure: 15 } as const;
+export const MIN_HISTORY = { trend: 20, volume: 21, momentum: 27, volatility: 21, structure: 15 } as const;
 export const WINDOW = 210;
