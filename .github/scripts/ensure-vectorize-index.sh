@@ -42,7 +42,7 @@ ensure_metadata_index() {
   entry="$(metadata_entry "$metadata_json")"
 
   if [[ "$entry" != "null" ]]; then
-    actual_type="$(jq -r '(.indexType // .index_type // "")' <<<"$entry")"
+    actual_type="$(jq -r '(.indexType // .index_type // "" | tostring | ascii_downcase)' <<<"$entry")"
     [[ "$actual_type" == "$metadata_type" ]] || fail "Vectorize metadata index ${metadata_prop} exists with type=${actual_type:-unknown} (expected ${metadata_type}); refusing to modify"
     echo "Vectorize metadata index ${metadata_prop} already exists (${metadata_type}); no-op."
     return 0
@@ -56,7 +56,7 @@ ensure_metadata_index() {
     metadata_json="$(npx wrangler vectorize list-metadata-index "$index_name" --json)"
     entry="$(metadata_entry "$metadata_json")"
     if [[ "$entry" != "null" ]]; then
-      actual_type="$(jq -r '(.indexType // .index_type // "")' <<<"$entry")"
+      actual_type="$(jq -r '(.indexType // .index_type // "" | tostring | ascii_downcase)' <<<"$entry")"
       [[ "$actual_type" == "$metadata_type" ]] || fail "Vectorize metadata index ${metadata_prop} was created with type=${actual_type:-unknown} (expected ${metadata_type})"
       echo "Vectorize metadata index ${metadata_prop} is ready (${metadata_type})."
       return 0
