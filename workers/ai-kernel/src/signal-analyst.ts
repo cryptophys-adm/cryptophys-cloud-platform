@@ -20,6 +20,17 @@ export const DISCLAIMER = "advisory only; not an order";
 const SERVICE = "cryptophys-ai-kernel";
 export const DIGEST_INTERVAL_MS = 6 * 3_600_000;
 
+/** Serializes overlapping invocations of this agent's Durable Object cycle, including awaits. */
+export class SignalAnalystCycleQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  run<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation);
+    this.tail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
 export interface ObservedSymbol {
   symbol: string;
   basis_close_time: number;
