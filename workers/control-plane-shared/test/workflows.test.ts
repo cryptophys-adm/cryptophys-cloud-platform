@@ -10,7 +10,7 @@ import recovery from "../../recovery-manager/src/index.ts";
 import { runLifecycle, windows } from "../../recovery-manager/src/lifecycle.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { Pacer, scheduleIngest, setPacer } from "../../signal-engine/src/index.ts";
-import { SERIES_RETRIES, runIngest } from "../../signal-engine/src/ingest-workflow.ts";
+import { MACRO_RETRIES, SERIES_RETRIES, runIngest } from "../../signal-engine/src/ingest-workflow.ts";
 
 // ---------------------------------------------------------------- recovery lifecycle
 
