@@ -29,13 +29,16 @@ case "$*" in
     done
     [[ -n "$property" && -n "$type" ]] || exit 2
     jq --arg property "$property" --arg type "$type" '
-      if type == "array" then
-        . + [{"propertyName":$property,"indexType":$type}]
-      elif type == "object" then
-        .metadataIndexes = ((.metadataIndexes // .metadata_indexes // []) + [{"propertyName":$property,"indexType":$type}])
-      else
-        error("unexpected fake metadata response")
-      end
+      # Wrangler serializes Vectorize metadata types with an initial capital.
+      ($type[0:1] | ascii_upcase) as $label
+      | ($label + $type[1:]) as $display_type
+      | if type == "array" then
+          . + [{"propertyName":$property,"indexType":$display_type}]
+        elif type == "object" then
+          .metadataIndexes = ((.metadataIndexes // .metadata_indexes // []) + [{"propertyName":$property,"indexType":$display_type}])
+        else
+          error("unexpected fake metadata response")
+        end
     ' "$FAKE_METADATA_FILE" > "${FAKE_METADATA_FILE}.tmp"
     mv "${FAKE_METADATA_FILE}.tmp" "$FAKE_METADATA_FILE"
     printf '%s\n' '{"mutationId":"m1"}'
@@ -93,10 +96,10 @@ setup missing-index '{"metadataIndexes":[]}' '[]'
 expect_pass "missing index is created with the required metadata index"
 grep -Fq 'wrangler vectorize create cryptophys-agent-memory --dimensions 384 --metric cosine' "$NPX_LOG" || fail=$((fail + 1))
 grep -Fq 'wrangler vectorize create-metadata-index cryptophys-agent-memory --property-name agent_id --type string' "$NPX_LOG" || fail=$((fail + 1))
-jq -e 'any(.metadataIndexes[]; .propertyName == "agent_id" and .indexType == "string")' "$FAKE_METADATA_FILE" >/dev/null || fail=$((fail + 1))
+jq -e 'any(.metadataIndexes[]; .propertyName == "agent_id" and (.indexType | ascii_downcase) == "string")' "$FAKE_METADATA_FILE" >/dev/null || fail=$((fail + 1))
 
 # 2. Existing index and metadata index both match -> no mutation.
-setup existing-complete '{"metadataIndexes":[{"propertyName":"agent_id","indexType":"string"}]}' '[{"name":"cryptophys-agent-memory","config":{"dimensions":384,"metric":"cosine"}}]'
+setup existing-complete '{"metadataIndexes":[{"propertyName":"agent_id","indexType":"String"}]}' '[{"name":"cryptophys-agent-memory","config":{"dimensions":384,"metric":"cosine"}}]'
 expect_pass "existing index and metadata index are a no-op"
 if grep -Eq 'vectorize create ' "$NPX_LOG" || grep -Fq 'vectorize create-metadata-index ' "$NPX_LOG"; then fail=$((fail + 1)); fi
 
@@ -122,7 +125,7 @@ expect_fail "unknown metric is rejected"
 if grep -Eq 'vectorize create |vectorize delete' "$NPX_LOG"; then fail=$((fail + 1)); fi
 
 # 7. Existing agent_id metadata index with the wrong type -> fail closed.
-setup wrong-metadata-type '{"metadataIndexes":[{"propertyName":"agent_id","indexType":"number"}]}' '[{"name":"cryptophys-agent-memory","config":{"dimensions":384,"metric":"cosine"}}]'
+setup wrong-metadata-type '{"metadataIndexes":[{"propertyName":"agent_id","indexType":"Number"}]}' '[{"name":"cryptophys-agent-memory","config":{"dimensions":384,"metric":"cosine"}}]'
 expect_fail "wrong metadata index type is rejected"
 if grep -Fq 'vectorize create-metadata-index ' "$NPX_LOG"; then fail=$((fail + 1)); fi
 
