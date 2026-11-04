@@ -52,6 +52,8 @@ interface StoredCandle extends Candle { close_time: number }
 export interface Provider {
   name: string;
   origin: string;
+  /** Minimum spacing between requests to this provider within one ingestion pass. */
+  minIntervalMs: number;
   url(symbol: string, timeframe: string, sinceOpenTime: number | null, backfill: boolean): string;
   parse(body: unknown, timeframe: string, now: number): StoredCandle[] | Error;
 }
@@ -66,12 +68,16 @@ export const PROVIDERS: Record<string, Provider> = {
   binance: {
     name: "binance",
     origin: "https://data-api.binance.vision",
+    minIntervalMs: 0,
     url: (symbol, timeframe, _since, backfill) => `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${backfill ? WINDOW + 1 : 5}`,
     parse: (body, _tf, now) => parseKlines(body, now),
   },
   kraken: {
     name: "kraken",
     origin: "https://api.kraken.com",
+    // Kraken's public endpoints allow roughly one call per second per IP; six back-to-back calls
+    // produced "EGeneral:Too many requests" in production (signal_ingest_runs, 2026-11-04 05:04Z).
+    minIntervalMs: 1_100,
     // Kraken names bitcoin XBT; intervals are minutes; `since` (seconds) returns committed candles after it.
     url: (symbol, timeframe, since) =>
       `https://api.kraken.com/0/public/OHLC?pair=${symbol.replace(/^BTC/, "XBT")}&interval=${TIMEFRAME_MS[timeframe] / 60_000}` +
@@ -137,24 +143,56 @@ export interface SeriesResult {
   error?: string;
 }
 
+const RATE_LIMIT_BACKOFF_MS = 3_000;
+
+/** Spaces provider calls within one pass; `sleep` is injectable so tests do not wait. */
+export class Pacer {
+  private last = -Infinity;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly clock: () => number;
+  constructor(sleep?: (ms: number) => Promise<void>, clock?: () => number) {
+    this.sleep = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.clock = clock ?? (() => Date.now());
+  }
+  async wait(ms: number): Promise<void> { if (ms > 0) await this.sleep(ms); }
+  async turn(minIntervalMs: number): Promise<void> {
+    const gap = this.last + minIntervalMs - this.clock();
+    if (gap > 0) await this.sleep(gap);
+    this.last = this.clock();
+  }
+}
+let pace = new Pacer();
+/** Test hook: replace the pacer (e.g. with a recording, non-sleeping one). */
+export function setPacer(p: Pacer): void { pace = p; }
+
 async function ingestSeries(env: Env, provider: Provider, symbol: string, timeframe: string, now: number): Promise<SeriesResult> {
   const have = await env.DB.prepare(
     "SELECT COUNT(*) AS n, MAX(open_time) AS latest, SUM(source <> ?) AS foreign_rows FROM market_candles WHERE symbol = ? AND timeframe = ?",
   ).bind(provider.origin, symbol, timeframe).first<{ n: number; latest: number | null; foreign_rows: number | null }>();
   if ((have?.foreign_rows ?? 0) > 0) return { symbol, timeframe, status: "error", error: "series_has_other_provider_candles" };
   const backfill = (have?.n ?? 0) < WINDOW;
-  let body: unknown;
-  try {
-    const res = await fetch(provider.url(symbol, timeframe, backfill ? null : have?.latest ?? null, backfill), {
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { accept: "application/json", "user-agent": "cryptophys-signal-engine (advisory; github.com/cryptophys-adm/cryptophys-cloud-platform)" },
-    });
-    if (!res.ok) return { symbol, timeframe, status: "error", error: `market_data_http_${res.status}` };
-    body = await res.json();
-  } catch (err) {
-    return { symbol, timeframe, status: "error", error: (err as Error)?.name === "TimeoutError" ? "market_data_timeout" : "market_data_unreachable" };
+  const url = provider.url(symbol, timeframe, backfill ? null : have?.latest ?? null, backfill);
+  let parsed: StoredCandle[] | Error = new Error("not_fetched");
+  // One retry after a back-off when the provider says it is rate limited; anything else fails now.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await pace.wait(RATE_LIMIT_BACKOFF_MS);
+    await pace.turn(provider.minIntervalMs);
+    let body: unknown;
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        headers: { accept: "application/json", "user-agent": "cryptophys-signal-engine (advisory; github.com/cryptophys-adm/cryptophys-cloud-platform)" },
+      });
+      if (res.status === 429 && attempt === 0) { await res.body?.cancel(); continue; }
+      if (!res.ok) return { symbol, timeframe, status: "error", error: `market_data_http_${res.status}` };
+      body = await res.json();
+    } catch (err) {
+      return { symbol, timeframe, status: "error", error: (err as Error)?.name === "TimeoutError" ? "market_data_timeout" : "market_data_unreachable" };
+    }
+    parsed = provider.parse(body, timeframe, now);
+    if (parsed instanceof Error && /too many requests|rate limit/i.test(parsed.message) && attempt === 0) continue;
+    break;
   }
-  const parsed = provider.parse(body, timeframe, now);
   if (parsed instanceof Error) return { symbol, timeframe, status: "error", error: parsed.message };
   // Only candles newer than the stored tail are written; the provider may resend history.
   const candles = parsed.filter((k) => have?.latest == null || k.open_time > have.latest).slice(-1000);
