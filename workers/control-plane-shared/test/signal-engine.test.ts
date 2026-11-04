@@ -1,7 +1,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, call, migratedDb, req, accessCertsResponse, isAccessCerts, OUTSIDER_JWT, fakeAi } from "./harness.ts";
-import signal, { config, ingest, parseKlines } from "../../signal-engine/src/index.ts";
+import signal, { config, ingest, parseKlines, parseKrakenOhlc, PROVIDERS } from "../../signal-engine/src/index.ts";
 
 const H = 3_600_000;
 const NOW = Date.UTC(2026, 10, 3, 12, 4); // 12:04Z: the 11:00 candle is closed, the 12:00 candle is still forming
@@ -26,14 +26,14 @@ function market(handler: (url: URL) => Response | Promise<Response>) {
 }
 
 const env = (db = migratedDb(), extra: Record<string, unknown> = {}) =>
-  baseEnv("cryptophys-signal-engine", db, { SYMBOLS: "BTCUSDT,ETHUSDT", TIMEFRAMES: "1h", MARKET_DATA_URL: "https://data-api.binance.vision", ...extra });
+  baseEnv("cryptophys-signal-engine", db, { SYMBOLS: "BTCUSDT,ETHUSDT", TIMEFRAMES: "1h", MARKET_DATA_PROVIDER: "binance", ...extra });
 
 test("config validates symbols, timeframes and the market-data origin", () => {
   assert.ok(!(config(env() as never) instanceof Error));
   assert.ok(config({ ...env(), SYMBOLS: "btc" } as never) instanceof Error);
   assert.ok(config({ ...env(), TIMEFRAMES: "1h,5m" } as never) instanceof Error);
-  assert.ok(config({ ...env(), MARKET_DATA_URL: "http://data-api.binance.vision" } as never) instanceof Error);
-  assert.ok(config({ ...env(), MARKET_DATA_URL: "https://x.example/path?q" } as never) instanceof Error);
+  assert.ok(config({ ...env(), MARKET_DATA_PROVIDER: "coingecko" } as never) instanceof Error);
+  assert.equal((config({ ...env(), MARKET_DATA_PROVIDER: undefined } as never) as { provider: string }).provider, "kraken", "Kraken is the default");
 });
 
 test("klines are parsed strictly and the forming candle is never kept", () => {
@@ -125,4 +125,42 @@ test("the scheduled handler runs one ingestion pass", async () => {
   await signal.scheduled({ cron: "4,19,34,49 * * * *", scheduledTime: NOW }, env(db) as never, { waitUntil: (p) => { waited = p; } });
   await waited;
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM market_candles").get() as any).n >= 0, true);
+});
+
+// Kraken rows: [time(s), open, high, low, close, vwap, volume, count]; the last row is the forming candle.
+function krakenRow(i: number, intervalMs = H): unknown[] {
+  const open = NOW - (NOW % intervalMs) - (300 - i) * intervalMs;
+  const c = 60000 + Math.cos(i / 5) * 300 + i;
+  return [open / 1000, String(c - 5), String(c + 20), String(c - 25), String(c), String(c), String(1 + (i % 7) / 10), 42];
+}
+
+test("Kraken provider: XBT naming, minute intervals, since-based tail, forming candle dropped, API errors surfaced", async () => {
+  const k = PROVIDERS.kraken;
+  assert.equal(k.url("BTCUSDT", "4h", null, true), "https://api.kraken.com/0/public/OHLC?pair=XBTUSDT&interval=240");
+  assert.equal(k.url("ETHUSDT", "1h", 1_700_000_000_000, false), "https://api.kraken.com/0/public/OHLC?pair=ETHUSDT&interval=60&since=1700000000");
+  const parsed = parseKrakenOhlc({ error: [], result: { XBTUSDT: [krakenRow(298), krakenRow(299), krakenRow(300)], last: 1 } }, H, NOW);
+  assert.ok(Array.isArray(parsed) && parsed.length === 2 && parsed[1].close_time === parsed[1].open_time + H - 1);
+  assert.match(String(parseKrakenOhlc({ error: ["EQuery:Unknown asset pair"] }, H, NOW)), /provider_error: EQuery:Unknown asset pair/);
+  assert.ok(parseKrakenOhlc({ error: [], result: { last: 1 } }, H, NOW) instanceof Error);
+
+  const db = migratedDb();
+  const e = env(db, { MARKET_DATA_PROVIDER: "kraken", SYMBOLS: "BTCUSDT" });
+  const calls = market((url) => {
+    const since = url.searchParams.get("since");
+    const rows = since ? [krakenRow(299), krakenRow(300)] : Array.from({ length: 301 }, (_, i) => krakenRow(i));
+    return Response.json({ error: [], result: { [url.searchParams.get("pair")!]: rows, last: 0 } });
+  });
+  const first = await ingest(e as never, NOW);
+  assert.deepEqual([first.series[0].status, first.series[0].inserted, first.series[0].computed], ["ok", 300, ["trend", "volume"]]);
+  assert.ok(calls[0].includes("pair=XBTUSDT") && !calls[0].includes("since="));
+  const second = await ingest(e as never, NOW);
+  assert.ok(calls[1].includes("since="), "steady state asks only for candles after the stored tail");
+  assert.equal(second.series[0].inserted, 0);
+  const src = db.raw.prepare("SELECT DISTINCT source FROM market_candles").all() as { source: string }[];
+  assert.deepEqual(src.map((r) => r.source), ["https://api.kraken.com"]);
+
+  // Switching provider never mixes venues inside one series.
+  market(() => Response.json([kline(299)]));
+  const mixed = await ingest({ ...e, MARKET_DATA_PROVIDER: "binance" } as never, NOW);
+  assert.equal(mixed.series[0].error, "series_has_other_provider_candles");
 });

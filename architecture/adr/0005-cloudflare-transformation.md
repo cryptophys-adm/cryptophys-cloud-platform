@@ -41,7 +41,7 @@
 6. **First migrated workload: `cryptophys-signal-engine`.**
    - It ports the trend and volume indicator engines, which are the only signal engines with source.
    - A cron runs every 15 minutes:
-     - It fetches **closed** klines from Binance's public market-data API (`data-api.binance.vision`, no keys).
+     - It fetches **closed** candles from a keyless public market-data API. *(Amended 2026-11-04.)* Binance (`data-api.binance.vision`) answered HTTP 403 to every production run from Cloudflare (recorded in `signal_ingest_runs`), so the default provider is Kraken (`api.kraken.com`, 1h/4h OHLC). Candles from different providers are never mixed in one series.
      - It computes the indicators deterministically.
      - It stores candles and indicators in D1, then exposes them read-only behind Access.
    - Usage: about 3k invocations, 30k subrequests and well under 100k D1 rows written per month, all far inside the included quotas.
