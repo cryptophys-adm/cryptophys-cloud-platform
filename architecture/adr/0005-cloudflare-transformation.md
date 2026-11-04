@@ -1,6 +1,6 @@
 # ADR-0005: Transform the Kubernetes GitOps estate into Cloudflare
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 3 amended by [ADR-0007](0007-ai-worker-os.md) (tier 2 reversible agent actions under policy)
 - **Date:** 2026-11-03
 - **Owner decision:** "transform everything into the Cloudflare environment and ecosystem, stay within the Workers Paid plan, no containers" (repository owner, 2026-11-03).
 - **Inventory:** [docs/TRANSFORMATION-INVENTORY.md](../../docs/TRANSFORMATION-INVENTORY.md), generated from `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops`. All 122 components are listed there.

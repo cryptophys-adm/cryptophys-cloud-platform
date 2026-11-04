@@ -58,3 +58,9 @@ TP-001 and TP-002 can run in parallel. TP-003 must be validated before TP-004, a
 
 _Workers log discoveries here through their PR._
 - An owner decision is pending on rescaling the Mizan momentum and volume dimensions (ADR-0005 decision 10, "Remaining finding").
+
+## Task status (2026-11-04)
+
+- TP-001 security containment: step 2 done; remaining owner gates **deferred by the owner**. Do not continue without a new APPROVAL.md entry.
+- TP-002 GitHub cleanup: **done**.
+- TP-003, TP-004, TP-005 (cluster inventory, export, decommission): **cancelled** by the owner. The cluster is deprecated, its data is not kept, and the platform no longer needs cluster access. See each task's STATUS.md.

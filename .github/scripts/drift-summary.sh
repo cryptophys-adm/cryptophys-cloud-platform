@@ -11,7 +11,7 @@ report="${1:?usage: drift-summary.sh REPORT_JSON NOW_EPOCH [MAX_AGE_SECONDS]}"
 now="${2:?usage: drift-summary.sh REPORT_JSON NOW_EPOCH [MAX_AGE_SECONDS]}"
 max_age="${3:-2700}"
 [[ "$now" =~ ^[0-9]+$ && "$max_age" =~ ^[0-9]+$ ]] || { echo "::error::NOW_EPOCH and MAX_AGE_SECONDS must be integers" >&2; exit 1; }
-expected='["cryptophys-audit-ledger","cryptophys-deployment-orchestrator","cryptophys-drift-detector","cryptophys-platform-api","cryptophys-platform-registry","cryptophys-policy-engine","cryptophys-recovery-manager","cryptophys-signal-engine","xauusd-ai-trading-assistant","xauusd-fundamental-news-ingestion","xauusd-nexus-dashboard","xauusd-tradingview-pull-adapter"]'
+expected='["cryptophys-ai-kernel","cryptophys-audit-ledger","cryptophys-deployment-orchestrator","cryptophys-drift-detector","cryptophys-platform-api","cryptophys-platform-registry","cryptophys-policy-engine","cryptophys-recovery-manager","cryptophys-signal-engine","xauusd-ai-trading-assistant","xauusd-fundamental-news-ingestion","xauusd-nexus-dashboard","xauusd-tradingview-pull-adapter"]'
 
 summary="$(jq -c --argjson now "$now" --argjson max "$max_age" --argjson expected "$expected" '
   def age: $now - (.observed_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601);

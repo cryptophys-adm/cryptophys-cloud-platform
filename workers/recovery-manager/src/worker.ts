@@ -4,16 +4,28 @@
 // with entrypoint = "HealthRpc"), which is not reachable over HTTP. RecoveryPlanWorkflow is
 // the per-plan lifecycle Workflow (ADR-0006); it is not reachable over HTTP either.
 import { WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
-import worker, { type Env } from "./index.ts";
+import worker, { proposeFromAgent, type Env } from "./index.ts";
 import { runLifecycle, type LifecycleParams } from "./lifecycle.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import type { WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
+import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 
 export default worker;
 
 export class HealthRpc extends WorkerEntrypoint<Env> {
   async health(): Promise<HealthBody> {
     return healthBody(this.env);
+  }
+}
+
+/**
+ * Tier 1 syscall target for the AI Kernel (ADR-0007): an agent may only create a draft plan.
+ * Bound only by cryptophys-ai-kernel, after the Policy Engine allowed recovery.propose.
+ */
+export class RecoveryRpc extends WorkerEntrypoint<Env> {
+  async propose(agentId: string, decisionId: string, input: Record<string, unknown>) {
+    await verifySyscallDecision(this.env.DB, decisionId, agentId, "recovery.propose");
+    return proposeFromAgent(this.env, agentId, input ?? {});
   }
 }
 

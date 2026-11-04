@@ -66,14 +66,26 @@ jobs:
         run: npm ci
       - name: Type-check
         run: npm run typecheck
-      - name: Verify deployment configuration
+      - name: Verify deployment configuration and build the Access identity allow-lists
         run: |
+          set -euo pipefail
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$CLOUDFLARE_API_TOKEN"
+          # GET /v1/overview is authorized by Cloudflare Access identity, like every control-plane /v1.
+          "$GITHUB_WORKSPACE/.github/scripts/access-identities.sh" "$GITHUB_ENV"
           npx wrangler whoami
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_ALLOWED_EMAILS: ${{ vars.ACCESS_ALLOWED_EMAILS }}
+      - name: Resolve the control-plane D1 database by exact name and render the deploy config
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}  # D1 Edit (owner decision); Workers deploy keeps CLOUDFLARE_API_TOKEN
+          D1_DATABASE_NAME: cryptophys-control-plane
+        run: '"$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" .'
+
       - name: Resolve Cloudflare Access configuration (fails closed if the Workers are not protected)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -82,7 +94,7 @@ jobs:
           EXPECTED_WORKERS: cryptophys-platform-api
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
       - name: Deploy Worker
-        run: npx wrangler deploy --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}"
+        run: npx wrangler deploy --config wrangler.deploy.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}"
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -102,7 +114,7 @@ jobs:
             --commit "$COMMIT_SHA" \
             --require-access \
             --health-filter '.status == "ok" and .service == "cryptophys-cloud-platform" and .environment == "production" and .contract_version == "v1"' \
-            --ready-filter '.status == "ready" and .service == "cryptophys-cloud-platform" and (.dependencies | length == 0)'
+            --ready-filter '.status == "ready" and .service == "cryptophys-cloud-platform" and .production_ready == true and ([.checks[]] | all)'
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
       - name: Record the desired version in the Platform Registry (drift baseline)
         shell: bash
