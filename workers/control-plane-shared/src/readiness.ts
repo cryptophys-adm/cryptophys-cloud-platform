@@ -3,7 +3,7 @@ import { json } from "./http.ts";
 import { accessConfigured, listConfigured } from "./access.ts";
 
 /** The newest schema migration every service requires before it reports ready. */
-export const REQUIRED_MIGRATION = "0010_ai_worker_os.sql";
+export const REQUIRED_MIGRATION = "0011_agent_reports.sql";
 
 export type Checks = Record<string, boolean>;
 

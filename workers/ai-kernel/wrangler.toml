@@ -55,9 +55,17 @@ entrypoint = "SignalRpc"
 name = "SUPERVISOR"
 class_name = "SupervisorAgent"
 
+[[durable_objects.bindings]]
+name = "SIGNAL_ANALYST"
+class_name = "SignalAnalystAgent"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SupervisorAgent"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SignalAnalystAgent"]
 
 # No shared secrets: /v1 and /mcp are authorized by the verified Cloudflare Access identity.
 # The deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.

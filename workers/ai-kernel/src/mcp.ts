@@ -8,6 +8,7 @@ import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES } from "../../control-plane-shared/src/capabilities.ts";
 import { observe } from "./syscall.ts";
 import { listAgents, listActions, setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv } from "./kernel.ts";
+import { listReports } from "./reports.ts";
 
 export const PROTOCOL_VERSION = "2025-06-18";
 
@@ -20,7 +21,9 @@ export const TOOLS: Tool[] = [
   { name: "list_agents", description: "Registered agents, their tier limit, capabilities and status.", inputSchema: { type: "object", properties: {} } },
   { name: "list_agent_actions", description: "Recent syscalls of an agent with their policy decision and outcome.",
     inputSchema: { type: "object", properties: { agent_id: str("agent id"), limit: { type: "integer", minimum: 1, maximum: 100 } }, required: ["agent_id"] } },
-  { name: "wake_agent", description: "Run one supervisor cycle now and return its report.", inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
+  { name: "list_reports", description: "Recent advisory agent reports (signal and audit digests).",
+    inputSchema: { type: "object", properties: { agent_id: str("optional agent id"), kind: str("optional report kind"), limit: { type: "integer", minimum: 1, maximum: 100 } } } },
+  { name: "wake_agent", description: "Run one agent cycle now (supervisor or signal-analyst) and return its report.", inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
   { name: "suspend_agent", description: "Suspend an agent (any operator).", inputSchema: { type: "object", properties: { agent_id: str("agent id"), reason: str("why") }, required: ["agent_id", "reason"] } },
   { name: "resume_agent", description: "Resume a suspended agent (approver only).", approverOnly: true, inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
   { name: "set_agents_enabled", description: "Global kill switch: false stops every agent (any operator); true needs an approver.",
@@ -69,6 +72,12 @@ async function callTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, actor:
     case "list_capabilities": return text(CAPABILITIES);
     case "list_agents": return text(await listAgents(env));
     case "list_agent_actions": return text(await listActions(env, agentId, Number(args.limit ?? 20)));
+    case "list_reports":
+      return text(await listReports(env.DB, {
+        agent_id: typeof args.agent_id === "string" && args.agent_id ? args.agent_id : null,
+        kind: typeof args.kind === "string" && args.kind ? args.kind : null,
+        limit: Number(args.limit ?? 20),
+      }));
     case "wake_agent": return text(await wakeAgent(env, agentId));
     case "suspend_agent": return text(await setAgentStatus(env, agentId, "suspended", actor, String(args.reason ?? "")));
     case "resume_agent": return text(await setAgentStatus(env, agentId, "enabled", actor, "resumed"));

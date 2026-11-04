@@ -11,6 +11,7 @@ import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
+import { publishReport } from "./reports.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -64,9 +65,52 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   };
 }
 
+/** Tier 0: latest Signal Engine confluence, decision, Mizan per symbol, plus macro context (read-only). */
+export async function observeSignals(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
+  const rows = await env.DB.prepare(
+    `SELECT c.symbol, c.basis_close_time, c.confluence_score, c.decision_json, c.mizan_json, c.computed_at
+     FROM signal_confluence c
+     WHERE c.basis_close_time = (SELECT MAX(i.basis_close_time) FROM signal_confluence i WHERE i.symbol = c.symbol)
+     ORDER BY c.symbol`,
+  ).all<{ symbol: string; basis_close_time: number; confluence_score: number; decision_json: string; mizan_json: string | null; computed_at: string }>();
+  const symbols = rows.results.map((r) => {
+    const dec = JSON.parse(r.decision_json) as JsonObject;
+    const mz = r.mizan_json ? (JSON.parse(r.mizan_json) as JsonObject) : null;
+    const action = String(dec.action ?? "NEUTRAL");
+    const confidence = typeof dec.confidence === "number" ? dec.confidence : null;
+    const phi = typeof mz?.phi === "number" ? mz.phi : null;
+    const tier = (mz?.signal_tier ?? mz?.tier ?? null) as string | null;
+    const direction = (mz?.direction_bias ?? mz?.direction ?? null) as string | null;
+    return {
+      symbol: r.symbol,
+      basis_close_time: r.basis_close_time,
+      confluence_score: r.confluence_score,
+      action,
+      confidence,
+      decision: { action, confidence },
+      mizan: mz ? { phi, tier, signal_tier: tier, direction, direction_bias: direction } : null,
+      computed_at: r.computed_at,
+    };
+  });
+  const macro = await env.DB.prepare(
+    "SELECT observed_hour, fear_greed, fear_greed_class, fear_greed_sentiment, fear_greed_time, btc_dominance, total_market_cap, observed_at FROM macro_context ORDER BY observed_hour DESC LIMIT 1",
+  ).first<JsonObject>();
+  return {
+    observed_at: new Date(now).toISOString(),
+    symbols,
+    macro: macro ?? null,
+  };
+}
+
+const TIER0_HANDLERS: Record<string, (env: BaseEnv) => Promise<JsonObject>> = {
+  "platform.observe": (env) => observe(env),
+  "signals.observe": (env) => observeSignals(env),
+};
+
 async function dispatch(env: SyscallEnv, capability: string, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
   switch (capability) {
     case "recovery.propose": return { plan: await env.RECOVERY.propose(agentId, decisionId, input) };
+    case "reports.publish": return { report: await publishReport(env.DB, agentId, decisionId, input) };
     case "signals.reingest": return { run: await env.SIGNALS.reingest(agentId, decisionId) };
     default: throw new Error("capability_not_dispatchable");
   }
@@ -89,9 +133,11 @@ export async function syscall(env: SyscallEnv, agentId: string, capability: stri
   const cap = Object.hasOwn(CAPABILITIES, capability) ? CAPABILITIES[capability] : undefined;
   const tier = cap?.tier ?? 3;
   if (tier === 0) {
-    const failed = (await agentSyscallChecks(env.DB, `agent:${agentId}`, capability)).filter((c) => !c.passed);
-    if (failed.length) return { outcome: "denied", capability, tier, decision_id: null, reason: `failed: ${failed.map((c) => c.id).join(", ")}` };
-    return { outcome: "succeeded", capability, tier, decision_id: null, result: await observe(env) };
+    const handler = Object.hasOwn(TIER0_HANDLERS, capability) ? TIER0_HANDLERS[capability] : undefined;
+    const failed = (await agentSyscallChecks(env.DB, `agent:${agentId}`, capability)).filter((c) => !c.passed).map((c) => c.id);
+    if (!handler) failed.push("tier0_handler_missing");
+    if (failed.length) return { outcome: "denied", capability, tier, decision_id: null, reason: `failed: ${failed.join(", ")}` };
+    return { outcome: "succeeded", capability, tier, decision_id: null, result: await handler!(env) };
   }
   let decision: { decision: string; decision_id: string; reason: string };
   try {

@@ -15,6 +15,8 @@ import { accessGate, authorize, listConfigured, requireOperator } from "../../co
 import { CAPABILITIES } from "../../control-plane-shared/src/capabilities.ts";
 import { agentStatus, listActions, listAgents, setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv } from "./kernel.ts";
 import { handleMcp } from "./mcp.ts";
+import { listReports } from "./reports.ts";
+import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 
@@ -38,12 +40,14 @@ export default {
           approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES),
           policy_binding: Boolean(env.POLICY), recovery_binding: Boolean(env.RECOVERY), signals_binding: Boolean(env.SIGNALS),
           supervisor_binding: Boolean(env.SUPERVISOR),
+          signal_analyst_binding: "SIGNAL_ANALYST" in env ? Boolean(env.SIGNAL_ANALYST) : Boolean(env.SUPERVISOR),
         });
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/agents", "GET /v1/agents/{id}",
-          "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake", "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/reports?agent_id=&kind=&limit=",
+          "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
+          "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
         ]);
       }
     }
@@ -54,6 +58,13 @@ export default {
       if (path === "/mcp") return await handleMcp(request, env, operator.actor, await isApprover(request, env));
       if (path === "/v1/kernel" && request.method === "GET") return json({ ...(await listAgents(env)), capabilities: CAPABILITIES });
       if (path === "/v1/status" && request.method === "GET") return json(await observe(env));
+      if (path === "/v1/reports" && request.method === "GET") {
+        return json(await listReports(env.DB, {
+          agent_id: url.searchParams.get("agent_id"),
+          kind: url.searchParams.get("kind"),
+          limit: limitParam(url),
+        }));
+      }
       if (path === "/v1/kernel/agents-enabled" && request.method === "POST") {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
@@ -73,7 +84,7 @@ export default {
       if (verb === "actions") return request.method === "GET" ? json(await listActions(env, agentId, limitParam(url))) : errorResponse(405, "method_not_allowed");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       if (verb === "wake") {
-        if (agentId !== AGENT_ID) return errorResponse(404, "not_found");
+        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID) return errorResponse(404, "not_found");
         return json(await wakeAgent(env, agentId));
       }
       if (verb === "suspend") {
@@ -91,9 +102,14 @@ export default {
     }
   },
 
-  async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+  async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
     ctx.waitUntil(env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID)).cycle("scheduled").then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "supervisor_cycle_failed", message: String((err as Error)?.message ?? err) }));
     }));
+    if (new Date(event.scheduledTime).getUTCMinutes() === 7 && env.SIGNAL_ANALYST) {
+      ctx.waitUntil(env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID)).cycle("scheduled").then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "signal_analyst_cycle_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
   },
 };

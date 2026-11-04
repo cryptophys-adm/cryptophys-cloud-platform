@@ -4,6 +4,7 @@
 // reachable over HTTP. HealthRpc lets the Drift Detector observe this Worker.
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import worker, { type Env } from "./index.ts";
+import { runSignalCycle } from "./signal-analyst.ts";
 import { runCycle, type CycleReport } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
@@ -27,6 +28,16 @@ export class KernelRpc extends WorkerEntrypoint<Env> {
 export class SupervisorAgent extends DurableObject<Env> {
   async cycle(trigger: "scheduled" | "operator"): Promise<CycleReport> {
     return runCycle(this.env, this.ctx.storage, trigger);
+  }
+  async status(): Promise<CycleReport | null> {
+    return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;
+  }
+}
+
+/** Signal Analyst agent process (TP-006): hourly advisory signal digest. */
+export class SignalAnalystAgent extends DurableObject<Env> {
+  async cycle(trigger: "scheduled" | "operator"): Promise<CycleReport> {
+    return runSignalCycle(this.env, this.ctx.storage, trigger);
   }
   async status(): Promise<CycleReport | null> {
     return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;
