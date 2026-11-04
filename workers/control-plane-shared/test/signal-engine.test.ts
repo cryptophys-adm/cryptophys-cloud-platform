@@ -2,6 +2,7 @@ import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, call, migratedDb, req, accessCertsResponse, isAccessCerts, OUTSIDER_JWT, fakeAi } from "./harness.ts";
 import signal, { Pacer, config, ingest, parseKlines, parseKrakenOhlc, PROVIDERS, setPacer } from "../../signal-engine/src/index.ts";
+import { parseFearGreed, parseGlobal } from "../../signal-engine/src/macro.ts";
 
 const H = 3_600_000;
 const NOW = Date.UTC(2026, 10, 3, 12, 4); // 12:04Z: the 11:00 candle is closed, the 12:00 candle is still forming
@@ -12,6 +13,7 @@ let virtualNow = 0;
 beforeEach(() => {
   slept = [];
   virtualNow = 0;
+  macroHandler = (url) => Response.json(url.hostname === "api.alternative.me" ? FNG : GLOBAL);
   setPacer(new Pacer(async (ms) => { slept.push(ms); virtualNow += ms; }, () => virtualNow));
 });
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -22,17 +24,25 @@ function kline(i: number, base = 2000): unknown[] {
   return [open, String(c - 1), String(c + 3), String(c - 4), String(c), String(100 + (i % 13)), open + H - 1, "0", 10, "0", "0", "0"];
 }
 
+// Documented response shapes of the keyless macro sources (alternative.me, CoinLore).
+const FNG = { name: "Fear and Greed Index", data: [{ value: "27", value_classification: "Fear", timestamp: "1793750400" }] };
+const GLOBAL = [{ coins_count: 12000, total_mcap: 2.91e12, btc_d: "58.40", eth_d: "11.2" }];
+let macroHandler: (url: URL) => Response = (url) => Response.json(url.hostname === "api.alternative.me" ? FNG : GLOBAL);
+
 function market(handler: (url: URL) => Response | Promise<Response>) {
   const calls: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (isAccessCerts(url)) return accessCertsResponse();
+    const u = new URL(url);
+    if (u.hostname === "api.alternative.me" || u.hostname === "api.coinlore.com") return macroHandler(u);
     calls.push(url);
     return handler(new URL(url));
   }) as typeof fetch;
   return calls;
 }
 
+const marketsOnly = <T extends { symbol: string }>(x: T[]) => x.filter((s) => s.symbol !== "MACRO");
 const env = (db = migratedDb(), extra: Record<string, unknown> = {}) =>
   baseEnv("cryptophys-signal-engine", db, { SYMBOLS: "BTCUSDT,ETHUSDT", TIMEFRAMES: "1h", MARKET_DATA_PROVIDER: "binance", ...extra });
 
@@ -98,13 +108,13 @@ test("a failing market-data source is isolated per series and never stores parti
   const db = migratedDb();
   market((url) => url.searchParams.get("symbol") === "BTCUSDT" ? new Response("geo-blocked", { status: 451 }) : Response.json([kline(299), kline(300)]));
   const run = await ingest(env(db) as never, NOW);
-  assert.deepEqual(run.series.map((s) => [s.symbol, s.status, s.error ?? null]), [["BTCUSDT", "error", "market_data_http_451"], ["ETHUSDT", "ok", null]]);
+  assert.deepEqual(marketsOnly(run.series).map((s) => [s.symbol, s.status, s.error ?? null]), [["BTCUSDT", "error", "market_data_http_451"], ["ETHUSDT", "ok", null]]);
   const eth = run.series[1];
   assert.deepEqual([eth.inserted, eth.computed], [1, []], "too little history: candle kept, no indicators published");
   market(() => Response.json({ msg: "invalid" }));
   assert.equal((await ingest(env(db) as never, NOW)).failed, 2);
   const runs = db.raw.prepare("SELECT trigger, series_total, series_failed, results_json FROM signal_ingest_runs ORDER BY started_at, rowid").all() as any[];
-  assert.deepEqual(runs.map((r) => [r.trigger, r.series_total, r.series_failed]), [["scheduled", 2, 1], ["scheduled", 2, 2]]);
+  assert.deepEqual(runs.map((r) => [r.trigger, r.series_total, r.series_failed]), [["scheduled", 3, 1], ["scheduled", 2, 2]], "the first pass also stored this hour's macro context");
   assert.equal(JSON.parse(runs[0].results_json)[0].error, "market_data_http_451", "the failure cause is persisted");
 });
 
@@ -189,15 +199,41 @@ test("Kraken calls are spaced and a rate-limited series is retried once after a 
     return Response.json({ error: [], result: { [url.searchParams.get("pair")!]: [krakenRow(299), krakenRow(300)], last: 0 } });
   });
   const run = await ingest(e as never, NOW);
-  assert.deepEqual(run.series.map((s) => s.status), ["ok", "ok"], "the retried series succeeds");
+  assert.deepEqual(marketsOnly(run.series).map((s) => s.status), ["ok", "ok"], "the retried series succeeds");
   assert.equal(solCalls, 2);
   assert.ok(slept.includes(3000), "back-off before the retry");
   assert.ok(slept.filter((ms) => ms === 1100).length >= 1, "consecutive Kraken calls are at least 1.1 s apart");
 
   market(() => Response.json({ error: ["EGeneral:Too many requests"] }));
   const limited = await ingest(e as never, NOW);
-  assert.deepEqual(limited.series.map((s) => s.error), ["provider_error: EGeneral:Too many requests", "provider_error: EGeneral:Too many requests"], "only one retry; the cause is persisted");
+  assert.deepEqual(marketsOnly(limited.series).map((s) => s.error), ["provider_error: EGeneral:Too many requests", "provider_error: EGeneral:Too many requests"], "only one retry; the cause is persisted");
 
   market(() => new Response("slow down", { status: 429 }));
   assert.equal((await ingest(e as never, NOW)).series[0].error, "market_data_http_429");
+});
+
+test("macro context: hourly Fear & Greed and global market data, never invented on failure", async () => {
+  assert.deepEqual(parseFearGreed(FNG), { fear_greed: 27, fear_greed_class: "Fear", fear_greed_sentiment: -0.46, fear_greed_time: 1793750400000 });
+  assert.deepEqual(parseGlobal(GLOBAL), { btc_dominance: 58.4, total_market_cap: 2.91e12 });
+  for (const bad of [{}, { data: [] }, { data: [{ value: "101" }] }, { data: [{ value: "x" }] }]) assert.ok(parseFearGreed(bad) instanceof Error);
+  for (const bad of [{}, [], [{ total_mcap: 0, btc_d: 50 }], [{ total_mcap: 1, btc_d: 120 }]]) assert.ok(parseGlobal(bad) instanceof Error);
+
+  const db = migratedDb();
+  const e = env(db);
+  market((url) => Response.json(Array.from({ length: Number(url.searchParams.get("limit")) }, (_, k) => kline(90 + k))));
+  const first = await ingest(e as never, NOW);
+  assert.deepEqual(first.series.at(-1), { symbol: "MACRO", timeframe: "1h", status: "ok", inserted: 1, computed: ["macro"] });
+  const second = await ingest(e as never, NOW);
+  assert.equal(second.series.find((s) => s.symbol === "MACRO"), undefined, "one observation per hour");
+  const row = db.raw.prepare("SELECT fear_greed, fear_greed_sentiment, btc_dominance FROM macro_context").get() as any;
+  assert.deepEqual([row.fear_greed, row.fear_greed_sentiment, row.btc_dominance], [27, -0.46, 58.4]);
+  const latest = await call(signal, e, req("GET", "/v1/signals?symbol=BTCUSDT&timeframe=1h"));
+  assert.equal(latest.body.macro.fear_greed, 27);
+  assert.equal((await call(signal, e, req("GET", "/v1/macro"))).body.rows.length, 1);
+
+  // The source returned fng=50/dxy=103.5/vix=14.5 on failure; the port stores nothing and reports why.
+  macroHandler = (url) => (url.hostname === "api.alternative.me" ? new Response("down", { status: 503 }) : Response.json(GLOBAL));
+  const failed = await ingest(e as never, NOW + 3_600_000);
+  assert.deepEqual(failed.series.at(-1), { symbol: "MACRO", timeframe: "1h", status: "error", error: "macro_http_503" });
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM macro_context").get() as any).n, 1, "no invented row");
 });

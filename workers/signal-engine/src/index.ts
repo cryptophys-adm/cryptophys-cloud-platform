@@ -11,6 +11,7 @@ import {
   volumeIndicators, type Candle, type Indicators,
 } from "./indicators.ts";
 import { CATEGORIES, REGIME, decision, mizan, regime, tfConfluence } from "./mizan.ts";
+import { MACRO_SOURCES, parseFearGreed, parseGlobal } from "./macro.ts";
 
 const ENGINES: [string, number, (c: Candle[]) => Indicators][] = [
   ["trend", MIN_HISTORY.trend, trendIndicators],
@@ -271,6 +272,44 @@ async function deriveSymbol(env: Env, symbol: string, timeframes: string[], now:
   if (writes.length) await env.DB.batch(writes);
 }
 
+/**
+ * Hourly macro context (Fear & Greed, BTC dominance, total market cap). Returns null when this
+ * hour is already stored; a failed or malformed source stores nothing and is reported.
+ */
+export async function ingestMacro(env: Env, now: number): Promise<SeriesResult | null> {
+  const hour = now - (now % 3_600_000);
+  if (await env.DB.prepare("SELECT 1 AS x FROM macro_context WHERE observed_hour = ?").bind(hour).first()) return null;
+  const get = async (url: string): Promise<unknown | Error> => {
+    await pace.turn(1_100);
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { accept: "application/json", "user-agent": "cryptophys-signal-engine (advisory)" } });
+      if (!res.ok) { await res.body?.cancel(); return new Error(`macro_http_${res.status}`); }
+      return await res.json();
+    } catch (err) {
+      return new Error((err as Error)?.name === "TimeoutError" ? "macro_timeout" : "macro_unreachable");
+    }
+  };
+  const fgBody = await get(MACRO_SOURCES.fear_greed);
+  const glBody = await get(MACRO_SOURCES.global);
+  const fg = fgBody instanceof Error ? fgBody : parseFearGreed(fgBody);
+  const gl = glBody instanceof Error ? glBody : parseGlobal(glBody);
+  const errors = [fg, gl].filter((x): x is Error => x instanceof Error).map((e) => e.message);
+  if (errors.length) return { symbol: "MACRO", timeframe: "1h", status: "error", error: errors.join(", ") };
+  const f = fg as Exclude<typeof fg, Error>;
+  const g = gl as Exclude<typeof gl, Error>;
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO macro_context (observed_hour, fear_greed, fear_greed_class, fear_greed_sentiment, fear_greed_time, btc_dominance, total_market_cap, sources_json, observed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(hour, f.fear_greed, f.fear_greed_class, f.fear_greed_sentiment, f.fear_greed_time, g.btc_dominance, g.total_market_cap, JSON.stringify(MACRO_SOURCES), nowIso()).run();
+  return { symbol: "MACRO", timeframe: "1h", status: "ok", inserted: 1, computed: ["macro"] };
+}
+
+async function latestMacro(env: Env): Promise<JsonObject | null> {
+  return env.DB.prepare(
+    "SELECT observed_hour, fear_greed, fear_greed_class, fear_greed_sentiment, fear_greed_time, btc_dominance, total_market_cap, observed_at FROM macro_context ORDER BY observed_hour DESC LIMIT 1",
+  ).first<JsonObject>();
+}
+
 /** One ingestion pass over every configured series; a failing series never blocks the others. */
 export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | "manual" = "scheduled"): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
   const startedAt = nowIso();
@@ -292,7 +331,15 @@ export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | 
       console.error(JSON.stringify({ service: SERVICE, event: "derive_failed", symbol, message: String((err as Error)?.message ?? err) }));
     }
   }
+  try {
+    const macro = await ingestMacro(env, now);
+    if (macro) series.push(macro);
+  } catch (err) {
+    series.push({ symbol: "MACRO", timeframe: "1h", status: "error", error: "storage_failed" });
+    console.error(JSON.stringify({ service: SERVICE, event: "macro_failed", message: String((err as Error)?.message ?? err) }));
+  }
   await env.DB.prepare("DELETE FROM market_candles WHERE open_time < ?").bind(now - RETENTION_DAYS * 86_400_000).run();
+  await env.DB.prepare("DELETE FROM macro_context WHERE observed_hour < ?").bind(now - RETENTION_DAYS * 86_400_000).run();
   const failed = series.filter((s) => s.status === "error").length;
   const runId = newId("sig");
   await env.DB.batch([
@@ -325,7 +372,7 @@ async function latestSignals(env: Env, symbol: string, timeframe: string): Promi
     "SELECT basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, computed_at FROM signal_confluence WHERE symbol = ? ORDER BY basis_close_time DESC LIMIT 1",
   ).bind(symbol).first<{ tf_scores_json: string; decision_json: string } & JsonObject>();
   return {
-    symbol, timeframe, candle, engines, advisory_only: true,
+    symbol, timeframe, candle, engines, advisory_only: true, macro: await latestMacro(env),
     confluence: confluence ? { ...confluence, tf_scores_json: undefined, decision_json: undefined, tf_scores: JSON.parse(confluence.tf_scores_json), decision: JSON.parse(confluence.decision_json) } : null,
   };
 }
@@ -360,7 +407,7 @@ export default {
       if (path === "/ready" || path === "/readyz") return readinessResponse(env, { market_config_valid: !(config(env) instanceof Error) });
       if (path === "/") {
         return serviceMetadata(env, "Deterministic trend and volume indicators from public market data (advisory only; every 15 minutes)", [
-          "GET /v1/signals?symbol=&timeframe=", "GET /v1/signals/history?symbol=&timeframe=&limit=", "GET /v1/status", "POST /v1/ingest",
+          "GET /v1/signals?symbol=&timeframe=", "GET /v1/signals/history?symbol=&timeframe=&limit=", "GET /v1/status", "GET /v1/macro", "POST /v1/ingest",
         ]);
       }
     }
@@ -377,6 +424,12 @@ export default {
           outcome: report.failed ? "partial" : "success", payload: { run_id: report.run_id, failed: report.failed },
         });
         return json(report, report.failed === report.series.length ? 502 : 200);
+      }
+      if (path === "/v1/macro" && request.method === "GET") {
+        const rows = await env.DB.prepare(
+          "SELECT observed_hour, fear_greed, fear_greed_class, fear_greed_sentiment, btc_dominance, total_market_cap, observed_at FROM macro_context ORDER BY observed_hour DESC LIMIT ?",
+        ).bind(limitParam(url, 24, 200)).all<JsonObject>();
+        return json({ advisory_only: true, sources: MACRO_SOURCES, rows: rows.results });
       }
       if (path === "/v1/status" && request.method === "GET") {
         const rows = await env.DB.prepare(
