@@ -6,7 +6,19 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
-import { IMPLEMENTATION, MIN_HISTORY, WINDOW, trendIndicators, volumeIndicators, type Candle } from "./indicators.ts";
+import {
+  IMPLEMENTATION, MIN_HISTORY, WINDOW, momentumIndicators, structureIndicators, trendIndicators, volatilityIndicators,
+  volumeIndicators, type Candle, type Indicators,
+} from "./indicators.ts";
+import { CATEGORIES, REGIME, decision, mizan, regime, tfConfluence } from "./mizan.ts";
+
+const ENGINES: [string, number, (c: Candle[]) => Indicators][] = [
+  ["trend", MIN_HISTORY.trend, trendIndicators],
+  ["volume", MIN_HISTORY.volume, volumeIndicators],
+  ["momentum", MIN_HISTORY.momentum, momentumIndicators],
+  ["volatility", MIN_HISTORY.volatility, volatilityIndicators],
+  ["structure", MIN_HISTORY.structure, structureIndicators],
+];
 
 /**
  * cryptophys-signal-engine (ADR-0005): the apps-gitops trend and volume signal engines,
@@ -165,7 +177,7 @@ async function ingestSeries(env: Env, provider: Provider, symbol: string, timefr
   const computed: string[] = [];
   if (latest) {
     const writes = [];
-    for (const [engine, min, compute] of [["trend", MIN_HISTORY.trend, trendIndicators], ["volume", MIN_HISTORY.volume, volumeIndicators]] as const) {
+    for (const [engine, min, compute] of ENGINES) {
       if (history.length < min) continue;
       writes.push(env.DB.prepare(
         `INSERT OR IGNORE INTO signal_indicators (symbol, timeframe, open_time, engine, implementation, window_size, indicators_json, computed_at)
@@ -176,6 +188,49 @@ async function ingestSeries(env: Env, provider: Provider, symbol: string, timefr
     if (writes.length) await env.DB.batch(writes);
   }
   return { symbol, timeframe, status: "ok", fetched: candles.length, inserted, latest_open_time: latest?.open_time ?? null, computed };
+}
+
+/**
+ * Cross-series engines for one symbol, after its candles and per-series engines are stored:
+ * Mizan (regime from the 1h closes, as mizan-regime subscribed to 1h KWW only) on each
+ * timeframe's latest candle, then the signal-edge multi-timeframe confluence and decision bias.
+ */
+async function deriveSymbol(env: Env, symbol: string, timeframes: string[], now: number): Promise<void> {
+  const closesOf = async (tf: string) => (await env.DB.prepare(
+    "SELECT open_time, close_time, close, volume FROM market_candles WHERE symbol = ? AND timeframe = ? ORDER BY open_time DESC LIMIT ?",
+  ).bind(symbol, tf, REGIME.WINDOW).all<{ open_time: number; close_time: number; close: number; volume: number }>()).results.reverse();
+  const regime1h = timeframes.includes("1h") ? regime((await closesOf("1h")).map((r) => r.close)) : null;
+  const state: Record<string, Record<string, { ts: number; indicators: Indicators }>> = {};
+  const writes = [];
+  for (const tf of timeframes) {
+    const rows = await closesOf(tf);
+    const latest = rows.at(-1);
+    if (!latest) continue;
+    const ind = await env.DB.prepare("SELECT engine, indicators_json FROM signal_indicators WHERE symbol = ? AND timeframe = ? AND open_time = ?")
+      .bind(symbol, tf, latest.open_time).all<{ engine: string; indicators_json: string }>();
+    const byEngine = Object.fromEntries(ind.results.map((r) => [r.engine, JSON.parse(r.indicators_json) as Indicators]));
+    for (const cat of CATEGORIES) {
+      if (!byEngine[cat]) continue;
+      // The aggregator compares EMAs with the close, which the original trend payload never carried.
+      const indicators = cat === "trend" ? { ...byEngine[cat], close: latest.close } : byEngine[cat];
+      (state[cat] ??= {})[tf] = { ts: latest.close_time, indicators };
+    }
+    const atr14 = (byEngine.volatility?.atr_14 as number | null | undefined) ?? null;
+    const m = mizan(rows.map((r) => r.close), latest.volume, tf, regime1h, latest.close, atr14);
+    writes.push(env.DB.prepare(
+      `INSERT OR IGNORE INTO signal_indicators (symbol, timeframe, open_time, engine, implementation, window_size, indicators_json, computed_at)
+       VALUES (?, ?, ?, 'mizan', ?, ?, ?, ?)`,
+    ).bind(symbol, tf, latest.open_time, IMPLEMENTATION, rows.length, JSON.stringify(m), nowIso()));
+  }
+  const conf = tfConfluence(state, now);
+  if (conf) {
+    const basis = Math.max(...Object.values(state).flatMap((byTf) => Object.values(byTf).map((e) => e.ts)));
+    writes.push(env.DB.prepare(
+      `INSERT OR IGNORE INTO signal_confluence (symbol, basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, computed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(symbol, basis, IMPLEMENTATION, conf.confluence_score, JSON.stringify(conf.tf_scores), JSON.stringify(decision(conf.confluence_score)), nowIso()));
+  }
+  if (writes.length) await env.DB.batch(writes);
 }
 
 /** One ingestion pass over every configured series; a failing series never blocks the others. */
@@ -192,6 +247,11 @@ export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | 
         series.push({ symbol, timeframe, status: "error", error: "storage_failed" });
         console.error(JSON.stringify({ service: SERVICE, event: "series_failed", symbol, timeframe, message: String((err as Error)?.message ?? err) }));
       }
+    }
+    try {
+      await deriveSymbol(env, symbol, cfg.timeframes, now);
+    } catch (err) {
+      console.error(JSON.stringify({ service: SERVICE, event: "derive_failed", symbol, message: String((err as Error)?.message ?? err) }));
     }
   }
   await env.DB.prepare("DELETE FROM market_candles WHERE open_time < ?").bind(now - RETENTION_DAYS * 86_400_000).run();
@@ -223,7 +283,13 @@ async function latestSignals(env: Env, symbol: string, timeframe: string): Promi
   for (const r of rows.results) {
     engines[r.engine] = { implementation: r.implementation, window_size: r.window_size, computed_at: r.computed_at, indicators: JSON.parse(r.indicators_json) };
   }
-  return { symbol, timeframe, candle, engines, advisory_only: true };
+  const confluence = await env.DB.prepare(
+    "SELECT basis_close_time, implementation, confluence_score, tf_scores_json, decision_json, computed_at FROM signal_confluence WHERE symbol = ? ORDER BY basis_close_time DESC LIMIT 1",
+  ).bind(symbol).first<{ tf_scores_json: string; decision_json: string } & JsonObject>();
+  return {
+    symbol, timeframe, candle, engines, advisory_only: true,
+    confluence: confluence ? { ...confluence, tf_scores_json: undefined, decision_json: undefined, tf_scores: JSON.parse(confluence.tf_scores_json), decision: JSON.parse(confluence.decision_json) } : null,
+  };
 }
 
 interface Summary { summary: string; observations: string[] }

@@ -1,0 +1,13 @@
+commit_deleted_in	date	path_in_cryptophys-work/apps-gitops (content is the parent of that commit)
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/mizan-edge/services/mizan-confluence/src/lib.rs
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/mizan-edge/services/mizan-confluence/src/main.rs
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/mizan-edge/services/mizan-regime/src/hurst.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/requirements.txt
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/src/decision_engine.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/src/momentum_engine.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/src/quant_formulas.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/src/structure_engine.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/src/tf_aggregator.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/signal-edge/src/volatility_engine.py
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/mizan-edge/services/mizan-dimension-router/src/main.rs
+aa912bbfff6f200f7ef02f905848488ad9e94996 2026-05-17 apps/user/cognitive-risk/mizan-edge/services/mizan-kww-engine/src/lib.rs

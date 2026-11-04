@@ -1,0 +1,9 @@
+[package]
+name = "mizan-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No dependencies: the recovered libraries are compiled as-is (their serde derive is
+# stripped by build.rs-free inclusion below) so fixtures come from the original Rust math.
+[dependencies]
