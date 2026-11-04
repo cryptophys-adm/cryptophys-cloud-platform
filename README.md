@@ -23,7 +23,7 @@ Git is the source of truth for platform design and code. This repository contain
 - D1 database `cryptophys-control-plane` with versioned migrations and Time Travel restore points before every migration.
 - A hash-chained, append-only audit ledger.
 - `cryptophys-signal-engine`: the apps-gitops trend and volume engines migrated off Kubernetes, with pandas_ta parity fixtures (ADR-0005; inventory in docs/TRANSFORMATION-INVENTORY.md).
-- Drift detection every 15 minutes: version and health for the eight platform Workers over RPC service bindings, and health-only checks for the four external xauusd Workers over private service bindings.
+- Drift detection every 15 minutes: the Drift Detector observes its own version and health locally, its seven platform peers over RPC, and the four external xauusd Workers for health only over private service bindings.
 - Cloudflare Access in front of every platform Worker, with the JWT verified inside each platform Worker. Authorization is by verified identity: operators and recovery approvers are allow-lists of Access identities, and there are no shared bearer tokens.
 - Seven AI-enabled platform Workers (Deployment Orchestrator, the five control-plane services, and Signal Engine) each have a dedicated advisory Workers AI binding and daily budget; Platform API has no AI binding. AI never makes authoritative decisions.
 - Validation CI, SHA-pinned actions and Dependabot.
