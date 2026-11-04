@@ -41,13 +41,3 @@ for dir in "$@"; do
 done
 echo "Resolved ${D1_DATABASE_NAME} and rendered wrangler.deploy.toml for: $*"
 
-if [[ -n "${GITHUB_ACTIONS:-}" && -z "${CF_API_BASE:-}" ]]; then
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [[ -x "${script_dir}/ensure-vectorize-index.sh" ]]; then
-    if "${script_dir}/ensure-vectorize-index.sh"; then
-      [[ -n "${GITHUB_ENV:-}" ]] && echo "VECTORIZE_INDEX_ENSURED=1" >> "$GITHUB_ENV"
-    else
-      echo "Note: ensure-vectorize-index.sh did not succeed with D1 token; will retry with Workers deploy token."
-    fi
-  fi
-fi
