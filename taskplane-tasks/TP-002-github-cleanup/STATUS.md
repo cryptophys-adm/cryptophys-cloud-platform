@@ -1,6 +1,6 @@
 # TP-002 GitHub Cleanup — STATUS
 
-State: in_progress
+State: awaiting_owner
 
 ## Evidence
 
@@ -36,3 +36,7 @@ None (read-only step).
 ## Open questions
 
 - Owner approval needed for any destructive cleanup (branch deletion, secret removal, environment policy change). Awaiting owner gate before TP-002 step 2.
+
+## Gate
+
+Step 2 (delete secrets, delete branch, remove claude branch from production deployment policy) is destructive and waits for orchestrator `VALIDATED` on PR #47 (step 1). Not executed.
