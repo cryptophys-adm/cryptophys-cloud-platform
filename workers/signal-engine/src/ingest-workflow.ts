@@ -17,7 +17,7 @@ import {
 
 export const SERIES_RETRIES = { limit: 3, delay: "10 seconds", backoff: "exponential" as const };
 export const MACRO_RETRIES = { limit: 2, delay: "30 seconds", backoff: "exponential" as const };
-export const TRANSIENT_MACRO_ERRORS = /macro_(?:timeout|unreachable|http_(?:429|5\\d\\d))/i;
+export const TRANSIENT_MACRO_ERRORS = /macro_(?:timeout|unreachable|http_(?:429|5\d\d))/i;
 
 export async function runIngest(env: Env, params: IngestParams, instanceId: string, step: WorkflowStepLike) {
   const startedAt = await step.do("start", async () => nowIso());
