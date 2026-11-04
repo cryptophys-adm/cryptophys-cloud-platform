@@ -104,14 +104,32 @@ cf_get "${account_path}/workers/scripts/${script_name}/subdomain" \
   || fail "workers.dev route is not enabled for ${script_name}"
 
 # 3. Active deployment must serve exactly one version, annotated with the commit.
-deployments="$(cf_get "${account_path}/workers/scripts/${script_name}/deployments")"
-active_version="$(printf '%s' "$deployments" | jq -er '
-  .result.deployments[0].versions
-  | if length == 1 and .[0].percentage == 100 then .[0].version_id else empty end')" \
-  || fail "Active deployment of ${script_name} does not serve a single version at 100%"
-version_json="$(cf_get "${account_path}/workers/scripts/${script_name}/versions/${active_version}")"
-printf '%s' "$version_json" | jq -e --arg sha "$commit_sha" '[.result | .. | strings] | any(contains($sha))' >/dev/null \
-  || fail "Active version ${active_version} of ${script_name} is not annotated with commit ${commit_sha}"
+# The deployments list is eventually consistent: right after `wrangler deploy` it can still
+# report the previous version (seen in production, run 41823740347), so this is retried
+# with the same budget as the health checks before failing.
+active_version=""
+for ((v = 1; v <= attempts; v++)); do
+  deployments="$(cf_get "${account_path}/workers/scripts/${script_name}/deployments")"
+  candidate="$(printf '%s' "$deployments" | jq -er '
+    .result.deployments[0].versions
+    | if length == 1 and .[0].percentage == 100 then .[0].version_id else empty end')" || candidate=""
+  if [[ -n "$candidate" ]]; then
+    version_json="$(cf_get "${account_path}/workers/scripts/${script_name}/versions/${candidate}")"
+    if printf '%s' "$version_json" | jq -e --arg sha "$commit_sha" '[.result | .. | strings] | any(contains($sha))' >/dev/null; then
+      active_version="$candidate"
+      break
+    fi
+    echo "Active version ${candidate} of ${script_name} is not yet commit ${commit_sha} (attempt ${v}/${attempts})" >&2
+  else
+    echo "Active deployment of ${script_name} does not yet serve a single version at 100% (attempt ${v}/${attempts})" >&2
+  fi
+  (( v < attempts )) && sleep "$delay"
+done
+if [[ -z "$active_version" && -n "$candidate" ]]; then
+  fail "Active version ${candidate} of ${script_name} is not annotated with commit ${commit_sha} after ${attempts} attempts"
+fi
+[[ -n "$active_version" ]] \
+  || fail "Active deployment of ${script_name} does not serve a single version at 100% after ${attempts} attempts"
 echo "Active Cloudflare version for ${script_name}: ${active_version} (commit ${commit_sha})"
 
 base_url="https://${script_name}.${account_subdomain}.workers.dev"
