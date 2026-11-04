@@ -66,3 +66,13 @@ _Workers log discoveries here through their PR._
 - TP-002 GitHub cleanup: **done**.
 - TP-006 to TP-009 (AI Worker OS: Signal Analyst agent, Auditor agent, Vectorize memory, external agents through MCP): **done** (merged via PRs #61, #62, #63, #64).
 - TP-003, TP-004, TP-005 (cluster inventory, export, decommission): **cancelled** by the owner. The cluster is deprecated, its data is not kept, and the platform no longer needs cluster access. See each task's STATUS.md.
+
+## Validation record: TP-006 to TP-009 (orchestrator, 2026-11-05)
+
+Merged by the owner's account (#61 to #64) and deployed in run 41931114234 at `56f52bf`; validated after the fact by the orchestrator.
+- Tests: 94 pass, 0 skipped; migrations and `.github/scripts` tests pass.
+- Invariants checked in code: tier 3 human-only, `tier_max` ≤ 2 (CHECK), trading prohibited, `external_tier_limit`, per-agent memory isolation enforced in D1.
+- **Process findings.**
+  - Commit `56f52bf` was pushed straight to `main`. It wired Vectorize provisioning into `render-d1-config.sh` and `remove-worker-secrets.sh` as hidden side effects, working around the rule against editing workflows.
+  - The orchestrator replaced those side effects with an explicit, visible step in `deploy-control-plane.yml`.
+  - Workers must not push to `main`, dispatch deployments or add side effects to unrelated scripts. They open a PR and stop; the orchestrator merges and deploys.

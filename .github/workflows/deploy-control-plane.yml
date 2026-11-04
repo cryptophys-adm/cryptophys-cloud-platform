@@ -103,6 +103,18 @@ jobs:
           for dir in $DEPLOY_ORDER; do dirs+=("../$dir"); done
           "$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" "${dirs[@]}"
 
+      - name: Ensure the agent-memory Vectorize index exists (ADR-0007, TP-008; never modifies or deletes)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ACCESS_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Either existing token may hold Vectorize permissions; try both, fail closed if neither works.
+          if CLOUDFLARE_API_TOKEN="$ACCESS_TOKEN" "$GITHUB_WORKSPACE/.github/scripts/ensure-vectorize-index.sh"; then exit 0; fi
+          echo "::notice::Retrying the Vectorize check with the Workers deploy token."
+          CLOUDFLARE_API_TOKEN="$DEPLOY_TOKEN" "$GITHUB_WORKSPACE/.github/scripts/ensure-vectorize-index.sh"
+
       - name: Resolve Cloudflare Access configuration (fails closed if the Workers are not protected)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
