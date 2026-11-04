@@ -171,3 +171,79 @@ export async function call(worker: { fetch(r: Request, e: never): Promise<Respon
   return { status: res.status, body };
 }
 
+
+// ---------------------------------------------------------------- Workflows
+// A minimal stand-in for the Workflows engine: step.do runs the callback and retries it up to
+// config.retries.limit times (attempt is 1-indexed); waitForEvent resolves with a queued event
+// of that type, or throws as a timeout would. Sleeps and back-offs are not waited for.
+export interface FakeWorkflow {
+  binding: {
+    create(o?: { id?: string; params?: unknown }): Promise<{ id: string }>;
+    get(id: string): Promise<{ id: string; sendEvent(e: { type: string; payload?: unknown }): Promise<void>; terminate(): Promise<void>; status(): Promise<{ status: string }> }>;
+  };
+  created: { id: string; params: unknown }[];
+  events: Record<string, string[]>;
+  terminated: string[];
+  step(instanceId: string): FakeStep;
+}
+export interface FakeStep {
+  names: string[];
+  attempts: Record<string, number>;
+  timedOut: string[];
+  do<T>(name: string, a: unknown, b?: unknown): Promise<T>;
+  waitForEvent<T>(name: string, o: { type: string; timeout?: unknown }): Promise<{ payload: T; timestamp: Date; type: string }>;
+}
+
+export function fakeWorkflow(opts: { failCreate?: boolean; existing?: string[] } = {}): FakeWorkflow {
+  const created: { id: string; params: unknown }[] = [];
+  const events: Record<string, string[]> = {};
+  const terminated: string[] = [];
+  const known = new Set(opts.existing ?? []);
+  const wf: FakeWorkflow = {
+    created, events, terminated,
+    binding: {
+      async create(o) {
+        if (opts.failCreate) throw new Error("workflows unavailable");
+        const id = o?.id ?? `wf-${created.length + 1}`;
+        if (known.has(id)) throw new Error(`instance ${id} already exists`);
+        known.add(id);
+        created.push({ id, params: o?.params });
+        return { id };
+      },
+      async get(id) {
+        if (!known.has(id)) throw new Error(`instance ${id} not found`);
+        return {
+          id,
+          async sendEvent(e) { (events[id] ??= []).push(e.type); },
+          async terminate() { terminated.push(id); },
+          async status() { return { status: terminated.includes(id) ? "terminated" : "running" }; },
+        };
+      },
+    },
+    step(instanceId) {
+      const s: FakeStep = {
+        names: [], attempts: {}, timedOut: [],
+        async do<T>(name: string, a: unknown, b?: unknown): Promise<T> {
+          const config = (typeof a === "function" ? {} : a) as { retries?: { limit: number } };
+          const fn = (typeof a === "function" ? a : b) as (ctx: { attempt: number }) => Promise<T>;
+          s.names.push(name);
+          const limit = config.retries?.limit ?? 0;
+          for (let attempt = 1; ; attempt++) {
+            s.attempts[name] = attempt;
+            try { return await fn({ attempt }); } catch (err) { if (attempt > limit) throw err; }
+          }
+        },
+        async waitForEvent<T>(name: string, o: { type: string }) {
+          s.names.push(name);
+          const queue = events[instanceId] ?? [];
+          const i = queue.indexOf(o.type);
+          if (i < 0) { s.timedOut.push(name); throw new Error(`waitForEvent ${name} timed out`); }
+          queue.splice(i, 1);
+          return { payload: {} as T, timestamp: new Date(), type: o.type };
+        },
+      };
+      return s;
+    },
+  };
+  return wf;
+}

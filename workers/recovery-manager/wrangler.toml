@@ -22,6 +22,10 @@ AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 # Per-service and coordinated account-wide daily request caps (Workers AI Free allocation).
 AI_DAILY_REQUEST_LIMIT = "80"
 AI_ACCOUNT_DAILY_REQUEST_LIMIT = "400"
+# Recovery plan windows enforced by the handlers and closed by RecoveryPlanWorkflow (ADR-0006).
+RECOVERY_APPROVAL_WINDOW_HOURS = "72"
+RECOVERY_EXECUTION_WINDOW_HOURS = "24"
+RECOVERY_FINISH_WINDOW_HOURS = "24"
 
 # The account-specific database_id is kept out of Git (ADR-0001). The deploy workflow
 # resolves it from the Cloudflare API by exact database name and substitutes it.
@@ -39,3 +43,14 @@ entrypoint = "PolicyRpc"
 
 # No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
 # deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.
+
+# One Workflow instance per recovery plan (ADR-0006): it waits on the approval and execution
+# windows and closes a stale plan with an audit event. A plan uses a handful of steps.
+[[workflows]]
+name = "cryptophys-recovery-lifecycle"
+binding = "RECOVERY_LIFECYCLE"
+class_name = "RecoveryPlanWorkflow"
+
+[workflows.default_retention]
+success_retention = "30 days"
+error_retention = "30 days"

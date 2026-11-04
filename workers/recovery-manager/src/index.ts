@@ -7,6 +7,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authorize, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
 export interface PolicyRpcBinding {
@@ -14,7 +15,7 @@ export interface PolicyRpcBinding {
     Promise<{ decision: "allow" | "deny"; decision_id: string; reason: string }>;
 }
 
-export interface Env extends BaseEnv {
+export interface Env extends BaseEnv, LifecycleEnv {
   /**
    * Comma-separated Access identities (people's emails) allowed to approve recovery plans.
    * An approver can never approve a plan they authored (checked on verified identities).
@@ -38,6 +39,11 @@ interface PlanRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  approve_by?: string | null;
+  execute_by?: string | null;
+  finish_by?: string | null;
+  disabled_reason?: string | null;
+  workflow_instance_id?: string | null;
 }
 
 interface Draft { options: string[]; blast_radius: string }
@@ -96,13 +102,25 @@ async function createPlan(request: Request, env: Env, url: URL, createdBy: strin
   const planId = newId("plan");
   const now = nowIso();
   const plan = { title, rationale, steps };
+  const approveBy = deadline(Date.now(), windows(env).approval);
   await env.DB.prepare(
-    `INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, approved_by, last_execution_json, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, 'draft', ?, NULL, NULL, ?, ?, ?)`,
-  ).bind(planId, serviceId, planVersion, JSON.stringify(plan), createdBy, now, now).run();
+    `INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, approved_by, last_execution_json, created_by, created_at, updated_at, approve_by)
+     VALUES (?, ?, ?, 'draft', ?, NULL, NULL, ?, ?, ?, ?)`,
+  ).bind(planId, serviceId, planVersion, JSON.stringify(plan), createdBy, now, now, approveBy).run();
+  // The lifecycle Workflow closes the approval window on time. Without it the stored deadline
+  // is still enforced by the handlers, so a failed create is reported, not fatal.
+  let instanceId: string | null = null;
+  if (env.RECOVERY_LIFECYCLE) {
+    try {
+      instanceId = (await env.RECOVERY_LIFECYCLE.create({ id: planId, params: { plan_id: planId } })).id;
+      await env.DB.prepare("UPDATE recovery_plans SET workflow_instance_id = ? WHERE plan_id = ?").bind(instanceId, planId).run();
+    } catch (err) {
+      console.error(JSON.stringify({ service: SERVICE, event: "lifecycle_create_failed", plan_id: planId, message: String((err as Error)?.message ?? err) }));
+    }
+  }
   await appendAuditEvent(env.DB, {
     event_type: "recovery.plan_created", actor: createdBy, subject: planId, outcome: "draft",
-    payload: { service_id: serviceId, plan_version: planVersion, step_actions: steps.map((s) => s.action) },
+    payload: { service_id: serviceId, plan_version: planVersion, step_actions: steps.map((s) => s.action), approve_by: approveBy, workflow_instance_id: instanceId },
   });
   const saved = (await getPlan(env, planId))!;
   const response: JsonObject = { plan: present(saved) };
@@ -115,11 +133,14 @@ async function createPlan(request: Request, env: Env, url: URL, createdBy: strin
 async function approvePlan(env: Env, plan: PlanRow, approver: string): Promise<Response> {
   if (plan.status !== "draft") return errorResponse(409, "invalid_state", `plan is ${plan.status}, only draft plans can be approved`);
   if (approver === plan.created_by) return errorResponse(403, "separation_of_duties", "the plan author cannot approve their own plan");
+  if (windowClosed(plan.approve_by)) return errorResponse(409, "approval_window_closed", `the plan had to be approved by ${plan.approve_by}`);
+  const executeBy = deadline(Date.now(), windows(env).execution);
   const result = await env.DB.prepare(
-    "UPDATE recovery_plans SET status = 'approved', approved_by = ?, updated_at = ? WHERE plan_id = ? AND status = 'draft'",
-  ).bind(approver, nowIso(), plan.plan_id).run();
+    "UPDATE recovery_plans SET status = 'approved', approved_by = ?, execute_by = ?, updated_at = ? WHERE plan_id = ? AND status = 'draft'",
+  ).bind(approver, executeBy, nowIso(), plan.plan_id).run();
   if ((result.meta.changes ?? 0) !== 1) return errorResponse(409, "invalid_state", "plan changed concurrently");
-  await appendAuditEvent(env.DB, { event_type: "recovery.plan_approved", actor: approver, subject: plan.plan_id, outcome: "approved", payload: {} });
+  await appendAuditEvent(env.DB, { event_type: "recovery.plan_approved", actor: approver, subject: plan.plan_id, outcome: "approved", payload: { execute_by: executeBy } });
+  await notify(env, plan.workflow_instance_id ?? null, EVENTS.approved, {});
   return json({ plan: present((await getPlan(env, plan.plan_id))!) });
 }
 
@@ -132,6 +153,9 @@ async function recordExecution(request: Request, env: Env, plan: PlanRow, execut
   for (const v of [phase, notes]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
 
   if (phase === "start") {
+    if (plan.status === "approved" && windowClosed(plan.execute_by)) {
+      return errorResponse(409, "execution_window_closed", `the approved plan had to be started by ${plan.execute_by}; approve a new plan`);
+    }
     // The Policy Engine is authoritative: no execution starts without its recorded allow decision.
     let decision: { decision: string; decision_id: string; reason: string };
     try {
@@ -147,11 +171,13 @@ async function recordExecution(request: Request, env: Env, plan: PlanRow, execut
       return errorResponse(403, "policy_denied", decision?.reason ?? "policy denied", { decision_id: decision?.decision_id ?? null });
     }
     const execution = { phase: "start", executed_by: executor, policy_decision_id: decision.decision_id, started_at: nowIso(), notes: notes ?? null };
+    const finishBy = deadline(Date.now(), windows(env).finish);
     const result = await env.DB.prepare(
-      "UPDATE recovery_plans SET status = 'executing', last_execution_json = ?, updated_at = ? WHERE plan_id = ? AND status = 'approved'",
-    ).bind(JSON.stringify(execution), nowIso(), plan.plan_id).run();
+      "UPDATE recovery_plans SET status = 'executing', last_execution_json = ?, finish_by = ?, updated_at = ? WHERE plan_id = ? AND status = 'approved'",
+    ).bind(JSON.stringify(execution), finishBy, nowIso(), plan.plan_id).run();
     if ((result.meta.changes ?? 0) !== 1) return errorResponse(409, "invalid_state", "plan is no longer approved");
-    await appendAuditEvent(env.DB, { event_type: "recovery.execution_started", actor: executor, subject: plan.plan_id, outcome: "executing", payload: execution });
+    await appendAuditEvent(env.DB, { event_type: "recovery.execution_started", actor: executor, subject: plan.plan_id, outcome: "executing", payload: { ...execution, finish_by: finishBy } });
+    await notify(env, plan.workflow_instance_id ?? null, EVENTS.started, {});
   } else if (phase === "finish") {
     const outcome = b.outcome;
     if (outcome !== "completed" && outcome !== "failed") return errorResponse(400, "invalid_request", "outcome must be completed or failed");
@@ -163,6 +189,7 @@ async function recordExecution(request: Request, env: Env, plan: PlanRow, execut
     ).bind(outcome, JSON.stringify(execution), nowIso(), plan.plan_id).run();
     if ((result.meta.changes ?? 0) !== 1) return errorResponse(409, "invalid_state", "plan changed concurrently");
     await appendAuditEvent(env.DB, { event_type: "recovery.execution_finished", actor: executor, subject: plan.plan_id, outcome: outcome as string, payload: execution });
+    await notify(env, plan.workflow_instance_id ?? null, EVENTS.finished, {});
   } else {
     return errorResponse(400, "invalid_request", "phase must be start or finish");
   }
@@ -178,7 +205,10 @@ export default {
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/health" || path === "/healthz") return healthResponse(env);
       if (path === "/ready" || path === "/readyz") {
-        return readinessResponse(env, { approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES), policy_binding: Boolean(env.POLICY) });
+        return readinessResponse(env, {
+          approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES), policy_binding: Boolean(env.POLICY),
+          lifecycle_workflow: Boolean(env.RECOVERY_LIFECYCLE),
+        });
       }
       if (path === "/") {
         return serviceMetadata(env, "Reviewed recovery plans with separated approval and policy-gated, operator-recorded execution", [
@@ -221,8 +251,9 @@ export default {
       if (match[2] === "executions") return await recordExecution(request, env, plan, operator.actor);
       // disable
       if (plan.status === "executing") return errorResponse(409, "invalid_state", "an executing plan must be finished first");
-      await env.DB.prepare("UPDATE recovery_plans SET status = 'disabled', updated_at = ? WHERE plan_id = ?").bind(nowIso(), plan.plan_id).run();
+      await env.DB.prepare("UPDATE recovery_plans SET status = 'disabled', disabled_reason = 'operator', updated_at = ? WHERE plan_id = ?").bind(nowIso(), plan.plan_id).run();
       await appendAuditEvent(env.DB, { event_type: "recovery.plan_disabled", actor: operator.actor, subject: plan.plan_id, outcome: "disabled", payload: { previous_status: plan.status } });
+      await terminate(env, plan.workflow_instance_id ?? null);
       return json({ plan: present((await getPlan(env, plan.plan_id))!) });
     } catch (err) {
       const id = newId("err");

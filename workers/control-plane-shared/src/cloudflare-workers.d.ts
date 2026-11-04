@@ -5,4 +5,10 @@ declare module "cloudflare:workers" {
     protected ctx: unknown;
     constructor(ctx: unknown, env: Env);
   }
+  export abstract class WorkflowEntrypoint<Env = unknown, Params = unknown> {
+    protected env: Env;
+    protected ctx: unknown;
+    constructor(ctx: unknown, env: Env);
+    abstract run(event: { payload: Readonly<Params>; timestamp: Date; instanceId: string }, step: unknown): Promise<unknown>;
+  }
 }
