@@ -10,7 +10,8 @@ Deviations from the Python source, both deliberate:
   the pinned 0.4.47 publishes span A/B under the tenkan/kijun names; the port labels them correctly.
 
 Usage: python3 signal_fixtures.py > workers/control-plane-shared/test/fixtures/signal-parity.json
-Requires: pandas, pandas_ta_classic==0.4.47 (the version pinned in signal-edge/requirements.txt)
+Requires: pandas, pandas_ta_classic==0.4.47 (the version pinned in signal-edge/requirements.txt; copy kept as
+          legacy/signal-edge/pinned-dependencies.reference so GitHub does not scan it as a manifest)
 """
 import ast
 import json

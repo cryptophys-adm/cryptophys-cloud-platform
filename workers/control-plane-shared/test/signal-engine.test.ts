@@ -1,11 +1,19 @@
-import { test, afterEach } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, call, migratedDb, req, accessCertsResponse, isAccessCerts, OUTSIDER_JWT, fakeAi } from "./harness.ts";
-import signal, { config, ingest, parseKlines, parseKrakenOhlc, PROVIDERS } from "../../signal-engine/src/index.ts";
+import signal, { Pacer, config, ingest, parseKlines, parseKrakenOhlc, PROVIDERS, setPacer } from "../../signal-engine/src/index.ts";
 
 const H = 3_600_000;
 const NOW = Date.UTC(2026, 10, 3, 12, 4); // 12:04Z: the 11:00 candle is closed, the 12:00 candle is still forming
 const realFetch = globalThis.fetch;
+// A virtual clock: pacing and back-off are recorded instead of slept.
+let slept: number[] = [];
+let virtualNow = 0;
+beforeEach(() => {
+  slept = [];
+  virtualNow = 0;
+  setPacer(new Pacer(async (ms) => { slept.push(ms); virtualNow += ms; }, () => virtualNow));
+});
 afterEach(() => { globalThis.fetch = realFetch; });
 
 function kline(i: number, base = 2000): unknown[] {
@@ -170,4 +178,26 @@ test("Kraken provider: XBT naming, minute intervals, since-based tail, forming c
   market(() => Response.json([kline(299)]));
   const mixed = await ingest({ ...e, MARKET_DATA_PROVIDER: "binance" } as never, NOW);
   assert.equal(mixed.series[0].error, "series_has_other_provider_candles");
+});
+
+test("Kraken calls are spaced and a rate-limited series is retried once after a back-off", async () => {
+  const db = migratedDb();
+  const e = env(db, { MARKET_DATA_PROVIDER: "kraken", SYMBOLS: "BTCUSDT,SOLUSDT" });
+  let solCalls = 0;
+  market((url) => {
+    if (url.searchParams.get("pair") === "SOLUSDT" && solCalls++ === 0) return Response.json({ error: ["EGeneral:Too many requests"] });
+    return Response.json({ error: [], result: { [url.searchParams.get("pair")!]: [krakenRow(299), krakenRow(300)], last: 0 } });
+  });
+  const run = await ingest(e as never, NOW);
+  assert.deepEqual(run.series.map((s) => s.status), ["ok", "ok"], "the retried series succeeds");
+  assert.equal(solCalls, 2);
+  assert.ok(slept.includes(3000), "back-off before the retry");
+  assert.ok(slept.filter((ms) => ms === 1100).length >= 1, "consecutive Kraken calls are at least 1.1 s apart");
+
+  market(() => Response.json({ error: ["EGeneral:Too many requests"] }));
+  const limited = await ingest(e as never, NOW);
+  assert.deepEqual(limited.series.map((s) => s.error), ["provider_error: EGeneral:Too many requests", "provider_error: EGeneral:Too many requests"], "only one retry; the cause is persisted");
+
+  market(() => new Response("slow down", { status: 429 }));
+  assert.equal((await ingest(e as never, NOW)).series[0].error, "market_data_http_429");
 });

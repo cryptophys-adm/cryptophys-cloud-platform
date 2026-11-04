@@ -49,6 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'ops/requests/*.json')
+          # A push whose head commit adds no request (for example the operator branch being reset
+          # onto main, or a code commit) dispatches nothing; it is not an error.
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::notice::The head commit adds no ops/requests/*.json file; nothing to dispatch."
+            exit 0
+          fi
           [[ ${#files[@]} -eq 1 ]] || { echo "::error::A request commit must add exactly one ops/requests/*.json file (found ${#files[@]})"; exit 1; }
           request="${files[0]}"
           echo "Request: ${request}"
