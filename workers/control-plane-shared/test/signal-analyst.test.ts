@@ -11,12 +11,32 @@ import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { publishReport } from "../../ai-kernel/src/reports.ts";
 import {
-  DISCLAIMER, DIGEST_INTERVAL_MS, SIGNAL_ANALYST_ID, draftSignalDigestTask, runSignalCycle, templateDigest,
+  DISCLAIMER, DIGEST_INTERVAL_MS, SIGNAL_ANALYST_ID, SignalAnalystCycleQueue, draftSignalDigestTask, runSignalCycle, templateDigest,
 } from "../../ai-kernel/src/signal-analyst.ts";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
 
 type Db = ReturnType<typeof migratedDb>;
+
+test("Signal Analyst cycle queue serializes concurrent work and recovers after rejection", async () => {
+  const queue = new SignalAnalystCycleQueue();
+  let active = 0;
+  let maxActive = 0;
+  const order: number[] = [];
+  const tasks = [1, 2, 3].map((n) => queue.run(async () => {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    order.push(n);
+    active--;
+    return n;
+  }));
+  assert.deepEqual(await Promise.all(tasks), [1, 2, 3]);
+  assert.equal(maxActive, 1);
+  assert.deepEqual(order, [1, 2, 3]);
+  await assert.rejects(queue.run(async () => { throw new Error("queue test failure"); }), /queue test failure/);
+  assert.equal(await queue.run(async () => 42), 42);
+});
 
 function memory() {
   const m = new Map<string, unknown>();
@@ -372,6 +392,9 @@ test("HTTP GET /v1/reports, POST /v1/agents/signal-analyst/wake, MCP list_report
   assert.deepEqual([ready.status, ready.body.checks.signal_analyst_binding], [200, true]);
   const unready = await call(kernel, { ...env, SIGNAL_ANALYST: undefined }, req("GET", "/ready"));
   assert.deepEqual([unready.status, unready.body.checks.signal_analyst_binding], [503, false]);
+  const { SIGNAL_ANALYST: _signalAnalyst, ...withoutSignalAnalyst } = env;
+  const absentBinding = await call(kernel, withoutSignalAnalyst, req("GET", "/ready"));
+  assert.deepEqual([absentBinding.status, absentBinding.body.checks.signal_analyst_binding], [503, false]);
 
   // Operator wakes signal-analyst over HTTP.
   const woke = await call(kernel, env, req("POST", "/v1/agents/signal-analyst/wake", {}, OPERATOR_JWT));
