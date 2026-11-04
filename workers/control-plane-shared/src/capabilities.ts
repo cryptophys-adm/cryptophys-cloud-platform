@@ -47,10 +47,26 @@ export interface AgentRow {
   updated_at: string;
 }
 
+export interface AgentPrincipalRow {
+  access_identity: string;
+  agent_id: string;
+  created_by: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
 export interface CapabilityCheck { id: string; passed: boolean; detail: string }
 
 export const getAgent = (db: D1Database, agentId: string) =>
   db.prepare("SELECT * FROM agents WHERE agent_id = ?").bind(agentId).first<AgentRow>();
+
+export const getActivePrincipalByIdentity = (db: D1Database, accessIdentity: string) =>
+  db.prepare("SELECT * FROM agent_principals WHERE access_identity = ? AND revoked_at IS NULL").bind(accessIdentity).first<AgentPrincipalRow>();
+
+export async function hasActivePrincipal(db: D1Database, agentId: string): Promise<boolean> {
+  const row = await db.prepare("SELECT 1 AS x FROM agent_principals WHERE agent_id = ? AND revoked_at IS NULL LIMIT 1").bind(agentId).first<{ x: number }>();
+  return Boolean(row);
+}
 
 export async function agentsEnabled(db: D1Database): Promise<boolean> {
   const row = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
@@ -77,6 +93,9 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
   try { granted = JSON.parse(agent?.capabilities_json ?? "[]"); } catch { granted = []; }
   add("capability_granted", Array.isArray(granted) && granted.includes(capability), "capability must be granted to this agent");
   add("tier_within_agent_limit", Boolean(cap) && Boolean(agent) && cap!.tier <= agent!.tier_max, "capability tier must not exceed the agent's tier_max");
+  if (agent && (await hasActivePrincipal(db, agent.agent_id))) {
+    add("external_tier_limit", Boolean(cap) && cap!.tier <= 1, "agents with an active external principal may only use tier <= 1 capabilities");
+  }
   add("not_human_only", Boolean(cap) && cap!.tier < 3, "tier 3 capabilities require a human");
   if (cap?.max_per_hour && agent) {
     const since = new Date(now - 3_600_000).toISOString();
@@ -126,6 +145,7 @@ export async function verifySyscallDecision(db: D1Database, decisionId: unknown,
        SELECT 1 FROM agents a
        WHERE a.agent_id = ? AND a.status = 'enabled' AND a.tier_max >= ?
          AND EXISTS (SELECT 1 FROM json_each(a.capabilities_json) j WHERE j.value = ?)
+         AND NOT (? > 1 AND EXISTS (SELECT 1 FROM agent_principals ap WHERE ap.agent_id = a.agent_id AND ap.revoked_at IS NULL))
      )
      AND EXISTS (SELECT 1 FROM kernel_controls k WHERE k.control = 'agents_enabled' AND k.value = '1')
      AND (SELECT COUNT(*) FROM agent_syscall_consumptions c
@@ -133,7 +153,7 @@ export async function verifySyscallDecision(db: D1Database, decisionId: unknown,
   ).bind(
     decisionId, agentId, capability, nowAt,
     decisionId, `agent:${agentId}`, capability, cutoff, nowAt,
-    agentId, cap.tier, capability,
+    agentId, cap.tier, capability, cap.tier,
     agentId, capability, new Date(now - 3_600_000).toISOString(), cap.max_per_hour,
   ).run();
   if ((consumed.meta.changes ?? 0) !== 1) {

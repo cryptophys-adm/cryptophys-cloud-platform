@@ -1,19 +1,24 @@
 /**
  * cryptophys-ai-kernel: the AI Worker OS kernel (ADR-0007).
  *
- *  - Agents are Durable Object processes (SupervisorAgent) woken by the cron and by operators.
+ *  - Agents are Durable Object processes (SupervisorAgent, SignalAnalystAgent, AuditorAgent)
+ *    woken by the cron and by operators, plus external agents bound via agent_principals (TP-009).
  *  - Every agent action is a syscall: tier 0 checked here, tier >= 1 decided by the Policy
  *    Engine, dispatched over RPC to the owning Worker, recorded and audited.
  *  - Operators reach the OS through this HTTP API and the MCP endpoint (/mcp), both behind
- *    Cloudflare Access. Suspending agents is open to every operator; resuming them or turning
- *    the global switch back on needs an identity in APPROVER_IDENTITIES.
+ *    Cloudflare Access. External agent principals may use /mcp only (at tier <= 1).
+ *    Suspending agents is open to every operator; resuming them, turning the global switch
+ *    back on, or registering/revoking external principals needs an identity in APPROVER_IDENTITIES.
  */
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata } from "../../control-plane-shared/src/http.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, authorize, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
-import { CAPABILITIES } from "../../control-plane-shared/src/capabilities.ts";
-import { agentStatus, listActions, listAgents, setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv } from "./kernel.ts";
+import { accessGate, actorOf, authenticate, authorize, identityAllowed, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { CAPABILITIES, getActivePrincipalByIdentity } from "../../control-plane-shared/src/capabilities.ts";
+import {
+  addAgentPrincipal, agentStatus, listActions, listAgents, revokeAgentPrincipal,
+  setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv,
+} from "./kernel.ts";
 import { handleMcp } from "./mcp.ts";
 import { listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
@@ -51,14 +56,43 @@ export default {
           "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/reports?agent_id=&kind=&limit=",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
+          "POST /v1/agents/{id}/principals (APPROVER_IDENTITIES)", "DELETE /v1/agents/{id}/principals/{access_identity} (APPROVER_IDENTITIES)",
         ]);
       }
     }
     if (path !== "/mcp" && !path.startsWith("/v1/")) return errorResponse(404, "not_found");
+
+    if (path === "/mcp") {
+      const auth = await authenticate(request, env);
+      if (!auth.ok) return auth.response;
+      const callerActor = actorOf(auth.identity);
+      const isOperator = listConfigured(env.OPERATOR_IDENTITIES) && identityAllowed(auth.identity, env.OPERATOR_IDENTITIES);
+      const principal = await getActivePrincipalByIdentity(env.DB, callerActor);
+      if (isOperator && principal) {
+        console.warn(JSON.stringify({
+          service: SERVICE,
+          event: "principal_operator_overlap",
+          access_identity: callerActor,
+          agent_id: principal.agent_id,
+          resolution: "operator",
+        }));
+      }
+      if (isOperator) {
+        return await handleMcp(request, env, callerActor, await isApprover(request, env));
+      }
+      if (principal) {
+        return await handleMcp(request, env, callerActor, false, {
+          agentId: principal.agent_id,
+          accessIdentity: principal.access_identity,
+        });
+      }
+      const operator = await requireOperator(request, env);
+      return operator.ok ? await handleMcp(request, env, operator.actor, await isApprover(request, env)) : operator.response;
+    }
+
     const operator = await requireOperator(request, env);
     if (!operator.ok) return operator.response;
     try {
-      if (path === "/mcp") return await handleMcp(request, env, operator.actor, await isApprover(request, env));
       if (path === "/v1/kernel" && request.method === "GET") return json({ ...(await listAgents(env)), capabilities: CAPABILITIES });
       if (path === "/v1/status" && request.method === "GET") return json(await observe(env));
       if (path === "/v1/reports" && request.method === "GET") {
@@ -76,6 +110,30 @@ export default {
         return json(await setAgentsEnabled(env, body.value.enabled, operator.actor));
       }
       if (path === "/v1/agents" && request.method === "GET") return json(await listAgents(env));
+
+      const principalMatch = /^\/v1\/agents\/([a-z0-9-]{2,40})\/principals(?:\/([^/]+))?$/.exec(path);
+      if (principalMatch) {
+        const [, agentId, encodedIdentity] = principalMatch;
+        if (!encodedIdentity) {
+          if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+          if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "registering an agent principal needs an approver");
+          const body = await readJsonObject(request);
+          if (!body.ok) return body.response;
+          const res = await addAgentPrincipal(env, agentId, body.value.access_identity, operator.actor);
+          return json(res.body, res.status);
+        }
+        if (request.method !== "DELETE") return errorResponse(405, "method_not_allowed");
+        if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "revoking an agent principal needs an approver");
+        let decodedIdentity: string;
+        try {
+          decodedIdentity = decodeURIComponent(encodedIdentity);
+        } catch {
+          return errorResponse(400, "invalid_request", "invalid access_identity encoding");
+        }
+        const res = await revokeAgentPrincipal(env, agentId, decodedIdentity, operator.actor);
+        return json(res.body, res.status);
+      }
+
       const m = /^\/v1\/agents\/([a-z0-9-]{2,40})(?:\/(actions|wake|suspend|resume))?$/.exec(path);
       if (!m) return errorResponse(404, "not_found");
       const [, agentId, verb] = m;
