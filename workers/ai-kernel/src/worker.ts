@@ -4,6 +4,7 @@
 // reachable over HTTP. HealthRpc lets the Drift Detector observe this Worker.
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import worker, { type Env } from "./index.ts";
+import { runAuditCycle, AuditorCycleQueue } from "./auditor.ts";
 import { runSignalCycle, SignalAnalystCycleQueue } from "./signal-analyst.ts";
 import { runCycle, SerialCycleQueue, type CycleReport } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
@@ -42,6 +43,18 @@ export class SignalAnalystAgent extends DurableObject<Env> {
 
   async cycle(trigger: "scheduled" | "operator"): Promise<CycleReport> {
     return this.cycles.run(() => runSignalCycle(this.env, this.ctx.storage, trigger));
+  }
+  async status(): Promise<CycleReport | null> {
+    return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;
+  }
+}
+
+/** Platform Auditor agent process (TP-007): hourly audit hash chain & 24h governance verification. */
+export class AuditorAgent extends DurableObject<Env> {
+  private readonly cycles = new AuditorCycleQueue();
+
+  async cycle(trigger: "scheduled" | "operator"): Promise<CycleReport> {
+    return this.cycles.run(() => runAuditCycle(this.env, this.ctx.storage, trigger));
   }
   async status(): Promise<CycleReport | null> {
     return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;

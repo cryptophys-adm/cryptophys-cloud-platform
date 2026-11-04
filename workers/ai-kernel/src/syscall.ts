@@ -9,7 +9,7 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
-import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { publishReport } from "./reports.ts";
 
@@ -102,9 +102,72 @@ export async function observeSignals(env: BaseEnv, now = Date.now()): Promise<Js
   };
 }
 
-const TIER0_HANDLERS: Record<string, (env: BaseEnv) => Promise<JsonObject>> = {
+/** Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only). */
+export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
+  const chain = await verifyAuditChain(env.DB);
+  const since = new Date(now - 24 * 3_600_000).toISOString();
+  const actionRows = await env.DB.prepare(
+    `SELECT agent_id, outcome, COUNT(*) AS count FROM agent_actions
+     WHERE outcome IN ('denied', 'failed') AND created_at >= ?
+     GROUP BY agent_id, outcome ORDER BY agent_id, outcome`,
+  ).bind(since).all<{ agent_id: string; outcome: "denied" | "failed"; count: number }>();
+  const byAgentMap = new Map<string, { agent_id: string; denied: number; failed: number }>();
+  let deniedTotal = 0;
+  let failedTotal = 0;
+  for (const r of actionRows.results) {
+    const cur = byAgentMap.get(r.agent_id) ?? { agent_id: r.agent_id, denied: 0, failed: 0 };
+    if (r.outcome === "denied") {
+      cur.denied += r.count;
+      deniedTotal += r.count;
+    } else {
+      cur.failed += r.count;
+      failedTotal += r.count;
+    }
+    byAgentMap.set(r.agent_id, cur);
+  }
+  const policyRows = await env.DB.prepare(
+    `SELECT action, COUNT(*) AS count FROM policy_decisions
+     WHERE decision = 'deny' AND created_at >= ?
+     GROUP BY action ORDER BY action`,
+  ).bind(since).all<{ action: string; count: number }>();
+  const govRows = await env.DB.prepare(
+    `SELECT event_type, COUNT(*) AS count FROM audit_events
+     WHERE event_type IN ('agent.suspended', 'agent.resumed', 'kernel.agents_enabled') AND created_at >= ?
+     GROUP BY event_type`,
+  ).bind(since).all<{ event_type: string; count: number }>();
+  const governanceEvents: Record<string, number> = {
+    "agent.suspended": 0,
+    "agent.resumed": 0,
+    "kernel.agents_enabled": 0,
+  };
+  for (const r of govRows.results) {
+    governanceEvents[r.event_type] = r.count;
+  }
+  const planRow = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM recovery_plans WHERE created_by LIKE 'agent:%' AND created_at >= ?",
+  ).bind(since).first<{ count: number }>();
+
+  return {
+    observed_at: new Date(now).toISOString(),
+    since,
+    chain: chain as unknown as JsonObject,
+    valid: chain.valid,
+    events_checked: chain.events_checked,
+    counts_24h: {
+      agent_actions_by_agent: [...byAgentMap.values()],
+      denied_agent_syscalls: deniedTotal,
+      failed_agent_syscalls: failedTotal,
+      policy_denies_by_action: policyRows.results,
+      governance_audit_events: governanceEvents,
+      agent_recovery_plans: planRow?.count ?? 0,
+    },
+  };
+}
+
+const TIER0_HANDLERS: Record<string, (env: BaseEnv, input: JsonObject) => Promise<JsonObject>> = {
   "platform.observe": (env) => observe(env),
   "signals.observe": (env) => observeSignals(env),
+  "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
 };
 
 async function dispatch(env: SyscallEnv, capability: string, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
@@ -137,7 +200,7 @@ export async function syscall(env: SyscallEnv, agentId: string, capability: stri
     const failed = (await agentSyscallChecks(env.DB, `agent:${agentId}`, capability)).filter((c) => !c.passed).map((c) => c.id);
     if (!handler) failed.push("tier0_handler_missing");
     if (failed.length) return { outcome: "denied", capability, tier, decision_id: null, reason: `failed: ${failed.join(", ")}` };
-    return { outcome: "succeeded", capability, tier, decision_id: null, result: await handler!(env) };
+    return { outcome: "succeeded", capability, tier, decision_id: null, result: await handler!(env, input) };
   }
   let decision: { decision: string; decision_id: string; reason: string };
   try {

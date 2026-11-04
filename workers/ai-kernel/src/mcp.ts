@@ -23,7 +23,7 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: { agent_id: str("agent id"), limit: { type: "integer", minimum: 1, maximum: 100 } }, required: ["agent_id"] } },
   { name: "list_reports", description: "Recent advisory agent reports (signal and audit digests).",
     inputSchema: { type: "object", properties: { agent_id: str("optional agent id"), kind: str("optional report kind"), limit: { type: "integer", minimum: 1, maximum: 100 } } } },
-  { name: "wake_agent", description: "Run one agent cycle now (supervisor or signal-analyst) and return its report.", inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
+  { name: "wake_agent", description: "Run one agent cycle now (supervisor, signal-analyst, or auditor) and return its report.", inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
   { name: "suspend_agent", description: "Suspend an agent (any operator).", inputSchema: { type: "object", properties: { agent_id: str("agent id"), reason: str("why") }, required: ["agent_id", "reason"] } },
   { name: "resume_agent", description: "Resume a suspended agent (approver only).", approverOnly: true, inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
   { name: "set_agents_enabled", description: "Global kill switch: false stops every agent (any operator); true needs an approver.",
