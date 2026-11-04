@@ -16,6 +16,8 @@ import {
 } from "./index.ts";
 
 export const SERIES_RETRIES = { limit: 3, delay: "10 seconds", backoff: "exponential" as const };
+export const MACRO_RETRIES = { limit: 2, delay: "30 seconds", backoff: "exponential" as const };
+export const TRANSIENT_MACRO_ERRORS = /macro_(?:timeout|unreachable|http_(?:429|5\\d\\d))/i;
 
 export async function runIngest(env: Env, params: IngestParams, instanceId: string, step: WorkflowStepLike) {
   const startedAt = await step.do("start", async () => nowIso());
@@ -35,7 +37,16 @@ export async function runIngest(env: Env, params: IngestParams, instanceId: stri
     }
     await step.do(`derive ${symbol}`, async () => deriveStage(env, symbol, cfg.timeframes, params.now));
   }
-  const macro = await step.do("macro", { retries: { limit: 2, delay: "30 seconds", backoff: "exponential" } }, async () => macroStage(env, params.now));
+  const macro = await step.do("macro", { retries: MACRO_RETRIES }, async (ctx) => {
+    const result = await macroStage(env, params.now);
+    // macroStage returns provider failures as data so inline ingestion can record them.
+    // Re-throw only transient failures here to activate Workflow retries; preserve the
+    // final failure as data so recordRunStage still records it.
+    if (result?.status === "error" && TRANSIENT_MACRO_ERRORS.test(result.error ?? "") && ctx.attempt <= MACRO_RETRIES.limit) {
+      throw new Error(`macro context: ${result.error}`);
+    }
+    return result;
+  });
   if (macro) series.push(macro);
   const run = await step.do("record run", async () => recordRunStage(env, params.now, startedAt, params.trigger, series, instanceId));
   return { run_id: run.run_id, series: run.series.length, failed: run.failed };
