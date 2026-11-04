@@ -119,7 +119,8 @@ async function ingestSeries(env: Env, origin: string, symbol: string, timeframe:
 }
 
 /** One ingestion pass over every configured series; a failing series never blocks the others. */
-export async function ingest(env: Env, now = Date.now()): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
+export async function ingest(env: Env, now = Date.now(), trigger: "scheduled" | "manual" = "scheduled"): Promise<{ run_id: string; series: SeriesResult[]; failed: number }> {
+  const startedAt = nowIso();
   const cfg = config(env);
   if (cfg instanceof Error) throw cfg;
   const series: SeriesResult[] = [];
@@ -136,6 +137,13 @@ export async function ingest(env: Env, now = Date.now()): Promise<{ run_id: stri
   await env.DB.prepare("DELETE FROM market_candles WHERE open_time < ?").bind(now - RETENTION_DAYS * 86_400_000).run();
   const failed = series.filter((s) => s.status === "error").length;
   const runId = newId("sig");
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(runId, trigger, startedAt, nowIso(), series.length, failed, JSON.stringify(series)),
+    env.DB.prepare("DELETE FROM signal_ingest_runs WHERE started_at < ?").bind(new Date(now - 30 * 86_400_000).toISOString()),
+  ]);
   console.log(JSON.stringify({ service: SERVICE, event: "ingest", run_id: runId, series: series.length, failed }));
   return { run_id: runId, series, failed };
 }
@@ -199,7 +207,7 @@ export default {
       const cfg = config(env);
       if (cfg instanceof Error) return errorResponse(503, "not_configured", cfg.message);
       if (path === "/v1/ingest" && request.method === "POST") {
-        const report = await ingest(env);
+        const report = await ingest(env, Date.now(), "manual");
         await appendAuditEvent(env.DB, {
           event_type: "signal.manual_ingest", actor: operator.actor, subject: SERVICE,
           outcome: report.failed ? "partial" : "success", payload: { run_id: report.run_id, failed: report.failed },
@@ -212,8 +220,12 @@ export default {
            FROM market_candles GROUP BY symbol, timeframe ORDER BY symbol, timeframe`,
         ).all<{ symbol: string; timeframe: string; candles: number; latest_open_time: number; latest_close_time: number }>();
         const now = Date.now();
+        const runs = await env.DB.prepare(
+          "SELECT run_id, trigger, started_at, finished_at, series_total, series_failed, results_json FROM signal_ingest_runs ORDER BY started_at DESC LIMIT 5",
+        ).all<{ results_json: string } & JsonObject>();
         return json({
           configured: cfg,
+          recent_runs: runs.results.map((r) => ({ ...r, results_json: undefined, results: JSON.parse(r.results_json) })),
           series: rows.results.map((r) => ({ ...r, age_seconds: Math.round((now - r.latest_close_time) / 1000) })),
         });
       }

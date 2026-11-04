@@ -88,6 +88,9 @@ test("a failing market-data source is isolated per series and never stores parti
   assert.deepEqual([eth.inserted, eth.computed], [1, []], "too little history: candle kept, no indicators published");
   market(() => Response.json({ msg: "invalid" }));
   assert.equal((await ingest(env(db) as never, NOW)).failed, 2);
+  const runs = db.raw.prepare("SELECT trigger, series_total, series_failed, results_json FROM signal_ingest_runs ORDER BY started_at, rowid").all() as any[];
+  assert.deepEqual(runs.map((r) => [r.trigger, r.series_total, r.series_failed]), [["scheduled", 2, 1], ["scheduled", 2, 2]]);
+  assert.equal(JSON.parse(runs[0].results_json)[0].error, "market_data_http_451", "the failure cause is persisted");
 });
 
 test("HTTP surface: Access + operator identity, configured series only, manual ingest is audited, advisory output refuses trade advice", async () => {
@@ -100,6 +103,8 @@ test("HTTP surface: Access + operator identity, configured series only, manual i
   assert.equal((await call(signal, e, req("GET", "/v1/signals?symbol=BTCUSDT&timeframe=1h"))).status, 404);
   const run = await call(signal, e, req("POST", "/v1/ingest"));
   assert.equal(run.status, 200);
+  const status = await call(signal, e, req("GET", "/v1/status"));
+  assert.deepEqual([status.body.recent_runs.length, status.body.recent_runs[0].trigger], [1, "manual"]);
   const audit = db.raw.prepare("SELECT actor, outcome FROM audit_events WHERE event_type = 'signal.manual_ingest'").get() as any;
   assert.equal(audit.outcome, "success");
 
