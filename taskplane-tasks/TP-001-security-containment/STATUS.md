@@ -55,3 +55,10 @@ None (read-only step 1).
 
 - Owner: provide vault status output and endpoint; approve rekey (step 3) and Binance/wallet handling (step 5).
 - platform-gitops is public; step 2 needs org-admin (gh token may lack rights) — owner to run `gh repo edit cryptophys-work/platform-gitops --visibility private --accept-visibility-change-consequences` if needed.
+
+
+## Step 2 (OWNER GATE) — completed
+
+- Command: `gh repo edit cryptophys-work/platform-gitops --visibility private`
+- Result: visibility now `private`.
+- Anonymous verification: `git ls-remote https://github.com/cryptophys-work/platform-gitops HEAD` → failed (no anonymous access).
