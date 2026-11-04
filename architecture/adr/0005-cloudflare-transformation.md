@@ -68,7 +68,7 @@
    - **Not migrated:** `forecasting.py` (it needs Prophet/Stan, which cannot run without containers), and corpus, omega and aether-edge (not yet assessed).
    - **Findings for the owner's reassessment.** The ported math is faithful, and these follow from it:
      - **Mizan phi** = dim_score × tf_weight × regime. The timeframe weight is at most 0.40 (5m) and 0.20 (1h), so phi can never reach the 0.45 "weak" tier, let alone the 0.60 signal threshold. Advisory risk levels are therefore never produced.
-     - **Mizan regime** uses a 10-bin histogram entropy of *price levels*. This exceeds `ENTROPY_MAX` 0.92 for ordinary series, so `regime_score` is usually 0.
+     - **Mizan regime** uses a 10-bin histogram entropy of *price levels*. This sits close to `ENTROPY_MAX` 0.92 for ordinary series: synthetic random walks exceeded it in the parity fixtures (`regime_score` 0), while live BTCUSDT 1h on 2026-11-04 read 0.903 (`regime_score` 0.41). The regime gate therefore switches on and off with the shape of the price distribution rather than with persistence.
      - **The decision engine** multiplies the 0–100 confluence by 0.65 before comparing it with BUY ≥ 62 and SELL ≤ 38. BUY needs a confluence of at least 95.4, while SELL triggers at 58.5 or below, which is a strong bearish bias.
 
 ## Security
