@@ -93,6 +93,17 @@ jobs:
           "$GITHUB_WORKSPACE/.github/scripts/access-identities.sh" "$GITHUB_ENV"
           npx wrangler whoami
 
+      - name: Preflight and ensure Vectorize index before D1 migrations or Worker deployment
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fail before any D1 or Worker mutation if the deployment token cannot
+          # inspect/create the required 384d cosine agent-memory index.
+          "$GITHUB_WORKSPACE/.github/scripts/ensure-vectorize-index.sh"
+          echo "VECTORIZE_INDEX_ENSURED=1" >> "$GITHUB_ENV"
+
       - name: Resolve the control-plane D1 database by exact name and render deploy configs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
