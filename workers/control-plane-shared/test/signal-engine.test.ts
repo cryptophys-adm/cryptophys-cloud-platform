@@ -198,7 +198,7 @@ test("Pacer serializes concurrent turns within one Worker isolate", async () => 
   const pendingSleeps: Array<{ ms: number; resolve: () => void }> = [];
   const pacer = new Pacer((ms) => new Promise<void>((resolve) => { pendingSleeps.push({ ms, resolve }); }), () => now);
   const pending = Promise.all([pacer.turn(1_100), pacer.turn(1_100), pacer.turn(1_100)]);
-  const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 
   await flush();
   assert.deepEqual(pendingSleeps.map((x) => x.ms), [1_100], "only one concurrent caller may reserve the next slot");
