@@ -4,74 +4,72 @@ State: awaiting_owner
 
 ## Evidence
 
-Read-only inventory completed. Secret values are intentionally omitted; report only location, commit and SHA-256 prefixes.
+Read-only inventory completed. Secret values are intentionally omitted; report only locations, commits and SHA-256 prefixes.
 
 1. Vault unseal shares — `cryptophys-work/platform-gitops`
    - Path: `platform/infrastructure/vault-system/vault__unseal-keys-secret.yaml`
    - Commit: ef58494a (fix(vault): correct auto-unseal keys double-base64 encoding)
    - sha256[:8] of file: `315afe52`
-   - Still exists: YES (repository visibility independently confirmed PUBLIC)
-   - Vault status: UNAVAILABLE — vault binary/endpoint not present in this worker environment; no VAULT_ADDR/VAULT_TOKEN. Owner must provide redacted `vault status` metadata (sealed, threshold, shares, version). Do not unseal.
+   - Current tree: YES (verified by recursive Git tree inspection).
+   - Repository visibility: PRIVATE (verified from current GitHub repository metadata). The repository is no longer anonymously readable, but the committed material remains in the current tree/history and must still be treated as compromised.
+   - Vault status: UNAVAILABLE — Vault CLI/endpoint and VAULT_ADDR/VAULT_TOKEN are not available in this worker environment. Owner must provide redacted `vault status` metadata (sealed, threshold, shares, version). Do not unseal.
 
-2. genesis.key (likely wallet private key) — `cryptophys-work/apps-gitops` (history)
+2. `genesis.key` (likely wallet private key) — `cryptophys-work/apps-gitops` history
    - Path: `apps/user/omega/core/vault/genesis.key` (also historical paths under `apps/user/03-execution-swarms/` and `apps/user/omega/vault/`)
    - Commit (last containing): 48e2d2293 (refactor(taxonomy): ...)
    - sha256[:8] of content: `c302d918`
-   - Still exists in current tree: NO (reported removed in cleanup commits); present in git history only.
-   - Public address/balance: NOT derived (no RPC/owner approval). Owner action for funds; worker must not use the key or move funds.
+   - Current tree: NO (verified by recursive Git tree inspection); present in Git history only.
+   - Public address/balance: NOT derived. Owner handles funds; worker must not use the key or move funds.
 
-3. Binance API key/secret — `cryptophys-work/apps-gitops` (history)
+3. Binance API key/secret — `cryptophys-work/apps-gitops` history
    - Path: `apps/user/omega/core/vault/binance_hmac.json` (also historical path under `apps/user/03-execution-swarms/`)
    - Commit (last containing): 48e2d2293
    - sha256[:8] of content: `bd715dea`
-   - Still exists in current tree: NO (reported removed in cleanup commits); present in git history only.
-   - Revocation: OWNER (Binance account). Worker can only confirm rejection after owner revokes.
+   - Current tree: NO (verified by recursive Git tree inspection); present in Git history only.
+   - Revocation: OWNER (Binance account). Worker may only confirm rejection after owner revokes.
 
-4. NATS password (RISK_PWD_SECRET / trading_brain user) — `cryptophys-work/apps-gitops`
-   - Path: `apps/user/cognitive-risk/risk-engine/domain-controller/src/main.py` (and mizan-executor)
-   - Code references env var `TRADING_PWD_SECRET` / literal `RISK_PWD_SECRET`; no plaintext password was located in the scanned current tree/history.
-   - Status: NO plaintext password located; owner to confirm whether a real value was ever committed in a Secret manifest.
+4. NATS weak literal password — `cryptophys-work/apps-gitops`
+   - Source: `apps/user/cognitive-risk/risk-engine/domain-controller/src/main.py` and related mizan-executor configuration.
+   - The corrected TP-001 prompt on main records that the committed literal is a 14-character environment-variable-style name used as the password, not a random secret.
+   - Status: NOT VERIFIED whether the NATS server accepts it. Owner/authorized operator must confirm rejection or rotate the affected NATS users. Do not disclose the literal.
 
-5. ArgoCD reconcile-token annotation — `cryptophys-work/apps-gitops`
+5. ArgoCD reconcile-token annotations — `cryptophys-work/apps-gitops`
    - Annotation: `cryptophys.work/reconcile-token`
-   - Still exists: YES (current tree, per read-only inventory).
-   - Values are omitted. SHA-256 prefixes only:
+   - Locations and SHA-256 prefixes from the read-only inventory:
      - `apps/core/08-infra-ops/platform-ui/platform-ui__argocd-app.yaml`: `a4a8db91`
      - `apps/core/00-genesis/kagenti/metadata/argocd-app.yaml`: `d5b60d1c`
      - `apps/dash/01-identity/identity/argocd-app.yaml`: `a4a8db91`
      - `apps/user/cognitive-risk/aether-edge/argocd-app.yaml`: `55a91a1d`
-   - Treat these values as exposed until the owner confirms they are non-credentials; rotate at the issuer and update consumers.
+   - Values are omitted. Treat them as exposed until the owner confirms they are non-credentials; rotate at the issuer and update consumers.
 
-6. PagerDuty routing key — `cryptophys-work/apps-gitops` (PR #110 draft)
-   - Path: `apps/falco-pagerduty/manifests/falco-pagerduty-secret.yaml`
-   - External repository PR #110 is OPEN and DRAFT at head `cc1a064e5866ecf91cdc04bcf18d3a7a06a6ad7a`.
-   - The value in the changed secret manifest is an explicit placeholder, not a real routing key. No real PagerDuty key was verified in that manifest. Owner to confirm whether a real key was provisioned elsewhere.
+PagerDuty was removed from TP-001 scope by the corrected prompt merged in PR #49: the value inspected in apps-gitops#110 was a placeholder, not a verified live routing key.
 
-Tooling:
+## Tooling and access
+
 - gh: OK
 - kubectl: NOT installed
 - vault: NOT installed
+- GitHub metadata: `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` both currently report PRIVATE.
+- Recursive tree inspection: complete (not truncated) for both repositories; no secret file contents were fetched.
 
 ## Changes
 
-- Corrected this report to remove literal ArgoCD annotation values; only SHA-256 prefixes remain.
-- No external credentials, Vault state, repository visibility, or infrastructure were changed.
-- The earlier PR commit contained the literal annotation values in this report. This correction removes them from the current file only; it does not purge Git history. Treat them as exposed and rotate at the issuer. History rewriting remains OWNER GATE.
+- Removed the obsolete PagerDuty item and aligned the NATS finding with the corrected TP-001 prompt on main (PR #49).
+- Corrected the Vault repository visibility from PUBLIC to PRIVATE based on current GitHub metadata; confirmed the Vault manifest path still exists in the current tree.
+- Confirmed the wallet and Binance files are absent from the current apps-gitops tree; their historical commits remain relevant.
+- Earlier PR history contained literal ArgoCD annotation values in this report. The current file omits them, but this update does not purge Git history. Treat them as exposed and rotate at the issuer. History rewriting remains an OWNER GATE.
+- No Vault state, credential, Binance key, NATS user, ArgoCD token, wallet, Cloudflare resource, or production infrastructure was changed by this report update.
 
-## Open questions / OWNER GATES
+## Owner gates / remaining work
 
-- Make `cryptophys-work/platform-gitops` private (requires org-admin). Exact owner command:
-  `gh repo edit cryptophys-work/platform-gitops --visibility private --accept-visibility-change-consequences`
-- Owner to provide Vault endpoint/status metadata and explicitly approve Vault rekey under the runbook. Do not unseal or rekey without written approval.
-- Owner to rotate NATS and ArgoCD credentials; confirm whether the annotation values are active credentials.
-- Owner to revoke the Binance API key; worker may only verify rejection after owner revocation.
-- Owner to handle wallet address/balance verification; worker must never move funds.
-- Optional Git history purge for both repositories requires explicit OWNER GATE. Do not run it.
+- Step 2 (make platform-gitops private): completed by the worker after owner approval was recorded in PR #46. Current GitHub metadata confirms PRIVATE visibility; the worker previously reported anonymous `git ls-remote` access was denied.
+- Vault rekey: OWNER GATE. Requires Vault endpoint/status and explicit approval under the platform-gitops runbook. Do not unseal or rekey without written authorization.
+- ArgoCD: owner/authorized operator to confirm whether the annotations are active credentials, rotate them at the issuer, update consumers, and provide successful health evidence.
+- NATS: owner/authorized operator to verify the old weak literal is rejected by the server or rotate the affected users; report only redacted evidence.
+- Binance: owner revokes the historical API key; worker may only perform a rejection check after owner revocation.
+- Wallet: owner handles address/balance decisions and all funds. Worker must not use the key or move funds.
+- Optional Git history purge for both repositories requires explicit OWNER GATE; propose a plan only, do not run it.
 
-## Step 2 (OWNER GATE) — completed by worker
+## Step 2 note
 
 Owner approval: confirmed by owner to orchestrator, 2026-11-04
-
-- Command: `gh repo edit cryptophys-work/platform-gitops --visibility private`
-- Result: visibility now `private`.
-- Anonymous verification: `git ls-remote https://github.com/cryptophys-work/platform-gitops HEAD` → failed (no anonymous access).
