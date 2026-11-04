@@ -23,3 +23,10 @@ for name in "$@"; do
     echo "${name} is not bound to ${script}."
   fi
 done
+
+if [[ "$script" == "cryptophys-ai-kernel" && "${VECTORIZE_INDEX_ENSURED:-}" != "1" && -z "${CLOUDFLARE_API_BASE:-}" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -x "${script_dir}/ensure-vectorize-index.sh" ]]; then
+    "${script_dir}/ensure-vectorize-index.sh"
+  fi
+fi

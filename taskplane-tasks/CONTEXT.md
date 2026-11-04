@@ -11,8 +11,8 @@
 
 Cloudflare production is live and verified at `main`, deployed by GitHub Actions only.
 - **9 platform Workers** behind Cloudflare Access, every one with its own AI engine: Platform API (OS gateway), Deployment Orchestrator, Platform Registry, Policy Engine, Audit Ledger, Recovery Manager, Drift Detector, Signal Engine and AI Kernel.
-- **AI Worker OS (ADR-0007):** the kernel runs the `supervisor` agent (Durable Object), policy-gated syscalls by tier, and the MCP front door. **Workflows (ADR-0006):** recovery lifecycle and signal ingest.
-- **D1** `cryptophys-control-plane`, with migrations up to `0010`.
+- **AI Worker OS (ADR-0007):** the kernel runs the `supervisor`, `signal-analyst`, and `auditor` agents (Durable Objects), Vectorize-backed semantic agent memory (`cryptophys-agent-memory`), external agent sessions over MCP via `agent_principals`, policy-gated syscalls by tier, and the MCP front door. **Workflows (ADR-0006):** recovery lifecycle and signal ingest.
+- **D1** `cryptophys-control-plane`, with migrations up to `0015`.
 - **Drift:** 13 of 13 services are healthy, including the 4 xauusd Workers, which are watched for health only.
 - **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
 
@@ -64,5 +64,5 @@ _Workers log discoveries here through their PR._
 
 - TP-001 security containment: step 2 done; remaining owner gates **deferred by the owner**. Do not continue without a new APPROVAL.md entry.
 - TP-002 GitHub cleanup: **done**.
-- TP-006 to TP-009 (AI Worker OS: Signal Analyst agent, Auditor agent, Vectorize memory, external agents through MCP): **ready for the Antigravity worker**.
+- TP-006 to TP-009 (AI Worker OS: Signal Analyst agent, Auditor agent, Vectorize memory, external agents through MCP): **done** (merged via PRs #61, #62, #63, #64).
 - TP-003, TP-004, TP-005 (cluster inventory, export, decommission): **cancelled** by the owner. The cluster is deprecated, its data is not kept, and the platform no longer needs cluster access. See each task's STATUS.md.
