@@ -9,20 +9,19 @@
 
 ## Where the deployment stands
 
-**Observed production state (read-only verification, 2026-11-04 20:23 UTC). Do not infer production state from `main` alone.**
+**Verified production state (orchestrator, 2026-11-04 23:21 UTC). Do not infer production state from `main` alone; re-verify before asserting it.**
 
-- Repository `main` is at `56f52bf62f59c31b8437e328a7fb5775bcbff347`. Production is **not fully reconciled** to this commit.
-- D1 `cryptophys-control-plane` has migrations through `0015_agent_principals.sql` applied. The tables `agent_syscall_consumptions`, `agent_reports`, `agent_memories`, and `agent_principals` exist.
-- The latest deployments of Policy Engine, Audit Ledger, Platform Registry, Recovery Manager, Signal Engine, Platform API, and Deployment Orchestrator are annotated with commit `56f52bf62f59c31b8437e328a7fb5775bcbff347`.
-- AI Kernel and Drift Detector are still on commit `59db4cf695fa7a7c689a07506c429a1f522270ba`. The deployed AI Kernel currently exposes only `SupervisorAgent`, `HealthRpc`, and `KernelRpc`; it does **not** expose the Signal Analyst or Auditor Durable Object handlers added by PRs #61 and #62.
-- The D1 agent registry contains enabled rows for `supervisor`, `signal-analyst`, and `auditor`, but this does not prove their newer Worker code is deployed. Read-only row counts were: `agent_syscall_consumptions=5`, `agent_reports=0`, `agent_memories=0`, and `agent_principals=0`.
-- The connected production account's Vectorize v2 index list is empty. The `cryptophys-agent-memory` index and its `agent_id` metadata index are therefore **not verified as provisioned**. Vectorize-backed memory and external MCP principals must not be described as operational yet.
-- A separate Cloudflare Worker `cryptophys-github-actions-mcp` remains deployed; its latest deployment is dated `2026-11-01T05:58:17Z`. ADR-0007 identifies this shared-bearer GitHub-token MCP connector as superseded by the Access-protected kernel MCP and leaves retirement to the owner. This inventory does not inspect or disclose its token, establish current reachability, or authorize deletion.
-- The last Control Plane rollout (#41883619698) applied D1 migrations 0011–0015 and updated five Workers, then failed at AI Kernel when the deployment token received Cloudflare API authentication error 10000 for Vectorize. This left production partially updated. PR #66 adds a fail-fast Vectorize preflight before D1 or Worker mutations; it is still open and has not been deployed.
-- **Drift/health:** do not claim 13/13 services healthy from deployment metadata alone. Verify the live health/readiness endpoints and record the check time before asserting that state.
+- Deploy Control Plane runs 41931114234 (`56f52bf`) and 41932785364 (`0effe17`) succeeded end to end:
+  - every Worker's active version matches the commit, and health and readiness pass (the AI Kernel's `/ready` includes `supervisor_binding`, `signal_analyst_binding`, `auditor_binding`, `memory_binding`);
+  - the MCP front door, the agent registry and a supervisor cycle are verified;
+  - the recovery lifecycle Workflow is verified, and the audit chain is valid.
+- **Vectorize:** the explicit preflight step creates the index `cryptophys-agent-memory` (384d, cosine, metadata index `agent_id`) or verifies an existing one, and fails closed otherwise. The Workers deploy token lacks Vectorize access (Cloudflare error 10000, run 41883619698), so the step tries the D1/Access token first.
+- **D1:** migrations through `0015_agent_principals.sql`. Agents: `supervisor` (tier 2), `signal-analyst` (tier 1), `auditor` (tier 1), all enabled. No external principals are registered yet.
+- **Drift:** 13 of 13 healthy at 23:15 UTC.
+  - The 5 recovery drafts the supervisor proposed at 18:37 (audit-ledger, platform-registry, policy-engine, recovery-manager, signal-engine) were correct detections of the partial rollout from run 41883619698. They are now stale.
+  - Do not approve them. They expire automatically (`approval_expired`) after 72 h.
+- `cryptophys-github-actions-mcp` was **retired by the owner (2026-11-05)**: its GitHub token was revoked, and the Worker was deleted, verified absent from the account. Its source was removed from the repository.
 - **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
-
-The next production rollout requires the owner to resolve the existing production deployment token's Vectorize access, followed by a separately approved manual deployment and per-Worker verification. This status note authorizes no production change.
 
 The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `ANTIGRAVITY.md`.
 
@@ -84,3 +83,4 @@ Merged by the owner's account (#61 to #64) and deployed in run 41931114234 at `5
   - Commit `56f52bf` was pushed straight to `main`. It wired Vectorize provisioning into `render-d1-config.sh` and `remove-worker-secrets.sh` as hidden side effects, working around the rule against editing workflows.
   - The orchestrator replaced those side effects with an explicit, visible step in `deploy-control-plane.yml`.
   - Workers must not push to `main`, dispatch deployments or add side effects to unrelated scripts. They open a PR and stop; the orchestrator merges and deploys.
+- **Owner ratification (2026-11-05):** "lanjutkan validasi untuk accept semua commit dan PR yang dikerjakan oleh akun saya" (continue validating, to accept all commits and PRs made by my account). The owner accepts the work done from the owner account (#53, #57, #59, #61 to #64, `56f52bf`, #66, #67) after the orchestrator's validation recorded above. #66 and #67 were integrated by the orchestrator, merged with #68. Going forward, the process rule above applies.
