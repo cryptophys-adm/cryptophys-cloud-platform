@@ -20,7 +20,7 @@ Git is the source of truth for platform design and code. This repository contain
   - `cryptophys-platform-api`: health and readiness API.
   - `cryptophys-deployment-orchestrator`: CI-gated, locked (Durable Object) and audited Platform API deployments.
   - `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-drift-detector`: the control plane (ADR-0004).
-- D1 database `cryptophys-control-plane` with versioned migrations and Time Travel restore points before every migration.
+- D1 database `cryptophys-control-plane` with versioned migrations and a Time Travel restore point recorded before each migration batch.
 - A hash-chained, append-only audit ledger.
 - `cryptophys-signal-engine`: the apps-gitops trend and volume engines migrated off Kubernetes, with pandas_ta parity fixtures (ADR-0005; inventory in docs/TRANSFORMATION-INVENTORY.md).
 - Drift detection every 15 minutes: the Drift Detector observes its own version and health locally, its seven platform peers over RPC, and the four external xauusd Workers for health only over private service bindings.
