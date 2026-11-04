@@ -20,15 +20,26 @@ fail() {
   fail "refusing to provision Vectorize index ${index_name}: not a cryptophys index name"
 }
 
+metadata_entry() {
+  jq -c --arg property "$metadata_prop" '
+    def metadata_indexes:
+      if type == "array" then .
+      elif type == "object" then
+        (.metadataIndexes // .metadata_indexes // .result.metadataIndexes // [])
+      else
+        error("unexpected Vectorize metadata-index response shape")
+      end;
+    metadata_indexes
+    | map(select((.propertyName // .property_name) == $property))
+    | first // null
+  ' <<<"$1"
+}
+
 ensure_metadata_index() {
   local metadata_json entry actual_type attempt
 
   metadata_json="$(npx wrangler vectorize list-metadata-index "$index_name" --json)"
-  entry="$(jq -c --arg property "$metadata_prop" '
-    (.metadataIndexes // .metadata_indexes // .result.metadataIndexes // [])
-    | map(select((.propertyName // .property_name) == $property))
-    | first // null
-  ' <<<"$metadata_json")"
+  entry="$(metadata_entry "$metadata_json")"
 
   if [[ "$entry" != "null" ]]; then
     actual_type="$(jq -r '(.indexType // .index_type // "")' <<<"$entry")"
@@ -43,11 +54,7 @@ ensure_metadata_index() {
   # before allowing D1 migrations or Worker deployments to proceed.
   for attempt in {1..10}; do
     metadata_json="$(npx wrangler vectorize list-metadata-index "$index_name" --json)"
-    entry="$(jq -c --arg property "$metadata_prop" '
-      (.metadataIndexes // .metadata_indexes // .result.metadataIndexes // [])
-      | map(select((.propertyName // .property_name) == $property))
-      | first // null
-    ' <<<"$metadata_json")"
+    entry="$(metadata_entry "$metadata_json")"
     if [[ "$entry" != "null" ]]; then
       actual_type="$(jq -r '(.indexType // .index_type // "")' <<<"$entry")"
       [[ "$actual_type" == "$metadata_type" ]] || fail "Vectorize metadata index ${metadata_prop} was created with type=${actual_type:-unknown} (expected ${metadata_type})"
