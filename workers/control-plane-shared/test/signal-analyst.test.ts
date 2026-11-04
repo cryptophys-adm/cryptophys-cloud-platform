@@ -88,6 +88,9 @@ function analystEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) 
       get: () => ({ cycle: async () => ({ agent_id: "auditor", trigger: "scheduled", ran_at: new Date().toISOString(), findings: [] }), status: async () => null }),
     };
   }
+  if (!("MEMORY" in extra)) {
+    env.MEMORY = { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) };
+  }
   return { env, db, supMem, sigMem };
 }
 
@@ -122,7 +125,7 @@ test("migration 0012 seeds signal-analyst at tier 1 and agent_reports rejects an
   const agent = db.raw.prepare("SELECT tier_max, status, host_worker, capabilities_json FROM agents WHERE agent_id = ?").get(SIGNAL_ANALYST_ID) as any;
   assert.deepEqual(
     [agent.tier_max, agent.status, agent.host_worker, JSON.parse(agent.capabilities_json)],
-    [1, "enabled", "cryptophys-ai-kernel", ["signals.observe", "reports.publish"]],
+    [1, "enabled", "cryptophys-ai-kernel", ["signals.observe", "reports.publish", "memory.recall", "memory.remember"]],
   );
   assert.equal(CAPABILITIES["signals.observe"].tier, 0);
   assert.deepEqual(

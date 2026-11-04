@@ -63,6 +63,10 @@ class_name = "SignalAnalystAgent"
 name = "AUDITOR"
 class_name = "AuditorAgent"
 
+[[vectorize]]
+binding = "MEMORY"
+index_name = "cryptophys-agent-memory"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SupervisorAgent"]

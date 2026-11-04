@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0013_auditor_agent.sql");
+  assert.equal(REQUIRED_MIGRATION, "0014_agent_memories.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -71,6 +71,9 @@ function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
   if (!("AUDITOR" in extra)) {
     env.AUDITOR = { idFromName: (n: string) => n, get: () => ({ cycle: async () => ({ agent_id: "auditor", trigger: "scheduled", ran_at: new Date().toISOString(), findings: [] }), status: async () => null }) };
   }
+  if (!("MEMORY" in extra)) {
+    env.MEMORY = { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) };
+  }
   return { env, db, reingests, mem };
 }
 
@@ -93,7 +96,7 @@ const AI_PLAN = { response: JSON.stringify({ title: "Redeploy Platform API", rat
 test("migration 0010 seeds the supervisor at tier 2, the kill switch on, and the kernel in the registry", () => {
   const db = migratedDb();
   const a = db.raw.prepare("SELECT tier_max, status, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;
-  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [2, "enabled", ["platform.observe", "recovery.propose", "signals.reingest"]]);
+  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [2, "enabled", ["platform.observe", "recovery.propose", "signals.reingest", "memory.recall", "memory.remember"]]);
   assert.equal((db.raw.prepare("SELECT value FROM kernel_controls").get() as any).value, "1");
   assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
   assert.ok(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_syscall_consumptions'").get());
@@ -282,7 +285,8 @@ test("kernel HTTP: readiness, agents, suspension by any operator, resumption and
   assert.equal((await call(kernel, env, req("GET", "/ready"))).body.status, "ready");
   assert.equal((await call(kernel, env, req("GET", "/v1/agents", undefined, OUTSIDER_JWT))).status, 403);
   const agents = await call(kernel, env, req("GET", "/v1/agents"));
-  assert.deepEqual(agents.body.agents[0].capabilities.map((c: any) => c.tier), [0, 1, 2]);
+  const supAgent = agents.body.agents.find((a: any) => a.agent_id === "supervisor");
+  assert.deepEqual(supAgent.capabilities.map((c: any) => c.tier), [0, 1, 2, 0, 1]);
   const suspended = await call(kernel, env, req("POST", "/v1/agents/supervisor/suspend", { reason: "test" }, OPERATOR_JWT));
   assert.equal(suspended.body.agent.status, "suspended");
   assert.equal((await call(kernel, env, req("POST", "/v1/agents/supervisor/resume", {}, OPERATOR_JWT))).status, 403);

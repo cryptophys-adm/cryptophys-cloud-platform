@@ -17,6 +17,7 @@ import { boundedString, engineFor, type AiTask } from "../../control-plane-share
 import { agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import type { ChainVerification } from "../../control-plane-shared/src/audit.ts";
 import type { ReportSeverity } from "./reports.ts";
+import { pruneExpiredMemories, recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import type { CycleReport, KernelEnv, Memory } from "./supervisor.ts";
 import { syscall } from "./syscall.ts";
 
@@ -213,6 +214,15 @@ export async function runAuditCycle(
   const obs = obsCall.result as unknown as AuditObservation;
   const lastDailyDay = await memory.get<string>("last_daily_digest_day");
 
+  const dt = new Date(now);
+  if (dt.getUTCHours() === 0 && dt.getUTCMinutes() === 37) {
+    try {
+      await pruneExpiredMemories(env, now);
+    } catch {
+      report.memory = "unavailable";
+    }
+  }
+
   const { shouldPublish, severity, reasons, dailyDay } = evaluateAuditTriggers(obs, now, lastDailyDay);
   if (!shouldPublish) {
     report.findings.push({ kind: "audit", action: "none" });
@@ -220,10 +230,18 @@ export async function runAuditCycle(
     return report;
   }
 
+  const recalled = await recallContextForAgent(env, AUDITOR_ID, `audit ${severity} ${reasons.join(" ")}`, report);
   const task = draftAuditDigestTask(obs);
+  const baseInput: JsonObject = {
+    severity,
+    trigger_reasons: reasons,
+    chain: obs.chain as unknown as JsonObject,
+    counts_24h: obs.counts_24h as unknown as JsonObject,
+  };
+  const aiInput = recalled && recalled.length > 0 ? { ...baseInput, context: recalled } : baseInput;
   const ai = await engineFor(env, SERVICE, [task.name]).run(
     task,
-    { severity, trigger_reasons: reasons, chain: obs.chain, counts_24h: obs.counts_24h },
+    aiInput,
     `${AUDITOR_ID}:${now}`,
   );
   const draft = ai.status === "ok" ? ai.data : templateAuditDigest(obs, severity, reasons);
@@ -255,8 +273,12 @@ export async function runAuditCycle(
     ai: ai.status,
   });
 
-  if (pub.outcome === "succeeded" && dailyDay) {
-    await memory.put("last_daily_digest_day", dailyDay);
+  if (pub.outcome === "succeeded") {
+    if (dailyDay) {
+      await memory.put("last_daily_digest_day", dailyDay);
+    }
+    const reportId = String(((pub.result.report as JsonObject | undefined)?.report_id) ?? "");
+    await rememberOutcomeForAgent(env, AUDITOR_ID, "audit_digest", draft.headline, reportId || null, report);
   }
   await memory.put("last_cycle", report);
   return report;

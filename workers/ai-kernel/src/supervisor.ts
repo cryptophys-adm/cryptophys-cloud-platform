@@ -14,6 +14,7 @@
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
+import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 
 export const AGENT_ID = "supervisor";
@@ -97,6 +98,7 @@ export interface CycleReport {
   trigger: string;
   cycle_at: string;
   skipped?: string;
+  memory?: "ok" | "unavailable";
   findings: JsonObject[];
   actions: SyscallResult[];
 }
@@ -124,7 +126,9 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       report.findings.push({ kind: "drift", service_id: s.service_id, action: "none", why: "proposal already open or recent" });
       continue;
     }
-    const ai = await engineFor(env, SERVICE, [draftTask.name]).run(draftTask, s, `${AGENT_ID}:${s.service_id}:${now}`);
+    const recalled = await recallContextForAgent(env, AGENT_ID, `drift ${s.service_id} ${s.reasons.join(" ")}`, report);
+    const aiInput = recalled && recalled.length > 0 ? { ...s, context: recalled } : s;
+    const ai = await engineFor(env, SERVICE, [draftTask.name]).run(draftTask, aiInput, `${AGENT_ID}:${s.service_id}:${now}`);
     const draft = ai.status === "ok" ? ai.data : templateProposal(s);
     const result = await syscall(env, AGENT_ID, "recovery.propose", {
       service_id: s.service_id, plan_version: (s.desired_version ?? "unknown").slice(0, 40),
@@ -132,7 +136,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     });
     report.actions.push(result);
     report.findings.push({ kind: "drift", service_id: s.service_id, action: "recovery.propose", outcome: result.outcome, ai: ai.status });
-    if (result.outcome === "succeeded") proposals[s.service_id] = now;
+    if (result.outcome === "succeeded") {
+      proposals[s.service_id] = now;
+      const planId = String(((result.result.plan as JsonObject | undefined)?.plan_id) ?? s.service_id);
+      await rememberOutcomeForAgent(env, AGENT_ID, "recovery_proposal", draft.title, planId, report);
+    }
   }
   await memory.put("proposals", proposals);
 

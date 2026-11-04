@@ -14,6 +14,8 @@ import { redact } from "./http.ts";
  */
 
 export const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
+export const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-small-en-v1.5";
+export const EMBEDDING_DIMENSIONS = 384;
 
 export type AiOutcome<T> =
   | { status: "ok"; data: T; model: string; correlation_id: string }
@@ -167,6 +169,63 @@ export class AiEngine {
         return { status: "invalid_output", reason: "output_failed_schema_validation", correlation_id: correlationId };
       }
       return { status: "ok", data, model: this.model, correlation_id: correlationId };
+    } catch (err) {
+      await this.recordFailure(day);
+      return unavailable(String((err as Error)?.message) === "timeout" ? "timeout" : "inference_failed");
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Compute a 384-dimension embedding vector using `@cf/baai/bge-small-en-v1.5` (TP-008).
+   * Uses the same per-service and account-wide daily budget accounting as `run()` under task `embed`.
+   */
+  async embed(text: string, correlationId = "embed"): Promise<AiOutcome<number[]>> {
+    const unavailable = (reason: string): AiOutcome<number[]> => ({ status: "unavailable", reason, correlation_id: correlationId });
+    if (!this.allowedTasks.includes("embed")) return unavailable("task_not_allowed");
+    if (!this.ai) return unavailable("ai_binding_missing");
+    const cleaned = typeof text === "string" ? String(redact(text)).trim() : "";
+    if (!cleaned) return unavailable("empty_input");
+    if (cleaned.length > 2000) return unavailable("input_too_large");
+
+    const day = utcDay();
+    let reserved: boolean;
+    try {
+      reserved = await this.reserve(day);
+    } catch {
+      return unavailable("budget_store_unavailable");
+    }
+    if (!reserved) return unavailable("daily_budget_exhausted");
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), this.timeoutMs);
+      });
+      const out = await Promise.race([
+        this.ai.run(DEFAULT_EMBEDDING_MODEL, { text: [cleaned] }),
+        timeout,
+      ]);
+      const rec = out as { data?: unknown; vector?: unknown } | number[] | null;
+      const candidate = Array.isArray(rec)
+        ? rec
+        : Array.isArray((rec as { data?: unknown[] })?.data?.[0])
+          ? ((rec as { data: unknown[][] }).data[0])
+          : Array.isArray((rec as { data?: unknown[] })?.data)
+            ? ((rec as { data: unknown[] }).data)
+            : Array.isArray((rec as { vector?: unknown[] })?.vector)
+              ? ((rec as { vector: unknown[] }).vector)
+              : null;
+      if (
+        !candidate ||
+        candidate.length !== EMBEDDING_DIMENSIONS ||
+        !candidate.every((n): n is number => typeof n === "number" && Number.isFinite(n))
+      ) {
+        await this.recordFailure(day);
+        return unavailable("invalid_embedding_output");
+      }
+      return { status: "ok", data: candidate, model: DEFAULT_EMBEDDING_MODEL, correlation_id: correlationId };
     } catch (err) {
       await this.recordFailure(day);
       return unavailable(String((err as Error)?.message) === "timeout" ? "timeout" : "inference_failed");
