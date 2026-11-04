@@ -19,5 +19,5 @@ INSERT OR IGNORE INTO agents
 VALUES
   ('signal-analyst', 'Signal Analyst', 'cryptophys-ai-kernel',
    'Reads Signal Engine confluence, decisions, Mizan and macro context hourly and publishes an advisory digest when actions change or every 6 hours.',
-   1, '["signals.observe","reports.publish"]', 'enabled', NULL, 'migration:0011',
+   1, '["signals.observe","reports.publish"]', 'enabled', NULL, 'migration:0012',
    '2026-11-04T00:00:00.000Z', '2026-11-04T00:00:00.000Z');

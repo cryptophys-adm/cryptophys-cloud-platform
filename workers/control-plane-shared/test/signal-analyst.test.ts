@@ -109,9 +109,9 @@ function seedMacro(db: Db, observedHour: number, fearGreed = 44, fgClass = "Fear
   ).run(observedHour, fearGreed, fgClass, observedHour, btcDom);
 }
 
-// ---------------------------------------------------------------- AC 1: migration 0011
+// ---------------------------------------------------------------- AC 1: migration 0012
 
-test("migration 0011 seeds signal-analyst at tier 1 and agent_reports rejects an unknown kind", () => {
+test("migration 0012 seeds signal-analyst at tier 1 and agent_reports rejects an unknown kind", () => {
   const db = migratedDb();
   const agent = db.raw.prepare("SELECT tier_max, status, host_worker, capabilities_json FROM agents WHERE agent_id = ?").get(SIGNAL_ANALYST_ID) as any;
   assert.deepEqual(

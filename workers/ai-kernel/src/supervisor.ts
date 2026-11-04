@@ -22,6 +22,17 @@ const PROPOSAL_COOLDOWN_MS = 24 * 3_600_000;
 const REINGEST_COOLDOWN_MS = 30 * 60_000;
 const INGEST_STALE_MS = 40 * 60_000;
 
+/** Serializes overlapping invocations of one Durable Object agent cycle, including awaits. */
+export class SerialCycleQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  run<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation);
+    this.tail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
 export interface KernelEnv extends SyscallEnv {
   AI_MODEL?: string;
   AI_DAILY_REQUEST_LIMIT?: string;

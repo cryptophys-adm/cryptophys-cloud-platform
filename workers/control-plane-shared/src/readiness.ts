@@ -3,14 +3,18 @@ import { json } from "./http.ts";
 import { accessConfigured, listConfigured } from "./access.ts";
 
 /** The newest schema migration every service requires before it reports ready. */
-export const REQUIRED_MIGRATION = "0011_agent_reports.sql";
+export const REQUIRED_MIGRATION = "0012_agent_reports.sql";
+const REQUIRED_MIGRATIONS = ["0011_agent_syscall_consumptions.sql", REQUIRED_MIGRATION] as const;
 
 export type Checks = Record<string, boolean>;
 
 export async function schemaReady(env: BaseEnv): Promise<boolean> {
   try {
-    const row = await env.DB.prepare("SELECT name FROM d1_migrations WHERE name = ?").bind(REQUIRED_MIGRATION).first();
-    return row !== null;
+    for (const name of REQUIRED_MIGRATIONS) {
+      const row = await env.DB.prepare("SELECT name FROM d1_migrations WHERE name = ?").bind(name).first();
+      if (row === null) return false;
+    }
+    return true;
   } catch {
     return false;
   }

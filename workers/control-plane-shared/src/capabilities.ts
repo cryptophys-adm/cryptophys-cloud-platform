@@ -78,9 +78,9 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
   if (cap?.max_per_hour && agent) {
     const since = new Date(now - 3_600_000).toISOString();
     const used = await db.prepare(
-      "SELECT COUNT(*) AS n FROM agent_actions WHERE agent_id = ? AND capability = ? AND outcome = 'succeeded' AND created_at >= ?",
+      "SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = ? AND capability = ? AND consumed_at >= ?",
     ).bind(agent.agent_id, capability, since).first<{ n: number }>();
-    add("rate_limit", (used?.n ?? 0) < cap.max_per_hour, `at most ${cap.max_per_hour} successful calls per hour`);
+    add("rate_limit", (used?.n ?? 0) < cap.max_per_hour, `at most ${cap.max_per_hour} consumed syscalls per hour`);
   }
   return checks;
 }
@@ -92,14 +92,52 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
  */
 export async function verifySyscallDecision(db: D1Database, decisionId: unknown, agentId: string, capability: string, now = Date.now()): Promise<void> {
   if (typeof decisionId !== "string" || !/^dec_[0-9a-f-]{36}$/.test(decisionId)) throw new Error("policy_decision_required");
-  const row = await db.prepare("SELECT subject, action, resource, decision, created_at FROM policy_decisions WHERE decision_id = ?")
-    .bind(decisionId).first<{ subject: string; action: string; resource: string; decision: string; created_at: string }>();
-  const fresh = row ? now - Date.parse(row.created_at) <= 300_000 : false;
-  if (!row || row.decision !== "allow" || row.action !== "agent.syscall" || row.subject !== `agent:${agentId}` || row.resource !== capability || !fresh) {
+  const cap = CAPABILITIES[capability];
+  if (!cap || cap.tier === 0 || cap.tier >= 3 || !cap.max_per_hour || PROHIBITED_CAPABILITY.test(capability)) {
     throw new Error("policy_decision_invalid");
   }
-  const used = await db.prepare("SELECT 1 AS x FROM agent_actions WHERE decision_id = ?").bind(decisionId).first();
-  if (used) throw new Error("policy_decision_already_used");
+  const row = await db.prepare("SELECT subject, action, resource, decision, created_at FROM policy_decisions WHERE decision_id = ?")
+    .bind(decisionId).first<{ subject: string; action: string; resource: string; decision: string; created_at: string }>();
+  const age = row ? now - Date.parse(row.created_at) : Number.NaN;
+  if (!row || row.decision !== "allow" || row.action !== "agent.syscall" || row.subject !== `agent:${agentId}`
+    || row.resource !== capability || !Number.isFinite(age) || age < 0 || age > 300_000) {
+    throw new Error("policy_decision_invalid");
+  }
+
+  // Re-check the live agent grant and kill switch. The INSERT below repeats those checks in
+  // the same atomic statement that consumes the decision, closing the check/dispatch race.
+  const failed = (await agentSyscallChecks(db, `agent:${agentId}`, capability, now)).filter((c) => !c.passed);
+  if (failed.length) throw new Error(`policy_decision_revoked: ${failed.map((c) => c.id).join(",")}`);
+
+  const nowAt = new Date(now).toISOString();
+  const cutoff = new Date(now - 300_000).toISOString();
+  const consumed = await db.prepare(
+    `INSERT OR IGNORE INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at)
+     SELECT ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM policy_decisions p
+       WHERE p.decision_id = ? AND p.subject = ? AND p.action = 'agent.syscall'
+         AND p.resource = ? AND p.decision = 'allow' AND p.created_at >= ? AND p.created_at <= ?
+     )
+     AND EXISTS (
+       SELECT 1 FROM agents a
+       WHERE a.agent_id = ? AND a.status = 'enabled' AND a.tier_max >= ?
+         AND EXISTS (SELECT 1 FROM json_each(a.capabilities_json) j WHERE j.value = ?)
+     )
+     AND EXISTS (SELECT 1 FROM kernel_controls k WHERE k.control = 'agents_enabled' AND k.value = '1')
+     AND (SELECT COUNT(*) FROM agent_syscall_consumptions c
+          WHERE c.agent_id = ? AND c.capability = ? AND c.consumed_at >= ?) < ?`,
+  ).bind(
+    decisionId, agentId, capability, nowAt,
+    decisionId, `agent:${agentId}`, capability, cutoff, nowAt,
+    agentId, cap.tier, capability,
+    agentId, capability, new Date(now - 3_600_000).toISOString(), cap.max_per_hour,
+  ).run();
+  if ((consumed.meta.changes ?? 0) !== 1) {
+    const used = await db.prepare("SELECT 1 AS x FROM agent_syscall_consumptions WHERE decision_id = ?").bind(decisionId).first();
+    if (used) throw new Error("policy_decision_already_used");
+    throw new Error("policy_decision_revoked_or_rate_limited");
+  }
 }
 
 /** Step actions a recovery plan may name (the Recovery Manager validates them; nothing runs them automatically). */
