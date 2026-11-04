@@ -5,9 +5,9 @@
 - `cryptophys-work/apps-gitops` history contains:
   - `apps/user/03-execution-swarms/omega/core/vault/genesis.key`, a 64-hex value that is likely a wallet private key;
   - `.../omega/core/vault/binance_hmac.json`, a Binance API key and secret;
-  - a NATS password (`RISK_PWD_SECRET` / `trading_brain` user);
+  - a NATS literal password (`risk_guard` / `trading_brain` users). The committed literal is a 14-character env-var-style name, not a random secret; confirm that the NATS server does not accept it.
   - an ArgoCD `cryptophys.work/reconcile-token` annotation.
-- The draft PR `cryptophys-work/apps-gitops#110` commits a real-looking `PAGERDUTY_ROUTINGKEY` in `apps/falco-pagerduty/manifests/falco-pagerduty-secret.yaml`.
+- *(Corrected 2026-11-04 after the worker's inventory, PR #46.)* The `PAGERDUTY_ROUTINGKEY` in the draft PR `cryptophys-work/apps-gitops#110` is a placeholder, not a real key. It is not part of this task.
 
 All of these values must be treated as public.
 
@@ -22,12 +22,11 @@ All of these values must be treated as public.
    - Evidence: `vault status` before and after, showing the new key count and threshold. No shares.
 4. **Rotate dependent secrets.** Do this in Vault and in the systems themselves:
    - NATS users;
-   - the ArgoCD token;
-   - the PagerDuty routing key. Rotating needs the owner in PagerDuty; you prepare the change.
+   - the ArgoCD `reconcile-token` annotations.
    Evidence: the name and `sha256[:8]` of the old and new values, plus a successful consumer health check after rotation.
 5. **OWNER GATE: Binance and wallet.**
    - **Binance:** the owner revokes the API key in the Binance account. You only confirm with a single unauthenticated-equivalent check that the old key is rejected, or state that you cannot.
    - **`genesis.key`:** derive the public address locally, without printing the key, and report the address and its on-chain balance using a public read-only RPC. Moving funds is the owner's action, never yours.
 6. **History purge (optional, OWNER GATE).** Propose a `git filter-repo` plan for both repositories. Do not run it. Rewriting history is irreversible and needs every clone re-cut.
 
-**Done when:** platform-gitops is not anonymously readable, Vault is rekeyed, the leaked credentials are revoked or rotated with evidence, and `STATUS.md` lists any item that only the owner can finish.
+**Done when:** `platform-gitops` is not anonymously readable, Vault is rekeyed, the leaked credentials are revoked or rotated with evidence, and `STATUS.md` lists any item that only the owner can finish.
