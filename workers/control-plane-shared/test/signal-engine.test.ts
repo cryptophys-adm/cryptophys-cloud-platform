@@ -57,7 +57,7 @@ test("ingest backfills the window, stores immutable candles and computes both en
   assert.equal(first.failed, 0);
   assert.ok(calls.every((u) => u.startsWith("https://data-api.binance.vision/api/v3/klines?") && u.includes("limit=211")), "backfill fetches WINDOW + 1");
   const btc = first.series.find((s) => s.symbol === "BTCUSDT")!;
-  assert.deepEqual([btc.fetched, btc.inserted, btc.computed], [210, 210, ["trend", "volume"]]);
+  assert.deepEqual([btc.fetched, btc.inserted, btc.computed], [210, 210, ["trend", "volume", "momentum", "volatility", "structure"]]);
   assert.equal(btc.latest_open_time, NOW - (NOW % H) - H, "latest stored candle is the last closed one");
 
   calls.length = 0;
@@ -65,16 +65,23 @@ test("ingest backfills the window, stores immutable candles and computes both en
   assert.ok(calls.every((u) => u.includes("limit=5")), "steady state fetches only the tail");
   assert.equal(second.series[0].inserted, 0, "closed candles are immutable and deduplicated");
   const n = db.raw.prepare("SELECT COUNT(*) AS n FROM signal_indicators").get() as { n: number };
-  assert.equal(n.n, 4, "one row per engine per series; re-runs do not duplicate");
+  assert.equal(n.n, 12, "five engines + mizan per series; re-runs do not duplicate");
+  const conf = db.raw.prepare("SELECT symbol, confluence_score, decision_json FROM signal_confluence ORDER BY symbol").all() as any[];
+  assert.deepEqual(conf.map((r) => r.symbol), ["BTCUSDT", "ETHUSDT"], "one confluence per symbol and basis candle");
+  assert.equal(JSON.parse(conf[0].decision_json).advisory_only, true);
 
   const latest = await call(signal, e, req("GET", "/v1/signals?symbol=BTCUSDT&timeframe=1h"));
   assert.equal(latest.status, 200);
   assert.equal(latest.body.advisory_only, true);
   assert.equal(typeof latest.body.engines.trend.indicators.ema_200, "number");
   assert.equal(typeof latest.body.engines.volume.indicators.mfi_14, "number");
-  assert.match(latest.body.engines.trend.implementation, /pandas_ta_classic 0\.9\.0/);
+  assert.match(latest.body.engines.trend.implementation, /pandas_ta_classic 0\.4\.47/);
+  assert.equal(typeof latest.body.engines.momentum.indicators.rsi_14, "number");
+  assert.equal(latest.body.engines.mizan.indicators.signal_tier, "neutral");
+  assert.equal(latest.body.engines.mizan.indicators.advisory_risk_levels, null);
+  assert.ok(["bullish", "bearish", "neutral"].includes(latest.body.confluence.decision.bias));
   const history = await call(signal, e, req("GET", "/v1/signals/history?symbol=ETHUSDT&timeframe=1h&limit=10"));
-  assert.equal(history.body.rows.length, 2);
+  assert.equal(history.body.rows.length, 6);
   const status = await call(signal, e, req("GET", "/v1/status"));
   assert.deepEqual(status.body.series.map((s: any) => [s.symbol, s.candles]), [["BTCUSDT", 210], ["ETHUSDT", 210]]);
 });
@@ -151,7 +158,7 @@ test("Kraken provider: XBT naming, minute intervals, since-based tail, forming c
     return Response.json({ error: [], result: { [url.searchParams.get("pair")!]: rows, last: 0 } });
   });
   const first = await ingest(e as never, NOW);
-  assert.deepEqual([first.series[0].status, first.series[0].inserted, first.series[0].computed], ["ok", 300, ["trend", "volume"]]);
+  assert.deepEqual([first.series[0].status, first.series[0].inserted, first.series[0].computed], ["ok", 300, ["trend", "volume", "momentum", "volatility", "structure"]]);
   assert.ok(calls[0].includes("pair=XBTUSDT") && !calls[0].includes("since="));
   const second = await ingest(e as never, NOW);
   assert.ok(calls[1].includes("since="), "steady state asks only for candles after the stored tail");
