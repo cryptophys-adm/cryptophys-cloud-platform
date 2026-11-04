@@ -403,10 +403,12 @@ export function trendIndicators(candles: Candle[]): Indicators {
   out.supertrend = round(last(st.trend), 6);
   out.supertrend_direction = finite(last(st.direction)) ? last(st.direction) : null;
   const ich = ichimokuLast(h, l);
-  out.ichimoku_tenkan = round(ich?.tenkan, 6);
-  out.ichimoku_kijun = round(ich?.kijun, 6);
-  out.ichimoku_span_a = round(ich?.span_a, 6);
-  out.ichimoku_span_b = round(ich?.span_b, 6);
+  if (ich) { // pandas_ta 0.4.47 returns None below 52 candles, so the keys are absent
+    out.ichimoku_tenkan = round(ich.tenkan, 6);
+    out.ichimoku_kijun = round(ich.kijun, 6);
+    out.ichimoku_span_a = round(ich.span_a, 6);
+    out.ichimoku_span_b = round(ich.span_b, 6);
+  }
   return out;
 }
 
