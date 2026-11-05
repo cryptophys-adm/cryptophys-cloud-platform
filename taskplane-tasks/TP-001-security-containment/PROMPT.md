@@ -22,12 +22,11 @@ The read-only inventory from the first version (PR #46) remains valid evidence. 
    - **Never output the secret or any part of either credential.** Never call any Binance endpoint with either value, signed or unsigned.
    - If the approved value fingerprint cannot be computed safely in memory, mark A1 incomplete; do not substitute a file/blob hash or a masked substring.
    - Purpose: provide a non-reversible evidence fingerprint for the owner; the owner must identify and revoke the key in Binance API Management.
-2. **Wallet address and balance** (`genesis.key`).
-   - Derive the secp256k1/EVM address locally in memory using a pinned library in a throwaway environment. Never print, store or transmit the private key or a fingerprint of the key file.
-   - Report the address, native balance and transaction count on Ethereum, BNB Smart Chain, Polygon, Arbitrum and Base using public read-only RPCs and `eth_getBalance` / `eth_getTransactionCount` only, unless the derived account is a known public test vector or the result would reveal a publicly known private key.
-   - If the source key matches a publicly known test vector, withhold the address and all account details, mark the source key compromised, and require owner validation through a secure channel. Do not disclose the test-vector scalar or other key material.
-   - If the value is not a valid secp256k1 key, report that and stop. Do not try other chains or formats.
-   - Never sign, send, approve or import the key into any wallet.
+2. **Wallet key containment (owner-only validation)** (`genesis.key`).
+   - Treat the historical source key as compromised because it was stored in repository history that was readable before containment.
+   - The worker must not derive an address, query any chain/RPC, inspect or report balances, nonces, transaction history, or other account metadata. Do not publish an address or any account identifier, even if the source is not recognized as a public test vector.
+   - The owner must independently validate wallet ownership and determine disposition through a secure, controlled channel outside this shared repository. Any address or financial details must remain in that owner-controlled channel.
+   - Never print, store, transmit, sign with, send, approve, import, or otherwise use the private key. Do not disclose a test-vector scalar or other key material.
 3. **Inventory of what Vault and the cluster held.**
    - From the two repositories' current tree and history, list every secret **name and path**, never values: `ExternalSecret` / `SecretStore` refs, Vault paths, Kubernetes `Secret` names, and env vars that look like credentials (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`).
    - For each, name the **issuer**: Cloudflare, GitHub, Binance, an exchange, email/SMTP, a cloud provider, an LLM provider, cluster-internal only, or unknown.
