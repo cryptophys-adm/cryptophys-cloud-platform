@@ -253,3 +253,14 @@ test("13. confirmation dialog traps Tab focus and wraps in both directions", asy
   assert.ok(js.text.includes("last.focus()"));
   assert.ok(js.text.includes("first.focus()"));
 });
+
+
+test("14. Observe now remains disabled until the request settles without a lock timer", async () => {
+  const env = consoleEnv();
+  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
+  assert.ok(js.text.includes('act({ route: "drift.observe", body: {}, done: "Observation requested.", after: load })'));
+  assert.ok(js.text.includes('.finally(function () { observe.disabled = false; })'));
+  assert.doesNotMatch(js.text, /OBSERVE_LOCK_MS/);
+  assert.doesNotMatch(js.text, /setTimeout\(function \(\) \{ observe\.disabled/);
+  assert.ok(js.text.includes("setInterval(refreshMission, REFRESH_MS)"));
+});
