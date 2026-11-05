@@ -27,7 +27,7 @@ md="$(jq -r .markdown <<<"$out2")"
 if [[ "$(jq -r .state <<<"$out2")" == "critical" && "$(jq -r .critical <<<"$out2")" == "2" ]]; then pass "critical -> critical state"; else bad "critical -> critical state"; fi
 rows="$(grep '^| 2026' <<<"$md" || true)"
 if [[ "$(wc -l <<<"$rows")" == "2" && "$(head -1 <<<"$rows")" == *recovery-manager* ]]; then pass "only critical rows, newest first"; else bad "only critical rows, newest first"; fi
-if grep -qF 'Audit chain | invalid' <<<"$md"; then bad "table-breaking characters neutralized"; else pass "table-breaking characters neutralized"; fi
+if grep -qF 'Audit chain' <<<"$md" || grep -qF 'Recovery plan' <<<"$md"; then bad "subjects never reach the public issue"; else pass "subjects never reach the public issue"; fi
 if [[ "$(jq -r .fingerprint <<<"$out2")" == "$(jq -r .fingerprint <<<"$("$here/report-summary.sh" "$tmp/crit.json")")" ]]; then pass "fingerprint is stable"; else bad "fingerprint is stable"; fi
 
 echo '{"agent_reports_24h":{"since":"x","counts":{"critical":0,"warning":0,"info":0},"latest_attention":[],"error":"reports_unavailable"}}' > "$tmp/err.json"
