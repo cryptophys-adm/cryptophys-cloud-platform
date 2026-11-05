@@ -135,3 +135,40 @@ The follow-up also adds tests 9–12 for the path-forwarding fix, the observe() 
 ### Remaining verification
 
 The owner’s Chromium render at 1280 px and 360 px was performed on the pre-correction head. A rendered-browser recheck after these five fixes has not yet been run. No production workflow was dispatched and nothing was deployed by this follow-up.
+
+### Captured GitHub Actions output tails (run #42085115972, current code unchanged)
+
+Type-check step (completed successfully):
+
+```text
+> @cryptophys/control-plane@1.0.0 typecheck
+> tsc --noEmit -p ../control-plane-tsconfig.json
+```
+
+npm test:
+
+```text
+1..165
+# tests 165
+# suites 0
+# pass 165
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+```
+
+Migration test:
+
+```text
+PASS: initial schema, forward migration, data preservation, indexes, CHECK constraints, foreign keys, service-scoped idempotency, and fail-closed rollback
+```
+
+Seven Worker dry-runs completed successfully. Final Console bundle tail:
+
+```text
+Total Upload: 60.80 KiB / gzip: 17.24 KiB
+--dry-run: exiting now.
+```
+
+Validate run #42085115865 completed all 3 jobs successfully. Validate Control Plane Workers run #42085115972 completed type-check, tests, migration tests and all 7 dry-run bundles successfully. These are the observed job results; no local shell execution is claimed.
