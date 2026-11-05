@@ -11,7 +11,9 @@ for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) {
   const rOld = regime(h1)!; const rNew = regimeRevised(h1)!;
   const old1 = mizan(h1, s.vol1h, "1h", rOld, h1.at(-1)!, null) as any;
   const old4 = mizan(h4, s.vol4h, "4h", rOld, h4.at(-1)!, null) as any;
-  const per = { "1h": mizanTimeframe(h1, s.vol1h, "1h"), "4h": mizanTimeframe(h4, s.vol4h, "4h") };
+  // decision 11 needs the volume window; older exports only carry the latest volume.
+  const v1: number[] = s.vols1h ?? h1.map(() => s.vol1h); const v4: number[] = s.vols4h ?? h4.map(() => s.vol4h);
+  const per = { "1h": mizanTimeframe(h1, v1, "1h"), "4h": mizanTimeframe(h4, v4, "4h") };
   const mNew = mizanSymbol(per, rNew, h1.at(-1)!, null)!;
   const dOld = decision(s.score); const dNew = decisionRevised(s.score);
   console.log(`\n${sym}  (1h n=${h1.length}, last close ${h1.at(-1)})`);

@@ -15,14 +15,20 @@
  *  4. The decision applies BUY >= 62 / SELL <= 38 to the raw confluence score; the 0.65 base
  *     rate is the BUY win probability in EV/Kelly, as the source's own per-action win
  *     probabilities already were (the source also scaled the score by 0.65, biasing it bearish).
+ *  5. (decision 11, owner 2026-11-05: "skala ulang mizan") The router's dimensions are rescaled
+ *     to be dimensionless and comparable across assets: momentum and trend strength are z-scores
+ *     against the series' own volatility, volume is relative to its median, direction scores
+ *     agreement between momentum and trend (symmetric for long and short), and the source
+ *     weights are normalised to sum to 1. The source divided by the raw price, so momentum and
+ *     volume sat near 1e-4, dim_score could not exceed 0.667, and only rising markets scored.
  */
 import { pairwiseSum, round } from "./indicators.ts";
 import {
-  K, REGIME, SL_ATR, TP_ATR, classifyRegime, cyclePhase, dimension, hurstRs, kwwMemory, positionSizePct, regimeScore,
+  K, REGIME, SL_ATR, TP_ATR, classifyRegime, cyclePhase, hurstRs, kwwMemory, positionSizePct, regimeScore,
   shannonEntropy, signalRank, signalTier, timeframeWeight, type Dimension,
 } from "./mizan.ts";
 
-export const FORMULAS = "mizan-revised/1 (ADR-0005 decision 10)";
+export const FORMULAS = "mizan-revised/2 (ADR-0005 decisions 10 and 11)";
 export const ENTROPY_PERCENTILE = 0.95;
 const MIN_CALIBRATION_WINDOWS = 30;
 
@@ -90,13 +96,61 @@ export function regimeRevised(closes1hAll: number[]): RegimeRevised | null {
   };
 }
 
-/** Per-timeframe Mizan dimensions with the revised KWW. */
-export function mizanTimeframe(closes: number[], volume: number, timeframe: string): Dimension & { kww_close: number; kww_momentum: number; tf_weight: number } {
-  const window = closes.slice(-REGIME.WINDOW);
+/** 5. Source weights (0.20, 0.20, 0.1667, 0.0667, 0.0333) normalised to sum to 1. */
+export const DIM_WEIGHTS = { direction: 0.30, momentum: 0.30, strength: 0.25, cycle: 0.10, volume: 0.05 } as const;
+/** A z-score of this size (or a 2x median volume) earns the full dimension score. */
+export const FULL_SCORE_Z = 2;
+
+const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(Math.max(x, 0), 1) : 0);
+function stdev(x: number[]): number {
+  if (x.length < 2) return 0;
+  const m = pairwiseSum(x) / x.length;
+  return Math.sqrt(pairwiseSum(x.map((v) => (v - m) ** 2)) / (x.length - 1));
+}
+function median(x: number[]): number {
+  const v = [...x].sort((a, b) => a - b);
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
+/** 5. Dimensionless Mizan dimensions for one timeframe window (closes and volumes ascending). */
+export function dimensionScaled(window: number[], volumes: number[], candlesSinceSignal: number): Dimension & { kww_close: number; kww_momentum: number } {
   const kwwClose = kwwMaRecent(window);
   const kwwMom = kwwMomentumRecent(window);
-  const d = dimension(kwwClose, volume, kwwMom, Math.max(window.length - 1, 0), window);
-  return { ...d, kww_close: kwwClose, kww_momentum: kwwMom, tf_weight: timeframeWeight(timeframe) };
+  const n = window.length;
+  const valid = n >= 3 && window.every((c) => c > 0);
+  const returns = valid ? window.slice(1).map((c, i) => Math.log(c / window[i])) : [];
+  const sigma = stdev(returns);
+  // Momentum: today's KWW momentum against the spread of its own history over the window.
+  const history: number[] = [];
+  for (let end = 3; end <= n; end++) history.push(kwwMomentumRecent(window.slice(0, end)));
+  const momSigma = stdev(history);
+  const momentum_score = momSigma > 0 ? clamp01(Math.abs(kwwMom) / momSigma / FULL_SCORE_Z) : (kwwMom !== 0 ? 1 : 0);
+  // Trend strength: the window's log return against a random walk's sigma * sqrt(n - 1).
+  const drift = valid ? Math.log(window[n - 1] / window[0]) : 0;
+  const trend_strength = sigma > 0 ? clamp01(Math.abs(drift) / (sigma * Math.sqrt(n - 1)) / FULL_SCORE_Z) : (drift !== 0 ? 1 : 0);
+  // Direction: momentum agreeing with the trend scores in either direction (long or short).
+  const agreement = kwwMom === 0 || drift === 0 ? 0.5 : Math.sign(kwwMom) === Math.sign(drift) ? 1 : 0;
+  const cycle_score = 1 - Math.abs((candlesSinceSignal % K.BASE) / K.BASE - 0.5) * 2;
+  const vols = volumes.slice(-n).filter((v) => Number.isFinite(v) && v >= 0);
+  const med = vols.length ? median(vols) : 0;
+  const lastVol = vols.at(-1) ?? 0;
+  const volume_score = med > 0 ? clamp01(lastVol / med / FULL_SCORE_Z) : 0;
+  const dim_score = clamp01(
+    agreement * DIM_WEIGHTS.direction + momentum_score * DIM_WEIGHTS.momentum + trend_strength * DIM_WEIGHTS.strength
+    + cycle_score * DIM_WEIGHTS.cycle + volume_score * DIM_WEIGHTS.volume,
+  );
+  return {
+    dim_score, trend_direction: kwwMom >= 0 ? 1 : 0, momentum_score, trend_strength, cycle_score, volume_score,
+    kww_close: kwwClose, kww_momentum: kwwMom,
+  };
+}
+
+/** Per-timeframe Mizan dimensions with the revised KWW and the rescaled router (decision 11). */
+export function mizanTimeframe(closes: number[], volumes: number[], timeframe: string): Dimension & { kww_close: number; kww_momentum: number; tf_weight: number } {
+  const window = closes.slice(-REGIME.WINDOW);
+  const d = dimensionScaled(window, volumes.slice(-REGIME.WINDOW), Math.max(window.length - 1, 0));
+  return { ...d, tf_weight: timeframeWeight(timeframe) };
 }
 
 /** 3. Symbol-level phi across timeframes, tier/rank/size and advisory risk levels (never orders). */
@@ -116,7 +170,7 @@ export function mizanSymbol(perTf: Record<string, Dimension & { tf_weight: numbe
     formulas: FORMULAS,
     timeframes: Object.fromEntries(tfs.map((tf) => [tf, { tf_weight: perTf[tf].tf_weight, dim_score: round(perTf[tf].dim_score, 8) }])),
     dim_score: round(dim, 8),
-    max_dim_score: 0.6667, // the router's dimension weights sum to 0.6667
+    max_dim_score: 1, // decision 11: the weights are normalised to sum to 1
     regime,
     phi: round(phi, 8),
     signal_tier: signalTier(phi),

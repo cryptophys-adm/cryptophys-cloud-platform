@@ -271,7 +271,7 @@ async function deriveSymbol(env: Env, symbol: string, timeframes: string[], now:
     }
     const atr14 = (byEngine.volatility?.atr_14 as number | null | undefined) ?? null;
     if (tf === "1h" || !reference) reference = { close: latest.close, atr14 };
-    const m = mizanTimeframe(rows.map((r) => r.close), latest.volume, tf);
+    const m = mizanTimeframe(rows.map((r) => r.close), rows.map((r) => r.volume), tf);
     perTf[tf] = m;
     writes.push(env.DB.prepare(
       `INSERT OR IGNORE INTO signal_indicators (symbol, timeframe, open_time, engine, implementation, window_size, indicators_json, computed_at)
