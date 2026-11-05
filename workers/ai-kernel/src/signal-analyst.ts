@@ -77,7 +77,7 @@ export async function runSignalCycle(
     return report;
   }
 
-  const observed = await syscall(env, SIGNAL_ANALYST_ID, "signals.observe");
+  const observed = await syscall(env, SIGNAL_ANALYST_ID, "signals.observe", { now });
   report.actions.push(observed);
   if (observed.outcome !== "succeeded") {
     await memory.put("last_cycle", report);
