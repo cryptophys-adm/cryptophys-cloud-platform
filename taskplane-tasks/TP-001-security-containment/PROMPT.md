@@ -16,13 +16,16 @@ The read-only inventory from the first version (PR #46) remains valid evidence. 
 
 ### A. Worker: read-only (no gate; open a PR from a fresh branch on `main`)
 
-1. **Masked Binance key identifier.**
-   - From `binance_hmac.json` in apps-gitops history (commit `48e2d2293^` or earlier), report only the API key's first 4 and last 4 characters and `sha256[:8]` of the file.
-   - **Never output the secret.** Never call any Binance endpoint with this key, signed or unsigned.
-   - Purpose: so the owner can recognise the key in Binance API Management.
-2. **Wallet address and balance** (`genesis.key`, `sha256[:8]` `c302d918`).
-   - Derive the secp256k1/EVM address locally in memory, using a pinned library such as `eth-account` in a throwaway venv. Never print, store or transmit the key.
-   - Report the address, plus the native balance and transaction count on Ethereum, BNB Smart Chain, Polygon, Arbitrum and Base. Use public read-only RPCs and `eth_getBalance` / `eth_getTransactionCount` only.
+1. **Non-revealing Binance API-key fingerprint.**
+   - From `binance_hmac.json` in apps-gitops history, identify the API-key value field without assuming its name. If the field is ambiguous, stop and report the ambiguity.
+   - Report only the field name, source path/commit, and the first 8 hex characters of `sha256(API-key value)`. Do not report any prefix, suffix, substring, length, encoded form, file hash, blob hash, or full value of the key or its paired secret.
+   - **Never output the secret or any part of either credential.** Never call any Binance endpoint with either value, signed or unsigned.
+   - If the approved value fingerprint cannot be computed safely in memory, mark A1 incomplete; do not substitute a file/blob hash or a masked substring.
+   - Purpose: provide a non-reversible evidence fingerprint for the owner; the owner must identify and revoke the key in Binance API Management.
+2. **Wallet address and balance** (`genesis.key`).
+   - Derive the secp256k1/EVM address locally in memory using a pinned library in a throwaway environment. Never print, store or transmit the private key or a fingerprint of the key file.
+   - Report the address, native balance and transaction count on Ethereum, BNB Smart Chain, Polygon, Arbitrum and Base using public read-only RPCs and `eth_getBalance` / `eth_getTransactionCount` only, unless the derived account is a known public test vector or the result would reveal a publicly known private key.
+   - If the source key matches a publicly known test vector, withhold the address and all account details, mark the source key compromised, and require owner validation through a secure channel. Do not disclose the test-vector scalar or other key material.
    - If the value is not a valid secp256k1 key, report that and stop. Do not try other chains or formats.
    - Never sign, send, approve or import the key into any wallet.
 3. **Inventory of what Vault and the cluster held.**
