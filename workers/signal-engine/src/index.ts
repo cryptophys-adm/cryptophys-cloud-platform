@@ -1,3 +1,4 @@
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import type { BaseEnv, ExecutionContextLike, ScheduledEventLike, WorkflowBindingLike } from "../../control-plane-shared/src/types.ts";
 import {
   errorResponse, healthResponse, json, limitParam, newId, nowIso, serviceMetadata, type JsonObject,
@@ -30,6 +31,8 @@ const ENGINES: [string, number, (c: Candle[]) => Indicators][] = [
 export interface IngestParams { now: number; trigger: "scheduled" | "manual" }
 
 export interface Env extends BaseEnv {
+  /** AI Kernel AgentRpc (ADR-0007 §1.1), pinned to host_worker = cryptophys-signal-engine. */
+  AGENTS?: AgentRpcBinding;
   /** Workflow binding for SignalIngestWorkflow (ADR-0006); without it the cron runs inline. */
   INGEST_WORKFLOW?: WorkflowBindingLike<IngestParams>;
   /** Comma-separated exchange symbols, e.g. "BTCUSDT,ETHUSDT". */
@@ -383,6 +386,14 @@ export async function recordRunStage(
     env.DB.prepare("DELETE FROM signal_ingest_runs WHERE started_at < ?").bind(new Date(now - 30 * 86_400_000).toISOString()),
   ]);
   console.log(JSON.stringify({ service: SERVICE, event: "ingest", run_id: runId, series: series.length, failed, workflow_instance_id: workflowInstanceId }));
+  if (failed > 0) {
+    // Advisory: the Signal Engine's own agent (tier 1) reports failed series. Never blocks ingestion.
+    await publishAgentReport(env.AGENTS, "signal-engine", {
+      kind: "platform_digest", severity: failed === series.length ? "critical" : "warning",
+      subject: `Signal ingest ${runId}: ${failed} of ${series.length} series failed`,
+      body: { run_id: runId, trigger, failed: series.filter((s) => s.status === "error").map((s) => ({ symbol: s.symbol, timeframe: s.timeframe, error: s.error ?? null })) },
+    });
+  }
   return { run_id: runId, series, failed };
 }
 

@@ -39,3 +39,12 @@ tag = "v1"
 new_sqlite_classes = ["DeploymentLock"]
 
 # Secrets are configured out-of-band in Cloudflare and are never stored in this file.
+
+# AI Kernel AgentRpc (ADR-0007 §1.1, TP-011): this Worker may act only as the agents whose
+# host_worker is cryptophys-deployment-orchestrator, at tier <= 1, through the policy-gated syscall path. The props value
+# is set here by the account owner's reviewed config; the kernel trusts it as the caller identity.
+[[services]]
+binding = "AGENTS"
+service = "cryptophys-ai-kernel"
+entrypoint = "AgentRpc"
+props = { host_worker = "cryptophys-deployment-orchestrator" }
