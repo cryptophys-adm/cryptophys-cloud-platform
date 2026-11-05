@@ -1,7 +1,7 @@
 name: Provision Cloudflare Access
 
 # Creates or updates ONE self-hosted Cloudflare Access application that protects all
-# eight platform Workers (destination type `worker`, so workers.dev, previews and the
+# the platform Workers (destination type `worker`, so workers.dev, previews and the
 # orchestrator custom domain are all covered), with exactly two policies:
 #   1. Service Auth for the CI service token (CF_ACCESS_CLIENT_ID), and
 #   2. Allow for the operator emails in the ACCESS_ALLOWED_EMAILS environment variable.
@@ -27,7 +27,7 @@ env:
   PLATFORM_WORKERS: >-
     cryptophys-platform-api cryptophys-deployment-orchestrator cryptophys-platform-registry
     cryptophys-policy-engine cryptophys-drift-detector cryptophys-audit-ledger cryptophys-recovery-manager
-    cryptophys-ai-kernel
+    cryptophys-ai-kernel cryptophys-console
 
 jobs:
   provision:
