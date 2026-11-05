@@ -7,8 +7,9 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { newId, nowIso, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 
-export const REPORT_KINDS = ["signal_digest", "audit_digest"] as const;
+export const REPORT_KINDS = ["signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest"] as const;
 export const REPORT_SEVERITIES = ["info", "warning", "critical"] as const;
+export const MAX_REPORT_BODY_BYTES = 16 * 1024;
 export type ReportKind = (typeof REPORT_KINDS)[number];
 export type ReportSeverity = (typeof REPORT_SEVERITIES)[number];
 
@@ -57,6 +58,7 @@ export async function publishReport(
   const reportId = newId("rpt");
   const createdAt = nowIso();
   const bodyJson = JSON.stringify(body);
+  if (new TextEncoder().encode(bodyJson).byteLength > MAX_REPORT_BODY_BYTES) throw new Error("report_body_too_large");
   await db.prepare(
     `INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

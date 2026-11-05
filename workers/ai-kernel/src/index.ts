@@ -78,6 +78,8 @@ export default {
         }));
       }
       if (isOperator) {
+        // Operator and CI identities always receive operator tools. Agent identity is never
+        // selected from a request header; external agents require an active registered principal.
         return await handleMcp(request, env, callerActor, await isApprover(request, env));
       }
       if (principal) {

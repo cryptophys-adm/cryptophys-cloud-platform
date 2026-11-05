@@ -3,13 +3,14 @@ import { json } from "./http.ts";
 import { accessConfigured, listConfigured } from "./access.ts";
 
 /** The newest schema migration every service requires before it reports ready. */
-export const REQUIRED_MIGRATION = "0016_platform_and_xauusd_agents.sql";
+export const REQUIRED_MIGRATION = "0017_report_kinds_xauusd_and_hud.sql";
 const REQUIRED_MIGRATIONS = [
   "0011_agent_syscall_consumptions.sql",
   "0012_agent_reports.sql",
   "0013_auditor_agent.sql",
   "0014_agent_memories.sql",
   "0015_agent_principals.sql",
+  "0016_platform_and_xauusd_agents.sql",
   REQUIRED_MIGRATION,
 ] as const;
 

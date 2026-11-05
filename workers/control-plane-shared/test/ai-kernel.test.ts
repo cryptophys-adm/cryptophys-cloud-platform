@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, fakeWorkflow, migratedDb, req,
+  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, fakeWorkflow, migratedDb, req,
 } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import { CAPABILITIES, agentSyscallChecks, verifySyscallDecision } from "../src/capabilities.ts";
@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0016_platform_and_xauusd_agents.sql");
+  assert.equal(REQUIRED_MIGRATION, "0017_report_kinds_xauusd_and_hud.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -28,8 +28,8 @@ test("readiness requires the atomic syscall-consumption migration and the newest
   assert.equal(await schemaReady({ DB: db2 } as never), false);
 });
 
-test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-assistant agents (7 active + 14 HUD)", () => {
-  const db = migratedDb();
+test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD report kinds without operator impersonation", async () => {
+  const { env, db } = kernelEnv();
   const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status FROM agents ORDER BY agent_id").all() as Array<{
     agent_id: string;
     host_worker: string;
@@ -47,6 +47,8 @@ test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-as
     assert.equal(r.status, "enabled");
     if (r.agent_id !== "supervisor") {
       assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
+      const caps = JSON.parse(r.capabilities_json) as string[];
+      assert.ok(caps.includes("reports.publish"), `${r.agent_id} must be able to publish reports`);
     }
     const caps = JSON.parse(r.capabilities_json) as string[];
     assert.ok(caps.length > 0);
@@ -54,6 +56,38 @@ test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-as
       assert.ok(Object.hasOwn(CAPABILITIES, c), `${r.agent_id} capability ${c} must exist in CAPABILITIES`);
     }
   }
+
+  // Operator and CI identities must never become an agent by supplying a caller-controlled header.
+  // External MCP sessions require a separately registered Access principal; in-account callers
+  // use AgentRpc binding props. This PR intentionally does not seed external principals.
+  for (const [label, jwt] of [["operator", OPERATOR_JWT], ["CI service token", CI_JWT]] as const) {
+    const listed = await call(
+      kernel,
+      env,
+      req("POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, jwt, { "x-cryptophys-agent-id": "recovery-manager" }),
+    );
+    assert.equal(listed.status, 200, label);
+    const names = listed.body.result.tools.map((tool: any) => tool.name);
+    assert.ok(names.includes("platform_status"), `${label} retains operator tools`);
+    assert.ok(!names.includes("agent_whoami"), `${label} cannot obtain agent tools`);
+    assert.ok(!names.includes("agent_syscall"), `${label} cannot obtain agent syscalls`);
+
+    const attempted = await call(
+      kernel,
+      env,
+      req("POST", "/mcp", {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "agent_syscall", arguments: { capability: "recovery.propose", input: {} } },
+      }, jwt, { "x-cryptophys-agent-id": "recovery-manager" }),
+    );
+    assert.equal(attempted.body.error.code, -32602, `${label} cannot call an agent syscall`);
+  }
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM recovery_plans").get() as any).n, 0,
+    "operator-supplied agent headers cannot create agent-authored recovery plans");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports").get() as any).n, 0,
+    "operator-supplied agent headers cannot publish reports");
 });
 
 function memory() {
@@ -210,6 +244,24 @@ test("syscall decision consumption is atomic under replay and rate-limit races, 
   assert.equal(results.filter(r => r.status === "fulfilled").length, CAPABILITIES["signals.reingest"].max_per_hour);
   assert.equal(results.filter(r => r.status === "rejected").length, 3 - CAPABILITIES["signals.reingest"].max_per_hour!);
   assert.equal((rateDb.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'supervisor' AND capability = 'signals.reingest'").get() as any).n, CAPABILITIES["signals.reingest"].max_per_hour);
+});
+
+test("reports.publish enforces the 16 KiB JSON body limit before inserting", async () => {
+  const { env, db } = kernelEnv();
+  const oversized = await syscall(env as never, "platform-api", "reports.publish", {
+    kind: "platform_digest",
+    severity: "info",
+    subject: "oversized report",
+    ai_status: "ok",
+    body: { payload: "x".repeat(16 * 1024) },
+  });
+  assert.equal(oversized.outcome, "failed");
+  assert.equal(oversized.reason, "report_body_too_large");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports").get() as any).n, 0);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_actions WHERE capability = 'reports.publish' AND outcome = 'failed'").get() as any).n, 1);
+  const auditRow = db.raw.prepare("SELECT input_json FROM agent_actions WHERE capability = 'reports.publish' AND outcome = 'failed'").get() as { input_json: string };
+  assert.equal(JSON.parse(auditRow.input_json).truncated, true, "oversized audit input is replaced by a valid truncation marker");
+  assert.equal((await verifyAuditChain(db)).valid, true);
 });
 
 test("denied syscalls are recorded and audited; tier 3 never dispatches", async () => {
@@ -371,4 +423,41 @@ test("Platform API gateway: readiness needs its AI, D1 and kernel bindings; over
   assert.deepEqual([advised.body.advisory.status, advised.body.advisory.data.summary], ["ok", "All services in sync."]);
   const down = await call(api, { ...apiEnv, KERNEL: { overview: async () => { throw new Error("x"); } } }, req("GET", "/v1/overview"));
   assert.equal(down.status, 503);
+});
+
+test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <= 1, through the normal syscall checks", async () => {
+  const { rpcWhoami, rpcObserve, rpcSyscall, callerHostWorker } = await import("../../ai-kernel/src/agent-rpc.ts");
+  const { env, db } = kernelEnv();
+  const xau = { host_worker: "xauusd-ai-trading-assistant" };
+  const api = { host_worker: "cryptophys-platform-api" };
+
+  // The caller identity comes only from binding props; missing or malformed props are refused.
+  assert.equal(callerHostWorker(undefined), null);
+  assert.equal(callerHostWorker({ host_worker: "Bad Name!" }), null);
+  assert.deepEqual(await rpcWhoami(env as never, undefined, "xauusd-analyst"), { error: "caller_identity_missing" });
+
+  const me = await rpcWhoami(env as never, xau, "hud-prophet");
+  assert.equal(me.agent_id, "hud-prophet");
+  assert.equal(me.access_identity, "rpc:xauusd-ai-trading-assistant");
+
+  // A Worker cannot impersonate another Worker's agent, nor the tier 2 supervisor.
+  assert.deepEqual(await rpcWhoami(env as never, api, "xauusd-analyst"), { error: "agent_not_hosted_by_caller" });
+  assert.equal((await rpcSyscall(env as never, xau, "platform-api", "platform.observe", {})).reason, "agent_not_hosted_by_caller");
+  assert.equal((await rpcSyscall(env as never, { host_worker: "cryptophys-ai-kernel" }, "supervisor", "platform.observe", {})).reason, "external_tier_limit");
+  assert.equal((await rpcWhoami(env as never, xau, "nope")).error, "agent_not_registered");
+
+  // observe is tier 0 only; a granted tier 0 read goes through (tier 0 reads are not ledgered).
+  assert.equal((await rpcObserve(env as never, api, "platform-api", "recovery.propose", {})).reason, "agent_observe_requires_tier_0");
+  const ok = await rpcObserve(env as never, api, "platform-api", "platform.observe", {});
+  assert.equal(ok.outcome, "succeeded");
+  const published = await rpcSyscall(env as never, api, "platform-api", "reports.publish", {
+    kind: "platform_digest", severity: "info", subject: "Platform API test digest",
+    ai_status: "ok", body: { summary: "bounded report path" },
+  });
+  assert.equal(published.outcome, "succeeded");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = 'platform-api' AND kind = 'platform_digest'").get() as any).n, 1);
+  // An ungranted capability is still denied by the normal syscall checks, and that is ledgered.
+  assert.equal((await rpcSyscall(env as never, api, "platform-api", "recovery.propose", {})).outcome, "denied");
+  const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY created_at").all() as Array<{ outcome: string }>;
+  assert.deepEqual(rows.map((r) => r.outcome), ["succeeded", "denied"]);
 });

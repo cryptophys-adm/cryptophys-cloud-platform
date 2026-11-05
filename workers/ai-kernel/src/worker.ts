@@ -8,7 +8,8 @@ import { runAuditCycle, AuditorCycleQueue } from "./auditor.ts";
 import { runSignalCycle, SignalAnalystCycleQueue } from "./signal-analyst.ts";
 import { runCycle, SerialCycleQueue, type CycleReport } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
-import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
+import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
+import { healthBody, type HealthBody, type JsonObject } from "../../control-plane-shared/src/http.ts";
 
 export default worker;
 
@@ -22,6 +23,25 @@ export class HealthRpc extends WorkerEntrypoint<Env> {
 export class KernelRpc extends WorkerEntrypoint<Env> {
   async overview() {
     return observe(this.env);
+  }
+}
+
+/**
+ * In-account agent RPC (TP-011, no service token). The caller's Worker name is pinned in its
+ * Service Binding (`props = { host_worker = "..." }`); it may act only as agents it hosts, tier_max <= 1.
+ */
+export class AgentRpc extends WorkerEntrypoint<Env> {
+  private get props(): unknown {
+    return (this.ctx as { props?: unknown } | undefined)?.props;
+  }
+  async whoami(agentId: string): Promise<JsonObject> {
+    return rpcWhoami(this.env, this.props, agentId);
+  }
+  async observe(agentId: string, capability: string, input: JsonObject = {}): Promise<JsonObject> {
+    return rpcObserve(this.env, this.props, agentId, capability, input);
+  }
+  async syscall(agentId: string, capability: string, input: JsonObject = {}): Promise<JsonObject> {
+    return rpcSyscall(this.env, this.props, agentId, capability, input);
   }
 }
 

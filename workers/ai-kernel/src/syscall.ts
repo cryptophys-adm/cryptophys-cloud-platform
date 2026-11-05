@@ -183,12 +183,21 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
   }
 }
 
+const MAX_AUDIT_JSON_BYTES = 8_000;
+
+/** Keep the JSON CHECK valid and avoid persisting partial/possibly sensitive oversized payloads. */
+function auditJson(value: JsonObject): string {
+  const serialized = JSON.stringify(value);
+  const bytes = new TextEncoder().encode(serialized).byteLength;
+  return bytes <= MAX_AUDIT_JSON_BYTES ? serialized : JSON.stringify({ truncated: true, original_bytes: bytes });
+}
+
 async function record(env: SyscallEnv, agentId: string, capability: string, tier: number, decisionId: string | null, outcome: string, input: JsonObject, result: JsonObject): Promise<string> {
   const actionId = newId("act");
   await env.DB.prepare(
     `INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(actionId, agentId, capability, tier, decisionId, outcome, JSON.stringify(input).slice(0, 8000), JSON.stringify(result).slice(0, 8000), nowIso()).run();
+  ).bind(actionId, agentId, capability, tier, decisionId, outcome, auditJson(input), auditJson(result), nowIso()).run();
   await appendAuditEvent(env.DB, {
     event_type: "agent.action", actor: `agent:${agentId}`, subject: capability, outcome,
     payload: { action_id: actionId, tier, decision_id: decisionId, result },

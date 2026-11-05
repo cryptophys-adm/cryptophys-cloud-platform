@@ -31,7 +31,7 @@ Durable state lives only in D1 `cryptophys-control-plane` (owner `cryptophys-adm
 - Restore verification: after any restore, run `GET /v1/verify` on the Audit Ledger and a drift observation, and record the restore as a new audit event.
 - Recovery plans for each service are stored in the Recovery Manager and need a second person to approve.
 
-## Registered platform and XAUUSD AI agents (ADR-0007, TP-009, 0016)
+## Registered platform and XAUUSD AI agents (ADR-0007, TP-009, 0016, 0017)
 
 There are no third-party or IDE external agents. The AI Worker OS process table (`agents`) registers only:
 
@@ -42,14 +42,28 @@ There are no third-party or IDE external agents. The AI Worker OS process table 
    - Active H1 synthesis chain (`xauusd-analyst`, `xauusd-counselor`, `xauusd-reasoner`) and multi-agent bus / news threads / live 15m room (`xauusd-technical-analyst`, `xauusd-news-analyst`, `xauusd-risk-manager`, `xauusd-moderator`).
    - 14 Pine HUD agents (`hud-r37-funnel`, `hud-prophet`, `hud-trade-management`, `hud-interstellar-eyes`, `hud-kinetic-engine-tva`, `hud-fabio-amt-sensors`, `hud-chronos-matrix`, `hud-aegis-footprint-matrix`, `hud-tactical-muscles`, `hud-macro-aether-sensors`, `hud-gabfx-price-action`, `hud-playbook-execution`, `hud-decision-matrix`, `hud-grid-bot-protocol`).
 
-If a cross-deployment Worker agent reaches the AI Kernel's MCP endpoint `POST /mcp` over Cloudflare Access rather than an in-account binding:
+The D1 process table contains 31 registered and enabled `tier_max = 1` rows: 2 AI Kernel agents (`signal-analyst` and `auditor`), 8 per-Worker platform agents, and 21 XAUUSD/HUD agents. The `supervisor` is the 32nd registered row at tier 2. **A row being enabled does not mean that its host Worker is already wired to invoke it.** This TP-011 change adds the `AgentRpc` entrypoint and report kinds in migration `0017`; it deliberately does not add caller Worker bindings or seed external principals. Until a follow-up reviewed change adds and deploys each caller binding after the AI Kernel exposes `AgentRpc`, those host Workers cannot invoke the in-account RPC. No external MCP agent can invoke the kernel until an owner-created Access identity is explicitly registered in `agent_principals`.
 
-1. **Owner: create the service token (only if cross-HTTP MCP binding is used).** In Cloudflare Zero Trust, go to Access → Service credentials → Service tokens → Create.
-   - Name it `cryptophys-agent-<agent-id>`; the prefix matters.
-   - Give the **Client Secret only to the Worker's configuration**. Never paste it in git, an issue, a PR or a chat.
-   - Send the orchestrator the **Client ID**. A Client ID is an identifier, not a secret.
-2. **Orchestrator: Provision Access.** Run the Provision Access workflow. It adds every `cryptophys-agent-*` token to the policy `external-agents` (`non_identity`). Access then admits the token, but the Workers still refuse it on `/v1` because it is not in `OPERATOR_IDENTITIES`.
-3. **Bind the principal:** an approver binds `agent_principals.access_identity = Client ID` to the registered `agent_id` (`tier_max` ≤ 1).
-4. **The agent connects.** It sends `POST https://cryptophys-ai-kernel.<subdomain>.workers.dev/mcp` with the headers `CF-Access-Client-Id` and `CF-Access-Client-Secret`. `tools/list` shows only `agent_whoami`, `agent_observe` and `agent_syscall`.
+- **In-account RPC Service Binding (no token):** A caller Worker may bind to `cryptophys-ai-kernel` with `entrypoint = "AgentRpc"`. The binding must set `props = { host_worker = "<exact caller Worker name>" }`. The caller may invoke only D1 agents whose `host_worker` exactly matches that property and whose `tier_max <= 1`. Normal grants, suspension, kill switch, rate limit and Policy Engine checks still apply. Example for a future, separately reviewed caller-binding change:
+
+  ```toml
+  [[services]]
+  binding = "AGENTS"
+  service = "cryptophys-ai-kernel"
+  entrypoint = "AgentRpc"
+  props = { host_worker = "xauusd-ai-trading-assistant" }
+  ```
+
+  ```ts
+  await env.AGENTS.syscall("xauusd-analyst", "reports.publish", {
+    kind: "xauusd_digest", severity: "info", subject: "H1 digest",
+    ai_status: "ok", body: { summary: "..." }
+  });
+  ```
+
+- **Trust boundary:** `host_worker` comes from the caller Worker's deployed Service Binding configuration, not from an HTTP request. The trust boundary is the Cloudflare account and the identities permitted to change/deploy that caller configuration. An actor with that deployment authority can change the asserted property; this is not protection against a malicious account deployer. The kernel checks the exact host match and tier limit before the normal syscall gate.
+- **Agent reports:** `reports.publish` stores UTF-8 JSON bodies up to 16 KiB per report; oversized bodies fail closed and are audited as failed syscalls.
+- **MCP:** Operator and CI Access identities always receive operator tools. No request header can select an agent. A non-operator Access identity receives agent tools only when its exact Access identity has an active `agent_principals` row for a tier-`<=1` agent.
+- **External service tokens:** Credential creation is an owner action in Cloudflare Zero Trust. The owner must securely retain the one-time `client_secret`, then have an approver register the token's Access identity through `POST /v1/agents/{id}/principals`. Do not generate credentials from repository scripts, and never print, commit or log the secret.
 
 **Revocation.** An approver can revoke a principal with `DELETE /v1/agents/{id}/principals/{client_id}`. Deleting the service token in Zero Trust and re-running Provision Access removes it at the edge.
