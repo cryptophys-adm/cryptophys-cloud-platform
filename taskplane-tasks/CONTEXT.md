@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-11-05
 **Status:** Active
-**Next Task ID:** TP-020 (reserved: fix AI drafts from TP-016 data, if the Auditor digest still fails)
+**Next Task ID:** TP-022 (TP-020 reserved: fix AI drafts from TP-016 data, if the Auditor digest still fails)
 **Roles:** orchestrator and validator = Claude (cloud session); code worker = pi agent on the VPS with Reflection's `beam` model from TP-012 (see `PI.md`; Antigravity did TP-006 to TP-009 and is out of quota); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
 
 ---
@@ -28,6 +28,8 @@ The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its l
 ## Owner decisions (2026-11-05)
 
 - **The signal role moves to XAUUSD.** The Signal Analyst reads `xauusd-ai-trading-assistant` decisions (TP-017), and the crypto Signal Engine (BTC/ETH/SOL) is retired (TP-018). The platform never changes the xauusd repository; it reads that repository's read-only API through an in-account Service Binding.
+
+- **Data retention (TP-021).** Keep `drift_observations` for 90 days, always keeping the 2 newest per service. Keep `agent_syscall_consumptions` for 7 days. Never delete audit events, policy decisions, reports, plans, deployment requests, the registry or crypto history.
 
 ## Hard rules for the worker (apply to every task)
 
