@@ -1,10 +1,10 @@
 # Control Plane Deployment Runbook
 
-Deploys `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager` and `cryptophys-drift-detector` from one reviewed `main` commit with `.github/workflows/deploy-control-plane.yml`.
+Deploys six Workers from one reviewed `main` commit with `.github/workflows/deploy-control-plane.yml`: `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-platform-registry`, `cryptophys-recovery-manager`, `cryptophys-ai-kernel` and `cryptophys-drift-detector`. The Deployment Orchestrator and Platform API use separate workflows. The crypto Signal Engine is retired and excluded from the deploy order.
 
 ## One-time configuration
 
-### Cloudflare Access (all seven Workers sit behind it)
+### Cloudflare Access (eight active Workers plus the retired Signal Engine until deletion)
 
 1. **Zero Trust → Access → Service credentials → Service tokens:** create a token named `cryptophys-ci` and copy its Client ID and Client Secret (the secret is shown once).
 2. **API token** `CLOUDFLARE_ACCESS_API_TOKEN` (account-scoped): *Access: Apps and Policies Edit*, *Access: Service Tokens Read*, *Access: Organizations, Identity Providers, and Groups Read*, *Workers Scripts Read*, and *D1 Edit* (used for the D1 steps of the deploy workflows).
@@ -32,7 +32,7 @@ The retired secrets are removed from the Workers by the deploy workflows (`ADMIN
 
 ## Deploy
 
-A **new** platform Worker (for example `cryptophys-signal-engine`) first needs **Provision Cloudflare Access**: it creates the Worker as a private 503 stub with workers.dev disabled, then adds it to the Access application, so the Worker is protected before its first real deploy.
+A **new active** platform Worker first needs **Provision Cloudflare Access**: it creates the Worker as a private 503 stub with workers.dev disabled, then adds it to the Access application, so the Worker is protected before its first real deploy. The retired `cryptophys-signal-engine` remains in the Access destinations while its legacy Worker is still deployed; do not remove that destination until owner-authorized deletion or workers.dev is disabled.
 
 Order for a fresh commit (after Access is provisioned once): **Deploy Control Plane** (applies D1 migrations) → **Deploy Production Deployment Orchestrator** (refuses to deploy while `0003` is unapplied) → **Request Platform API Deployment**.
 
@@ -49,7 +49,7 @@ The job then, failing closed at every step:
 4. records a D1 Time Travel bookmark (shown in the job summary) as the restore point;
 5. applies pending D1 migrations;
 6. removes the retired shared tokens, deploys each Worker in dependency order with `--tag <sha12>` and its identity lists, proves no retired token is bound, then verifies the active version is that commit and `/health` + `/ready` pass over workers.dev;
-7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all seven Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI. It then verifies the recovery lifecycle Workflow end to end (ADR-0006): as an operator (never an approver) it creates a verification plan, requires its `cryptophys-recovery-lifecycle` instance to be running or waiting in the Cloudflare API, disables the plan and requires the instance to be terminated. Nothing is approved or executed.
+7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all eight active Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI. It then verifies the recovery lifecycle Workflow end to end (ADR-0006): as an operator (never an approver) it creates a verification plan, requires its `cryptophys-recovery-lifecycle` instance to be running or waiting in the Cloudflare API, disables the plan and requires the instance to be terminated. Nothing is approved or executed.
 
 ## Rollback
 
