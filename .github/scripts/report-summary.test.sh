@@ -30,6 +30,8 @@ out2="$("$here/report-summary.sh" "$tmp/crit.json")"
 md="$(jq -r .markdown <<<"$out2")"
 if [[ "$(jq -r .state <<<"$out2")" == "critical" && "$(jq -r .critical <<<"$out2")" == "2" ]]; then pass "critical -> critical state"; else bad "critical -> critical state"; fi
 rows="$(grep '^| 2026' <<<"$md" || true)"
+echo "DEBUG v2 markdown: [$md]"
+echo "DEBUG v2 rows: [$rows]"
 if [[ "$(grep -c "^| 2026" <<<"$rows")" == "2" && "$(head -1 <<<"$rows")" == *recovery-manager* ]]; then pass "only allow-listed metadata, newest first"; else bad "only allow-listed metadata, newest first"; fi
 if grep -Eq 'UNTRUSTED_SECRET_MARKER|SECOND_SECRET_MARKER|@cryptophys-adm|evil.invalid|rpt_[ab]' <<<"$md"; then bad "untrusted subjects and report ids never leave the kernel"; else pass "untrusted subjects and report ids never leave the kernel"; fi
 if [[ "$(jq -r .fingerprint <<<"$out2" | grep -Ec '^[0-9a-f]{64}$')" == "1" ]]; then pass "v2 fingerprint is a full SHA-256"; else bad "v2 fingerprint is a full SHA-256"; fi
@@ -47,6 +49,7 @@ cat > "$tmp/legacy.json" <<'J'
 J
 legacy="$("$here/report-summary.sh" "$tmp/legacy.json")"
 legacy_md="$(jq -r .markdown <<<"$legacy")"
+echo "DEBUG legacy markdown: [$legacy_md]"
 if [[ "$(jq -r .state <<<"$legacy")" == "critical" && "$(grep -c '^| 2026' <<<"$legacy_md")" == "2" ]]; then pass "legacy kernel retains critical alerting"; else bad "legacy kernel retains critical alerting"; fi
 if grep -Eq 'LEGACY_SECRET_MARKER|LEGACY_SECOND_SECRET|WARNING_SECRET|rpt_legacy' <<<"$legacy_md"; then bad "legacy alert also withholds subjects and ids"; else pass "legacy alert also withholds subjects and ids"; fi
 
