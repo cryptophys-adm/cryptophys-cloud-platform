@@ -105,3 +105,33 @@ dry-run exit=0
 ## Open questions
 
 - The §4 request bodies were used as given; the target Workers' source was not read. Not done here: a rendered-browser check at desktop and 360 px widths (the PROMPT lists it as an orchestrator step after merge).
+
+## Owner-requested corrections and follow-up validation (2026-11-06)
+
+The owner requested five corrections in PR comment #6665811379. They are implemented on this branch:
+
+1. **Safe path identifiers:** after validating the full identifier against SAFE, call() now inserts it unchanged rather than percent-encoding it. Regression test 9 sends a DELETE request with ops@cryptophys.work:svc+1 through the Console Worker and verifies the recording Service Binding receives the exact unencoded path.
+2. **Mission Control overview:** reads the actual observe() shape:
+   - services for drift count and service IDs, marking persistent drift;
+   - open_agent_plans for the count and #/recovery/<plan_id> links;
+   - agent_reports_24h.counts and latest_critical, shown as count plus agent/kind/time rows;
+   - only decision, confidence, candle_key, and decided_at from xauusd_latest; an error is displayed as unavailable.
+3. **Approval wording:** now says, “Approval is recorded under your identity. You cannot approve a plan you authored.” Any eligible operator may start the execution after a different person approves.
+4. **Input limits:** added maxLength to PLAIN_PROPS, so the declared limits are applied to DOM controls.
+5. **Audit export:** object URL revocation is deferred with setTimeout(..., 0) until after the click task.
+
+The follow-up also adds tests 9–12 for the path-forwarding fix, the observe() field contract, maxLength and separation-of-duties copy, and deferred object-URL revocation.
+
+### Validation observed on code head 4230c4469bbc113e3b5ddb923de91ab001fa04e8
+
+- Validate run #42084745936: SUCCESS, all 3 jobs.
+- Validate Control Plane Workers #42084745943: SUCCESS.
+- npm run typecheck: PASS.
+- npm test: 165 passed, 0 failed, 0 cancelled, 0 skipped, 0 todo.
+- Migration tests: PASS (initial schema, forward migration, data preservation, indexes, CHECK constraints, foreign keys, service-scoped idempotency, fail-closed rollback).
+- Dry-run bundles: all 7 platform Workers, including Console, completed successfully without credentials. Console bundle: 60.80 KiB (17.24 KiB gzip).
+- The first attempt at commit 80015204 failed TypeScript parsing in the new test regexes; those assertions were corrected in 4230c446, and the final validation above passed.
+
+### Remaining verification
+
+The owner’s Chromium render at 1280 px and 360 px was performed on the pre-correction head. A rendered-browser recheck after these five fixes has not yet been run. No production workflow was dispatched and nothing was deployed by this follow-up.
