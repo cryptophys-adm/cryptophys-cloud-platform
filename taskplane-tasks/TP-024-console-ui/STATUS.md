@@ -196,3 +196,28 @@ Added test 13, which checks that the served client includes the focusable-contro
 - No production workflow was dispatched and nothing was deployed.
 
 The STATUS.md update itself will be revalidated on the resulting commit before the PR is reported as current-head green.
+
+
+## Follow-up audit — remove the extra Observe-now timer (2026-11-06)
+
+A contract review against `PROMPT.md` §1.6 found that the 30-second `OBSERVE_LOCK_MS` timeout was an extra timer beyond the specified 60-second, visible-tab-only Mission Control refresh. It was unnecessary and could re-enable the button while the observation request was still pending.
+
+Correction on the PR branch:
+- Removed `OBSERVE_LOCK_MS`.
+- The Observe now button is disabled while the `drift.observe` action promise is pending and is re-enabled in `finally()`, including after the action's handled error path.
+- Added regression test 14 to assert the request-scoped lock and absence of the old timer.
+- The only periodic timer remains the 60-second Mission Control refresh, guarded by `document.visibilityState === "visible"`.
+- The one-shot `setTimeout(..., 0)` for `URL.revokeObjectURL` remains because the owner explicitly requested deferred revocation after the download click; it is not polling or an interaction lock.
+
+### Validation on current code head `40e74aea6b33761a051295c3e362aaecb3557dcd`
+
+- Validate run #42110975262: SUCCESS (3/3 jobs).
+- Validate Control Plane Workers run #42110974751: SUCCESS.
+- Type-check: PASS.
+- Control Plane tests: 167 passed, 0 failed, 0 cancelled, 0 skipped, 0 todo.
+- Test 14, request-scoped Observe lock: PASS.
+- Migration tests: PASS.
+- All 8 Worker dry-run bundles: PASS; Console 61.34 KiB (17.40 KiB gzip).
+- No production workflow was dispatched and nothing was deployed.
+
+The current head was revalidated after the two source/test commits. The STATUS.md update is a separate documentation-only commit and will be revalidated before this PR is reported as current-head green.
