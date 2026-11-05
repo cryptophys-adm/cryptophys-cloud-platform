@@ -18,8 +18,8 @@ summary="$(jq -c '
     });
   def render($n; $since; $rows; $legacy):
     if $n == 0 then "No critical agent report in the last 24 hours (since \($since))."
-    elif ($rows | length) == 0 then "Critical report(s) exist since $($since), but metadata is unavailable from the pre-upgrade kernel. Subjects and bodies are withheld."
-    else "\($n) critical report(s) since $($since). Newest (up to 5; subjects withheld):\n\n| Time (UTC) | Agent | Kind |\n| --- | --- | --- |\n"
+    elif ($rows | length) == 0 then "Critical report(s) exist since \($since), but metadata is unavailable from the pre-upgrade kernel. Subjects and bodies are withheld."
+    else "\($n) critical report(s) since \($since). Newest (up to 5; subjects withheld):\n\n| Time (UTC) | Agent | Kind |\n| --- | --- | --- |\n"
       + ($rows | map("| \(.time) | \(.agent) | \(.kind) |") | join("\n"))
     end;
   (.agent_reports_24h // error("status has no agent_reports_24h")) as $r
