@@ -80,12 +80,39 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     agentReports24h = { since, counts: { critical: 0, warning: 0, info: 0 }, latest_attention: [], error: "reports_unavailable" };
   }
 
+  // xauusd_latest
+  let xauusdLatest: JsonObject | null | { error: string } = null;
+  try {
+    const row = await env.DB.prepare(
+      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND json_extract(body_json, '$.decision') IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    ).first<{ report_id: string; created_at: string; body_json: string }>();
+    if (row) {
+      let body: any = {};
+      try { body = JSON.parse(row.body_json); } catch { body = {}; }
+      const decisionRaw = body?.decision;
+      const decision = ["BUY","SELL","WAIT","NO_TRADE"].includes(decisionRaw) ? decisionRaw : "UNKNOWN";
+      const conf = typeof body?.confidence === "number" && body.confidence >= 0 && body.confidence <= 1 ? body.confidence : null;
+      xauusdLatest = {
+        report_id: row.report_id,
+        reported_at: row.created_at,
+        candle_key: String(body?.candle_key ?? "").slice(0, 60),
+        decision,
+        confidence: conf,
+        decided_at: String(body?.decided_at ?? "").slice(0, 60),
+      };
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "xauusd_latest_unavailable", message: String((err as Error)?.message ?? err) }));
+    xauusdLatest = { error: "xauusd_latest_unavailable" };
+  }
+
   return {
     observed_at: new Date(now).toISOString(),
     services,
     open_agent_plans: plans.results,
     agents_enabled: await agentsEnabled(env.DB),
     agent_reports_24h: agentReports24h,
+    xauusd_latest: xauusdLatest,
   };
 }
 
