@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-11-05
 **Status:** Active
-**Next Task ID:** TP-025 (TP-023 Console Worker deployed; TP-024 Console UI is open; TP-020 reserved: fix AI drafts from TP-016 data, if the Auditor digest still fails)
+**Next Task ID:** TP-026 (TP-023 Console Worker and TP-024 Console UI deployed; TP-025 Cerebrum home is open; TP-020 reserved: fix AI drafts from TP-016 data, if the Auditor digest still fails)
 **Roles:** orchestrator and validator = Claude (cloud session); code worker = pi agent on the VPS with Reflection's `beam` model from TP-012 (see `PI.md`; Antigravity did TP-006 to TP-009 and is out of quota); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
 
 ---
