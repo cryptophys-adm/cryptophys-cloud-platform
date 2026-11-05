@@ -458,6 +458,6 @@ test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <=
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = 'platform-api' AND kind = 'platform_digest'").get() as any).n, 1);
   // An ungranted capability is still denied by the normal syscall checks, and that is ledgered.
   assert.equal((await rpcSyscall(env as never, api, "platform-api", "recovery.propose", {})).outcome, "denied");
-  const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY created_at").all() as Array<{ outcome: string }>;
+  const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY rowid").all() as Array<{ outcome: string }>;
   assert.deepEqual(rows.map((r) => r.outcome), ["succeeded", "denied"]);
 });

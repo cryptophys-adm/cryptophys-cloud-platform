@@ -284,7 +284,7 @@ test("recovery plans need a different approver and a policy allow before executi
 
   const trail = db.raw.prepare("SELECT event_type FROM audit_events WHERE subject = ? AND event_type LIKE 'recovery.%' ORDER BY rowid").all(id).map((r: any) => r.event_type);
   assert.deepEqual(trail, ["recovery.plan_created", "recovery.plan_approved", "recovery.execution_started", "recovery.execution_finished"]);
-  const decisions = db.raw.prepare("SELECT decision FROM policy_decisions WHERE resource = ? ORDER BY created_at").all(id).map((r: any) => r.decision);
+  const decisions = db.raw.prepare("SELECT decision FROM policy_decisions WHERE resource = ? ORDER BY rowid").all(id).map((r: any) => r.decision);
   assert.deepEqual(decisions, ["deny", "deny", "allow"]);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
