@@ -221,5 +221,5 @@ test("TP-017 schedule", async () => {
   const fs = await import("node:fs");
   const src = fs.readFileSync(new URL("../../ai-kernel/src/index.ts", import.meta.url), "utf8");
   assert.match(src, /minute === 22/);
-  assert.doesNotMatch(src, /minute === 7/);
+  assert.match(src, /if \(minute === 22 && env\.SIGNAL_ANALYST\)/);
 });

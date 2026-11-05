@@ -38,6 +38,9 @@ export interface Env extends BaseEnv {
 
 const SERVICE = "cryptophys-drift-detector";
 const PROBE_TIMEOUT_MS = 5000;
+export const DRIFT_RETENTION_DAYS = 90;
+const RETENTION_BATCH = 2000;
+const RETENTION_MAX_BATCHES = 5;
 
 /** Observation targets: service_id -> service binding (the detector observes itself directly). */
 export function targets(env: Env): Record<string, HealthRpcBinding | undefined> {
@@ -294,9 +297,45 @@ export default {
     }
   },
 
-  async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+  async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
     ctx.waitUntil(observe(env, "scheduled", SERVICE).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "scheduled_observation_failed", message: String((err as Error)?.message ?? err) }));
     }));
+    const d = new Date(event.scheduledTime);
+    if (d.getUTCHours() === 3 && d.getUTCMinutes() === 0) {
+      ctx.waitUntil(pruneDriftObservations(env, event.scheduledTime).then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "drift_retention_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
   },
 };
+
+
+export async function pruneDriftObservations(env: Env, now = Date.now()): Promise<{ deleted: number; cutoff: string; batches: number }> {
+  const cutoff = new Date(now - DRIFT_RETENTION_DAYS * 86_400_000).toISOString();
+  let deleted = 0;
+  let batches = 0;
+  for (let i = 0; i < RETENTION_MAX_BATCHES; i++) {
+    const res = await env.DB.prepare(
+      `DELETE FROM drift_observations WHERE observation_id IN (
+         SELECT o.observation_id FROM drift_observations o
+         WHERE o.observed_at < ?
+           AND (SELECT COUNT(*) FROM drift_observations i WHERE i.service_id = o.service_id AND i.observed_at > o.observed_at) >= 2
+         ORDER BY o.observed_at LIMIT ?)`,
+    ).bind(cutoff, RETENTION_BATCH).run();
+    const n = res.meta.changes ?? 0;
+    deleted += n;
+    batches++;
+    if (n < RETENTION_BATCH) break;
+  }
+  if (deleted > 0) {
+    await appendAuditEvent(env.DB, {
+      event_type: "maintenance.retention",
+      actor: "cryptophys-drift-detector",
+      subject: "drift_observations",
+      outcome: "deleted",
+      payload: { deleted, cutoff, retention_days: 90, keep_newest_per_service: 2, decision: "owner 2026-11-05" },
+    });
+  }
+  return { deleted, cutoff, batches };
+}
