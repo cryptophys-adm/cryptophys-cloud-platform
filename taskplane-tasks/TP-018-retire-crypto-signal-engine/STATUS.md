@@ -1,8 +1,8 @@
 # TP-018 status
 
-State: blocked — validation workflow sequencing and repository governance.
+State: blocked — waiting for prerequisite PR #109, independent review, and repository governance.
 
-Current branch head: `710546c4dd09ce6222ac7866b8f5a4d215ecbbd7`.
+Current branch head: `be7b557f5a104c656d5cbac71e7ba75e69dfb6d9` (the next docs-only status commit will trigger another validation run).
 
 ## Latest GitHub Actions evidence
 
@@ -40,9 +40,9 @@ Current branch head: `710546c4dd09ce6222ac7866b8f5a4d215ecbbd7`.
 
 ## External blockers
 
-1. Owner/orchestrator must land a separate validation-only workflow change removing the retired Signal Engine from the Control Plane dry-run bundle matrix. TP-018 explicitly forbids editing `.github/*`; this PR does not bypass that constraint.
-2. Keep production deployment order, Access provisioning, and drift inventory unchanged until the post-merge orchestration change is ready. No production deployment is authorized by this task.
-3. Repository `main` is currently unprotected and the repository has no visible rulesets. Independent approval and required-check enforcement are not established; do not merge on the basis of CI alone.
+1. Orchestrator prerequisite PR #109 is OPEN at head `f4258648e5d182c28086eb762779aa1512c96e3a`. Its Validate workflow is 3/3 SUCCESS; Control Plane validation is SUCCESS with 137/137 tests, migration tests, and all 7 remaining Worker dry-run bundles passing. Merge #109 first, then refresh #108 against the new main and rerun all checks.
+2. PR #109 removes Signal Engine from the validation matrix and future `DEPLOY_ORDER`/`EXPECTED_WORKERS`, but deliberately leaves `provision-access.yml` and `drift-summary.sh` unchanged until owner-confirmed Worker deletion. No production deployment is authorized by either PR.
+3. Repository `main` is currently unprotected and the repository has no visible rulesets. Required-check enforcement and independent approval are not established; do not merge on the basis of CI alone.
 4. Independent security review and external check suites remain outstanding.
 
 ## Data and safety
