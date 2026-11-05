@@ -189,7 +189,21 @@ function confirmModal(o) {
   }
   input.addEventListener("input", function () { ok.disabled = input.value !== o.phrase; });
   ok.addEventListener("click", function () { if (input.value === o.phrase) { close(); o.run(); } });
-  overlay.addEventListener("keydown", function (ev) { if (ev.key === "Escape") close(); });
+  overlay.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") { close(); return; }
+    if (ev.key !== "Tab") return;
+    var focusable = modal.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])");
+    if (!focusable.length) { ev.preventDefault(); return; }
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+    if (ev.shiftKey && document.activeElement === first) {
+      ev.preventDefault();
+      last.focus();
+    } else if (!ev.shiftKey && document.activeElement === last) {
+      ev.preventDefault();
+      first.focus();
+    }
+  });
   var modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "confirm-title" }, [
     el("h2", { id: "confirm-title", text: o.title }),
   ].concat((o.lines || []).map(function (l) { return el("p", { text: l }); })).concat([

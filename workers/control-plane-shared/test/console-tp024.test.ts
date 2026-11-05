@@ -241,3 +241,15 @@ test("12. audit export defers object URL revocation until after the click task",
   const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
   assert.match(js.text, /setTimeout\(function \(\) \{ URL\.revokeObjectURL\(url\); \}, 0\)/);
 });
+
+
+test("13. confirmation dialog traps Tab focus and wraps in both directions", async () => {
+  const env = consoleEnv();
+  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
+  assert.ok(js.text.includes("modal.querySelectorAll("));
+  assert.ok(js.text.includes("if (ev.key !== \"Tab\") return;"));
+  assert.ok(js.text.includes("ev.shiftKey && document.activeElement === first"));
+  assert.ok(js.text.includes("!ev.shiftKey && document.activeElement === last"));
+  assert.ok(js.text.includes("last.focus()"));
+  assert.ok(js.text.includes("first.focus()"));
+});
