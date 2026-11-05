@@ -269,6 +269,10 @@ jobs:
           printf '%s' "$cycle" | jq '{trigger, skipped, findings}'
           printf '%s' "$cycle" | jq -e '.trigger == "operator" and (.skipped | not) and ([.actions[] | select(.capability == "platform.observe" and .outcome == "succeeded")] | length == 1)' >/dev/null \
             || { echo "::error::Supervisor cycle did not complete an observation"; exit 1; }
-          echo "AI kernel verified: MCP, agent registry and a supervisor cycle."
+          # TP-015: the observation carries a bounded 24 h agent report summary (counts only are printed).
+          api GET "${kernel}/v1/status" | jq -e '.agent_reports_24h | (.counts | has("critical") and has("warning") and has("info")) and (.latest_attention | type == "array" and length <= 5) and (has("error") | not)' >/dev/null \
+            || { echo "::error::Kernel observation lacks a healthy agent_reports_24h summary"; exit 1; }
+          api GET "${kernel}/v1/status" | jq -c '{agent_reports_24h: {since: .agent_reports_24h.since, counts: .agent_reports_24h.counts}}'
+          echo "AI kernel verified: MCP, agent registry, a supervisor cycle and the report summary."
           echo "Control plane ${tag} deployed, registered, observed in sync, audited and policy-verified."
           echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
