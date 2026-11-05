@@ -246,6 +246,22 @@ test("syscall decision consumption is atomic under replay and rate-limit races, 
   assert.equal((rateDb.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'supervisor' AND capability = 'signals.reingest'").get() as any).n, CAPABILITIES["signals.reingest"].max_per_hour);
 });
 
+test("reports.publish enforces the 16 KiB JSON body limit before inserting", async () => {
+  const { env, db } = kernelEnv();
+  const oversized = await syscall(env as never, "platform-api", "reports.publish", {
+    kind: "platform_digest",
+    severity: "info",
+    subject: "oversized report",
+    ai_status: "ok",
+    body: { payload: "x".repeat(16 * 1024) },
+  });
+  assert.equal(oversized.outcome, "failed");
+  assert.equal(oversized.reason, "report_body_too_large");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports").get() as any).n, 0);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_actions WHERE capability = 'reports.publish' AND outcome = 'failed'").get() as any).n, 1);
+  assert.equal((await verifyAuditChain(db)).valid, true);
+});
+
 test("denied syscalls are recorded and audited; tier 3 never dispatches", async () => {
   const { env, db } = kernelEnv();
   const r = await syscall(env as never, "supervisor", "deploy.release", { commit: "x" });
@@ -432,6 +448,12 @@ test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <=
   assert.equal((await rpcObserve(env as never, api, "platform-api", "recovery.propose", {})).reason, "agent_observe_requires_tier_0");
   const ok = await rpcObserve(env as never, api, "platform-api", "platform.observe", {});
   assert.equal(ok.outcome, "succeeded");
+  const published = await rpcSyscall(env as never, api, "platform-api", "reports.publish", {
+    kind: "platform_digest", severity: "info", subject: "Platform API test digest",
+    ai_status: "ok", body: { summary: "bounded report path" },
+  });
+  assert.equal(published.outcome, "succeeded");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = 'platform-api' AND kind = 'platform_digest'").get() as any).n, 1);
   // An ungranted capability is still denied by the normal syscall checks, and that is ledgered.
   assert.equal((await rpcSyscall(env as never, api, "platform-api", "recovery.propose", {})).outcome, "denied");
   const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY created_at").all() as Array<{ outcome: string }>;
