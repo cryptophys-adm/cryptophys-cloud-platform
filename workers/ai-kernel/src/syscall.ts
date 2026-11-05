@@ -58,12 +58,39 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   const plans = await env.DB.prepare(
     "SELECT plan_id, service_id, status, created_by, created_at FROM recovery_plans WHERE created_by LIKE 'agent:%' AND status IN ('draft','approved','executing') ORDER BY created_at DESC LIMIT 50",
   ).all<JsonObject>();
+
+  const since = new Date(now - 24 * 3_600_000).toISOString();
+  let agentReports24h: JsonObject;
+  try {
+    const countRows = await env.DB.prepare(
+      "SELECT severity, COUNT(*) AS n FROM agent_reports WHERE created_at > ? GROUP BY severity",
+    ).bind(since).all<{ severity: string; n: number }>();
+    const counts = { critical: 0, warning: 0, info: 0 };
+    for (const r of countRows.results) {
+      if (r.severity === "critical" || r.severity === "warning" || r.severity === "info") {
+        counts[r.severity] = Number(r.n);
+      }
+    }
+    const latestRows = await env.DB.prepare(
+      "SELECT report_id, agent_id, kind, severity, subject, created_at FROM agent_reports WHERE created_at > ? AND severity IN ('critical','warning') ORDER BY created_at DESC, rowid DESC LIMIT 5",
+    ).bind(since).all<{ report_id: string; agent_id: string; kind: string; severity: string; subject: string; created_at: string }>();
+    const latestAttention = latestRows.results.map((r) => ({
+      report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: r.severity,
+      subject: String(r.subject).slice(0, 200), created_at: r.created_at,
+    }));
+    agentReports24h = { since, counts, latest_attention: latestAttention };
+  } catch (err) {
+    console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "agent_reports_overview_failed", message: String((err as Error)?.message ?? err) }));
+    agentReports24h = { since, counts: { critical: 0, warning: 0, info: 0 }, latest_attention: [], error: "reports_unavailable" };
+  }
+
   return {
     observed_at: new Date(now).toISOString(),
     services,
     ingest_runs: runs.results,
     open_agent_plans: plans.results,
     agents_enabled: await agentsEnabled(env.DB),
+    agent_reports_24h: agentReports24h,
   };
 }
 
