@@ -158,7 +158,7 @@ const AI_PLAN = { response: JSON.stringify({ title: "Redeploy Platform API", rat
 test("migration 0010 seeds the supervisor at tier 2, the kill switch on, and the kernel in the registry", () => {
   const db = migratedDb();
   const a = db.raw.prepare("SELECT tier_max, status, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;
-  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [2, "enabled", ["platform.observe", "recovery.propose", "signals.reingest", "memory.recall", "memory.remember"]]);
+  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [2, "enabled", ["platform.observe", "recovery.propose", "memory.recall", "memory.remember"]]);
   assert.equal((db.raw.prepare("SELECT value FROM kernel_controls").get() as any).value, "1");
   assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
   assert.ok(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_syscall_consumptions'").get());

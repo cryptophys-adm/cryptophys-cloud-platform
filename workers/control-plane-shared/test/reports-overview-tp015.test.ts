@@ -81,7 +81,6 @@ test("TP-015 fail-safe", async () => {
   const env: any = baseEnv("cryptophys-ai-kernel", wrapped);
   const res: any = await observe(env as never, NOW);
   assert.ok(Array.isArray(res.services));
-  assert.ok(Array.isArray(res.ingest_runs));
   assert.ok(Array.isArray(res.open_agent_plans));
   assert.ok(Array.isArray(res.agents_enabled) || typeof res.agents_enabled !== "undefined");
   assert.equal(res.agent_reports_24h.error, "reports_unavailable");

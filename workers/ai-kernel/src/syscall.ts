@@ -19,13 +19,11 @@ export interface PolicyRpcBinding {
     Promise<{ decision: "allow" | "deny"; decision_id: string; reason: string }>;
 }
 export interface RecoveryRpcBinding { propose(agentId: string, decisionId: string, input: Record<string, unknown>): Promise<JsonObject> }
-export interface SignalRpcBinding { reingest(agentId: string, decisionId: string): Promise<{ run_id: string; series: number; failed: number }> }
 
 export interface SyscallEnv extends BaseEnv {
   XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> };
   POLICY: PolicyRpcBinding;
   RECOVERY: RecoveryRpcBinding;
-  SIGNALS: SignalRpcBinding;
   MEMORY?: VectorizeBinding;
 }
 
@@ -53,9 +51,6 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
       observed_version: ((ev.probe as JsonObject | undefined)?.version_tag as string | null | undefined) ?? null,
     });
   }
-  const runs = await env.DB.prepare(
-    "SELECT run_id, trigger, started_at, series_total, series_failed FROM signal_ingest_runs ORDER BY started_at DESC LIMIT 4",
-  ).all<{ run_id: string; trigger: string; started_at: string; series_total: number; series_failed: number }>();
   const plans = await env.DB.prepare(
     "SELECT plan_id, service_id, status, created_by, created_at FROM recovery_plans WHERE created_by LIKE 'agent:%' AND status IN ('draft','approved','executing') ORDER BY created_at DESC LIMIT 50",
   ).all<JsonObject>();
@@ -88,7 +83,6 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   return {
     observed_at: new Date(now).toISOString(),
     services,
-    ingest_runs: runs.results,
     open_agent_plans: plans.results,
     agents_enabled: await agentsEnabled(env.DB),
     agent_reports_24h: agentReports24h,
@@ -246,7 +240,6 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "recovery.propose": return { plan: await env.RECOVERY.propose(agentId, decisionId, input) };
     case "reports.publish": return { report: await publishReport(env.DB, agentId, decisionId, input) };
     case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
-    case "signals.reingest": return { run: await env.SIGNALS.reingest(agentId, decisionId) };
     default: throw new Error("capability_not_dispatchable");
   }
 }

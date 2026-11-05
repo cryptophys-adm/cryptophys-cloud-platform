@@ -10,8 +10,7 @@ enabled = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
-# The supervisor agent wakes after the Signal Engine (:04/:19/:34/:49) and the Drift Detector
-# (every 15 min) have written, so it reasons on fresh state. 96 cycles a day.
+# The supervisor agent wakes after the Drift Detector (every 15 min) has written, so it reasons on fresh state.
 [triggers]
 crons = ["7,22,37,52 * * * *"]
 
@@ -44,11 +43,6 @@ entrypoint = "PolicyRpc"
 binding = "RECOVERY"
 service = "cryptophys-recovery-manager"
 entrypoint = "RecoveryRpc"
-
-[[services]]
-binding = "SIGNALS"
-service = "cryptophys-signal-engine"
-entrypoint = "SignalRpc"
 
 # Read-only access to the XAUUSD advisory decision chain (TP-017).
 [[services]]

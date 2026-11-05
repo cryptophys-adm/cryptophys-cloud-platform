@@ -44,7 +44,7 @@ export default {
       if (path === "/ready" || path === "/readyz") {
         return readinessResponse(env, {
           approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES),
-          policy_binding: Boolean(env.POLICY), recovery_binding: Boolean(env.RECOVERY), signals_binding: Boolean(env.SIGNALS),
+          policy_binding: Boolean(env.POLICY), recovery_binding: Boolean(env.RECOVERY),
           supervisor_binding: Boolean(env.SUPERVISOR),
           signal_analyst_binding: Boolean(env.SIGNAL_ANALYST),
           auditor_binding: Boolean(env.AUDITOR),

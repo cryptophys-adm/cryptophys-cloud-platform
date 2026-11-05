@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { baseEnv, migratedDb } from "./harness.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../src/agents.ts";
-import { recordRunStage } from "../../signal-engine/src/index.ts";
 
 function recorder(outcome: Record<string, unknown> | Error = { outcome: "succeeded" }) {
   const calls: { agentId: string; capability: string; input: any }[] = [];
@@ -33,34 +32,9 @@ test("publishAgentReport adds the advisory disclaimer, reports denials as data a
   assert.equal((await publishAgentReport(down.binding, "x", { kind: "platform_digest", severity: "info", subject: "s", body: {} })).ok, false);
 });
 
-test("Signal Engine: its agent reports failed series; a clean run publishes nothing; a kernel outage never fails the run", async () => {
-  const env = (agents?: AgentRpcBinding) => baseEnv("cryptophys-signal-engine", migratedDb(), { AGENTS: agents });
-  const now = Date.now();
-  const ok = { symbol: "BTCUSDT", timeframe: "1h", status: "ok" as const };
-  const bad = { symbol: "SOLUSDT", timeframe: "1h", status: "error" as const, error: "market_data_timeout" };
-
-  const quiet = recorder();
-  await recordRunStage(env(quiet.binding) as never, now, new Date(now).toISOString(), "scheduled", [ok]);
-  assert.equal(quiet.calls.length, 0);
-
-  const partial = recorder();
-  const run = await recordRunStage(env(partial.binding) as never, now, new Date(now).toISOString(), "scheduled", [ok, bad]);
-  assert.equal(run.failed, 1);
-  assert.equal(partial.calls[0].agentId, "signal-engine", "acts only as its own agent");
-  assert.deepEqual([partial.calls[0].input.kind, partial.calls[0].input.severity], ["platform_digest", "warning"]);
-  assert.deepEqual(partial.calls[0].input.body.failed, [{ symbol: "SOLUSDT", timeframe: "1h", error: "market_data_timeout" }]);
-
-  const all = recorder();
-  await recordRunStage(env(all.binding) as never, now, new Date(now).toISOString(), "scheduled", [bad]);
-  assert.equal(all.calls[0].input.severity, "critical");
-
-  const down = recorder(new Error("kernel unavailable"));
-  const survived = await recordRunStage(env(down.binding) as never, now, new Date(now).toISOString(), "scheduled", [bad]);
-  assert.equal(survived.failed, 1, "the run is still recorded");
-});
 
 test("every platform Worker binds AgentRpc pinned to its own Worker name", () => {
-  const workers = ["platform-api", "deployment-orchestrator", "platform-registry", "policy-engine", "drift-detector", "audit-ledger", "recovery-manager", "signal-engine"];
+  const workers = ["platform-api", "deployment-orchestrator", "platform-registry", "policy-engine", "drift-detector", "audit-ledger", "recovery-manager"];
   for (const w of workers) {
     const toml = readFileSync(new URL(`../../${w}/wrangler.toml`, import.meta.url), "utf8");
     const block = toml.slice(toml.indexOf('binding = "AGENTS"'));
