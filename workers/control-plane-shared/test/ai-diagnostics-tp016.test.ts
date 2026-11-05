@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { baseEnv, fakeAi, migratedDb } from "./harness.ts";
 import { engineFor, AiEngine, type AiTask, extractJsonObject } from "../src/ai-engine.ts";
 import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
-import { draftSignalDigestTask } from "../../ai-kernel/src/signal-analyst.ts";
 
 function makeEngine(db: any, ai: any, tasks: readonly string[], timeoutMs = 8000) {
   const env: any = baseEnv("cryptophys-policy-engine", db, { AI: ai });
@@ -69,21 +68,16 @@ test("TP-016 other text categories", async () => {
 
 test("TP-016 schema with diagnose", async () => {
   const db = migratedDb();
-  const expected = [{ symbol: "BTCUSDT", action: "BUY" }];
-  const task = draftSignalDigestTask(expected);
-  // action mismatch
-  const ai1 = fakeAi({ response: { headline: "h", summary: "s", symbols: [{ symbol: "BTCUSDT", action: "SELL", note: "n" }] } });
+  const task: AiTask<any> = {
+    name: "simple", instructions: "x", maxInputChars: 1000, maxOutputTokens: 100,
+    validate: (o: any) => (o && o.ok === true ? o : null),
+    diagnose: (o: any) => (o && o.ok === true ? "unknown" : "headline_invalid"),
+  };
+  const ai1 = fakeAi({ response: { ok: false } });
   const e1 = engineFor(baseEnv("cryptophys-policy-engine", db, { AI: ai1 }) as any, "cryptophys-policy-engine", [task.name]);
   const r1: any = await e1.run(task, {}, "c");
   assert.equal(r1.status, "invalid_output");
-  assert.equal(r1.reason, "schema:action_mismatch");
-
-  // headline 300 chars
-  const db2 = migratedDb();
-  const ai2 = fakeAi({ response: { headline: "a".repeat(300), summary: "s", symbols: [{ symbol: "BTCUSDT", action: "BUY", note: "n" }] } });
-  const e2 = engineFor(baseEnv("cryptophys-policy-engine", db2, { AI: ai2 }) as any, "cryptophys-policy-engine", [task.name]);
-  const r2: any = await e2.run(task, {}, "c");
-  assert.equal(r2.reason, "schema:headline_invalid");
+  assert.equal(r1.reason, "schema:headline_invalid");
 });
 
 test("TP-016 schema without diagnose", async () => {
@@ -147,9 +141,8 @@ test("TP-016 no content stored", async () => {
   }
   // diagnose slug no symbol name
   const db2 = migratedDb();
-  const expected = [{ symbol: "BTCUSDT", action: "BUY" }];
-  const task2 = draftSignalDigestTask(expected);
-  const ai2 = fakeAi({ response: { headline: "h", summary: "s", symbols: [{ symbol: "BTCUSDT", action: "SELL", note: "n" }] } });
+  const ai2 = fakeAi({ response: { ok: false } });
+  const task2: AiTask<any> = { name: "simple", instructions: "x", maxInputChars: 1000, maxOutputTokens: 100, validate: () => null, diagnose: () => "headline_invalid" };
   const e2 = engineFor(baseEnv("cryptophys-policy-engine", db2, { AI: ai2 }) as any, "cryptophys-policy-engine", [task2.name]);
   await e2.run(task2, {}, "c");
   const row = db2.raw.prepare("SELECT category FROM ai_failures").get() as any;

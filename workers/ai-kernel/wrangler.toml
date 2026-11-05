@@ -50,6 +50,11 @@ binding = "SIGNALS"
 service = "cryptophys-signal-engine"
 entrypoint = "SignalRpc"
 
+# Read-only access to the XAUUSD advisory decision chain (TP-017).
+[[services]]
+binding = "XAUUSD_AI"
+service = "xauusd-ai-trading-assistant"
+
 # Agent processes: SQLite-backed Durable Objects (Workers Paid included usage).
 [[durable_objects.bindings]]
 name = "SUPERVISOR"
