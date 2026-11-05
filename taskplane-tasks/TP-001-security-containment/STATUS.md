@@ -1,6 +1,6 @@
 # TP-001 Security Containment (v2) — STATUS
 
-State: awaiting_owner (only B5 for `apps-gitops` remains; see the Part C verification below)
+State: done
 
 ## Evidence (Part A: Read-Only Containment Inventory, A1–A4)
 
@@ -119,3 +119,7 @@ Because `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` are 
   - `platform-gitops`: an anonymous `git ls-remote` fails, so it is not publicly readable.
   - `apps-gitops`: the GitHub API reports `private: true, archived: false`. It is private but **not archived**.
   - B5 closes when `apps-gitops` is archived (`gh repo archive cryptophys-work/apps-gitops --yes`) or deleted, or when the owner records that private-only is the final state.
+
+### Closure (2026-11-05)
+
+B5 is complete. `apps-gitops` is verified as `private: true, archived: true`; `platform-gitops` is not anonymously readable and was archived by the owner. All TP-001 gates are done. The historical credentials remain compromised by definition and must never be reused.
