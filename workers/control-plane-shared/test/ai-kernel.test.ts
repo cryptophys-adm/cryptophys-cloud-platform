@@ -28,7 +28,7 @@ test("readiness requires the atomic syscall-consumption migration and the newest
   assert.equal(await schemaReady({ DB: db2 } as never), false);
 });
 
-test("0016 & 0017 register 29 tier-1 agents and add platform, XAUUSD, and HUD report kinds without operator impersonation", async () => {
+test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD report kinds without operator impersonation", async () => {
   const { env, db } = kernelEnv();
   const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status FROM agents ORDER BY agent_id").all() as Array<{
     agent_id: string;
