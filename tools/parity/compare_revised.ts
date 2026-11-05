@@ -1,5 +1,7 @@
 // Before/after comparison of the legacy (mizan.ts) and revised (revised.ts) formulas on candle data
-// exported from D1 as {SYMBOL: {score, vol1h, vol4h, h1: [closes asc], h4_desc: [closes desc]}}.
+// exported from D1 as {SYMBOL: {score, vol1h, vol4h, h1: [closes asc], h4_desc: [closes desc],
+// vols1h: [volumes asc], vols4h_desc: [volumes desc]}}. The revised router requires aligned per-candle
+// volume windows; scalar latest-volume fallbacks are deliberately rejected because they hide volume behavior.
 // Usage: node --experimental-strip-types tools/parity/compare_revised.ts prod.json
 import { readFileSync } from "node:fs";
 import { decision, mizan, regime, timeframeWeight } from "../../workers/signal-engine/src/mizan.ts";
@@ -11,8 +13,14 @@ for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) {
   const rOld = regime(h1)!; const rNew = regimeRevised(h1)!;
   const old1 = mizan(h1, s.vol1h, "1h", rOld, h1.at(-1)!, null) as any;
   const old4 = mizan(h4, s.vol4h, "4h", rOld, h4.at(-1)!, null) as any;
-  // decision 11 needs the volume window; older exports only carry the latest volume.
-  const v1: number[] = s.vols1h ?? h1.map(() => s.vol1h); const v4: number[] = s.vols4h ?? h4.map(() => s.vol4h);
+  const volumeSeries = (values: unknown, field: string, expected: number): number[] => {
+    if (!Array.isArray(values) || values.length !== expected || !values.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)) {
+      throw new Error(`${sym}: ${field} must contain ${expected} aligned finite, non-negative per-candle volumes; re-export the D1 window.`);
+    }
+    return values as number[];
+  };
+  const v1 = volumeSeries(s.vols1h, "vols1h", h1.length);
+  const v4 = volumeSeries(s.vols4h_desc, "vols4h_desc", h4.length).reverse();
   const per = { "1h": mizanTimeframe(h1, v1, "1h"), "4h": mizanTimeframe(h4, v4, "4h") };
   const mNew = mizanSymbol(per, rNew, h1.at(-1)!, null)!;
   const dOld = decision(s.score); const dNew = decisionRevised(s.score);
