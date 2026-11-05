@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-11-05
 **Status:** Active
-**Next Task ID:** TP-017
+**Next Task ID:** TP-018 (reserved: TP-018 retire the crypto Signal Engine; TP-019 fix AI drafts from TP-016 data)
 **Roles:** orchestrator and validator = Claude (cloud session); code worker = pi agent on the VPS with Reflection's `beam` model from TP-012 (see `PI.md`; Antigravity did TP-006 to TP-009 and is out of quota); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
 
 ---
@@ -24,6 +24,10 @@
 - **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
 
 The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `ANTIGRAVITY.md`.
+
+## Owner decisions (2026-11-05)
+
+- **The signal role moves to XAUUSD.** The Signal Analyst reads `xauusd-ai-trading-assistant` decisions (TP-017), and the crypto Signal Engine (BTC/ETH/SOL) is retired (TP-018). The platform never changes the xauusd repository; it reads that repository's read-only API through an in-account Service Binding.
 
 ## Hard rules for the worker (apply to every task)
 
