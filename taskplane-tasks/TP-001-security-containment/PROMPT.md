@@ -42,8 +42,9 @@ The read-only inventory from the first version (PR #46) remains valid evidence. 
    - Check that no withdrawal address whitelist entry, sub-account or device was added that you do not recognise.
    - Change the account password and 2FA if anything looks unfamiliar.
 2. **Wallet.**
-   - If A2 shows any balance, tokens or recent transactions, the key is compromised: move everything to a **new** wallet you generate offline (a hardware wallet is preferred).
-   - Revoke token approvals for the old address, for example with a revoke tool on each chain.
+   - If A2 identifies a publicly known test-vector key, treat it as compromised regardless of reported balances; withhold the address/account details and require owner validation through a secure channel.
+   - If A2 shows any balance, tokens or recent transactions, the owner must move everything to a **new** wallet generated offline (a hardware wallet is preferred).
+   - If balances are zero and there is no history, never reuse the old key or address; owner confirmation is still required when the source key is a known test vector.
    - If everything is zero and has no history, simply never use the address again.
 3. **Cluster retirement (replaces the Vault rekey and the NATS/ArgoCD rotation).**
    - Power off every Talos node, and delete or wipe their disks and volumes at the provider. That includes Longhorn and MinIO volumes and Vault storage.
