@@ -7,6 +7,7 @@ on:
       - "docs/CONTROL-PLANE-WORKERS.md"
       - ".github/workflows/validate-control-plane.yml"
       - ".github/workflows/deploy-control-plane.yml"
+      - ".github/workflows/deploy-console.yml"
   push:
     branches: [main]
     paths:
@@ -14,6 +15,7 @@ on:
       - "docs/CONTROL-PLANE-WORKERS.md"
       - ".github/workflows/validate-control-plane.yml"
       - ".github/workflows/deploy-control-plane.yml"
+      - ".github/workflows/deploy-console.yml"
   workflow_dispatch:
 
 permissions:
@@ -44,6 +46,6 @@ jobs:
       - name: Bundle every control-plane Worker (dry run, no credentials)
         run: |
           set -euo pipefail
-          for dir in platform-registry policy-engine audit-ledger recovery-manager ai-kernel drift-detector platform-api; do
+          for dir in platform-registry policy-engine audit-ledger recovery-manager ai-kernel drift-detector platform-api console; do
             npx wrangler deploy --dry-run --config "../${dir}/wrangler.toml" --outdir "$RUNNER_TEMP/dry-run-${dir}"
           done
