@@ -17,11 +17,14 @@
  */
 import type { BaseEnv, WorkflowBindingLike, WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 
 export interface LifecycleParams { plan_id: string }
 
 export interface LifecycleEnv extends BaseEnv {
+  /** AI Kernel agent binding (advisory reports). */
+  AGENTS?: AgentRpcBinding;
   /** Workflow binding for RecoveryPlanWorkflow (wrangler [[workflows]]). */
   RECOVERY_LIFECYCLE?: WorkflowBindingLike<LifecycleParams>;
   RECOVERY_APPROVAL_WINDOW_HOURS?: string;
@@ -76,6 +79,11 @@ async function closeWindow(env: LifecycleEnv, planId: string, status: string, in
       event_type: "recovery.execution_overdue", actor: "workflow:recovery-lifecycle", subject: planId, outcome: "overdue",
       payload: { workflow_instance_id: instanceId, note: "execution was started but never finished; status left unchanged for a human" },
     });
+    await publishAgentReport(env.AGENTS, "recovery-manager", {
+      kind: "platform_digest", severity: "critical",
+      subject: `Recovery plan ${planId} execution overdue`,
+      body: { plan_id: planId, previous_status: "executing", reason: "execution_overdue", workflow_instance_id: instanceId, action_required: "a human must finish or abandon the plan" },
+    });
     return true;
   }
   const reason = status === "draft" ? "approval_expired" : "approval_lapsed";
@@ -86,6 +94,11 @@ async function closeWindow(env: LifecycleEnv, planId: string, status: string, in
   await appendAuditEvent(env.DB, {
     event_type: "recovery.plan_expired", actor: "workflow:recovery-lifecycle", subject: planId, outcome: "disabled",
     payload: { previous_status: status, reason, workflow_instance_id: instanceId },
+  });
+  await publishAgentReport(env.AGENTS, "recovery-manager", {
+    kind: "platform_digest", severity: "warning",
+    subject: `Recovery plan ${planId} expired (${reason})`,
+    body: { plan_id: planId, previous_status: status, reason, workflow_instance_id: instanceId },
   });
   return true;
 }
