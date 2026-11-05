@@ -48,3 +48,15 @@ State: merged — retirement configuration is in main and the control plane depl
 - `.github/workflows/provision-access.yml` therefore intentionally retains the legacy Worker in its destination list and now documents why.
 - The drift alert inventory must exclude the disabled legacy service from the active expected Worker count and must not flag a disabled row as stale. A follow-up PR adds this behavior and regression coverage.
 - The repository's `main` branch reports `protected: false`; the repository rulesets endpoint returns an empty list. Branch-protection details remain inaccessible through the integration (HTTP 403). Independent approvals and required-check enforcement are not established.
+
+
+## Read-only Cloudflare verification after deployment
+
+- The legacy Worker `cryptophys-signal-engine` still exists in the account.
+- Its `workers.dev` subdomain is **enabled**; preview URLs are disabled.
+- Its cron trigger remains active: `4,19,34,49 * * * *` (every 15 minutes).
+- The `cryptophys-cloud-platform` Access application still contains the matching Worker destination, so the legacy endpoint remains behind Access.
+- Its latest listed deployment predates the TP-018 merge; TP-018's Control Plane deployment did not redeploy or delete it.
+- No cron change, Access destination removal, Worker deletion, or production mutation was performed by this task.
+
+**Owner action remains required:** explicitly authorize disabling the legacy Worker schedule and deleting the Worker. Keep its Access destination until deletion is verified or the public subdomain is disabled; removing Access protection while `workers.dev` is enabled would expose the still-live endpoint.
