@@ -17,13 +17,13 @@ summary="$(jq -c '
       kind: (if (.kind | type) == "string" and (.kind | test("^[a-z0-9_-]{1,64}$")) then .kind else "unknown" end)
     });
   def render($n; $since; $rows; $legacy):
-    if $n == 0 then "No critical agent report in the last 24 hours (since $($since))."
+    if $n == 0 then "No critical agent report in the last 24 hours (since \($since))."
     elif ($rows | length) == 0 then "Critical report(s) exist since $($since), but metadata is unavailable from the pre-upgrade kernel. Subjects and bodies are withheld."
-    else "$($n) critical report(s) since $($since). Newest (up to 5; subjects withheld):\n\n| Time (UTC) | Agent | Kind |\n| --- | --- | --- |\n"
-      + ($rows | map("| $(.time) | $(.agent) | $(.kind) |") | join("\n"))
+    else "\($n) critical report(s) since $($since). Newest (up to 5; subjects withheld):\n\n| Time (UTC) | Agent | Kind |\n| --- | --- | --- |\n"
+      + ($rows | map("| \(.time) | \(.agent) | \(.kind) |") | join("\n"))
     end;
   (.agent_reports_24h // error("status has no agent_reports_24h")) as $r
-  | if ($r.error // null) != null then error("report summary unavailable: $($r.error)") else . end
+  | if ($r.error // null) != null then error("report summary unavailable: \($r.error)") else . end
   | ($r.counts.critical // error("status has no critical count")) as $n
   | if ($n | type) != "number" or $n < 0 or ($n | floor) != $n then error("invalid critical count") else . end
   | (($r | has("critical_fingerprint")) as $has_fp
