@@ -81,13 +81,13 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     }));
     // Keep the public alert's fingerprint complete even when warning reports crowd
     // critical reports out of the five-row latest_attention window.
-    const criticalIds = await env.DB.prepare(
-      "SELECT report_id FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY report_id",
-    ).bind(since).all<{ report_id: string }>();
+    const criticalIdSet = await env.DB.prepare(
+      "SELECT GROUP_CONCAT(report_id, ',') AS report_ids FROM (SELECT report_id FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY report_id)",
+    ).bind(since).first<{ report_ids: string | null }>();
     const criticalLatestRows = await env.DB.prepare(
       "SELECT report_id, agent_id, kind, created_at FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY created_at DESC, rowid DESC LIMIT 5",
     ).bind(since).all<{ report_id: string; agent_id: string; kind: string; created_at: string }>();
-    const criticalFingerprint = await sha256Hex(criticalIds.results.map((r) => r.report_id).join("\n"));
+    const criticalFingerprint = await sha256Hex(criticalIdSet?.report_ids ?? "");
     const latestCritical = criticalLatestRows.results.map((r) => ({
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, created_at: r.created_at,
     }));
