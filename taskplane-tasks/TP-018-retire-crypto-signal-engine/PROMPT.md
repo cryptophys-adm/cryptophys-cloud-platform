@@ -186,3 +186,16 @@ The owner-approved retirement is a material architecture change. In addition to 
 - `docs/OPERATIONS.md`: reconcile the agent inventory to 30 enabled tier-1 rows, one suspended tier-1 `signal-engine` row, and the tier-2 supervisor; state that only the Drift Detector currently publishes scheduled platform reports.
 
 Preserve historical ADR text as historical context; add dated amendments rather than silently rewriting accepted decisions. Do not change `architecture/BASELINE.md` or any XAUUSD repository.
+
+
+## Post-merge execution record and Access safety correction — 2026-11-05
+
+The CI sequencing prerequisite PR #109 was merged, PR #110 resolved the time-dependent test conflict, and TP-018 PR #108 was merged by the repository owner at 2026-11-05T13:52:53Z (merge SHA `d81ce4040ddc89e66b02656f311ba783bd5b4c2d`). The merged head passed both validation workflows: 117/117 endpoint/library tests, isolated migration tests, and all seven active Worker dry-run bundles.
+
+The owner separately dispatched Control Plane deployment run #42039749459 against that exact SHA. It completed successfully: migration 0020 applied, six Control Plane Workers deployed and verified, drift observation returned 0 drifted services, the retired Signal Engine registry row was disabled and not probed, the supervisor observation completed, and audit/policy verification passed. This task did not dispatch that production workflow.
+
+**Access safety correction:** the legacy `cryptophys-signal-engine` Worker was not deleted. Keep it in `PLATFORM_WORKERS` and in the Access application's destinations while that Worker remains deployed. Removing it from `provision-access.yml` before deletion or disabling its public endpoint could remove Access protection from a still-live Worker. Remove the destination only as part of an owner-authorized retirement/deletion operation after verifying the Worker is absent or no longer publicly reachable.
+
+**Drift alert correction:** the legacy registry row is now `disabled` with reason `disabled`, `drifted = false`, and no observed version. It is not an active Worker and must not be counted as healthy or stale. The drift-summary expected inventory and tests must exclude it from the active set.
+
+The original post-merge instructions above are historical where they conflict with this safety correction. No production Worker deletion is authorized by this task packet.
