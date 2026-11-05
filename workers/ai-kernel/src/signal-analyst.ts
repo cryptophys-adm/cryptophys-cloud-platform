@@ -96,6 +96,28 @@ export function draftSignalDigestTask(expectedSymbols: readonly { symbol: string
         symbols: expectedSymbols.map((s) => bySymbol.get(s.symbol)!),
       };
     },
+    diagnose(output) {
+      const o = (output && typeof output === "object" ? output : {}) as Record<string, unknown>;
+      const headline = boundedString(o?.headline, 160);
+      if (!headline) return "headline_invalid";
+      const summary = boundedString(o?.summary, 800);
+      if (!summary) return "summary_invalid";
+      if (!Array.isArray(o?.symbols)) return "symbols_not_array";
+      if (o.symbols.length !== expected.size) return "symbols_count_mismatch";
+      const seen = new Set<string>();
+      for (const raw of o.symbols as Record<string, unknown>[]) {
+        const symbol = typeof raw?.symbol === "string" ? raw.symbol : "";
+        const action = typeof raw?.action === "string" ? raw.action : "";
+        const note = boundedString(raw?.note, 200);
+        if (!symbol || seen.has(symbol)) return symbol && seen.has(symbol) ? "symbol_duplicate" : "symbol_unknown";
+        if (!expected.has(symbol)) return "symbol_unknown";
+        if (expected.get(symbol) !== action) return "action_mismatch";
+        if (!note) return "note_invalid";
+        seen.add(symbol);
+      }
+      if (seen.size !== expected.size) return "symbol_unknown";
+      return "unknown";
+    },
   };
 }
 

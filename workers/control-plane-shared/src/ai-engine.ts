@@ -28,6 +28,8 @@ export interface AiTask<T> {
   maxInputChars: number;
   maxOutputTokens: number;
   validate(output: unknown): T | null;
+  /** Optional: why validate() rejected this output, as a short slug. Never echoes output content. */
+  diagnose?(output: unknown): string;
 }
 
 export interface AiEngineOptions {
@@ -121,6 +123,16 @@ export class AiEngine {
       // Telemetry must never break the caller.
     }
   }
+  private async recordFailureCategory(day: string, task: string, category: string): Promise<void> {
+    try {
+      await this.db.prepare(
+        `INSERT INTO ai_failures (service_id, day, task, category, count) VALUES (?, ?, ?, ?, 1)
+         ON CONFLICT(service_id, day, task, category) DO UPDATE SET count = count + 1`,
+      ).bind(this.service, day, task, category).run();
+    } catch {
+      // Telemetry must never break the caller.
+    }
+  }
 
   async run<T>(task: AiTask<T>, input: unknown, correlationId: string): Promise<AiOutcome<T>> {
     const unavailable = (reason: string): AiOutcome<T> => ({ status: "unavailable", reason, correlation_id: correlationId });
@@ -159,19 +171,62 @@ export class AiEngine {
         }),
         timeout,
       ]);
-      const text = typeof (completion as { response?: unknown })?.response === "string"
-        ? (completion as { response: string }).response
-        : typeof completion === "string" ? completion : "";
-      const parsed = extractJsonObject(text);
-      const data = parsed === null ? null : task.validate(parsed);
-      if (data === null) {
-        await this.recordFailure(day);
-        return { status: "invalid_output", reason: "output_failed_schema_validation", correlation_id: correlationId };
+      const response = (completion as { response?: unknown })?.response;
+      let text = "";
+      let parsed: unknown = null;
+      let objectResponse = false;
+      if (response !== null && typeof response === "object" && !Array.isArray(response)) {
+        objectResponse = true;
+        parsed = response;
+      } else if (typeof response === "string") {
+        text = response;
+      } else if (typeof completion === "string") {
+        text = completion;
       }
-      return { status: "ok", data, model: this.model, correlation_id: correlationId };
-    } catch (err) {
+
+      let category: string | null = null;
+      if (!objectResponse && parsed === null) {
+        if (text.trim() === "") {
+          category = "empty_response";
+        } else {
+          const start = text.indexOf("{");
+          const end = text.lastIndexOf("}");
+          if (start < 0) {
+            category = "no_json_object";
+          } else if (end <= start) {
+            category = "truncated";
+          } else {
+            try {
+              parsed = JSON.parse(text.slice(start, end + 1));
+            } catch {
+              category = "json_parse_error";
+            }
+          }
+        }
+      }
+
+      if (category === null) {
+        const data = task.validate(parsed);
+        if (data !== null) {
+          return { status: "ok", data, model: this.model, correlation_id: correlationId };
+        }
+        if (task.diagnose) {
+          const raw = String(task.diagnose(parsed)).toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 48);
+          category = `schema:${raw || "unknown"}`;
+        } else {
+          category = "schema_rejected";
+        }
+      }
+
       await this.recordFailure(day);
-      return unavailable(String((err as Error)?.message) === "timeout" ? "timeout" : "inference_failed");
+      await this.recordFailureCategory(day, task.name, category);
+      return { status: "invalid_output", reason: category, correlation_id: correlationId };
+    } catch (err) {
+      const isTimeout = String((err as Error)?.message) === "timeout";
+      const category = isTimeout ? "timeout" : "inference_failed";
+      await this.recordFailure(day);
+      await this.recordFailureCategory(day, task.name, category);
+      return unavailable(isTimeout ? "timeout" : "inference_failed");
     } finally {
       if (timer) clearTimeout(timer);
     }
