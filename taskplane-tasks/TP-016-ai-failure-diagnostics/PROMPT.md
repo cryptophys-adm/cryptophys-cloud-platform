@@ -165,4 +165,4 @@ Fill in `STATUS.md`: `State: done`, `Evidence`, `Changes`, `Open questions`.
 
 1. Deploy Control Plane, which applies migration 0019.
 2. Wait for the next real digests (Signal Analyst on change or every 6 h; Auditor daily at about 00:37 UTC).
-3. Query `ai_failures` for the categories. The fix (prompt, `max_tokens`, model or validator) becomes TP-017, based on that data.
+3. Query `ai_failures` for the categories. The fix (prompt, `max_tokens`, model or validator) becomes TP-019, based on that data. TP-017 (Signal Analyst reads XAUUSD) later removes `draftSignalDigestTask`; until then its `diagnose` is still required.
