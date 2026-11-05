@@ -226,7 +226,7 @@ jobs:
           api GET "$(url audit-ledger)/v1/verify" | tee /dev/stderr | jq -e '.valid == true and .events_checked > 0' >/dev/null
 
           policy="$(api POST "$(url policy-engine)/v1/evaluate" "$(jq -cn --arg sha "$COMMIT_SHA" \
-            '{action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false}}')")"
+            '{action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false, deploy_verification: true}}')")"
           printf '%s' "$policy" | jq -e '.decision == "deny" and (.reason | test("ci_green"))' >/dev/null \
             || { echo "::error::Policy Engine did not deny a deployment with failing CI"; exit 1; }
 
