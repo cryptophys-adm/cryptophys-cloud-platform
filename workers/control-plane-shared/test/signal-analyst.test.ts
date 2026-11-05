@@ -43,7 +43,7 @@ function nonJsonXauusd() {
 
 const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
 const item = (overrides: any = {}) => ({
-  candle_key: `OANDA:XAUUSD:60:${Date.now() - 10*60000}`,
+  candle_key: `OANDA:XAUUSD:60:${NOW - 10 * 60_000}`,
   timestamp: "2026-11-05 11:05:16",
   decision: "WAIT",
   confidence: 0.3,
@@ -149,7 +149,7 @@ test("TP-017 no repeat", async () => {
   const reports = (db as any).raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id='signal-analyst'").get().n;
   assert.equal(reports, 1);
   // new candle same decision within 6h
-  const binding2 = fakeXauusd([item({ candle_key: "OANDA:XAUUSD:60:1793876400000", decision: "WAIT" })]);
+  const binding2 = fakeXauusd([item({ candle_key: `OANDA:XAUUSD:60:${NOW - 5 * 60_000}`, decision: "WAIT" })]);
   (env as any).XAUUSD_AI = binding2;
   await runSignalCycle(env as any, mem, "operator", NOW + 2000);
   const reports2 = (db as any).raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id='signal-analyst'").get().n;
