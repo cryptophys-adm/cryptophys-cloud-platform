@@ -7,44 +7,63 @@
 
 ---
 
-## 1. Summary of Changes in `mizan-revised/2` (Decision 11)
+## 1. Implemented formulas (verified against source)
 
-The legacy router (`mizan.ts`) suffered from two structural saturation issues on real multi-timeframe OHLCV series:
-1. **Dimension Saturation & Asymmetry:** Raw price-denominated drift/momentum and unnormalized latest-candle volume prevented `dim_score` from reaching the `0.60` `phi` threshold reliably across assets with different nominal prices (`BTCUSDT` vs `ETHUSDT` vs `SOLUSDT`), while biasing `direction` toward long-only trends.
-2. **Latest-Volume Fallback Masking:** When a candle window lacked aligned per-candle volume history or contained an invalid latest sample (`NaN`/missing), re-using an older candle's scalar volume hid data degradation.
+The revised router is dimensionless and symmetric in the tested rising/falling cases. The exact implementation is:
 
-`mizan-revised/2` (`revised.ts`) resolves both issues deterministically:
-- **Dimensionless, Symmetric 5-Component Router (`DIM_WEIGHTS`):**
-  - `direction` (`0.25`): `1.0` whenever KWW stretched-exponential momentum (`kwwMom`) and log-return drift agree in sign (symmetric for both **long** and **short** trends), `0.5` when neutral, `0.0` when diverging.
-  - `momentum` (`0.25`): `clamp01(|kwwMom| / (volatility * FULL_SCORE_Z))` (`FULL_SCORE_Z = 2`).
-  - `strength` (`0.20`): `clamp01(|drift| / volatility * sqrt(n) / FULL_SCORE_Z)` (t-statistic scaled).
-  - `cycle` (`0.15`): `1 - |((candlesSinceSignal % 19) / 19 - 0.5) * 2|`.
-  - `volume` (`0.15`): `clamp01((lastVol / median(volumeWindow)) / FULL_SCORE_Z)`.
-- **Fail-Closed Volume Window Alignment:**
-  - `dimensionScaled` requires `volumeWindow.length === n` where every sample is finite and `>= 0`.
-  - If the window is shorter than `n` or the latest sample is `NaN`/negative, `volume_score` fails closed to `0` (never substituting an older candle's volume).
+- **Dimension weights** (`DIM_WEIGHTS`): direction `0.30`, momentum `0.30`, strength `0.25`, cycle `0.10`, volume `0.05`. They sum to `1.00`.
+- **Direction component:** `1.0` when KWW momentum and log-return drift have the same sign, `0.5` when either is zero, and `0.0` when their signs disagree.
+- **Momentum component:** `clamp01(abs(kwwMom) / (stdev(kwwMomentumHistory) * FULL_SCORE_Z))`. The history is the sequence of prefix KWW-momentum values inside the current window; `FULL_SCORE_Z = 2`. When that standard deviation is zero, a non-zero current momentum scores `1`, otherwise `0`.
+- **Trend-strength component:** `clamp01(abs(log(lastClose / firstClose)) / (stdev(logReturns) * sqrt(n - 1) * FULL_SCORE_Z))`, with the zero-volatility fallback implemented in `dimensionScaled`.
+- **Cycle component:** `1 - abs(((candlesSinceSignal % K.BASE) / K.BASE) - 0.5) * 2`; `K.BASE` is the source constant, not a per-symbol fitted value.
+- **Volume component:** `clamp01(lastVolume / median(alignedVolumeWindow) / FULL_SCORE_Z)`. The last `n` samples must be aligned, finite and non-negative; an invalid or short window, or a zero median, scores `0`. No older-volume fallback is used.
+
+The symbol-level `phi` is the timeframe-weighted mean of `dim_score`, multiplied by the revised regime score. `signalTier` labels are `neutral`, `weak`, `standard`, `strong`, and `extreme`; these are Mizan signal labels, **not** ADR-0007 agent autonomy tiers. The `decisionRevised` function independently applies raw-confluence thresholds BUY `>= 62` and SELL `<= 38`.
+
+Entropy is the normalized 10-bin Shannon entropy of log returns. The 1h threshold is the 95th percentile of rolling `REGIME.WINDOW` entropies when at least 30 windows exist; otherwise the implementation falls back to the source threshold `0.92` (`calibrated = false`).
 
 ---
 
-## 2. Quantitative Behavior Across Regimes
+## 2. Test evidence (synthetic inputs, not production parity)
 
-| Regime / Scenario | Hurst (`H`) | Entropy (`S`) | Volume Profile | `volume_score` | Composite `phi` | Tier / Action Behavior |
-|---|---|---|---|---|---|---|
-| **Strong Consistent Uptrend (`+1%/bar` + 2x Volume Spike)** | `> 0.65` (Persistent) | Low (`< 0.65`) | `lastVol = 2.0 * median` | `1.00` | `>= 0.60` | Reaches `tier >= 2` (`LONG` advisory bias, Bismillah sizing active) |
-| **Strong Consistent Downtrend (`-1%/bar` + 2x Volume Spike)** | `> 0.65` (Persistent) | Low (`< 0.65`) | `lastVol = 2.0 * median` | `1.00` | `>= 0.60` | Symmetric `dim_score` with uptrend; emits `SHORT` advisory bias when `confluence < 50` |
-| **Trending Price with Flat Volume (`lastVol == median`)** | `> 0.60` | Moderate | Constant volume | `0.50` | Moderate (`0.55–0.68`) | Requires stronger trend/regime alignment to cross `phi >= 0.60` |
-| **Missing / Misaligned / `NaN` Latest Volume** | Any | Any | `length != n` or `NaN` | **`0.00` (Fail-Closed)** | Reduced by `0.15 * weight` | Fails closed on volume component; prevents false breakout confirmation |
-| **High-Entropy Chaotic Walk (`walk_140` fixture)** | `~0.456` | `~0.943` | Normal | `<= 0.50` | `< 0.60` | `regime_zone = chaotic`, `tier = 0` (`WAIT` / no advisory risk levels) |
+The current unit tests use deterministic synthetic series. They establish the following and no more:
+
+| Scenario | Test evidence | What is not established |
+|---|---|---|
+| Rising and falling drift (`+0.4%` / `-0.4%` per candle) | Trend-strength difference is below `0.15`; dimension-score difference is below `0.20`; direction flags are opposite. | Exact equality or TradingView parity. |
+| Strong synthetic uptrend (`+1%` log drift per candle) with a 2x latest-volume sample | With an injected `regime_score = 0.8`, the test asserts `dim_score > 0.75`, `phi >= 0.60`, and `signal = true`. | Hurst/entropy behavior for that same series; the test injects the regime score rather than deriving it from a production history. |
+| Flat volume | `volume_score = 0.50` when the latest sample equals the median. | A fixed `phi` range; none is asserted. |
+| Missing, short, negative or non-finite volume sample | The volume component fails closed to `0`; no older sample is substituted. | Any claim that the entire signal is neutral solely because volume is invalid. |
+| Short entropy-calibration history | A 60-close series has fewer than 30 rolling windows, so calibration is false and the fallback threshold is `0.92`; fewer than 20 closes returns no regime. | A committed `walk_140` chaotic fixture. No such fixture is asserted by the current revised test suite. |
+
+Risk levels and `suggested_size_pct` are advisory outputs only. They are not orders, broker instructions, or execution authorization. No trading or fund-moving capability is introduced.
 
 ---
 
-## 3. Ongoing Multi-Day Production Monitoring Checklist
+## 3. Production validation and parity boundary
 
-As live `1h` and `4h` closed candles accumulate in D1 (`market_candles` and `signal_confluence`):
-1. **Verify `implementation = 'mizan-revised/2'` in D1:** Confirm new rows in `signal_confluence` record `mizan_json` with dimensionless `dim_score` in `[0, 1]`.
-2. **Check Signal Analyst Hourly Digest (`agent_reports` where `kind = 'signal_digest'`):** Monitor how often `BTCUSDT`, `ETHUSDT`, and `SOLUSDT` cross `phi >= 0.60` (expected only during genuine persistent regime + volume expansion, not in choppy/chaotic windows).
-3. **Run Parity Comparison (`tools/parity/compare_revised.ts`):** Export 100-candle `1h` and `4h` windows with aligned `vols1h` and `vols4h_desc` arrays from D1 and execute:
+The unit tests above are synthetic regression tests. They do **not** establish historical parity with TradingView or prove that production distributions match the legacy router.
+
+The comparison tool [`compare_revised.ts`](../tools/parity/compare_revised.ts) requires exported 1h/4h closes and aligned per-candle volume arrays for BTCUSDT, ETHUSDT and SOLUSDT. It deliberately rejects scalar-volume fallbacks. A production parity claim requires:
+1. a dated D1 export with source and candle-close provenance;
+2. aligned 1h/4h volume arrays;
+3. captured legacy and revised outputs for the same windows; and
+4. a reviewed comparison of dimensions, regime, `phi`, tier, direction and decision.
+
+Until that evidence is attached and reviewed, describe `mizan-revised/2` as the owner-authorized deterministic revision with synthetic regression coverage, **not as TradingView parity**.
+
+---
+
+## 4. Multi-day production monitoring checklist
+
+As closed 1h and 4h candles accumulate in D1 (`market_candles` and `signal_confluence`):
+
+1. Verify `implementation = 'mizan-revised/2'` on new rows and confirm every stored `dim_score` is in `[0, 1]`.
+2. Monitor `agent_reports` only after the relevant caller binding is deployed and the agent is actually able to publish; a registered/enabled D1 row alone does not prove invocation.
+3. Export 100-candle 1h/4h windows with aligned `vols1h` and `vols4h_desc`, then run:
+
    ```bash
    node --experimental-strip-types tools/parity/compare_revised.ts prod.json
    ```
-   to compare legacy vs. `mizan-revised/2` tier distributions over the multi-day sample.
+
+4. Record the export provenance, exact commit, candle-close times, output hashes and any distribution differences in a reviewed artifact.
