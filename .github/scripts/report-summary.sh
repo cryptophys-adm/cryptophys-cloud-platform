@@ -16,7 +16,8 @@ summary="$(jq -c '
   | ($r.critical_fingerprint
       | if type == "string" and test("^[0-9a-f]{64}$") then . else error("invalid critical report fingerprint") end) as $fp
   | ($r.latest_critical
-      | if type == "array" and length <= 5 then . else error("invalid latest_critical list") end) as $rows
+      | if type == "array" and length <= 5 then . else error("invalid latest_critical list") end
+      | sort_by(.created_at) | reverse) as $rows
   | if $n > 0 and ($rows | length) == 0 then error("critical reports exist but no critical metadata was returned") else . end
   | ($rows | map({
       time: (if (.created_at | type) == "string" and (.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$")) then .created_at else "unknown" end),
