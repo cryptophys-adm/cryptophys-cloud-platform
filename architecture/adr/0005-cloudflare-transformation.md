@@ -96,7 +96,15 @@
       - **KWW direction:** SOL flipped from down to up after its latest candles.
       - **Decision:** BTC at 42.7 and ETH at 53.3 moved from SELL to NEUTRAL. SOL at 34.5 stayed SELL.
       - **phi:** rose from 0–0.015 to 0.05–0.09.
-    - **Remaining finding, not changed.** phi still cannot reach the signal threshold in ordinary markets, because the router's momentum and volume dimensions are `|Δkww| / price` and `volume / (volume + price)`. These sit near 1e-4, so `dim_score` stays near 0.23 of a 0.67 maximum, and advisory risk levels are not produced. Rescaling those dimensions would redesign Mizan and needs a separate owner decision.
+    - **Finding resolved by decision 11.** phi could not reach the signal threshold in ordinary markets. The router's momentum and volume dimensions were `|Δkww| / price` and `volume / (volume + price)`, which sit near 1e-4, so `dim_score` stayed near 0.23 of a 0.667 maximum. Production showed phi at most 0.18–0.24 with `regime_score` averaging 0.56–0.62, so the dimensions were the bottleneck, not the regime.
+11. **Mizan dimensions rescaled** (owner decision 2026-11-05: "skala ulang mizan"; `mizan-revised/2`, `revised.ts` `dimensionScaled`). The faithful port in `mizan.ts` is unchanged and parity-tested.
+    - **Momentum:** |KWW momentum| as a z-score against the spread of its own history over the window.
+    - **Trend strength:** |ln(last/first)| / (σ of log returns · √(n−1)), a z-score against a random walk.
+    - **Volume:** the latest volume relative to the window median.
+    - **Scoring:** a z-score of 2, or 2× the median volume, earns the full score. Every dimension is independent of the price level.
+    - **Direction:** scores agreement between momentum and trend, symmetric for long and short. The source gave 0.20 to rising markets only. `trend_direction` still sets `direction_bias`.
+    - **Weights:** the source weights (0.20, 0.20, 0.1667, 0.0667, 0.0333) are normalised to sum to 1 (0.30, 0.30, 0.25, 0.10, 0.05), so `max_dim_score` = 1 and the 0.60 signal threshold is reachable in strong, confirmed trends.
+    - **Unchanged:** advisory risk levels are still produced only when phi ≥ 0.60, and are never orders.
 
 ## Security
 
