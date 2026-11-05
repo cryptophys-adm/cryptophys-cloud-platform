@@ -70,7 +70,7 @@ test("TP-015 critical alert metadata is complete beyond latest_attention and exc
   assert.ok(res.agent_reports_24h.latest_critical.every((r: any) => !("subject" in r)));
   assert.equal(
     res.agent_reports_24h.critical_fingerprint,
-    createHash("sha256").update([...ids].sort().join("\n")).digest("hex"),
+    createHash("sha256").update([...ids].sort().join(",")).digest("hex"),
   );
 });
 
