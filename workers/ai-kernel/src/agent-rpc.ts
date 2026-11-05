@@ -7,7 +7,7 @@
 // identities authorized to change/deploy the caller Worker configuration; this is not attestation
 // against a malicious account deployer. A Worker can act only as agents whose agents.host_worker
 // equals its pinned host_worker.
-// Agents with tier_max > 1 (supervisor) are never reachable this way.
+// Agents hosted by the AI Kernel (supervisor, signal-analyst, auditor) are never reachable this way.
 import { syscall, type SyscallEnv } from "./syscall.ts";
 import { KERNEL_HOST } from "./kernel.ts";
 import { CAPABILITIES, getAgent, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";

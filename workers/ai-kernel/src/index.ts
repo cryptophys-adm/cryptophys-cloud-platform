@@ -14,7 +14,7 @@ import type { ExecutionContextLike, ScheduledEventLike } from "../../control-pla
 import { errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata } from "../../control-plane-shared/src/http.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, actorOf, authenticate, authorize, identityAllowed, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
-import { CAPABILITIES, getActivePrincipalByIdentity } from "../../control-plane-shared/src/capabilities.ts";
+import { CAPABILITIES, getActivePrincipalByIdentity, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import {
   addAgentPrincipal, agentStatus, listActions, listAgents, revokeAgentPrincipal,
   setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv,
@@ -72,7 +72,6 @@ export default {
       const principal = await getActivePrincipalByIdentity(env.DB, callerActor);
       let agentSessionPrincipal = principal;
       if (principal) {
-        const { getAgent } = await import("../../control-plane-shared/src/capabilities.ts");
         const agent = await getAgent(env.DB, principal.agent_id);
         if (agent && agent.host_worker === KERNEL_HOST) {
           console.log(JSON.stringify({ service: SERVICE, event: "kernel_agent_principal_ignored", access_identity: callerActor, agent_id: principal.agent_id }));

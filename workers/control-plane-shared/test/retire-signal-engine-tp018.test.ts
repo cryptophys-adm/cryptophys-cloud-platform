@@ -19,7 +19,7 @@ test("TP-018 migration", async () => {
   assert.equal(agent.status, "suspended");
   assert.match(agent.status_reason, /retired/);
   const sup = db.raw.prepare("SELECT capabilities_json, tier_max FROM agents WHERE agent_id='supervisor'").get() as any;
-  assert.equal(sup.tier_max, 2);
+  assert.equal(sup.tier_max, 1);
   const caps = JSON.parse(sup.capabilities_json);
   assert.deepEqual(caps, caps.filter((c: string) => c !== "signals.reingest"));
   assert.ok(!caps.includes("signals.reingest"));
