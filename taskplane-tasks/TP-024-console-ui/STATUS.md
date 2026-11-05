@@ -172,3 +172,27 @@ Total Upload: 60.80 KiB / gzip: 17.24 KiB
 ```
 
 Validate run #42085115865 completed all 3 jobs successfully. Validate Control Plane Workers run #42085115972 completed type-check, tests, migration tests and all 7 dry-run bundles successfully. These are the observed job results; no local shell execution is claimed.
+
+
+## Accessibility hardening — confirmation modal focus trap (2026-11-06)
+
+A source audit found that the typed-confirmation dialog declared `aria-modal="true"` and focused its input, but Tab navigation could still move keyboard focus out of the dialog. The dialog now keeps keyboard focus inside:
+- Tab from the last enabled control wraps to the first.
+- Shift+Tab from the first control wraps to the last.
+- Escape still closes the dialog and restores focus to the invoking control.
+
+Added test 13, which checks that the served client includes the focusable-control query and both wrap directions. This is a source-level regression guard; it is not a substitute for the outstanding rendered-browser interaction check at desktop and 360 px.
+
+### Validation on code head `86daf8cdb5795aae458397028b5eed436b3e09e9`
+
+- Validate #42105581899: SUCCESS (3/3 jobs).
+- Validate Control Plane Workers #42105582101: SUCCESS.
+- Type-check: PASS.
+- Control Plane tests: 166 passed, 0 failed, 0 skipped, 0 todo.
+- Test 13, confirmation dialog focus trap: PASS.
+- Migration tests: PASS (initial schema, forward migration, data preservation, indexes, CHECK constraints, foreign keys, service-scoped idempotency, fail-closed rollback).
+- All 8 Worker dry-run bundles: PASS.
+- Console bundle: 61.38 KiB (17.41 KiB gzip).
+- No production workflow was dispatched and nothing was deployed.
+
+The STATUS.md update itself will be revalidated on the resulting commit before the PR is reported as current-head green.
