@@ -22,6 +22,7 @@ export interface RecoveryRpcBinding { propose(agentId: string, decisionId: strin
 export interface SignalRpcBinding { reingest(agentId: string, decisionId: string): Promise<{ run_id: string; series: number; failed: number }> }
 
 export interface SyscallEnv extends BaseEnv {
+  XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> };
   POLICY: PolicyRpcBinding;
   RECOVERY: RecoveryRpcBinding;
   SIGNALS: SignalRpcBinding;
@@ -94,40 +95,80 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   };
 }
 
-/** Tier 0: latest Signal Engine confluence, decision, Mizan per symbol, plus macro context (read-only). */
-export async function observeSignals(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
-  const rows = await env.DB.prepare(
-    `SELECT c.symbol, c.basis_close_time, c.confluence_score, c.decision_json, c.mizan_json, c.computed_at
-     FROM signal_confluence c
-     WHERE c.basis_close_time = (SELECT MAX(i.basis_close_time) FROM signal_confluence i WHERE i.symbol = c.symbol)
-     ORDER BY c.symbol`,
-  ).all<{ symbol: string; basis_close_time: number; confluence_score: number; decision_json: string; mizan_json: string | null; computed_at: string }>();
-  const symbols = rows.results.map((r) => {
-    const dec = JSON.parse(r.decision_json) as JsonObject;
-    const mz = r.mizan_json ? (JSON.parse(r.mizan_json) as JsonObject) : null;
-    const action = String(dec.action ?? "NEUTRAL");
-    const confidence = typeof dec.confidence === "number" ? dec.confidence : null;
-    const phi = typeof mz?.phi === "number" ? mz.phi : null;
-    const tier = (mz?.signal_tier ?? mz?.tier ?? null) as string | null;
-    const direction = (mz?.direction_bias ?? mz?.direction ?? null) as string | null;
-    return {
-      symbol: r.symbol,
-      basis_close_time: r.basis_close_time,
-      confluence_score: r.confluence_score,
-      action,
+/** Tier 0: latest XAUUSD advisory decisions from xauusd-ai-trading-assistant (read-only). */
+export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } }, now = Date.now(), timeoutMs = 5000): Promise<JsonObject> {
+  const observedAt = new Date(now).toISOString();
+  if (!env.XAUUSD_AI) {
+    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: "xauusd_binding_missing" };
+  }
+  let res: Response;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      res = await env.XAUUSD_AI.fetch("https://xauusd.internal/api/decisions?limit=6", {
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      } as RequestInit);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    const msg = String((err as Error)?.message ?? err);
+    const error = /abort/i.test(msg) ? "xauusd_timeout" : "xauusd_unreachable";
+    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error };
+  }
+  if (!res.ok) {
+    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: `xauusd_http_${res.status}` };
+  }
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: "xauusd_invalid_body" };
+  }
+  const itemsRaw = Array.isArray(body?.items) ? body.items : [];
+  const validDecisions = new Set(["BUY", "SELL", "WAIT", "NO_TRADE"]);
+  const keyRe = /^OANDA:XAUUSD:60:\d{10,14}$/;
+  const items: JsonObject[] = [];
+  for (const raw of itemsRaw.slice(0, 6)) {
+    const key = typeof raw?.candle_key === "string" ? raw.candle_key : "";
+    if (!keyRe.test(key)) continue;
+    const openMs = Number(key.split(":").pop());
+    if (!Number.isFinite(openMs)) continue;
+    const decision = validDecisions.has(raw?.decision) ? raw.decision : "UNKNOWN";
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const pos = (v: unknown) => { const n = num(v); return n !== null && n > 0 ? n : null; };
+    const conf = num(raw?.confidence);
+    const confidence = conf !== null && conf >= 0 && conf <= 1 ? conf : null;
+    const decidedAt = typeof raw?.timestamp === "string" ? raw.timestamp.slice(0, 40) : null;
+    const reasoning = typeof raw?.reasoning === "string" ? raw.reasoning.slice(0, 300) : "";
+    items.push({
+      candle_key: key,
+      candle_open_ms: openMs,
+      decided_at: decidedAt,
+      decision,
       confidence,
-      decision: { action, confidence },
-      mizan: mz ? { phi, tier, signal_tier: tier, direction, direction_bias: direction } : null,
-      computed_at: r.computed_at,
-    };
-  });
-  const macro = await env.DB.prepare(
-    "SELECT observed_hour, fear_greed, fear_greed_class, fear_greed_sentiment, fear_greed_time, btc_dominance, total_market_cap, observed_at FROM macro_context ORDER BY observed_hour DESC LIMIT 1",
-  ).first<JsonObject>();
+      entry_price: pos(raw?.entry_price),
+      stop_loss: pos(raw?.stop_loss),
+      take_profit: pos(raw?.take_profit),
+      risk_reward: pos(raw?.risk_reward),
+      reasoning,
+    });
+  }
+  const latest = items.length > 0 ? items[0] : null;
+  let stale = items.length === 0;
+  if (latest) {
+    const closeMs = (latest.candle_open_ms as number) + 3_600_000;
+    stale = now - closeMs > 90 * 60_000;
+  }
   return {
-    observed_at: new Date(now).toISOString(),
-    symbols,
-    macro: macro ?? null,
+    source: "xauusd-ai-trading-assistant",
+    observed_at: observedAt,
+    available: true,
+    stale,
+    latest: latest as unknown as JsonObject,
+    recent: items,
   };
 }
 

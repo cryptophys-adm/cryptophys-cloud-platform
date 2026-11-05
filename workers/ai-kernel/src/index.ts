@@ -170,7 +170,7 @@ export default {
       console.error(JSON.stringify({ service: SERVICE, event: "supervisor_cycle_failed", message: String((err as Error)?.message ?? err) }));
     }));
     const minute = new Date(event.scheduledTime).getUTCMinutes();
-    if (minute === 7 && env.SIGNAL_ANALYST) {
+    if (minute === 22 && env.SIGNAL_ANALYST) {
       ctx.waitUntil(env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID)).cycle("scheduled").then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "signal_analyst_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
