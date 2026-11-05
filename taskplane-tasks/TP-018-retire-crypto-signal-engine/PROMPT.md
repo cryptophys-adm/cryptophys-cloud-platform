@@ -161,3 +161,17 @@ In `STATUS.md`, list every test file you changed, and why.
    - drift is 0, with `cryptophys-signal-engine` shown as `disabled`;
    - the supervisor runs without `signals.reingest`.
 3. **Owner confirmation, then delete the Worker** `cryptophys-signal-engine` from Cloudflare. This is irreversible. Verify that it is absent and that drift is still 0.
+
+## Required audit addendum — pre-merge conditions (2026-11-05)
+
+1. **Readiness migration completeness.** `workers/control-plane-shared/src/readiness.ts` must require `0017_report_kinds_xauusd_and_hud.sql` as well as 0018, 0019, and 0020. TP-017 still publishes `xauusd_digest`; migration 0017 adds the corresponding report-kind constraint. Add a regression test proving `schemaReady()` returns false when the 0017 migration record is missing. Do not infer production migration state from source alone.
+
+2. **Retirement regression tests.** Update the existing supervisor, syscall, agent-memory, and drift-detector tests to assert that `signals.reingest` is unavailable, the supervisor no longer emits ingest actions, the `signal-engine` agent is suspended, and the disabled registry service is recorded as disabled without probing its binding. The repository-root scan must derive its root from `import.meta.url`; do not hard-code a runner filesystem path. Do not skip or delete these regression tests merely to obtain a green result.
+
+3. **Architecture record.** Add a dated amendment to `architecture/adr/0007-ai-worker-os.md` that preserves the original design as history but supersedes the active Signal Engine, `SignalRpc.reingest`, and tier-2 capability behavior. Record that XAUUSD advisory observation remains read-only and external. Do not edit `architecture/BASELINE.md`.
+
+4. **CI sequencing blocker — owner/orchestrator action required.** The current `.github/workflows/validate-control-plane.yml` still bundles `signal-engine` from its Worker matrix. It runs for this PR because the PR changes `workers/**`; after `workers/signal-engine/` is deleted, that workflow will fail when it tries to bundle the missing Worker. This task forbids changing `.github/*`. Therefore the owner/orchestrator must merge a separate validation-only prerequisite that removes the retired Worker from the validation bundle matrix before this PR can pass all checks. Keep the production `DEPLOY_ORDER`, Access provisioning list, and drift expected-worker list unchanged until the post-merge orchestration change is ready; do not run a production deployment from this task.
+
+5. **Architecture and documentation consistency.** Preserve historical crypto data and tables. Any deployment/Access/drift inventory changes must be explicit and verified; do not claim production retirement until the orchestrator has reconciled those inventories and the owner has confirmed the production Worker disposition.
+
+6. Update this task's `STATUS.md` with the exact latest CI test count and every remaining blocker. A locally reported test count is not a substitute for the GitHub Actions result.
