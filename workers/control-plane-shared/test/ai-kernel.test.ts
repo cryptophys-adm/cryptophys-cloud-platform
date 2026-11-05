@@ -19,13 +19,41 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0015_agent_principals.sql");
+  assert.equal(REQUIRED_MIGRATION, "0016_platform_and_xauusd_agents.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
   const db2 = migratedDb();
   db2.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(REQUIRED_MIGRATION);
   assert.equal(await schemaReady({ DB: db2 } as never), false);
+});
+
+test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-assistant agents (7 active + 14 HUD)", () => {
+  const db = migratedDb();
+  const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status FROM agents ORDER BY agent_id").all() as Array<{
+    agent_id: string;
+    host_worker: string;
+    tier_max: number;
+    capabilities_json: string;
+    status: string;
+  }>;
+  // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32 total
+  assert.equal(rows.length, 32);
+  const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
+  assert.equal(xauusdAgents.length, 21);
+  const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
+  assert.equal(hudAgents.length, 14);
+  for (const r of rows) {
+    assert.equal(r.status, "enabled");
+    if (r.agent_id !== "supervisor") {
+      assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
+    }
+    const caps = JSON.parse(r.capabilities_json) as string[];
+    assert.ok(caps.length > 0);
+    for (const c of caps) {
+      assert.ok(Object.hasOwn(CAPABILITIES, c), `${r.agent_id} capability ${c} must exist in CAPABILITIES`);
+    }
+  }
 });
 
 function memory() {

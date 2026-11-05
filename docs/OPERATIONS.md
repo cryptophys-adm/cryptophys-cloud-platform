@@ -31,16 +31,25 @@ Durable state lives only in D1 `cryptophys-control-plane` (owner `cryptophys-adm
 - Restore verification: after any restore, run `GET /v1/verify` on the Audit Ledger and a drift observation, and record the restore as a new audit event.
 - Recovery plans for each service are stored in the Recovery Manager and need a second person to approve.
 
-## Registering an external AI agent (ADR-0007, TP-009)
+## Registered platform and XAUUSD AI agents (ADR-0007, TP-009, 0016)
 
-An external agent (an IDE agent, another AI session) reaches the AI Kernel's MCP endpoint `POST /mcp` with **its own** Cloudflare Access service token. It acts as a registered agent at tier ≤ 1, through the same policy-gated syscalls as internal agents.
+There are no third-party or IDE external agents. The AI Worker OS process table (`agents`) registers only:
 
-1. **Owner: create the service token.** In Cloudflare Zero Trust, go to Access → Service credentials → Service tokens → Create.
+1. **AI Worker Cloud Platform agents (`cryptophys-cloud-platform`):**
+   - `cryptophys-ai-kernel` Durable Object agents: `supervisor` (tier 2), `signal-analyst` (tier 1), and `auditor` (tier 1).
+   - Per-Worker AI agents (`tier_max = 1`) for the remaining eight platform Workers: `platform-api`, `deployment-orchestrator`, `platform-registry`, `policy-engine`, `drift-detector`, `audit-ledger`, `recovery-manager`, and `signal-engine`.
+2. **XAUUSD AI Trading Assistant deployment agents (`host_worker = 'xauusd-ai-trading-assistant'`, `tier_max = 1`):**
+   - Active H1 synthesis chain (`xauusd-analyst`, `xauusd-counselor`, `xauusd-reasoner`) and multi-agent bus / news threads / live 15m room (`xauusd-technical-analyst`, `xauusd-news-analyst`, `xauusd-risk-manager`, `xauusd-moderator`).
+   - 14 Pine HUD agents (`hud-r37-funnel`, `hud-prophet`, `hud-trade-management`, `hud-interstellar-eyes`, `hud-kinetic-engine-tva`, `hud-fabio-amt-sensors`, `hud-chronos-matrix`, `hud-aegis-footprint-matrix`, `hud-tactical-muscles`, `hud-macro-aether-sensors`, `hud-gabfx-price-action`, `hud-playbook-execution`, `hud-decision-matrix`, `hud-grid-bot-protocol`).
+
+If a cross-deployment Worker agent reaches the AI Kernel's MCP endpoint `POST /mcp` over Cloudflare Access rather than an in-account binding:
+
+1. **Owner: create the service token (only if cross-HTTP MCP binding is used).** In Cloudflare Zero Trust, go to Access → Service credentials → Service tokens → Create.
    - Name it `cryptophys-agent-<agent-id>`; the prefix matters.
-   - Give the **Client Secret only to the agent's MCP configuration**. Never paste it in git, an issue, a PR or a chat.
+   - Give the **Client Secret only to the Worker's configuration**. Never paste it in git, an issue, a PR or a chat.
    - Send the orchestrator the **Client ID**. A Client ID is an identifier, not a secret.
 2. **Orchestrator: Provision Access.** Run the Provision Access workflow. It adds every `cryptophys-agent-*` token to the policy `external-agents` (`non_identity`). Access then admits the token, but the Workers still refuse it on `/v1` because it is not in `OPERATOR_IDENTITIES`.
-3. **Owner approves the agent definition in writing:** its `agent_id`, `tier_max` ≤ 1 and capabilities. The orchestrator then adds a migration that registers the agent and its principal (`agent_principals.access_identity` = Client ID) and deploys the control plane.
+3. **Bind the principal:** an approver binds `agent_principals.access_identity = Client ID` to the registered `agent_id` (`tier_max` ≤ 1).
 4. **The agent connects.** It sends `POST https://cryptophys-ai-kernel.<subdomain>.workers.dev/mcp` with the headers `CF-Access-Client-Id` and `CF-Access-Client-Secret`. `tools/list` shows only `agent_whoami`, `agent_observe` and `agent_syscall`.
 
 **Revocation.** An approver can revoke a principal with `DELETE /v1/agents/{id}/principals/{client_id}`. Deleting the service token in Zero Trust and re-running Provision Access removes it at the edge.
