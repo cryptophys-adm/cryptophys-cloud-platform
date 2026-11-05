@@ -113,6 +113,23 @@ export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestD
       if (contradictsChainValidity(combined, obs.chain.valid)) return null;
       return { headline, summary, items };
     },
+    diagnose(raw): string {
+      if (!raw || typeof raw !== "object") return "unknown";
+      const v = raw as Record<string, unknown>;
+      const headline = boundedString(v.headline, 160);
+      if (!headline) return "headline_invalid";
+      const summary = boundedString(v.summary, 800);
+      if (!summary) return "summary_invalid";
+      if (!Array.isArray(v.items) || v.items.length < 1 || v.items.length > 8) return "items_invalid";
+      for (const rawItem of v.items) {
+        const item = boundedString(rawItem, 200);
+        if (!item) return "item_invalid";
+      }
+      if (typeof v.chain_valid === "boolean" && v.chain_valid !== obs.chain.valid) return "chain_valid_mismatch";
+      const combined = `${headline}\n${summary}\n${(v.items as unknown[]).join("\n")}`;
+      if (contradictsChainValidity(combined, obs.chain.valid)) return "chain_contradiction";
+      return "unknown";
+    },
   };
 }
 
