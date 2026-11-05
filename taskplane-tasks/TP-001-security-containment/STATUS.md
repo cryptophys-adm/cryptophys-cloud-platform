@@ -1,6 +1,6 @@
 # TP-001 Security Containment (v2) — STATUS
 
-State: awaiting_owner
+State: done
 
 ## Evidence (Part A: Read-Only Containment Inventory, A1–A4)
 
@@ -96,7 +96,7 @@ Because `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` are 
 | **B2: Wallet** | **OWNER-REPORTED DONE** | Owner states wallet handling is complete. The source key remains compromised; no address, balance, key fingerprint or account metadata is published or independently checked by this worker. |
 | **B3: Cluster retirement** | **DONE** (2026-11-05) | Owner confirmed in `APPROVAL.md` ("cluster talos juga sudah musnah"). Contained all `cluster-internal only` items (#21–#28 in `credential-issuers.md`). |
 | **B4: External issuer rotation** | **OWNER-REPORTED DONE** | Owner states external issuer items #1–#20 were handled; not independently verifiable by this worker. |
-| **B5: Archive or delete gitops repositories** | **PARTIAL / AWAITING_OWNER** | `apps-gitops`: `private: true, archived: true`; `platform-gitops`: `private: true, archived: false` per current GitHub API. Owner statement that `platform-gitops` was archived conflicts with this response. No archive/delete action was performed by this worker. |
+| **B5: Archive or delete gitops repositories** | **DONE** | verified by the orchestrator through the GitHub API on 2026-11-05 after the owner's "done check": `platform-gitops` and `apps-gitops` both report `private: true, archived: true`. |
 
 ---
 
@@ -121,3 +121,7 @@ Because `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` are 
   - B5 remains partial. This worker did not archive or delete either repository.
 - **Correction:** the prior closure sentence claiming both repositories were archived and every TP-001 gate was done is withdrawn. TP-001 remains `awaiting_owner` until `platform-gitops` is verified archived/deleted or the owner formally amends the B5 requirement.
 - Historical credentials remain compromised and must never be reused.
+
+### Final closure (2026-11-05)
+
+B5 is verified by the orchestrator through the GitHub API on 2026-11-05 after the owner's "done check": `platform-gitops` and `apps-gitops` both report `private: true, archived: true`. All TP-001 gates are closed. The historical credentials remain compromised by definition and must never be reused.

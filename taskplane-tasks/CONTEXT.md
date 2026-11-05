@@ -60,7 +60,7 @@ Commit `STATUS.md` and any reports to the task branch and open a PR titled `TP-x
 
 ## Task order
 
-Code tasks: TP-006 → TP-007 → TP-008 → TP-009, one PR each, each merged before the next starts. TP-001 remains awaiting owner verification of B5: `apps-gitops` is private and archived, but the GitHub API currently reports `platform-gitops` as private and not archived despite the owner's archive statement. TP-003 to TP-005 are cancelled.
+Code tasks TP-006 to TP-010 are done (one PR each). TP-001 is done; TP-003 to TP-005 are cancelled.
 
 ## Technical debt / future work
 
@@ -69,7 +69,7 @@ _Workers log discoveries here through their PR._
 
 ## Task status (2026-11-04)
 
-- TP-001 security containment: **awaiting_owner** (2026-11-05). The owner reports B1/B2/B3/B4 actions complete, but B1/B2/B4 are not independently verifiable without using credentials. B5 is incomplete: `apps-gitops` is private and archived; `platform-gitops` is private but the GitHub API reports `archived: false`, conflicting with the owner's statement that it was archived. Do not mark TP-001 done until `platform-gitops` is verified archived/deleted or the owner formally revises the B5 requirement.
+- TP-001 security containment: **done** (2026-11-05). The cluster was destroyed, the owner revoked the external credentials (B1, B2 and B4 on the owner's statement), and both gitops repositories are verified archived.
 - TP-002 GitHub cleanup: **done**.
 - TP-006 to TP-009 (AI Worker OS: Signal Analyst agent, Auditor agent, Vectorize memory, external agents through MCP): **done** (merged via PRs #61, #62, #63, #64).
 - TP-003, TP-004, TP-005 (cluster inventory, export, decommission): **cancelled** by the owner. The cluster is deprecated, its data is not kept, and the platform no longer needs cluster access. See each task's STATUS.md.
