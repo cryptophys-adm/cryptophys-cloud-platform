@@ -1,6 +1,6 @@
 # TP-001 Security Containment (v2) — STATUS
 
-State: awaiting_owner
+State: awaiting_owner (only B5 for `apps-gitops` remains; see the Part C verification below)
 
 ## Evidence (Part A: Read-Only Containment Inventory, A1–A4)
 
@@ -106,3 +106,16 @@ Because `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` are 
 - Populated `taskplane-tasks/TP-001-security-containment/credential-issuers.md` with the complete A3 secret and credential issuer inventory across `platform-gitops` and `apps-gitops`.
 - Updated `taskplane-tasks/TP-001-security-containment/STATUS.md` with a non-revealing A1 field/path inventory, withdrawal of disallowed partial identifiers, withholding of A2 account details after identifying a public-test-vector disclosure risk, the A3 issuer inventory, the A4 written history purge plan, and corrected owner-gate statuses.
 - The prior report did not print a raw credential string, but it did include partial API-key characters and a derived account association with a publicly known test-vector key. Those disclosures have been withdrawn from the current artifacts; treat the historical source credentials as compromised. Temporary worker artifacts were removed. No credential was used, no Binance endpoint was called, and no transaction was signed or sent.
+
+---
+
+## Part C: orchestrator verification (2026-11-05)
+
+- **Part A** (PR #75): validated. No credential values, partial identifiers, derived addresses or key fingerprints appear in the merged artifacts.
+- PR #74 and PR #71 were closed unmerged. #74 contained partial Binance key characters and a derived wallet association, both now withdrawn. Its branch should be deleted; the owner may also ask GitHub support to purge the PR diff if desired.
+- **B1, B2, B4:** recorded as done on the owner's statement. They cannot be independently verified without using the credentials, which is prohibited.
+- **B3:** done (cluster destroyed, owner statement).
+- **B5:**
+  - `platform-gitops`: an anonymous `git ls-remote` fails, so it is not publicly readable.
+  - `apps-gitops`: the GitHub API reports `private: true, archived: false`. It is private but **not archived**.
+  - B5 closes when `apps-gitops` is archived (`gh repo archive cryptophys-work/apps-gitops --yes`) or deleted, or when the owner records that private-only is the final state.
