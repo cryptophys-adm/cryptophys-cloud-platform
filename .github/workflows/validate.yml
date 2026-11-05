@@ -65,6 +65,7 @@ jobs:
           bash .github/scripts/access-headers.test.sh
           bash .github/scripts/access-identities.test.sh
           bash .github/scripts/drift-summary.test.sh
+          bash .github/scripts/report-summary.test.sh
           bash .github/scripts/bootstrap-private-worker.test.sh
           bash .github/scripts/ensure-vectorize-index.test.sh
           bash .github/scripts/find-agent-service-tokens.test.sh
