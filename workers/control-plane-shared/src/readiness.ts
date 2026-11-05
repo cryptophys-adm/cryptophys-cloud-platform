@@ -11,6 +11,7 @@ const REQUIRED_MIGRATIONS = [
   "0014_agent_memories.sql",
   "0015_agent_principals.sql",
   "0016_platform_and_xauusd_agents.sql",
+  "0017_report_kinds_xauusd_and_hud.sql",
   "0018_grant_reports_publish.sql",
   "0019_ai_failures.sql",
   REQUIRED_MIGRATION,
