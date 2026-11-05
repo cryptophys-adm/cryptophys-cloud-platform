@@ -20,6 +20,7 @@ import {
   setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv,
 } from "./kernel.ts";
 import { handleMcp } from "./mcp.ts";
+import { KERNEL_HOST } from "./kernel.ts";
 import { listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
@@ -69,6 +70,15 @@ export default {
       const callerActor = actorOf(auth.identity);
       const isOperator = listConfigured(env.OPERATOR_IDENTITIES) && identityAllowed(auth.identity, env.OPERATOR_IDENTITIES);
       const principal = await getActivePrincipalByIdentity(env.DB, callerActor);
+      let agentSessionPrincipal = principal;
+      if (principal) {
+        const { getAgent } = await import("../../control-plane-shared/src/capabilities.ts");
+        const agent = await getAgent(env.DB, principal.agent_id);
+        if (agent && agent.host_worker === KERNEL_HOST) {
+          console.log(JSON.stringify({ service: SERVICE, event: "kernel_agent_principal_ignored", access_identity: callerActor, agent_id: principal.agent_id }));
+          agentSessionPrincipal = null;
+        }
+      }
       if (isOperator && principal) {
         console.warn(JSON.stringify({
           service: SERVICE,
@@ -83,10 +93,10 @@ export default {
         // selected from a request header; external agents require an active registered principal.
         return await handleMcp(request, env, callerActor, await isApprover(request, env));
       }
-      if (principal) {
+      if (agentSessionPrincipal) {
         return await handleMcp(request, env, callerActor, false, {
-          agentId: principal.agent_id,
-          accessIdentity: principal.access_identity,
+          agentId: agentSessionPrincipal.agent_id,
+          accessIdentity: agentSessionPrincipal.access_identity,
         });
       }
       const operator = await requireOperator(request, env);

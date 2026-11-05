@@ -44,6 +44,8 @@ export async function listAgentPrincipals(env: KernelHttpEnv, agentId: string): 
   return rows.results;
 }
 
+export const KERNEL_HOST = "cryptophys-ai-kernel";
+
 export async function addAgentPrincipal(
   env: KernelHttpEnv,
   agentId: string,
@@ -57,6 +59,9 @@ export async function addAgentPrincipal(
   }
   const agent = await getAgent(env.DB, agentId);
   if (!agent) return { status: 404, body: { error: "not_found", message: "agent not found" } };
+  if (agent.host_worker === KERNEL_HOST) {
+    return { status: 400, body: { error: "kernel_agent_internal", message: "agents hosted by the AI Kernel cannot have external principals" } };
+  }
   if (agent.tier_max > 1) {
     return { status: 400, body: { error: "external_tier_limit", message: "principals can only be registered for agents with tier_max <= 1" } };
   }

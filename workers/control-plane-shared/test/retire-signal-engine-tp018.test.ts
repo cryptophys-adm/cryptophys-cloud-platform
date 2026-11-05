@@ -50,7 +50,7 @@ test("TP-018 supervisor", async () => {
 
 test("TP-018 readiness", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0020_retire_signal_engine.sql");
+  assert.equal(REQUIRED_MIGRATION, "0021_supervisor_tier_1.sql");
   assert.equal(await schemaReady({ DB: db } as any), true);
 });
 

@@ -258,7 +258,7 @@ test("a tier-2 capability through agent_syscall is denied with external_tier_lim
   assert.equal(tier2Res.body.result.isError, true);
   const tier2Payload = JSON.parse(tier2Res.body.result.content[0].text);
   assert.equal(tier2Payload.outcome, "denied");
-  assert.match(tier2Payload.reason, /external_tier_limit/);
+  assert.match(tier2Payload.reason, /kernel_agent_internal/);
   assert.equal(reingests.length, 0);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
@@ -340,7 +340,7 @@ test("registering a principal requires an approver (operator alone gets 403) and
     req("POST", "/v1/agents/supervisor/principals", { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
   );
   assert.equal(supTry.status, 400);
-  assert.equal(supTry.body.error, "external_tier_limit");
+  assert.equal(supTry.body.error, "kernel_agent_internal");
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_principals").get() as any).n, 0);
 });
 
