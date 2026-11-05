@@ -12,6 +12,18 @@ Current branch head: `710546c4dd09ce6222ac7866b8f5a4d215ecbbd7`.
   - Endpoint/library tests against the real D1 migrations: **117/117 PASS, 0 failed, 0 skipped**.
   - Isolated SQLite migration tests: PASS.
   - Worker bundle dry-run: FAIL because the existing `.github/workflows/validate-control-plane.yml` still loops over `signal-engine` and attempts to read the deleted `workers/signal-engine/wrangler.toml` (ENOENT).
+- Exact test log tail from run #42038439162:
+  ```text
+  # tests 117
+  # pass 117
+  # fail 0
+  # skipped 0
+  ```
+- Exact bundle failure tail from the same run:
+  ```text
+  Could not read file: ../signal-engine/wrangler.toml
+  ENOENT: no such file or directory, open '.../workers/signal-engine/wrangler.toml'
+  ```
 - The workflow failure is not a TypeScript, test, migration, or Wrangler bundle-size failure. It is a stale validation matrix entry.
 - External check suites (Claude, Cloudflare Workers & Pages, Cursor) remain queued; they are not approvals.
 
@@ -21,6 +33,7 @@ Current branch head: `710546c4dd09ce6222ac7866b8f5a4d215ecbbd7`.
 - Rewrote supervisor/syscall/memory/drift tests for the retired `signals.reingest` capability and suspended Signal Engine.
 - Added a real drift test proving the disabled Signal Engine is recorded as disabled and its binding is not probed.
 - Made the repository-root binding test portable using `import.meta.url`; removed the hard-coded runner path.
+- Applied the owner's requested syscall-test corrections: the removed capability assertion checks for `capability_known`, and both rate-limit seed and consumption-count queries use `recovery.propose`. The now-unused `REINGEST_COOLDOWN_MS` and `INGEST_STALE_MS` constants are already absent from `supervisor.ts`.
 - Added dated amendments to ADR-0005, ADR-0006, and ADR-0007. Historical crypto data and the XAUUSD Mizan/Prophet/GMI ownership boundary are preserved.
 - Updated `docs/CONTROL-PLANE-WORKERS.md` and `docs/OPERATIONS.md` to distinguish 30 enabled tier-1 agents, one suspended tier-1 Signal Engine agent, and the tier-2 supervisor.
 - Updated this task packet with the CI sequencing prerequisite.
