@@ -88,6 +88,9 @@ test("5. decision 11: dimensions are dimensionless, symmetric and can reach the 
   const spike = [...Array(99).fill(10), 20];
   assert.equal(dimensionScaled(walk(0.004), spike, 99).volume_score, 1);
   assert.equal(dimensionScaled(walk(0.004), flatVol, 99).volume_score, 0.5);
+  const invalidLatestVolume = [...Array(99).fill(10), Number.NaN];
+  assert.equal(dimensionScaled(walk(0.004), invalidLatestVolume, 99).volume_score, 0, "invalid latest volume must not reuse an older candle");
+  assert.equal(dimensionScaled(walk(0.004), Array(99).fill(10), 99).volume_score, 0, "misaligned volume windows fail closed");
   // A strong, consistent trend can now reach the 0.60 signal threshold with a good regime.
   const strong = walk(0.01);
   const per = { "1h": mizanTimeframe(strong, spike, "1h") };
