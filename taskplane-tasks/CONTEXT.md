@@ -2,24 +2,24 @@
 
 **Last Updated:** 2026-11-05
 **Status:** Active
-**Next Task ID:** TP-023 (TP-020 reserved: fix AI drafts from TP-016 data, if the Auditor digest still fails)
+**Next Task ID:** TP-024 (TP-023 Console Worker is open; TP-020 reserved: fix AI drafts from TP-016 data, if the Auditor digest still fails)
 **Roles:** orchestrator and validator = Claude (cloud session); code worker = pi agent on the VPS with Reflection's `beam` model from TP-012 (see `PI.md`; Antigravity did TP-006 to TP-009 and is out of quota); ops worker = pi agent on the VPS (TP-001, TP-002); owner = repository owner (human).
 
 ---
 
 ## Where the deployment stands
 
-**Verified production state (orchestrator, 2026-11-05 15:50 UTC). Do not infer production state from `main` alone; re-verify it before asserting it.**
+**Verified production state (orchestrator, 2026-11-05 16:53 UTC, after TP-022). Do not infer production state from `main` alone; re-verify it before asserting it.**
 
 - **Last deploy:** Deploy Control Plane run 42058008673 at `6c531bb`: success. Platform API run 42054089679 at `4909c89`: success.
 - **Workers:** 8 platform Workers.
   - Platform API, Deployment Orchestrator, Platform Registry, Policy Engine, Drift Detector, Audit Ledger, Recovery Manager, AI Kernel.
   - The crypto Signal Engine was **retired and deleted** (TP-018). Its D1 history is kept.
   - The registry has 13 services: the 8 above, 4 xauusd Workers (health only) and the disabled `cryptophys-signal-engine` row.
-- **D1:** migrations through `0020_retire_signal_engine.sql`.
+- **D1:** migrations through `0021_supervisor_tier_1.sql`.
 - **Agents:**
-  - `supervisor`: tier 2, enabled. No tier-2 capability exists any more.
-  - 30 tier-1 agents, enabled.
+  - `supervisor`: tier 1, enabled (TP-022). No agent has `tier_max >= 2`.
+  - 31 tier-1 agents enabled in total, the supervisor included.
   - `signal-engine`: suspended.
   - Kill switch on. No external principals.
 - **Signal Analyst:** reads XAUUSD decisions (TP-017) and publishes `xauusd_digest`. It runs at minute 22 and makes no AI call.
@@ -35,7 +35,7 @@
 - **Retention (TP-021):** drift observations are kept 90 days (03:00 UTC), and syscall consumptions 7 days (03:07 UTC).
 - **Drift:** 0 at 15:46 UTC.
 - **Open recovery plans:** 5 stale supervisor drafts from 2026-11-04 18:37. **Do not approve them.** They expire automatically (`approval_expired`) after 72 h.
-- **Decisions:** ADR-0005, ADR-0006 and ADR-0007, each with its 2026-11-05 amendments, and `docs/TRANSFORMATION-INVENTORY.md`.
+- **Decisions:** ADR-0005, ADR-0006 and ADR-0007, each with its 2026-11-05 amendments, ADR-0008 (Cerebrum portal, Console, Access sign-in), and `docs/TRANSFORMATION-INVENTORY.md`.
 - **Repository:** temporarily **public**, an owner decision for Actions billing. Treat every issue, PR and log as public.
 
 The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `PI.md`.
@@ -45,6 +45,8 @@ The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its l
 - **The signal role moves to XAUUSD.** The Signal Analyst reads `xauusd-ai-trading-assistant` decisions (TP-017), and the crypto Signal Engine (BTC/ETH/SOL) is retired (TP-018). The platform never changes the xauusd repository; it reads that repository's read-only API through an in-account Service Binding.
 
 - **Data retention (TP-021).** Keep `drift_observations` for 90 days, always keeping the 2 newest per service. Keep `agent_syscall_consumptions` for 7 days. Never delete audit events, policy decisions, reports, plans, deployment requests, the registry or crypto history.
+
+- **Console and Cerebrum (ADR-0008).** An operator Console at `console.cryptophys.work`, separate from Nexus until phase 2, forwards the operator's own Access JWT to allow-listed routes and has no authority of its own (TP-023, TP-024). The home portal `home.cryptophys.work` is named Cerebrum (TP-025). Sign-in is Cloudflare Access with an OIDC identity provider; no application-managed login. Omega, Aladdin and Execution are retired names.
 
 - **Supervisor at tier 1 (TP-022).** No agent keeps `tier_max = 2`. Agents hosted by the AI Kernel (supervisor, signal-analyst, auditor) can never act through an external principal or through `AgentRpc`.
 
