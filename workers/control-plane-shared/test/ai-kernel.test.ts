@@ -19,23 +19,27 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0019_ai_failures.sql");
+  assert.equal(REQUIRED_MIGRATION, "0020_retire_signal_engine.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
   const db2 = migratedDb();
   db2.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(REQUIRED_MIGRATION);
   assert.equal(await schemaReady({ DB: db2 } as never), false);
+  const db3 = migratedDb();
+  db3.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run("0017_report_kinds_xauusd_and_hud.sql");
+  assert.equal(await schemaReady({ DB: db3 } as never), false, "readiness requires migration 0017");
 });
 
 test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD report kinds without operator impersonation", async () => {
   const { env, db } = kernelEnv();
-  const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status FROM agents ORDER BY agent_id").all() as Array<{
+  const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status, status_reason FROM agents ORDER BY agent_id").all() as Array<{
     agent_id: string;
     host_worker: string;
     tier_max: number;
     capabilities_json: string;
     status: string;
+    status_reason: string | null;
   }>;
   // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32 total
   assert.equal(rows.length, 32);
@@ -44,7 +48,12 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
   assert.equal(hudAgents.length, 14);
   for (const r of rows) {
-    assert.equal(r.status, "enabled");
+    if (r.agent_id === "signal-engine") {
+      assert.equal(r.status, "suspended");
+      assert.match(r.status_reason ?? "", /retired/);
+    } else {
+      assert.equal(r.status, "enabled");
+    }
     if (r.agent_id !== "supervisor") {
       assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
       const caps = JSON.parse(r.capabilities_json) as string[];
@@ -99,7 +108,6 @@ function memory() {
 function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
   const recoveryEnv = { ...baseEnv("cryptophys-recovery-manager", db), RECOVERY_LIFECYCLE: fakeWorkflow().binding };
-  const reingests: string[] = [];
   const mem = memory();
   const env: Record<string, unknown> = {
     ...baseEnv("cryptophys-ai-kernel", db, { OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`, APPROVER_IDENTITIES: APPROVER_EMAIL }),
@@ -110,18 +118,11 @@ function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
         return decide(policyEnv as never, parsed);
       },
     },
-    // Same as RecoveryRpc.propose / SignalRpc.reingest in the Workers' worker.ts.
+    // Same as RecoveryRpc.propose in the Workers' worker.ts.
     RECOVERY: {
       propose: async (agentId: string, decisionId: string, input: Record<string, unknown>) => {
         await verifySyscallDecision(db, decisionId, agentId, "recovery.propose");
         return proposeFromAgent(recoveryEnv as never, agentId, input);
-      },
-    },
-    SIGNALS: {
-      reingest: async (agentId: string, decisionId: string) => {
-        await verifySyscallDecision(db, decisionId, agentId, "signals.reingest");
-        reingests.push(decisionId);
-        return { run_id: "sig_test", series: 6, failed: 0 };
       },
     },
     ...extra,
@@ -136,7 +137,7 @@ function kernelEnv(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
   if (!("MEMORY" in extra)) {
     env.MEMORY = { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) };
   }
-  return { env, db, reingests, mem };
+  return { env, db, mem };
 }
 
 function drift(db: Db, serviceId: string, drifted: boolean, minutesAgo: number, reasons = ["version_mismatch"]) {
@@ -144,11 +145,6 @@ function drift(db: Db, serviceId: string, drifted: boolean, minutesAgo: number, 
   db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
     VALUES (?, ?, 'd', 'o', ?, ?, ?)`).run(`obs_${serviceId}_${minutesAgo}`, serviceId, drifted ? 1 : 0,
     JSON.stringify({ reasons: drifted ? reasons : [], desired_version: "aaaaaaaaaaaa", probe: { version_tag: drifted ? "bbbbbbbbbbbb" : "aaaaaaaaaaaa" } }), at);
-}
-function ingestRun(db: Db, minutesAgo: number, failed: number, total = 6) {
-  const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
-  db.raw.prepare(`INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES (?, 'scheduled', ?, ?, ?, ?, '[]')`)
-    .run(`sig_${minutesAgo}`, at, at, total, failed);
 }
 const AI_PLAN = { response: JSON.stringify({ title: "Redeploy Platform API", rationale: "Observed version differs from desired twice.",
   steps: [{ action: "redeploy_commit", description: "Redeploy the desired commit." }, { action: "manual", description: "Verify drift." }] }) };
@@ -170,26 +166,27 @@ test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and r
   const db = migratedDb();
   const failed = async (subject: string, cap: string) => (await agentSyscallChecks(db, subject, cap)).filter((c) => !c.passed).map((c) => c.id);
   assert.deepEqual(await failed(SUB, "recovery.propose"), []);
-  assert.deepEqual(await failed(SUB, "signals.reingest"), []);
+  assert.deepEqual(await failed(SUB, "signals.reingest"), ["capability_known"]);
+  assert.equal(CAPABILITIES["signals.reingest"], undefined);
   assert.ok((await failed(SUB, "deploy.release")).includes("not_human_only"));
   assert.ok((await failed(SUB, "deploy.release")).includes("capability_granted"));
   assert.ok((await failed(SUB, "trade.execute_order")).includes("capability_not_prohibited"));
   assert.ok((await failed(SUB, "__proto__")).includes("capability_known"));
   assert.ok((await failed("agent:ghost", "platform.observe")).includes("agent_registered"));
   assert.ok((await failed(OPERATOR_EMAIL, "platform.observe")).includes("subject_is_agent"));
-  db.raw.prepare("UPDATE agents SET tier_max = 1").run();
-  assert.ok((await failed(SUB, "signals.reingest")).includes("tier_within_agent_limit"));
+  db.raw.prepare("UPDATE agents SET tier_max = 0").run();
+  assert.ok((await failed(SUB, "recovery.propose")).includes("tier_within_agent_limit"));
   db.raw.prepare("UPDATE agents SET tier_max = 2, status = 'suspended'").run();
   assert.ok((await failed(SUB, "platform.observe")).includes("agent_enabled"));
   db.raw.prepare("UPDATE agents SET status = 'enabled'").run();
   db.raw.prepare("UPDATE kernel_controls SET value = '0'").run();
   assert.ok((await failed(SUB, "platform.observe")).includes("agents_enabled"));
   db.raw.prepare("UPDATE kernel_controls SET value = '1'").run();
-  for (const i of [1, 2]) {
+  for (const i of [1, 2, 3, 4, 5, 6]) {
     db.raw.prepare(`INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at)
       VALUES (?, 'supervisor', 'signals.reingest', ?)`).run(`seed_decision_${i}`, new Date().toISOString());
   }
-  assert.ok((await failed(SUB, "signals.reingest")).includes("rate_limit"), `max ${CAPABILITIES["signals.reingest"].max_per_hour}/h`);
+  assert.ok((await failed(SUB, "recovery.propose")).includes("rate_limit"), `max ${CAPABILITIES["recovery.propose"].max_per_hour}/h`);
 });
 
 test("Policy Engine decides agent.syscall; over HTTP a person can never act as an agent", async () => {
@@ -207,15 +204,15 @@ test("Policy Engine decides agent.syscall; over HTTP a person can never act as a
 test("syscall targets accept only a fresh, matching, unused allow decision", async () => {
   const db = migratedDb();
   const env = baseEnv("cryptophys-policy-engine", db);
-  const ok = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "signals.reingest", context: {} });
-  await verifySyscallDecision(db, ok.decision_id, "supervisor", "signals.reingest");
-  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "signals.reingest"), /already_used/);
-  await assert.rejects(verifySyscallDecision(db, undefined, "supervisor", "signals.reingest"), /policy_decision_required/);
-  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "recovery.propose"), /policy_decision_invalid/);
-  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "other-agent", "signals.reingest"), /policy_decision_invalid/);
-  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "signals.reingest", Date.now() + 301_000), /policy_decision_invalid/);
-  const future = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "signals.reingest", context: {} });
-  await assert.rejects(verifySyscallDecision(db, future.decision_id, "supervisor", "signals.reingest", Date.now() - 1_000), /policy_decision_invalid/);
+  const ok = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "recovery.propose", context: {} });
+  await verifySyscallDecision(db, ok.decision_id, "supervisor", "recovery.propose");
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "recovery.propose"), /already_used/);
+  await assert.rejects(verifySyscallDecision(db, undefined, "supervisor", "recovery.propose"), /policy_decision_required/);
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "memory.remember"), /policy_decision_invalid/);
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "other-agent", "recovery.propose"), /policy_decision_invalid/);
+  await assert.rejects(verifySyscallDecision(db, ok.decision_id, "supervisor", "recovery.propose", Date.now() + 301_000), /policy_decision_invalid/);
+  const future = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "recovery.propose", context: {} });
+  await assert.rejects(verifySyscallDecision(db, future.decision_id, "supervisor", "recovery.propose", Date.now() - 1_000), /policy_decision_invalid/);
   const denied = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "deploy.release", context: {} });
   await assert.rejects(verifySyscallDecision(db, denied.decision_id, "supervisor", "deploy.release"), /policy_decision_invalid/);
 });
@@ -223,27 +220,27 @@ test("syscall targets accept only a fresh, matching, unused allow decision", asy
 test("syscall decision consumption is atomic under replay and rate-limit races, and rechecks the kill switch", async () => {
   const db = migratedDb();
   const env = baseEnv("cryptophys-policy-engine", db);
-  const replay = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "signals.reingest", context: {} });
+  const replay = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "recovery.propose", context: {} });
   const replayResults = await Promise.allSettled([
-    verifySyscallDecision(db, replay.decision_id, "supervisor", "signals.reingest"),
-    verifySyscallDecision(db, replay.decision_id, "supervisor", "signals.reingest"),
+    verifySyscallDecision(db, replay.decision_id, "supervisor", "recovery.propose"),
+    verifySyscallDecision(db, replay.decision_id, "supervisor", "recovery.propose"),
   ]);
   assert.equal(replayResults.filter(r => r.status === "fulfilled").length, 1);
   assert.equal(replayResults.filter(r => r.status === "rejected").length, 1);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE decision_id = ?").get(replay.decision_id) as any).n, 1);
 
-  const revoked = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "signals.reingest", context: {} });
+  const revoked = await decide(env as never, { subject: SUB, action: "agent.syscall", resource: "recovery.propose", context: {} });
   db.raw.prepare("UPDATE kernel_controls SET value = '0' WHERE control = 'agents_enabled'").run();
-  await assert.rejects(verifySyscallDecision(db, revoked.decision_id, "supervisor", "signals.reingest"), /policy_decision_revoked/);
+  await assert.rejects(verifySyscallDecision(db, revoked.decision_id, "supervisor", "recovery.propose"), /policy_decision_revoked/);
 
   const rateDb = migratedDb();
   const rateEnv = baseEnv("cryptophys-policy-engine", rateDb);
-  const decisions = await Promise.all([1, 2, 3].map(() => decide(rateEnv as never, { subject: SUB, action: "agent.syscall", resource: "signals.reingest", context: {} })));
+  const decisions = await Promise.all(Array.from({ length: 7 }, () => decide(rateEnv as never, { subject: SUB, action: "agent.syscall", resource: "recovery.propose", context: {} })));
   assert.ok(decisions.every(d => d.decision === "allow"), "decisions may be minted before concurrent target consumption");
-  const results = await Promise.allSettled(decisions.map(d => verifySyscallDecision(rateDb, d.decision_id, "supervisor", "signals.reingest")));
-  assert.equal(results.filter(r => r.status === "fulfilled").length, CAPABILITIES["signals.reingest"].max_per_hour);
-  assert.equal(results.filter(r => r.status === "rejected").length, 3 - CAPABILITIES["signals.reingest"].max_per_hour!);
-  assert.equal((rateDb.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'supervisor' AND capability = 'signals.reingest'").get() as any).n, CAPABILITIES["signals.reingest"].max_per_hour);
+  const results = await Promise.allSettled(decisions.map(d => verifySyscallDecision(rateDb, d.decision_id, "supervisor", "recovery.propose")));
+  assert.equal(results.filter(r => r.status === "fulfilled").length, CAPABILITIES["recovery.propose"].max_per_hour);
+  assert.equal(results.filter(r => r.status === "rejected").length, decisions.length - CAPABILITIES["recovery.propose"].max_per_hour!);
+  assert.equal((rateDb.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'supervisor' AND capability = 'signals.reingest'").get() as any).n, CAPABILITIES["recovery.propose"].max_per_hour);
 });
 
 test("reports.publish enforces the 16 KiB JSON body limit before inserting", async () => {
@@ -270,7 +267,7 @@ test("denied syscalls are recorded and audited; tier 3 never dispatches", async 
   assert.equal(r.outcome, "denied");
   const row = db.raw.prepare("SELECT outcome, tier FROM agent_actions WHERE capability = 'deploy.release'").get() as any;
   assert.deepEqual([row.outcome, row.tier], ["denied", 3]);
-  const noPolicy = await syscall({ ...env, POLICY: { evaluate: async () => { throw new Error("down"); } } } as never, "supervisor", "signals.reingest");
+  const noPolicy = await syscall({ ...env, POLICY: { evaluate: async () => { throw new Error("down"); } } } as never, "supervisor", "recovery.propose");
   assert.deepEqual([noPolicy.outcome, (noPolicy as any).reason], ["denied", "policy_unavailable"], "fails closed");
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
@@ -308,19 +305,15 @@ test("SupervisorAgent serializes overlapping cycles and recovers its queue after
   assert.equal(await after, "after");
 });
 
-test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can approve; failing ingest -> tier 2 re-run", async () => {
-  const { env, db, reingests } = kernelEnv(migratedDb(), { AI: fakeAi(AI_PLAN) });
+test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can approve", async () => {
+  const { env, db, mem } = kernelEnv(migratedDb(), { AI: fakeAi(AI_PLAN) });
   drift(db, "cryptophys-platform-api", true, 20);
   drift(db, "cryptophys-platform-api", true, 5);
   drift(db, "cryptophys-policy-engine", false, 20);
   drift(db, "cryptophys-policy-engine", true, 5); // transient: not persistent
-  ingestRun(db, 20, 6);
-  ingestRun(db, 5, 6);
-
-  const report = await runCycle(env as never, kernelEnv().mem, "scheduled");
+  const report = await runCycle(env as never, mem, "scheduled");
   const kinds = report.findings.map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
-  assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded", "ingest::signals.reingest:succeeded"]);
-  assert.equal(reingests.length, 1);
+  assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded"]);
   const plan = db.raw.prepare("SELECT plan_id, status, created_by, steps_json FROM recovery_plans").get() as any;
   assert.deepEqual([JSON.parse(plan.steps_json).title, plan.status, plan.created_by], ["Redeploy Platform API", "draft", "agent:supervisor"]);
 
@@ -329,11 +322,11 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   const approved = await call(recovery, recoveryEnv, req("POST", `/v1/plans/${plan.plan_id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
   const trail = db.raw.prepare("SELECT event_type, actor FROM audit_events WHERE event_type = 'agent.action' ORDER BY rowid").all().map((r: any) => r.actor);
-  assert.deepEqual(trail, [SUB, SUB]);
+  assert.deepEqual(trail, [SUB]);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 
-test("supervisor: no duplicate proposals, re-run cooldown, template when AI is unavailable, nothing when suspended", async () => {
+test("supervisor: no duplicate proposals, template when AI is unavailable, nothing when suspended", async () => {
   const k = kernelEnv(migratedDb(), { AI: fakeAi({ response: "not json" }) });
   drift(k.db, "cryptophys-audit-ledger", true, 20, ["health_check_failed"]);
   drift(k.db, "cryptophys-audit-ledger", true, 5, ["health_check_failed"]);
@@ -344,12 +337,9 @@ test("supervisor: no duplicate proposals, re-run cooldown, template when AI is u
   assert.deepEqual(JSON.parse(plan.steps_json).steps.map((s: any) => s.action), ["manual", "rollback_worker_version"], "template proposal");
   assert.deepEqual(templateProposal({ service_id: "x", drifted: true, persistent: true, reasons: ["version_mismatch"], desired_version: "a", observed_version: "b" }).steps[0].action, "redeploy_commit");
 
-  // Ingest has no runs at all (stale) -> one re-run; the next cycle is within the cooldown.
-  assert.equal(k.reingests.length, 1);
   const second = await runCycle(k.env as never, k.mem, "scheduled");
-  assert.equal(k.reingests.length, 1);
   assert.equal((k.db.raw.prepare("SELECT COUNT(*) AS n FROM recovery_plans").get() as any).n, 1, "open plan -> no duplicate");
-  assert.deepEqual(second.findings.map((f) => f.action), ["none", "none"]);
+  assert.deepEqual(second.findings.map((f) => f.action), ["none"]);
 
   k.db.raw.prepare("UPDATE agents SET status = 'suspended'").run();
   assert.equal((await runCycle(k.env as never, k.mem, "scheduled")).skipped, "agent_suspended");
@@ -366,7 +356,7 @@ test("kernel HTTP: readiness, agents, suspension by any operator, resumption and
   assert.equal((await call(kernel, env, req("GET", "/v1/agents", undefined, OUTSIDER_JWT))).status, 403);
   const agents = await call(kernel, env, req("GET", "/v1/agents"));
   const supAgent = agents.body.agents.find((a: any) => a.agent_id === "supervisor");
-  assert.deepEqual(supAgent.capabilities.map((c: any) => c.tier), [0, 1, 2, 0, 1]);
+  assert.deepEqual(supAgent.capabilities.map((c: any) => c.tier), [0, 1, 0, 1]);
   const suspended = await call(kernel, env, req("POST", "/v1/agents/supervisor/suspend", { reason: "test" }, OPERATOR_JWT));
   assert.equal(suspended.body.agent.status, "suspended");
   assert.equal((await call(kernel, env, req("POST", "/v1/agents/supervisor/resume", {}, OPERATOR_JWT))).status, 403);
