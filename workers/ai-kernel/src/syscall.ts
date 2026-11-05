@@ -230,7 +230,7 @@ export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonO
 
 const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentId: string) => Promise<JsonObject>> = {
   "platform.observe": (env) => observe(env),
-  "signals.observe": (env) => observeSignals(env),
+  "signals.observe": (env, input) => observeSignals(env, typeof input.now === "number" ? input.now : Date.now()),
   "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
 };

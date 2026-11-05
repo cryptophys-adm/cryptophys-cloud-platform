@@ -1,10 +1,10 @@
 name: Deploy Control Plane
 
-# Production deployment of the five control-plane service Workers, Signal Engine,
-# and AI Kernel from one exact main commit; type-check, tests and migration validation
+# Production deployment of the five control-plane service Workers and the AI Kernel from one exact main commit; type-check, tests and migration validation
 # run before production credentials are used.
 # The five control-plane services are Platform Registry, Policy Engine, Audit Ledger,
-# Recovery Manager and Drift Detector. Signal Engine and AI Kernel also deploy here.
+# Recovery Manager and Drift Detector. The AI Kernel also deploys here. The crypto Signal
+# Engine was retired on 2026-11-05 (TP-018) and is no longer deployed.
 # The Deployment Orchestrator and Platform API keep their own workflows.
 #
 # Order matters: service bindings require their targets to exist. Policy Engine deploys
@@ -31,7 +31,7 @@ concurrency:
 
 env:
   D1_DATABASE_NAME: cryptophys-control-plane
-  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager signal-engine ai-kernel drift-detector"
+  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager ai-kernel drift-detector"
 
 jobs:
   validate:
@@ -120,7 +120,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
           ACCESS_APP_NAME: cryptophys-cloud-platform
-          EXPECTED_WORKERS: "cryptophys-platform-registry cryptophys-policy-engine cryptophys-audit-ledger cryptophys-recovery-manager cryptophys-signal-engine cryptophys-ai-kernel cryptophys-drift-detector"
+          EXPECTED_WORKERS: "cryptophys-platform-registry cryptophys-policy-engine cryptophys-audit-ledger cryptophys-recovery-manager cryptophys-ai-kernel cryptophys-drift-detector"
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
 
       - name: Record a D1 Time Travel restore point before migrating

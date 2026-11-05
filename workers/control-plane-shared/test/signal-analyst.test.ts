@@ -43,7 +43,7 @@ function nonJsonXauusd() {
 
 const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
 const item = (overrides: any = {}) => ({
-  candle_key: `OANDA:XAUUSD:60:${Date.now() - 10*60000}`,
+  candle_key: `OANDA:XAUUSD:60:${NOW - 10 * 60_000}`,
   timestamp: "2026-11-05 11:05:16",
   decision: "WAIT",
   confidence: 0.3,
@@ -149,7 +149,7 @@ test("TP-017 no repeat", async () => {
   const reports = (db as any).raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id='signal-analyst'").get().n;
   assert.equal(reports, 1);
   // new candle same decision within 6h
-  const binding2 = fakeXauusd([item({ candle_key: `OANDA:XAUUSD:60:${Date.now() - 5*60000}`, decision: "WAIT" })]);
+  const binding2 = fakeXauusd([item({ candle_key: `OANDA:XAUUSD:60:${NOW - 3_600_000}`, decision: "WAIT" })]);
   (env as any).XAUUSD_AI = binding2;
   await runSignalCycle(env as any, mem, "operator", NOW + 2000);
   const reports2 = (db as any).raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id='signal-analyst'").get().n;
@@ -172,8 +172,10 @@ test("TP-017 change and flip", async () => {
 test("TP-017 six-hour heartbeat", async () => {
   const { env, db, mem } = kernelEnv(migratedDb(), { XAUUSD_AI: fakeXauusd([item()]) });
   await runSignalCycle(env as any, mem, "operator", NOW);
-  (env as any).XAUUSD_AI = fakeXauusd([item()]);
-  await runSignalCycle(env as any, mem, "operator", NOW + 6 * 3600_000 + 1000);
+  // Same decision six hours later, on a candle that is fresh at that time (not stale).
+  const later = NOW + 6 * 3600_000 + 1000;
+  (env as any).XAUUSD_AI = fakeXauusd([item({ candle_key: `OANDA:XAUUSD:60:${later - 10 * 60_000}` })]);
+  await runSignalCycle(env as any, mem, "operator", later);
   const n = (db as any).raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id='signal-analyst'").get().n;
   assert.equal(n, 2);
 });
