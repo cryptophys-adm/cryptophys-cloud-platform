@@ -9,21 +9,36 @@
 
 ## Where the deployment stands
 
-**Verified production state (orchestrator, 2026-11-04 23:21 UTC). Do not infer production state from `main` alone; re-verify before asserting it.**
+**Verified production state (orchestrator, 2026-11-05 15:50 UTC). Do not infer production state from `main` alone; re-verify it before asserting it.**
 
-- Deploy Control Plane runs 41931114234 (`56f52bf`) and 41932785364 (`0effe17`) succeeded end to end:
-  - every Worker's active version matches the commit, and health and readiness pass (the AI Kernel's `/ready` includes `supervisor_binding`, `signal_analyst_binding`, `auditor_binding`, `memory_binding`);
-  - the MCP front door, the agent registry and a supervisor cycle are verified;
-  - the recovery lifecycle Workflow is verified, and the audit chain is valid.
-- **Vectorize:** the explicit preflight step creates the index `cryptophys-agent-memory` (384d, cosine, metadata index `agent_id`) or verifies an existing one, and fails closed otherwise. The Workers deploy token lacks Vectorize access (Cloudflare error 10000, run 41883619698), so the step tries the D1/Access token first.
-- **D1:** migrations through `0015_agent_principals.sql`. Agents: `supervisor` (tier 2), `signal-analyst` (tier 1), `auditor` (tier 1), all enabled. No external principals are registered yet.
-- **Drift:** 13 of 13 healthy at 23:15 UTC.
-  - The 5 recovery drafts the supervisor proposed at 18:37 (audit-ledger, platform-registry, policy-engine, recovery-manager, signal-engine) were correct detections of the partial rollout from run 41883619698. They are now stale.
-  - Do not approve them. They expire automatically (`approval_expired`) after 72 h.
-- `cryptophys-github-actions-mcp` was **retired by the owner (2026-11-05)**: its GitHub token was revoked, and the Worker was deleted, verified absent from the account. Its source was removed from the repository.
-- **Decisions:** ADR-0005, ADR-0006, ADR-0007 and `docs/TRANSFORMATION-INVENTORY.md`.
+- **Last deploy:** Deploy Control Plane run 42058008673 at `6c531bb`: success. Platform API run 42054089679 at `4909c89`: success.
+- **Workers:** 8 platform Workers.
+  - Platform API, Deployment Orchestrator, Platform Registry, Policy Engine, Drift Detector, Audit Ledger, Recovery Manager, AI Kernel.
+  - The crypto Signal Engine was **retired and deleted** (TP-018). Its D1 history is kept.
+  - The registry has 13 services: the 8 above, 4 xauusd Workers (health only) and the disabled `cryptophys-signal-engine` row.
+- **D1:** migrations through `0020_retire_signal_engine.sql`.
+- **Agents:**
+  - `supervisor`: tier 2, enabled. No tier-2 capability exists any more.
+  - 30 tier-1 agents, enabled.
+  - `signal-engine`: suspended.
+  - Kill switch on. No external principals.
+- **Signal Analyst:** reads XAUUSD decisions (TP-017) and publishes `xauusd_digest`. It runs at minute 22 and makes no AI call.
+- **Reports and alerts:**
+  - Seven per-Worker agents publish advisory reports (TP-011 to TP-014).
+  - `observe()` carries `agent_reports_24h` (TP-015, #115) and `xauusd_latest` (TP-019).
+  - Drift Alert opens GitHub issues for drift and for critical reports. Issues never include report subjects.
+- **AI:**
+  - Text drafts failed until TP-016 fixed the object-response handling. The first successful draft was on 2026-11-05 at 13:07.
+  - Every draft passes the advisory-language guard. The guard fails closed: TP-019 and #121.
+  - `ai_failures` records failure categories.
+  - TP-020 is reserved in case the Auditor digest still fails.
+- **Retention (TP-021):** drift observations are kept 90 days (03:00 UTC), and syscall consumptions 7 days (03:07 UTC).
+- **Drift:** 0 at 15:46 UTC.
+- **Open recovery plans:** 5 stale supervisor drafts from 2026-11-04 18:37. **Do not approve them.** They expire automatically (`approval_expired`) after 72 h.
+- **Decisions:** ADR-0005, ADR-0006 and ADR-0007, each with its 2026-11-05 amendments, and `docs/TRANSFORMATION-INVENTORY.md`.
+- **Repository:** temporarily **public**, an owner decision for Actions billing. Treat every issue, PR and log as public.
 
-The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `ANTIGRAVITY.md`.
+The legacy Talos/Kubernetes estate is deprecated (owner, 2026-11-04). Only its logic and architecture are adopted; no cluster access is needed. Code tasks follow `PI.md`.
 
 ## Owner decisions (2026-11-05)
 
