@@ -38,6 +38,16 @@ What it lacked was a runtime for agents, a uniform way for agents to act, and a 
 | Shell | MCP endpoint `POST /mcp` on the kernel (JSON-RPC, streamable HTTP), and the Platform API gateway `GET /v1/overview`. |
 | Kill switch | `kernel_controls.agents_enabled` and per-agent `status`. |
 
+### 1.1 In-account AgentRpc and trust boundary (TP-011)
+
+In-account Workers may call the AI Kernel's `AgentRpc` WorkerEntrypoint through a Cloudflare Service Binding, without a shared secret or Access service token. The caller's deployed binding supplies `props.host_worker`; the kernel accepts a call only when that value is well-formed, exactly matches the target agent row's `host_worker`, and the agent has `tier_max <= 1`. The call then passes through the same capability grants, agent status, global kill switch, rate limit, Policy Engine decision, target re-verification and audit path as other syscalls. Tier-2 `supervisor` is not exposed through this entrypoint.
+
+**Trust boundary:** the asserted host is configuration supplied by the caller Worker's Service Binding. The trust boundary is the Cloudflare account and the identities authorized to change or deploy that caller configuration. Such an actor can change `props.host_worker`; this mechanism does not attest a caller against a malicious account deployer. Service Binding changes are therefore security-sensitive and require reviewed source/configuration changes and controlled deployment. No HTTP/MCP request header may choose an agent identity.
+
+Caller bindings are deployed only after the AI Kernel's `AgentRpc` entrypoint is live, in a separate reviewed change. This avoids deploying a caller that references an entrypoint not yet deployed. A D1 agent row marked `enabled` is registered state, not proof that a caller binding or external principal exists.
+
+External MCP sessions remain separate: they require a Cloudflare Access identity explicitly registered in `agent_principals` by an approver. Service-token creation is an owner-controlled Cloudflare operation; repository automation must not create a token and discard its one-time client secret.
+
 ### 2. Autonomy tiers
 
 | Tier | Meaning | Rule |
@@ -49,7 +59,7 @@ What it lacked was a runtime for agents, a uniform way for agents to act, and a 
 | — | Trading, orders, exchange accounts, wallets, fund movements | Prohibited at every tier (`PROHIBITED_CAPABILITY`), whatever the registry says. |
 
 - **Policy decides.** Tier ≥ 1 requires an `allow` from the Policy Engine for `subject = agent:<id>`, `action = agent.syscall`, `resource = <capability>`.
-- **No impersonation.** Over HTTP the subject is the caller's Access identity, so a person can never pose as an agent.
+- **No operator impersonation.** Operator and CI MCP sessions always receive operator tools; no request header selects an agent. External MCP agent sessions require an active `agent_principals` mapping. In-account calls use the host-pinned `AgentRpc` Service Binding described below.
 - **Targets re-verify.** The syscall target checks the decision again (`verifySyscallDecision`): same agent and capability, `allow`, at most 5 minutes old, and not yet used. The kernel alone cannot bypass the policy.
 - **Kill switch.** Any operator may suspend an agent or turn the global switch off. Resuming an agent, or turning the switch on, needs an identity in `APPROVER_IDENTITIES`.
 
