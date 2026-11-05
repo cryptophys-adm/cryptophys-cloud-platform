@@ -29,10 +29,13 @@ The source `genesis.key` was identified in historical `cryptophys-work/apps-gito
 
 The previous report published a derived account identifier and explicitly associated it with a publicly known secp256k1 test-vector key. That association can disclose a publicly known signing key even without printing the raw file. The address, file fingerprint, chain balances, transaction counts, and nonce values have therefore been removed from this shared artifact.
 
-- **Disposition:** treat the historical source key as compromised; never use it to sign, authorize, or control funds.
-- **Evidence handling:** no private-key value or derived account details are recorded here. Any further balance/ownership verification must be performed by the owner through a secure, controlled channel.
+Because the source key was stored in repository history that was readable before containment, it must be treated as compromised regardless of whether a public test-vector match can be independently confirmed.
+
+- **Disposition:** never use the historical source key to sign, authorize, or control funds.
+- **Worker boundary:** do not derive an address, query any chain/RPC, inspect or report balances, nonces, transaction history, or other account metadata. Do not publish an address or account identifier.
+- **Evidence handling:** no private-key value, fingerprint, derived address, or account details are recorded here. Owner-only validation must occur through a secure, controlled channel outside this shared repository.
 - **Prior activity:** the previous worker report stated that no transaction was signed or sent. That does not make the source key safe.
-- **Owner gate B2:** owner must independently verify whether the key corresponds to any personal or operational wallet and determine the safe disposition. Do not rely on the withdrawn public report as proof of wallet ownership or zero exposure.
+- **Owner gate B2:** owner must independently verify wallet ownership and determine the safe disposition. Do not rely on the withdrawn public report as proof of wallet ownership or zero exposure.
 
 A2 is **awaiting owner validation**. No funds were moved and no wallet action was performed by this worker.
 
