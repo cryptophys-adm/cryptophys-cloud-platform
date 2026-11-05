@@ -70,3 +70,7 @@ The xauusd and HUD agents still need the owner to add the same binding in `xauus
 - **External service tokens:** Credential creation is an owner action in Cloudflare Zero Trust. The owner must securely retain the one-time `client_secret`, then have an approver register the token's Access identity through `POST /v1/agents/{id}/principals`. Do not generate credentials from repository scripts, and never print, commit or log the secret.
 
 **Revocation.** An approver can revoke a principal with `DELETE /v1/agents/{id}/principals/{client_id}`. Deleting the service token in Zero Trust and re-running Provision Access removes it at the edge.
+
+## Data retention
+
+Drift observations are pruned daily at 03:00 UTC by the Drift Detector: rows older than 90 days are deleted, but the 2 newest observations per service are always kept. Agent syscall consumptions are pruned daily at 03:07 UTC by the AI Kernel: rows older than 7 days are deleted. Audit events, policy decisions, agent reports, recovery plans, deployment requests, registry rows and crypto history tables are never deleted. Owner decision, 2026-11-05.

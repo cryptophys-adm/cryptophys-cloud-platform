@@ -23,6 +23,7 @@ import { handleMcp } from "./mcp.ts";
 import { listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
+import { pruneSyscallConsumptions } from "./retention.ts";
 import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 
@@ -178,6 +179,12 @@ export default {
     if (minute === 37 && env.AUDITOR) {
       ctx.waitUntil(env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID)).cycle("scheduled").then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "auditor_cycle_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
+    const d = new Date(event.scheduledTime);
+    if (d.getUTCHours() === 3 && minute === 7) {
+      ctx.waitUntil(pruneSyscallConsumptions(env as any, event.scheduledTime).then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "syscall_consumption_retention_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
   },
