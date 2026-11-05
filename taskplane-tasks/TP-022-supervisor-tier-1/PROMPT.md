@@ -19,7 +19,7 @@
 
 - `workers/ai-kernel/src/kernel.ts`, around lines 45–90: principal registration.
 - `workers/ai-kernel/src/agent-rpc.ts`: `resolve()`.
-- `workers/ai-kernel/src/mcp.ts` and `index.ts`: how an agent session is resolved from an active principal. Search for `agent_principals`.
+- `workers/ai-kernel/src/index.ts`, around line 71: the agent session is resolved there with `getActivePrincipalByIdentity` (defined in `control-plane-shared/src/capabilities.ts`, line 62) and passed to `handleMcp` (`mcp.ts`) as `agentSession`. Put the kernel-hosted guard in `index.ts`, right after that lookup. Do not change `getActivePrincipalByIdentity`; other callers rely on it.
 - `workers/control-plane-migrations/0010_ai_worker_os.sql`, lines 50–60, and `0020_retire_signal_engine.sql`, for the migration style.
 - `workers/control-plane-shared/src/readiness.ts`: `REQUIRED_MIGRATION` and `REQUIRED_MIGRATIONS`.
 - `architecture/adr/0007-ai-worker-os.md`: the 2026-11-05 amendment at the end.
@@ -29,7 +29,7 @@
 
 - `workers/control-plane-migrations/0021_supervisor_tier_1.sql` (new)
 - `workers/control-plane-shared/src/readiness.ts`
-- `workers/ai-kernel/src/kernel.ts`, `agent-rpc.ts`, and the agent-session lookup in `mcp.ts` / `index.ts`. Change only the kernel-hosted guard there.
+- `workers/ai-kernel/src/kernel.ts`, `agent-rpc.ts`, and `index.ts` (the agent-session lookup only). Change only the kernel-hosted guard there.
 - `workers/control-plane-shared/test/ai-kernel.test.ts`, `external-agents.test.ts` and `ai-diagnostics-tp016.test.ts`: only assertions that break because of this change. **Rewrite** them; never delete or skip them. List each one in `STATUS.md` with the reason.
 - `workers/control-plane-shared/test/supervisor-tier1-tp022.test.ts` (new)
 - `architecture/adr/0007-ai-worker-os.md`: append a dated amendment only. Do not edit earlier text.
