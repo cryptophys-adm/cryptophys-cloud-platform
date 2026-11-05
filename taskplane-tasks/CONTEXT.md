@@ -65,7 +65,7 @@ Code tasks: TP-006 → TP-007 → TP-008 → TP-009, one PR each, each merged be
 ## Technical debt / future work
 
 _Workers log discoveries here through their PR._
-- An owner decision is pending on rescaling the Mizan momentum and volume dimensions (ADR-0005 decision 10, "Remaining finding").
+- **Mizan rescaling: authorized by the owner, in writing, 2026-11-05** ("hapus branch, skala ulang mizan, dan daftarkan agent external"). Implemented as ADR-0005 decision 11 (`mizan-revised/2`). Orchestrator note: commits pushed by another session to `claude/gracious-brown-tkc4e8` (the volume fail-closed fix) were merged with #80. A later orchestrator force-push removed them from the branch only, not from `main`. Other sessions must not push to the orchestrator branch; use their own branch and open a PR.
 
 ## Task status (2026-11-04)
 
