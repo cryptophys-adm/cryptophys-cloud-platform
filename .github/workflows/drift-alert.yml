@@ -4,6 +4,10 @@ name: Drift Alert
 # GitHub issue in step with them: opened when any Worker is drifted, unhealthy, unobserved or
 # stale, updated only when the problem set changes, and closed once everything is back in sync.
 # Read-only towards production; authenticated by the CI Cloudflare Access service token.
+# A second job does the same for critical agent reports (AI Kernel /v1/status,
+# agent_reports_24h): one issue opened while any critical report exists in the last 24 h,
+# updated when the set changes, closed when none remain. Only deterministic report subjects,
+# agents, kinds and times are copied into the issue; report bodies never are.
 # Scheduled runs are excluded from the Orchestrator's CI gate (they are not CI for a commit).
 
 on:
@@ -92,4 +96,75 @@ jobs:
             echo "Updated drift issue #${number}"
           else
             echo "Drift unchanged; issue #${number} already describes it."
+          fi
+
+  agent-reports:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      REPORT_ISSUE_TITLE: "Critical agent report in production"
+    steps:
+      - name: Checkout main (scripts only)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Read the 24 h agent report summary
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          access="$(mktemp)"; trap 'rm -f "$access"' EXIT
+          .github/scripts/access-headers.sh "$access"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
+            --header "@${access}" "https://cryptophys-ai-kernel.${subdomain}.workers.dev/v1/status" \
+            --output "$RUNNER_TEMP/status.json" --write-out '%{http_code}')"
+          [[ "$status" == "200" ]] || { echo "::error::AI Kernel returned HTTP ${status}"; exit 1; }
+          .github/scripts/report-summary.sh "$RUNNER_TEMP/status.json" > "$RUNNER_TEMP/reports.json"
+          jq -r '"State: \(.state)\n\(.markdown)"' "$RUNNER_TEMP/reports.json"
+          jq -r '"### Agent reports (24 h)\n\(.markdown)"' "$RUNNER_TEMP/reports.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the critical-report issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/reports.json"
+          state="$(jq -r .state "$summary")"
+          fp="$(jq -r .fingerprint "$summary")"
+          # shellcheck disable=SC2016 # $t is a jq variable
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"${REPORT_ISSUE_TITLE}\" in:title" --json number,title,body \
+            | jq -c --arg t "$REPORT_ISSUE_TITLE" '[.[] | select(.title == $t)][0] // {}')"
+          number="$(jq -r '.number // empty' <<<"$issue")"
+          if [[ "$state" == "clear" ]]; then
+            if [[ -n "$number" ]]; then
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --reason completed \
+                --comment "Resolved: no critical agent report in the last 24 hours. ${RUN_URL}"
+              echo "Closed critical-report issue #${number}"
+            else
+              echo "No critical agent report; no open issue."
+            fi
+            exit 0
+          fi
+          body="$(jq -r --arg run "$RUN_URL" --arg fp "$fp" '
+            "An agent published a **critical** advisory report in the last 24 hours. Reports are advisory; a human decides what to do.\n\n\(.markdown)\n\n" +
+            "Read the full report with the MCP tool `list_reports` (or `GET /v1/reports` on the AI Kernel). Runbook: docs/OPERATIONS.md. Last checked: \($run)\n\n<!-- report-fingerprint:\($fp) -->"' "$summary")"
+          if [[ -z "$number" ]]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$REPORT_ISSUE_TITLE" --body "$body"
+          elif ! jq -e --arg fp "$fp" '.body | contains("report-fingerprint:" + $fp)' <<<"$issue" >/dev/null; then
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "New critical report(s):"$'\n\n'"$(jq -r .markdown "$summary")"$'\n\n'"${RUN_URL}"
+            echo "Updated critical-report issue #${number}"
+          else
+            echo "Critical reports unchanged; issue #${number} already describes them."
           fi
