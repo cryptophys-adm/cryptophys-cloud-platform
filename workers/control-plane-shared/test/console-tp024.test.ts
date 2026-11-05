@@ -191,3 +191,53 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // console-tp023.test.ts runs unchanged in the same npm test; typecheck, the test count and the
   // console dry-run are verified by the commands recorded in STATUS.md.
 });
+
+
+test("9. SAFE principal identifiers containing @, + and : reach the Worker unencoded", async () => {
+  const env = consoleEnv();
+  const kernel = recorder();
+  (env as Record<string, unknown>).KERNEL = kernel.binding;
+  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
+  assert.match(js.text, /return String\\(v\\);/);
+  assert.doesNotMatch(js.text, /encodeURIComponent/);
+
+  const identity = "ops@cryptophys.work:svc+1";
+  const request = creq("DELETE", `/api/kernel/v1/agents/platform-api/principals/${identity}`);
+  request.headers.set("origin", ORIGIN);
+  request.headers.set("x-cryptophys-console", "1");
+  const response = await run(env, request);
+  assert.equal(response.status, 200);
+  assert.equal(kernel.calls.length, 1);
+  assert.equal(kernel.calls[0].method, "DELETE");
+  assert.equal(new URL(kernel.calls[0].url).pathname, `/v1/agents/platform-api/principals/${identity}`);
+  assert.ok(!kernel.calls[0].url.includes("%40"));
+  assert.ok(!kernel.calls[0].url.includes("%2B"));
+  assert.ok(!kernel.calls[0].url.includes("%3A"));
+});
+
+test("10. Mission Control reads the actual observe() overview fields", async () => {
+  const env = consoleEnv();
+  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
+  assert.match(js.text, /Array\\.isArray\\(o\\.services\\)/);
+  assert.match(js.text, /Array\\.isArray\\(o\\.open_agent_plans\\)/);
+  assert.match(js.text, /reports\\.counts/);
+  assert.match(js.text, /reports\\.latest_critical/);
+  for (const key of ["decision", "confidence", "candle_key", "decided_at"]) {
+    assert.ok(js.text.includes("x." + key), "missing XAUUSD display field " + key);
+  }
+  assert.doesNotMatch(js.text, /Object\\.keys\\(x\\)/);
+});
+
+test("11. maxLength is applied and approval text states the actual separation-of-duties rule", async () => {
+  const env = consoleEnv();
+  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
+  assert.match(js.text, /PLAIN_PROPS = \\[.*"maxLength"/);
+  assert.ok(js.text.includes("Approval is recorded under your identity. You cannot approve a plan you authored."));
+  assert.ok(!js.text.includes("A different person must start the execution steps."));
+});
+
+test("12. audit export defers object URL revocation until after the click task", async () => {
+  const env = consoleEnv();
+  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
+  assert.match(js.text, /setTimeout\\(function \\(\\) \\{ URL\\.revokeObjectURL\\(url\\); \\}, 0\\)/);
+});
