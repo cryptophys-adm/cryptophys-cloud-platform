@@ -65,14 +65,16 @@ jobs:
           case "$workflow" in
             provision-access.yml|deploy-control-plane.yml|deploy-deployment-orchestrator.yml) ref=main ;;
             request-platform-api-deployment.yml) ref=main ;;
+            retire-worker.yml) ref=main ;;
             *) echo "::error::Workflow ${workflow} is not allow-listed"; exit 1 ;;
           esac
 
           args=()
           while IFS=$'\t' read -r key value; do
             case "$key" in
-              confirm_production) [[ "$value" =~ ^(DEPLOY|PROVISION)$ ]] || { echo "::error::invalid confirm_production"; exit 1; } ;;
+              confirm_production) [[ "$value" =~ ^(DEPLOY|PROVISION|DELETE)$ ]] || { echo "::error::invalid confirm_production"; exit 1; } ;;
               commit_sha) [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid commit_sha"; exit 1; } ;;
+              worker) [[ "$value" =~ ^cryptophys-[a-z0-9-]{2,60}$ ]] || { echo "::error::invalid worker"; exit 1; } ;;
               orchestrator_url) [[ "$value" =~ ^https://cryptophys-deployment-orchestrator\.[a-z0-9-]+\.workers\.dev$ ]] || { echo "::error::invalid orchestrator_url"; exit 1; } ;;
               *) echo "::error::Input ${key} is not allow-listed"; exit 1 ;;
             esac
