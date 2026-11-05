@@ -175,3 +175,14 @@ In `STATUS.md`, list every test file you changed, and why.
 5. **Architecture and documentation consistency.** Preserve historical crypto data and tables. Any deployment/Access/drift inventory changes must be explicit and verified; do not claim production retirement until the orchestrator has reconciled those inventories and the owner has confirmed the production Worker disposition.
 
 6. Update this task's `STATUS.md` with the exact latest CI test count and every remaining blocker. A locally reported test count is not a substitute for the GitHub Actions result.
+
+## Additional architecture and operations records
+
+The owner-approved retirement is a material architecture change. In addition to ADR-0007, amend:
+
+- `architecture/adr/0005-cloudflare-transformation.md`: mark the crypto Signal Engine and its crypto Mizan runtime as historical/retired; explicitly preserve the XAUUSD Mizan/Prophet/GMI ownership boundary and the advisory-only prohibition.
+- `architecture/adr/0006-cloudflare-workflows.md`: supersede the active SignalIngestWorkflow decision and usage estimate while retaining the Recovery Manager lifecycle Workflow.
+- `docs/CONTROL-PLANE-WORKERS.md`: mark `cryptophys-signal-engine` retired with no active endpoints; update active Worker and Workflow descriptions.
+- `docs/OPERATIONS.md`: reconcile the agent inventory to 30 enabled tier-1 rows, one suspended tier-1 `signal-engine` row, and the tier-2 supervisor; state that only the Drift Detector currently publishes scheduled platform reports.
+
+Preserve historical ADR text as historical context; add dated amendments rather than silently rewriting accepted decisions. Do not change `architecture/BASELINE.md` or any XAUUSD repository.
