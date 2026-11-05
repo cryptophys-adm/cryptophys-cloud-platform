@@ -1,4 +1,5 @@
 import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   errorResponse, healthResponse, json, newId, nowIso, serviceMetadata,
   type JsonObject,
@@ -19,6 +20,8 @@ export interface FetchBinding {
 }
 
 export interface Env extends BaseEnv {
+  /** AI Kernel AgentRpc (ADR-0007 §1.1), pinned to host_worker = cryptophys-drift-detector. */
+  AGENTS?: AgentRpcBinding;
   SVC_SIGNAL_ENGINE: HealthRpcBinding;
   SVC_AI_KERNEL: HealthRpcBinding;
   /** xauusd Workers, deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005 decision 7). */
@@ -189,6 +192,15 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
     outcome: drifted ? "drift_detected" : "in_sync",
     payload: { run_id: runId, trigger, drifted: services.filter((s) => s.drifted).map((s) => ({ service_id: s.service_id, reasons: s.reasons })) },
   });
+  if (drifted > 0 && trigger === "scheduled") {
+    // Advisory: the Drift Detector's own agent (tier 1) reports scheduled drift. Deploy-time
+    // observations (manual) are excluded; versions are in flux then. Never blocks observation.
+    await publishAgentReport(env.AGENTS, "drift-detector", {
+      kind: "platform_digest", severity: "warning",
+      subject: `Drift: ${drifted} service(s) out of sync`,
+      body: { run_id: runId, observed_at: observedAt, drifted: services.filter((s) => s.drifted).map((s) => ({ service_id: s.service_id, reasons: s.reasons, desired: s.desired_version, observed: s.observed_version })) },
+    });
+  }
   return { run_id: runId, observed_at: observedAt, services, drifted };
 }
 

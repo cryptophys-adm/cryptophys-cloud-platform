@@ -54,3 +54,12 @@ class_name = "RecoveryPlanWorkflow"
 [workflows.default_retention]
 success_retention = "30 days"
 error_retention = "30 days"
+
+# AI Kernel AgentRpc (ADR-0007 §1.1, TP-011): this Worker may act only as the agents whose
+# host_worker is cryptophys-recovery-manager, at tier <= 1, through the policy-gated syscall path. The props value
+# is set here by the account owner's reviewed config; the kernel trusts it as the caller identity.
+[[services]]
+binding = "AGENTS"
+service = "cryptophys-ai-kernel"
+entrypoint = "AgentRpc"
+props = { host_worker = "cryptophys-recovery-manager" }
