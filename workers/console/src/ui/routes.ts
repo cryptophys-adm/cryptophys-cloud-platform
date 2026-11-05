@@ -1,0 +1,55 @@
+// The one route table of the Console UI (TP-024 §1.3 and §4). Every entry equals a
+// CONSOLE_ALLOW_LIST row by service, method and path. The table is embedded into the client
+// JavaScript with JSON.stringify(UI_ROUTES); the client builds every API call from it.
+//
+// `confirm` is the typed phrase template, or null. In a template, {id} is the route's first
+// path parameter, {id13} its first 13 characters and {sha12} the first 12 of commit_sha.
+
+export interface UiRoute {
+  id: string;
+  service: string;
+  method: string;
+  path: string;
+  approverOnly: boolean;
+  confirm: string | null;
+}
+
+const r = (id: string, service: string, method: string, path: string, approverOnly: boolean, confirm: string | null): UiRoute =>
+  ({ id, service, method, path, approverOnly, confirm });
+
+export const UI_ROUTES: readonly UiRoute[] = [
+  r("platform.overview", "platform", "GET", "/v1/overview", false, null),
+  r("kernel.kernel", "kernel", "GET", "/v1/kernel", false, null),
+  r("kernel.status", "kernel", "GET", "/v1/status", false, null),
+  r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
+  r("kernel.agents", "kernel", "GET", "/v1/agents", false, null),
+  r("kernel.agent", "kernel", "GET", "/v1/agents/{id}", false, null),
+  r("kernel.agent_actions", "kernel", "GET", "/v1/agents/{id}/actions", false, null),
+  r("kernel.agents_disabled", "kernel", "POST", "/v1/kernel/agents-enabled", false, "AGENTS OFF"),
+  r("kernel.agents_enabled", "kernel", "POST", "/v1/kernel/agents-enabled", true, "AGENTS ON"),
+  r("kernel.wake", "kernel", "POST", "/v1/agents/{id}/wake", false, "WAKE {id}"),
+  r("kernel.suspend", "kernel", "POST", "/v1/agents/{id}/suspend", false, "SUSPEND {id}"),
+  r("kernel.resume", "kernel", "POST", "/v1/agents/{id}/resume", true, "RESUME {id}"),
+  r("kernel.principal_add", "kernel", "POST", "/v1/agents/{id}/principals", true, "PRINCIPAL {id}"),
+  r("kernel.principal_remove", "kernel", "DELETE", "/v1/agents/{id}/principals/{id}", true, "REVOKE {id}"),
+  r("recovery.plans", "recovery", "GET", "/v1/plans", false, null),
+  r("recovery.plan", "recovery", "GET", "/v1/plans/{id}", false, null),
+  r("recovery.create", "recovery", "POST", "/v1/plans", false, "CREATE PLAN"),
+  r("recovery.approve", "recovery", "POST", "/v1/plans/{id}/approve", true, "APPROVE {id13}"),
+  r("recovery.execute_start", "recovery", "POST", "/v1/plans/{id}/executions", false, "START {id13}"),
+  r("recovery.execute_finish", "recovery", "POST", "/v1/plans/{id}/executions", false, "FINISH {id13}"),
+  r("recovery.disable", "recovery", "POST", "/v1/plans/{id}/disable", false, "DISABLE {id13}"),
+  r("registry.services", "registry", "GET", "/v1/services", false, null),
+  r("registry.service", "registry", "GET", "/v1/services/{id}", false, null),
+  r("registry.upsert", "registry", "PUT", "/v1/services/{id}", false, "UPDATE {id}"),
+  r("registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", false, "VERSION {id}"),
+  r("policy.decisions", "policy", "GET", "/v1/decisions", false, null),
+  r("policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null),
+  r("policy.evaluate", "policy", "POST", "/v1/evaluate", false, null),
+  r("drift.list", "drift", "GET", "/v1/drift", false, null),
+  r("drift.observe", "drift", "POST", "/v1/observe", false, null),
+  r("audit.events", "audit", "GET", "/v1/events", false, null),
+  r("audit.event", "audit", "GET", "/v1/events/{id}", false, null),
+  r("audit.verify", "audit", "GET", "/v1/verify", false, null),
+  r("orchestrator.deploy", "orchestrator", "POST", "/v1/deployments", false, "DEPLOY {sha12}"),
+];
