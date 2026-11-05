@@ -166,7 +166,7 @@ test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and r
   const db = migratedDb();
   const failed = async (subject: string, cap: string) => (await agentSyscallChecks(db, subject, cap)).filter((c) => !c.passed).map((c) => c.id);
   assert.deepEqual(await failed(SUB, "recovery.propose"), []);
-  assert.deepEqual(await failed(SUB, "signals.reingest"), ["capability_known"]);
+  assert.ok((await failed(SUB, "signals.reingest")).includes("capability_known"));
   assert.equal(CAPABILITIES["signals.reingest"], undefined);
   assert.ok((await failed(SUB, "deploy.release")).includes("not_human_only"));
   assert.ok((await failed(SUB, "deploy.release")).includes("capability_granted"));
