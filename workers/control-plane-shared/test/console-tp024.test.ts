@@ -198,7 +198,7 @@ test("9. SAFE principal identifiers containing @, + and : reach the Worker unenc
   const kernel = recorder();
   (env as Record<string, unknown>).KERNEL = kernel.binding;
   const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /return String\\(v\\);/);
+  assert.match(js.text, /return String\(v\);/);
   assert.doesNotMatch(js.text, /encodeURIComponent/);
 
   const identity = "ops@cryptophys.work:svc+1";
@@ -218,20 +218,20 @@ test("9. SAFE principal identifiers containing @, + and : reach the Worker unenc
 test("10. Mission Control reads the actual observe() overview fields", async () => {
   const env = consoleEnv();
   const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /Array\\.isArray\\(o\\.services\\)/);
-  assert.match(js.text, /Array\\.isArray\\(o\\.open_agent_plans\\)/);
-  assert.match(js.text, /reports\\.counts/);
-  assert.match(js.text, /reports\\.latest_critical/);
+  assert.match(js.text, /Array\.isArray\(o\.services\)/);
+  assert.match(js.text, /Array\.isArray\(o\.open_agent_plans\)/);
+  assert.match(js.text, /reports\.counts/);
+  assert.match(js.text, /reports\.latest_critical/);
   for (const key of ["decision", "confidence", "candle_key", "decided_at"]) {
     assert.ok(js.text.includes("x." + key), "missing XAUUSD display field " + key);
   }
-  assert.doesNotMatch(js.text, /Object\\.keys\\(x\\)/);
+  assert.doesNotMatch(js.text, /Object\.keys\(x\)/);
 });
 
 test("11. maxLength is applied and approval text states the actual separation-of-duties rule", async () => {
   const env = consoleEnv();
   const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /PLAIN_PROPS = \\[.*"maxLength"/);
+  assert.match(js.text, /PLAIN_PROPS = \[.*"maxLength"/);
   assert.ok(js.text.includes("Approval is recorded under your identity. You cannot approve a plan you authored."));
   assert.ok(!js.text.includes("A different person must start the execution steps."));
 });
@@ -239,5 +239,5 @@ test("11. maxLength is applied and approval text states the actual separation-of
 test("12. audit export defers object URL revocation until after the click task", async () => {
   const env = consoleEnv();
   const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /setTimeout\\(function \\(\\) \\{ URL\\.revokeObjectURL\\(url\\); \\}, 0\\)/);
+  assert.match(js.text, /setTimeout\(function \(\) \{ URL\.revokeObjectURL\(url\); \}, 0\)/);
 });
