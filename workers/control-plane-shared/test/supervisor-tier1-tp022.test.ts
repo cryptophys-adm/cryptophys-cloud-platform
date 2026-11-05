@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseEnv, migratedDb, req, call } from "./harness.ts";
+import { baseEnv, migratedDb, req, call, signAccessJwt } from "./harness.ts";
 import { parsePolicyRequest, decide } from "../../policy-engine/src/index.ts";
 function kernelEnv(db: any, extra: any = {}) {
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
@@ -17,7 +17,6 @@ function kernelEnv(db: any, extra: any = {}) {
 }
 import { KERNEL_HOST, addAgentPrincipal } from "../../ai-kernel/src/kernel.ts";
 import { rpcWhoami, rpcSyscall } from "../../ai-kernel/src/agent-rpc.ts";
-import { getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
 
 test("TP-022 migration", async () => {
@@ -26,8 +25,8 @@ test("TP-022 migration", async () => {
   assert.equal(sup.tier_max, 1);
   assert.equal(sup.status, "enabled");
   assert.deepEqual(JSON.parse(sup.capabilities_json), ["platform.observe", "recovery.propose", "memory.recall", "memory.remember"]);
-  const anyTier2 = db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE tier_max = 2").get() as any;
-  assert.equal(anyTier2.n, 0);
+  const anyTier2OrHigher = db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE tier_max >= 2").get() as any;
+  assert.equal(anyTier2OrHigher.n, 0, "TP-022 must leave no agent at tier 2 or above");
   assert.equal(REQUIRED_MIGRATION, "0021_supervisor_tier_1.sql");
   assert.equal(await schemaReady({ DB: db } as any), true);
 });
@@ -61,25 +60,33 @@ test("TP-022 no principal for kernel agents", async () => {
   assert.equal(ok.status, 201);
 });
 
-test("TP-022 pre-existing principal ignored", async () => {
-  const db = migratedDb();
-  // insert principal for auditor
-  db.raw.prepare("INSERT INTO agent_principals (access_identity, agent_id, created_by, created_at, revoked_at) VALUES (?,?,?,?,NULL)").run("auditor-principal.access", "auditor", "admin", new Date().toISOString());
-  // ensure agent row has host_worker kernel
-  // MCP request with that identity should not get agent tools; operator only if operator. We'll just assert getAgent host_worker.
-  const agent = await getAgent(db, "auditor");
-  assert.ok(agent);
-  assert.equal(agent!.host_worker, "cryptophys-ai-kernel");
-});
-
-test("TP-022 no AgentRpc for kernel agents", async () => {
+test("TP-022 pre-existing principals for every kernel agent are ignored by MCP", async () => {
   const db = migratedDb();
   const env: any = baseEnv("cryptophys-ai-kernel", db);
-  const who = await rpcWhoami(env, { host_worker: "cryptophys-ai-kernel" }, "supervisor");
-  assert.equal(who.error, "kernel_agent_internal");
-  const sys = await rpcSyscall(env, { host_worker: "cryptophys-ai-kernel" }, "supervisor", "platform.observe", {});
-  assert.equal(sys.reason, "kernel_agent_internal");
-  // normal platform worker works
+  for (const [index, id] of ["supervisor", "signal-analyst", "auditor"].entries()) {
+    const identity = `stale-${id}.access`;
+    db.raw.prepare("INSERT INTO agent_principals (access_identity, agent_id, created_by, created_at, revoked_at) VALUES (?,?,?,?,NULL)")
+      .run(identity, id, "admin", new Date().toISOString());
+    const jwt = await signAccessJwt({ common_name: identity });
+    const denied = await call(
+      kernel,
+      env,
+      req("POST", "/mcp", { jsonrpc: "2.0", id: index + 1, method: "tools/list" }, jwt),
+    );
+    assert.equal(denied.status, 403, `${id}: stale kernel-hosted principal must not create an MCP session`);
+  }
+});
+
+test("TP-022 AgentRpc refuses every kernel-hosted agent", async () => {
+  const db = migratedDb();
+  const env: any = baseEnv("cryptophys-ai-kernel", db);
+  for (const id of ["supervisor", "signal-analyst", "auditor"]) {
+    const who = await rpcWhoami(env, { host_worker: KERNEL_HOST }, id);
+    assert.equal(who.error, "kernel_agent_internal", `${id}: rpcWhoami must refuse kernel-hosted agents`);
+    const sys = await rpcSyscall(env, { host_worker: KERNEL_HOST }, id, "platform.observe", {});
+    assert.equal(sys.reason, "kernel_agent_internal", `${id}: rpcSyscall must refuse kernel-hosted agents`);
+  }
+  // Positive control: a normal platform Worker can still reach its own agent.
   const normal = await rpcWhoami(baseEnv("cryptophys-platform-api", db) as any, { host_worker: "cryptophys-platform-api" }, "platform-api");
   assert.equal(normal.agent_id, "platform-api");
 });
