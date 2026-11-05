@@ -3,8 +3,10 @@
 //
 // Identity: Service Bindings do not identify the caller, so the caller's Worker name is pinned
 // in the binding itself (`props = { host_worker = "<worker>" }` in the caller's wrangler.toml),
-// and the runtime delivers it as ctx.props. Only the account owner can set binding props, so a
-// Worker can act only as agents whose agents.host_worker equals its pinned host_worker.
+// and the runtime delivers it as ctx.props. The trust boundary is the Cloudflare account and
+// identities authorized to change/deploy the caller Worker configuration; this is not attestation
+// against a malicious account deployer. A Worker can act only as agents whose agents.host_worker
+// equals its pinned host_worker.
 // Agents with tier_max > 1 (supervisor) are never reachable this way.
 import { syscall, type SyscallEnv } from "./syscall.ts";
 import { CAPABILITIES, getAgent, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";
