@@ -30,7 +30,7 @@ summary="$(jq -c '
      | ($r | has("latest_critical")) as $has_latest
      | if $has_fp != $has_latest then error("partial critical-report v2 metadata")
        elif $has_fp then
-         ($r.critical_fingerprint | if type == "string" and test("^[0-9a-f]{64}$")) then . else error("invalid critical report fingerprint") end) as $fp
+         ($r.critical_fingerprint | if type == "string" and test("^[0-9a-f]{64}$") then . else error("invalid critical report fingerprint") end) as $fp
          | ($r.latest_critical | if type == "array" and length <= 5 then . else error("invalid latest_critical list") end | sort_by(.created_at) | reverse) as $raw
          | if $n > 0 and ($raw | length) == 0 then error("critical reports exist but no critical metadata was returned") else . end
          | ($raw | safe_rows) as $rows
