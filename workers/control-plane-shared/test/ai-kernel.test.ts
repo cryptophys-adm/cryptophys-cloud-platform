@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, fakeWorkflow, migratedDb, req,
+  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, fakeAi, fakeWorkflow, migratedDb, req,
 } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import { CAPABILITIES, agentSyscallChecks, verifySyscallDecision } from "../src/capabilities.ts";
@@ -28,7 +28,7 @@ test("readiness requires the atomic syscall-consumption migration and the newest
   assert.equal(await schemaReady({ DB: db2 } as never), false);
 });
 
-test("0016 & 0017 register and activate the 8 AI Worker platform agents and 21 xauusd-ai-trading-assistant agents (7 active + 14 HUD) with platform_digest, xauusd_digest, and hud_digest report kinds", async () => {
+test("0016 & 0017 register 29 tier-1 agents and add platform, XAUUSD, and HUD report kinds without operator impersonation", async () => {
   const { env, db } = kernelEnv();
   const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status FROM agents ORDER BY agent_id").all() as Array<{
     agent_id: string;
@@ -57,64 +57,37 @@ test("0016 & 0017 register and activate the 8 AI Worker platform agents and 21 x
     }
   }
 
-  // Any of the 29 agents (tier_max = 1) can be activated on POST /mcp via X-Cryptophys-Agent-Id and publish platform_digest, xauusd_digest, and hud_digest reports.
-  for (const [agentId, kind, subject] of [
-    ["platform-api", "platform_digest", "Platform API posture digest"],
-    ["xauusd-analyst", "xauusd_digest", "XAUUSD H1 Analyst synthesis digest"],
-    ["hud-prophet", "hud_digest", "Prophet R38 HUD reading digest"],
-  ] as const) {
-    const whoamiRes = await call(
+  // Operator and CI identities must never become an agent by supplying a caller-controlled header.
+  // External MCP sessions require a separately registered Access principal; in-account callers
+  // use AgentRpc binding props. This PR intentionally does not seed external principals.
+  for (const [label, jwt] of [["operator", OPERATOR_JWT], ["CI service token", CI_JWT]] as const) {
+    const listed = await call(
       kernel,
       env,
-      new Request("https://example.test/mcp", {
-        method: "POST",
-        headers: { "content-type": "application/json", "cf-access-jwt-assertion": OPERATOR_JWT, "x-cryptophys-agent-id": agentId },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_whoami", arguments: {} } }),
-      }),
+      req("POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, jwt, { "x-cryptophys-agent-id": "recovery-manager" }),
     );
-    assert.equal(whoamiRes.status, 200);
-    const whoami = JSON.parse(whoamiRes.body.result.content[0].text);
-    assert.equal(whoami.agent_id, agentId);
+    assert.equal(listed.status, 200, label);
+    const names = listed.body.result.tools.map((tool: any) => tool.name);
+    assert.ok(names.includes("platform_status"), `${label} retains operator tools`);
+    assert.ok(!names.includes("agent_whoami"), `${label} cannot obtain agent tools`);
+    assert.ok(!names.includes("agent_syscall"), `${label} cannot obtain agent syscalls`);
 
-    const pubRes = await call(
+    const attempted = await call(
       kernel,
       env,
-      new Request("https://example.test/mcp", {
-        method: "POST",
-        headers: { "content-type": "application/json", "cf-access-jwt-assertion": OPERATOR_JWT, "x-cryptophys-agent-id": agentId },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 2,
-          method: "tools/call",
-          params: {
-            name: "agent_syscall",
-            arguments: {
-              capability: "reports.publish",
-              input: { kind, severity: "info", subject, ai_status: "ok", body: { summary: subject } },
-            },
-          },
-        }),
-      }),
+      req("POST", "/mcp", {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "agent_syscall", arguments: { capability: "recovery.propose", input: {} } },
+      }, jwt, { "x-cryptophys-agent-id": "recovery-manager" }),
     );
-    assert.equal(pubRes.status, 200);
-    const pub = JSON.parse(pubRes.body.result.content[0].text);
-    assert.equal(pub.outcome, "succeeded");
-    assert.equal(pub.result.report.kind, kind);
-    assert.equal(pub.result.report.agent_id, agentId);
+    assert.equal(attempted.body.error.code, -32602, `${label} cannot call an agent syscall`);
   }
-
-  // supervisor (tier_max = 2) cannot be entered via X-Cryptophys-Agent-Id
-  const supDenied = await call(
-    kernel,
-    env,
-    new Request("https://example.test/mcp", {
-      method: "POST",
-      headers: { "content-type": "application/json", "cf-access-jwt-assertion": OPERATOR_JWT, "x-cryptophys-agent-id": "supervisor" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    }),
-  );
-  assert.equal(supDenied.status, 400);
-  assert.equal(supDenied.body.error, "external_tier_limit");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM recovery_plans").get() as any).n, 0,
+    "operator-supplied agent headers cannot create agent-authored recovery plans");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports").get() as any).n, 0,
+    "operator-supplied agent headers cannot publish reports");
 });
 
 function memory() {
