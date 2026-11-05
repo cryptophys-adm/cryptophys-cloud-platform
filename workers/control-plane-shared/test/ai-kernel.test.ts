@@ -433,3 +433,34 @@ test("Platform API gateway: readiness needs its AI, D1 and kernel bindings; over
   const down = await call(api, { ...apiEnv, KERNEL: { overview: async () => { throw new Error("x"); } } }, req("GET", "/v1/overview"));
   assert.equal(down.status, 503);
 });
+
+test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <= 1, through the normal syscall checks", async () => {
+  const { rpcWhoami, rpcObserve, rpcSyscall, callerHostWorker } = await import("../../ai-kernel/src/agent-rpc.ts");
+  const { env, db } = kernelEnv();
+  const xau = { host_worker: "xauusd-ai-trading-assistant" };
+  const api = { host_worker: "cryptophys-platform-api" };
+
+  // The caller identity comes only from binding props; missing or malformed props are refused.
+  assert.equal(callerHostWorker(undefined), null);
+  assert.equal(callerHostWorker({ host_worker: "Bad Name!" }), null);
+  assert.deepEqual(await rpcWhoami(env as never, undefined, "xauusd-analyst"), { error: "caller_identity_missing" });
+
+  const me = await rpcWhoami(env as never, xau, "hud-prophet");
+  assert.equal(me.agent_id, "hud-prophet");
+  assert.equal(me.access_identity, "rpc:xauusd-ai-trading-assistant");
+
+  // A Worker cannot impersonate another Worker's agent, nor the tier 2 supervisor.
+  assert.deepEqual(await rpcWhoami(env as never, api, "xauusd-analyst"), { error: "agent_not_hosted_by_caller" });
+  assert.equal((await rpcSyscall(env as never, xau, "platform-api", "platform.observe", {})).reason, "agent_not_hosted_by_caller");
+  assert.equal((await rpcSyscall(env as never, { host_worker: "cryptophys-ai-kernel" }, "supervisor", "platform.observe", {})).reason, "external_tier_limit");
+  assert.equal((await rpcWhoami(env as never, xau, "nope")).error, "agent_not_registered");
+
+  // observe is tier 0 only; a granted tier 0 read goes through (tier 0 reads are not ledgered).
+  assert.equal((await rpcObserve(env as never, api, "platform-api", "recovery.propose", {})).reason, "agent_observe_requires_tier_0");
+  const ok = await rpcObserve(env as never, api, "platform-api", "platform.observe", {});
+  assert.equal(ok.outcome, "succeeded");
+  // An ungranted capability is still denied by the normal syscall checks, and that is ledgered.
+  assert.equal((await rpcSyscall(env as never, api, "platform-api", "recovery.propose", {})).outcome, "denied");
+  const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY created_at").all() as Array<{ outcome: string }>;
+  assert.deepEqual(rows.map((r) => r.outcome), ["denied"]);
+});

@@ -43,7 +43,17 @@ There are no third-party or IDE external agents. The AI Worker OS process table 
    - 14 Pine HUD agents (`hud-r37-funnel`, `hud-prophet`, `hud-trade-management`, `hud-interstellar-eyes`, `hud-kinetic-engine-tva`, `hud-fabio-amt-sensors`, `hud-chronos-matrix`, `hud-aegis-footprint-matrix`, `hud-tactical-muscles`, `hud-macro-aether-sensors`, `hud-gabfx-price-action`, `hud-playbook-execution`, `hud-decision-matrix`, `hud-grid-bot-protocol`).
 
 All 29 `tier_max = 1` agents are active and can invoke `agent_whoami`, `agent_observe`, and `agent_syscall` (including publishing `platform_digest`, `xauusd_digest`, and `hud_digest` reports to `agent_reports` via migration `0017`) in three ways:
-- **In-account RPC Service Binding (`KernelRpc`):** `KernelRpc.agentWhoami(agentId)`, `KernelRpc.agentObserve(agentId, capability, input)`, and `KernelRpc.agentSyscall(agentId, capability, input)` require no shared secret or service token.
+- **In-account RPC Service Binding (`AgentRpc`, recommended, no token):** `AgentRpc.whoami(agentId)`, `AgentRpc.observe(agentId, capability, input)` and `AgentRpc.syscall(agentId, capability, input)` need no shared secret or service token. The caller's Worker name is pinned in its binding, and a Worker may act only as agents whose `host_worker` equals that name (`agent_not_hosted_by_caller` otherwise; `supervisor` is refused with `external_tier_limit`). Normal syscall checks (grants, suspension, kill switch, rate limit, Policy Engine) still apply. Add to the caller's `wrangler.toml` **after** `cryptophys-ai-kernel` with `AgentRpc` is deployed:
+
+  ```toml
+  [[services]]
+  binding = "AGENTS"
+  service = "cryptophys-ai-kernel"
+  entrypoint = "AgentRpc"
+  props = { host_worker = "xauusd-ai-trading-assistant" }  # must equal the caller Worker's name
+  ```
+
+  Then, e.g. `await env.AGENTS.syscall("xauusd-analyst", "reports.publish", { kind: "xauusd_digest", ... })`.
 - **Authenticated MCP header (`X-Cryptophys-Agent-Id`):** An authenticated operator or CI service token calling `POST /mcp` with header `X-Cryptophys-Agent-Id: <agent-id>` enters a scoped `tier_max <= 1` MCP session for that agent (`tools/list` shows only `agent_whoami`, `agent_observe`, and `agent_syscall`).
 - **Dedicated Cloudflare Access Service Token (`cryptophys-agent-<agent-id>`):** Can be created idempotently with `.github/scripts/ensure-agent-service-tokens.sh <agent-id> ...` (which prints only `{agent_id, name, id, client_id, created}` and never outputs `client_secret`) and bound in `agent_principals` (`POST /v1/agents/{id}/principals`).
 
