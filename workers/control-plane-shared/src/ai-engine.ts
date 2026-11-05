@@ -76,6 +76,51 @@ export function boundedStringArray(value: unknown, maxItems: number, maxLen: num
   return out;
 }
 
+
+
+export const ADVISORY_LANGUAGE: RegExp[] = [
+  /\b(buy|sell|long|short)\s+(now|immediately|here|at\s+\d)/i,
+  /\b(recommend(s|ed|ation)?|advis(e|es|ed)|suggest(s|ed)?|should|consider)\b[^.!?\n]{0,60}\b(buy(ing)?|sell(ing)?|enter(ing)?|entry|go(ing)? (long|short)|open(ing)? a position)\b/i,
+  /\b(take[- ]profit|stop[- ]loss|leverage|position[- ]siz(e|ing)|lot size)\b/i,
+];
+
+export function violatesAdvisoryLanguage(value: unknown): boolean {
+  let strings = 0;
+  let done = false;
+  function walk(v: unknown, depth: number): boolean {
+    if (done) return false;
+    if (depth > 6) return false;
+    if (typeof v === "string") {
+      strings++;
+      if (strings > 200) { done = true; return false; }
+      for (const re of ADVISORY_LANGUAGE) {
+        if (re.test(v)) { done = true; return true; }
+      }
+      return false;
+    }
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (walk(item, depth + 1)) return true;
+        if (done) return false;
+      }
+      return false;
+    }
+    if (v && typeof v === "object") {
+      for (const k of Object.keys(v as Record<string, unknown>)) {
+        if (walk((v as Record<string, unknown>)[k], depth + 1)) return true;
+        if (done) return false;
+      }
+      return false;
+    }
+    return false;
+  }
+  try {
+    return walk(value, 0);
+  } catch {
+    return false;
+  }
+}
+
 export class AiEngine {
   readonly service: string;
   readonly model: string;
@@ -208,6 +253,11 @@ export class AiEngine {
       if (category === null) {
         const data = task.validate(parsed);
         if (data !== null) {
+          if (violatesAdvisoryLanguage(data)) {
+            await this.recordFailure(day);
+            await this.recordFailureCategory(day, task.name, "schema:advisory_language");
+            return { status: "invalid_output", reason: "schema:advisory_language", correlation_id: correlationId };
+          }
           return { status: "ok", data, model: this.model, correlation_id: correlationId };
         }
         if (task.diagnose) {

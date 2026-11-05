@@ -12,19 +12,19 @@ check() { if ! jq -e "$2" <<<"$3" >/dev/null; then echo "::error::$1: $3" >&2; f
 
 svc() { # svc ID DRIFTED OBSERVED_AT [REASON]
   jq -cn --arg id "$1" --argjson d "$2" --arg at "$3" --arg r "${4:-}" \
-    '{service_id: $id, drifted: $d, observed_at: $at, evidence: {reasons: (if $r == "" then [] else [$r] end), desired_version: "abc123def456", probe: {version_tag: (if $d then "000000000000" else "abc123def456" end)}}}'
+    '{service_id: $id, drifted: $d, observed_at: $at, evidence: {reasons: (if $r == "" then [] else [$r] end), desired_version: (if $r == "desired_version_unset" then null else "abc123def456" end), probe: {version_tag: (if $d then "000000000000" else (if $r == "desired_version_unset" then null else "abc123def456" end) end)}}}'
 }
 one_drifted() {
   for s in "${all[@]}"; do
     if [[ $s == cryptophys-platform-api ]]; then svc "$s" true "$at" version_mismatch; else svc "$s" false "$at"; fi
   done
 }
-all=(cryptophys-ai-kernel cryptophys-audit-ledger cryptophys-deployment-orchestrator cryptophys-drift-detector cryptophys-platform-api cryptophys-platform-registry cryptophys-policy-engine cryptophys-recovery-manager cryptophys-signal-engine xauusd-ai-trading-assistant xauusd-fundamental-news-ingestion xauusd-nexus-dashboard xauusd-tradingview-pull-adapter)
+all=(cryptophys-ai-kernel cryptophys-audit-ledger cryptophys-deployment-orchestrator cryptophys-drift-detector cryptophys-platform-api cryptophys-platform-registry cryptophys-policy-engine cryptophys-recovery-manager xauusd-ai-trading-assistant xauusd-fundamental-news-ingestion xauusd-nexus-dashboard xauusd-tradingview-pull-adapter)
 report() { jq -s '{services: .}' > "$tmp/r.json"; }
 
-for s in "${all[@]}"; do svc "$s" false "$at"; done | report
+{ for s in "${all[@]}"; do if [[ $s == xauusd-ai-trading-assistant ]]; then svc "$s" false "$at" desired_version_unset; else svc "$s" false "$at"; fi; done; jq -cn --arg at "$old" '{service_id: "cryptophys-signal-engine", drifted: false, observed_at: $at, evidence: {reasons: ["disabled"], desired_version: "370d30a149b3", probe: {version_tag: null}}}'; } | report
 ok="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
-check "in sync" '.state == "in_sync" and (.problems | length) == 0' "$ok"
+check "in sync excludes the retired disabled Worker" '.state == "in_sync" and (.problems | length) == 0 and .markdown == "No drift or stale observations were reported for the 12 active Worker services."' "$ok"
 
 one_drifted | report
 drift="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
@@ -38,7 +38,7 @@ check "missing service" '.state == "drift" and .problems[0] == {service_id: "cry
 
 for s in "${all[@]}"; do svc "$s" false "$old"; done | report
 stale="$("$here/drift-summary.sh" "$tmp/r.json" "$now")"
-check "stale observations" '.state == "drift" and (.problems | length) == 13 and all(.problems[]; .problem == "stale_observation")' "$stale"
+check "stale observations" '.state == "drift" and (.problems | length) == 12 and all(.problems[]; .problem == "stale_observation")' "$stale"
 
 [[ "$(jq -r .fingerprint <<<"$drift")" != "$(jq -r .fingerprint <<<"$missing")" ]] || { echo "::error::fingerprints must differ" >&2; fail=$((fail + 1)); }
 one_drifted | report

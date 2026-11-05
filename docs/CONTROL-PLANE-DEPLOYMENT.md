@@ -1,10 +1,10 @@
 # Control Plane Deployment Runbook
 
-Deploys `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager` and `cryptophys-drift-detector` from one reviewed `main` commit with `.github/workflows/deploy-control-plane.yml`.
+Deploys six Control Plane Workers from one reviewed `main` commit with `.github/workflows/deploy-control-plane.yml`: `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-ai-kernel` and `cryptophys-drift-detector`. The Platform API and Deployment Orchestrator use separate workflows.
 
 ## One-time configuration
 
-### Cloudflare Access (all seven Workers sit behind it)
+### Cloudflare Access (all eight active platform Workers sit behind it)
 
 1. **Zero Trust → Access → Service credentials → Service tokens:** create a token named `cryptophys-ci` and copy its Client ID and Client Secret (the secret is shown once).
 2. **API token** `CLOUDFLARE_ACCESS_API_TOKEN` (account-scoped): *Access: Apps and Policies Edit*, *Access: Service Tokens Read*, *Access: Organizations, Identity Providers, and Groups Read*, *Workers Scripts Read*, and *D1 Edit* (used for the D1 steps of the deploy workflows).
@@ -21,7 +21,7 @@ Every `/v1` call is authorized by the caller's verified Cloudflare Access identi
 
 | List | Members | Grants |
 | --- | --- | --- |
-| `OPERATOR_IDENTITIES` (all five services; `DEPLOY_ALLOWED_IDENTITIES` on the Orchestrator) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint; `POST /v1/deployments` |
+| `OPERATOR_IDENTITIES` (all six Control Plane Workers; `DEPLOY_ALLOWED_IDENTITIES` on the Orchestrator) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint; `POST /v1/deployments` |
 | `APPROVER_IDENTITIES` (Recovery Manager) | `ACCESS_ALLOWED_EMAILS` | `POST /v1/plans/{id}/approve` only, never for a plan the same identity authored |
 
 Emails are compared and recorded in lower case; Client IDs exactly. An unset list fails closed (`503 …_not_configured`); an identity outside a list gets `403 forbidden`. Automation can operate but can never approve a recovery plan.
@@ -32,7 +32,9 @@ The retired secrets are removed from the Workers by the deploy workflows (`ADMIN
 
 ## Deploy
 
-A **new** platform Worker (for example `cryptophys-signal-engine`) first needs **Provision Cloudflare Access**: it creates the Worker as a private 503 stub with workers.dev disabled, then adds it to the Access application, so the Worker is protected before its first real deploy.
+A **new** active platform Worker first needs **Provision Cloudflare Access**: it creates the Worker as a private 503 stub with workers.dev disabled, then adds it to the Access application, so the Worker is protected before its first real deploy.
+
+The crypto Signal Engine is retired. Its Cloudflare Worker and ingest Workflow were deleted by owner-authorized Retire Worker run `42041570698`; the Worker deletion was verified with HTTP 404. Its registry row remains `disabled` for history and is excluded from the active drift inventory. Historical crypto data in D1 is retained.
 
 Order for a fresh commit (after Access is provisioned once): **Deploy Control Plane** (applies D1 migrations) → **Deploy Production Deployment Orchestrator** (refuses to deploy while `0003` is unapplied) → **Request Platform API Deployment**.
 
@@ -49,7 +51,7 @@ The job then, failing closed at every step:
 4. records a D1 Time Travel bookmark (shown in the job summary) as the restore point;
 5. applies pending D1 migrations;
 6. removes the retired shared tokens, deploys each Worker in dependency order with `--tag <sha12>` and its identity lists, proves no retired token is bound, then verifies the active version is that commit and `/health` + `/ready` pass over workers.dev;
-7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all seven Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI. It then verifies the recovery lifecycle Workflow end to end (ADR-0006): as an operator (never an approver) it creates a verification plan, requires its `cryptophys-recovery-lifecycle` instance to be running or waiting in the Cloudflare API, disables the plan and requires the instance to be terminated. Nothing is approved or executed.
+7. records `desired_version` in the registry (the Orchestrator and Platform API deploy workflows record their own after deploying, so all eight active platform Workers are drift-managed), runs a drift observation and requires every deployed Worker to be in sync and healthy, appends a deployment audit event and verifies the whole audit chain, and checks the Policy Engine denies a deployment with failing CI. It then verifies the recovery lifecycle Workflow end to end (ADR-0006): as an operator (never an approver) it creates a verification plan, requires its `cryptophys-recovery-lifecycle` instance to be running or waiting in the Cloudflare API, disables the plan and requires the instance to be terminated. Nothing is approved or executed.
 
 ## Rollback
 

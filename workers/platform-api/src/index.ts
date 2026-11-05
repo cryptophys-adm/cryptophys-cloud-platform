@@ -55,8 +55,9 @@ interface Summary { summary: string; attention: string[] }
 export const overviewTask: AiTask<Summary> = {
   name: "summarize_platform_overview",
   instructions:
-    "Summarize the state of a Cloudflare Workers platform for its operator from the JSON given: drift per service, signal " +
-    'ingestion runs, open agent proposals and whether agents are enabled. Return {"summary": at most 600 characters, ' +
+    "Summarize the state of a Cloudflare Workers platform for its operator from the JSON given: drift per service, open " +
+    'agent proposals, whether agents are enabled, the 24 h agent report summary, and the latest XAUUSD advisory decision ' +
+    '(state it exactly as given; never add advice). Return {"summary": at most 600 characters, ' +
     '"attention": up to 5 strings of at most 200 characters naming what needs a human}. Use only the data given. ' +
     "Never give trading advice and never claim an action was taken.",
   maxInputChars: 8000,
