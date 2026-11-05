@@ -4,6 +4,7 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import { accessConfigured, actorOf, authenticate, identityAllowed } from "../../control-plane-shared/src/access.ts";
 import { healthBody } from "../../control-plane-shared/src/http.ts";
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -31,6 +32,8 @@ export interface Env {
   CF_VERSION_METADATA?: { id: string; tag?: string };
   /** Shared control-plane D1: deployment ledger, audit log and AI budget. */
   DB: D1Database;
+  /** AI Kernel agent binding (advisory reports). */
+  AGENTS?: AgentRpcBinding;
   /** Dedicated Deployment Orchestrator AI engine (advisory only). */
   AI?: AiBinding;
   AI_MODEL?: string;
@@ -187,6 +190,11 @@ export default {
     const refData = await refResponse.json() as { object?: { sha?: string } };
     if (refData.object?.sha !== sha) {
       await auditQuietly(env, { event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "commit_not_current_main", payload: { commit_sha: sha, main_sha: refData.object?.sha ?? null } });
+      await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
+        kind: "platform_digest", severity: "warning",
+        subject: `Deployment of ${TARGET_SERVICE} rejected: commit_not_current_main`,
+        body: { commit_sha: sha, main_sha: refData.object?.sha ?? null, requested_by: requestedBy },
+      });
       return json({ error: "commit_not_current_main", expected_sha: refData.object?.sha ?? null }, 409);
     }
 
@@ -223,9 +231,15 @@ export default {
       runs.some(run => run.status !== "completed" || run.conclusion !== "success");
 
     if (statusBlocked || runsBlocked) {
+      const ciPayload = { commit_sha: sha, commit_status: statusData.state ?? "unknown", blocking_workflows: runs.filter((r) => r.status !== "completed" || r.conclusion !== "success").map((r) => r.name) };
       await auditQuietly(env, {
         event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "ci_not_green",
-        payload: { commit_sha: sha, commit_status: statusData.state ?? "unknown", blocking_workflows: runs.filter((r) => r.status !== "completed" || r.conclusion !== "success").map((r) => r.name) }
+        payload: ciPayload
+      });
+      await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
+        kind: "platform_digest", severity: "warning",
+        subject: `Deployment of ${TARGET_SERVICE} rejected: ci_not_green`,
+        body: { ...ciPayload, requested_by: requestedBy },
       });
       return json({
         error: "ci_not_green",
