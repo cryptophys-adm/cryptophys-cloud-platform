@@ -1,0 +1,120 @@
+name: Retire Worker
+
+# Deletes a retired platform Worker from Cloudflare. Irreversible, so it is narrow:
+# - only Workers listed in RETIRABLE below (owner decisions), only from main, only with
+#   the exact confirmation DELETE, in the production Environment;
+# - fails closed unless the Worker's source is already gone from main and no Worker
+#   config in this repository still binds to it;
+# - deletes its Cloudflare Workflow (if any) first, then the script, and verifies both are gone.
+# Data in D1 is never touched.
+#
+# RETIRABLE:
+#   cryptophys-signal-engine  (owner decision 2026-11-05, TP-018; Workflow cryptophys-signal-ingest)
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: "Worker to delete (must be in RETIRABLE)"
+        required: true
+        type: string
+      confirm_production:
+        description: "Type DELETE to delete it from production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-retire-worker
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate request
+        shell: bash
+        env:
+          WORKER: ${{ inputs.worker }}
+          CONFIRM: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Must run from main"; exit 1; }
+          [[ "$CONFIRM" == "DELETE" ]] || { echo "::error::Exact confirmation DELETE required"; exit 1; }
+          case "$WORKER" in
+            cryptophys-signal-engine) echo "WORKFLOW_NAME=cryptophys-signal-ingest" >> "$GITHUB_ENV" ;;
+            *) echo "::error::${WORKER} is not retirable"; exit 1 ;;
+          esac
+
+      - name: Checkout main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Fail closed unless the Worker is fully retired in source
+        shell: bash
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          dir="workers/${WORKER#cryptophys-}"
+          [[ ! -e "$dir" ]] || { echo "::error::${dir} still exists on main"; exit 1; }
+          if grep -rlF --include=wrangler.toml --include='wrangler*.json*' "\"${WORKER}\"" workers/ 2>/dev/null; then
+            echo "::error::A Worker config still references ${WORKER}"; exit 1
+          fi
+          if grep -nF "$WORKER" .github/workflows/deploy-control-plane.yml .github/workflows/validate-control-plane.yml .github/workflows/provision-access.yml; then
+            echo "::error::A deploy, validation or Access workflow still lists ${WORKER}"; exit 1
+          fi
+          echo "${WORKER} has no source, no binding and no deploy/Access entry on main."
+
+      - name: Delete the Workflow and the Worker, then verify both are gone
+        shell: bash
+        env:
+          WORKER: ${{ inputs.worker }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" && test -n "$CLOUDFLARE_API_TOKEN"
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}"
+          call() { # method path -> prints HTTP status; body in /tmp/body.json (never contains secrets)
+            curl --silent --show-error --max-time 30 --output /tmp/body.json --write-out '%{http_code}' \
+              --request "$1" --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}$2"
+          }
+          errors() { jq -c '[.errors[]? | {code, message}]' /tmp/body.json 2>/dev/null || true; }
+
+          if [[ -n "${WORKFLOW_NAME:-}" ]]; then
+            status="$(call GET "/workflows/${WORKFLOW_NAME}")"
+            if [[ "$status" == "200" ]]; then
+              status="$(call DELETE "/workflows/${WORKFLOW_NAME}")"
+              [[ "$status" =~ ^2 ]] || { echo "::error::Deleting Workflow ${WORKFLOW_NAME} failed: HTTP ${status} $(errors)"; exit 1; }
+              echo "Deleted Workflow ${WORKFLOW_NAME}."
+            elif [[ "$status" == "404" ]]; then
+              echo "Workflow ${WORKFLOW_NAME} already absent."
+            else
+              echo "::error::Reading Workflow ${WORKFLOW_NAME} failed: HTTP ${status} $(errors)"; exit 1
+            fi
+          fi
+
+          status="$(call GET "/workers/scripts/${WORKER}/settings")"
+          if [[ "$status" == "200" ]]; then
+            status="$(call DELETE "/workers/scripts/${WORKER}")"
+            [[ "$status" =~ ^2 ]] || { echo "::error::Deleting Worker ${WORKER} failed: HTTP ${status} $(errors)"; exit 1; }
+            echo "Deleted Worker ${WORKER}."
+          elif [[ "$status" == "404" ]]; then
+            echo "Worker ${WORKER} already absent."
+          else
+            echo "::error::Reading Worker ${WORKER} failed: HTTP ${status} $(errors)"; exit 1
+          fi
+
+          for _ in 1 2 3 4 5; do
+            status="$(call GET "/workers/scripts/${WORKER}/settings")"
+            [[ "$status" == "404" ]] && break
+            sleep 3
+          done
+          [[ "$status" == "404" ]] || { echo "::error::${WORKER} still present (HTTP ${status})"; exit 1; }
+          echo "### Retired \`${WORKER}\`: Worker absent (404)${WORKFLOW_NAME:+, Workflow ${WORKFLOW_NAME} removed}. D1 data untouched." >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified: ${WORKER} is absent."

@@ -27,7 +27,7 @@ env:
   PLATFORM_WORKERS: >-
     cryptophys-platform-api cryptophys-deployment-orchestrator cryptophys-platform-registry
     cryptophys-policy-engine cryptophys-drift-detector cryptophys-audit-ledger cryptophys-recovery-manager
-    cryptophys-signal-engine cryptophys-ai-kernel
+    cryptophys-ai-kernel
 
 jobs:
   provision:
