@@ -96,7 +96,7 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
 }
 
 /** Tier 0: latest XAUUSD advisory decisions from xauusd-ai-trading-assistant (read-only). */
-export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } }, now = Date.now()): Promise<JsonObject> {
+export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } }, now = Date.now(), timeoutMs = 5000): Promise<JsonObject> {
   const observedAt = new Date(now).toISOString();
   if (!env.XAUUSD_AI) {
     return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: "xauusd_binding_missing" };
@@ -104,7 +104,7 @@ export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input:
   let res: Response;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       res = await env.XAUUSD_AI.fetch("https://xauusd.internal/api/decisions?limit=6", {
         headers: { accept: "application/json" },

@@ -1,12 +1,15 @@
+/**
+ * The Signal Analyst agent (TP-017, ADR-0007): a faithful, deterministic reader of
+ * XAUUSD advisory decisions from xauusd-ai-trading-assistant.
+ */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
-import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
+import { rememberOutcomeForAgent } from "./memory.ts";
 import { syscall } from "./syscall.ts";
 import type { CycleReport, KernelEnv, Memory } from "./supervisor.ts";
 
 export const SIGNAL_ANALYST_ID = "signal-analyst";
 export const DISCLAIMER = "advisory only; not an order";
-const SERVICE = "cryptophys-ai-kernel";
 export const DIGEST_INTERVAL_MS = 6 * 3_600_000;
 
 /** Serializes overlapping invocations of this agent's Durable Object cycle, including awaits. */
@@ -44,6 +47,7 @@ export interface XauusdObservation {
 }
 
 interface MemoryState {
+  last_empty_report_at?: number;
   last_candle_key?: string;
   last_decision?: string;
   last_digest_at?: number;
@@ -82,17 +86,6 @@ export async function runSignalCycle(
   const obs = observed.result as unknown as XauusdObservation;
 
   const mem = (await memory.get<MemoryState>("xauusd_state")) ?? {};
-  // backward compat: also read legacy keys
-  const legacyLastCandle = await memory.get<string>("last_candle_key");
-  const legacyLastDecision = await memory.get<string>("last_decision");
-  const legacyLastDigest = await memory.get<number>("last_digest_at");
-  const legacyLastStale = await memory.get<string>("last_stale_candle_key");
-  const legacyLastUnavail = await memory.get<number>("last_unavailable_report_at");
-  if (legacyLastCandle && !mem.last_candle_key) mem.last_candle_key = legacyLastCandle;
-  if (legacyLastDecision && !mem.last_decision) mem.last_decision = legacyLastDecision;
-  if (legacyLastDigest && !mem.last_digest_at) mem.last_digest_at = legacyLastDigest;
-  if (legacyLastStale && !mem.last_stale_candle_key) mem.last_stale_candle_key = legacyLastStale;
-  if (legacyLastUnavail && !mem.last_unavailable_report_at) mem.last_unavailable_report_at = legacyLastUnavail;
 
   // Unavailable
   if (!obs.available) {
@@ -143,8 +136,23 @@ export async function runSignalCycle(
       }
     }
   }
-  if (obs.stale && !latest) {
-    // no items; treat as stale but no candle key; skip report dedup by a sentinel
+  if (obs.available && !latest) {
+    const last = mem.last_empty_report_at ?? 0;
+    if (now - last >= DIGEST_INTERVAL_MS) {
+      const subject = "XAUUSD decisions empty";
+      const published = await syscall(env, SIGNAL_ANALYST_ID, "reports.publish", {
+        kind: "xauusd_digest",
+        severity: "warning",
+        subject,
+        ai_status: "deterministic",
+        body: { source: obs.source, disclaimer: DISCLAIMER },
+      });
+      report.actions.push(published);
+      if (published.outcome === "succeeded") {
+        mem.last_empty_report_at = now;
+        await memory.put("xauusd_state", mem);
+      }
+    }
   }
 
   // Digest

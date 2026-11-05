@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, fakeAi, migratedDb } from "./harness.ts";
 import { engineFor, AiEngine, type AiTask, extractJsonObject } from "../src/ai-engine.ts";
+import { draftAuditDigestTask } from "../../ai-kernel/src/auditor.ts";
 import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
 
 function makeEngine(db: any, ai: any, tasks: readonly string[], timeoutMs = 8000) {
@@ -168,6 +169,19 @@ test("TP-016 telemetry never breaks caller", async () => {
   const r: any = await e.run(task, { a: 1 }, "c");
   assert.equal(r.status, "invalid_output");
   assert.equal(r.reason, "truncated");
+});
+
+test("TP-016 audit diagnose", async () => {
+  const obs: any = {
+    observed_at: new Date().toISOString(), since: new Date().toISOString(),
+    chain: { valid: true, events_checked: 1, head_hash: "h", first_invalid_event_id: null, reason: null },
+    valid: true, events_checked: 1,
+    counts_24h: { governance_audit_events: {}, denied_agent_syscalls: 0, failed_agent_syscalls: 0, agent_recovery_plans: 0 },
+  };
+  const task = draftAuditDigestTask(obs);
+  assert.ok(task.diagnose);
+  const slug = task.diagnose!({ headline: "", summary: "s", items: ["a"] });
+  assert.equal(slug, "headline_invalid");
 });
 
 test("TP-016 extractJsonObject keeps behaviour", async () => {
