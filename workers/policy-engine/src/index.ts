@@ -1,4 +1,5 @@
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   ACTOR, COMMIT_SHA, SERVICE_ID, errorResponse, healthResponse, json, limitParam, newId, nowIso, readJsonObject, redact,
   serviceMetadata, stringField, type JsonObject,
@@ -9,7 +10,7 @@ import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { agentSyscallChecks } from "../../control-plane-shared/src/capabilities.ts";
 
-export type Env = BaseEnv;
+export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
 
 const SERVICE = "cryptophys-policy-engine";
 export const ACTIONS = ["deploy", "recovery.execute", "registry.update", "agent.syscall"] as const;
@@ -107,6 +108,16 @@ export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecisi
     outcome: result.decision,
     payload: { decision_id: decisionId, action: req.action, reason: result.reason },
   });
+  if (result.decision === "deny" && req.action !== "agent.syscall") {
+    await publishAgentReport(env.AGENTS, "policy-engine", {
+      kind: "platform_digest", severity: "warning",
+      subject: `Policy denied ${req.action} on ${req.resource.slice(0, 100)}`,
+      body: {
+        decision_id: decisionId, action: req.action, resource: req.resource, reason: result.reason, subject: req.subject,
+        failed_checks: result.checks.filter((c) => !c.passed).map((c) => c.id),
+      },
+    });
+  }
   return { decision_id: decisionId, action: req.action, resource: req.resource, ...result };
 }
 

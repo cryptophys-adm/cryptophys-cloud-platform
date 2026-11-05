@@ -1,4 +1,5 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   SERVICE_ID, VERSION_TAG, errorResponse, healthResponse, json, newId, nowIso, readJsonObject,
   serviceMetadata, stringField, type JsonObject,
@@ -8,7 +9,7 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 
-export type Env = BaseEnv;
+export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
 
 const SERVICE = "cryptophys-platform-registry";
 const ENVIRONMENTS = ["development", "preview", "production"];
@@ -101,6 +102,19 @@ async function upsertService(request: Request, env: Env, id: string, url: URL, a
     outcome: "success",
     payload: { environment, status, endpoint: endpoint ?? null, metadata },
   });
+  if (existing === null) {
+    await publishAgentReport(env.AGENTS, "platform-registry", {
+      kind: "platform_digest", severity: "info",
+      subject: `Service ${id} registered (${environment})`,
+      body: { service_id: id, environment, status, actor },
+    });
+  } else if (existing.status !== "disabled" && status === "disabled") {
+    await publishAgentReport(env.AGENTS, "platform-registry", {
+      kind: "platform_digest", severity: "warning",
+      subject: `Service ${id} disabled`,
+      body: { service_id: id, environment, previous_status: existing.status, actor },
+    });
+  }
   const saved = await getService(env, id);
   const response: JsonObject = { service: saved ? present(saved) : null };
   if (url.searchParams.get("advisory") === "true" && saved) {
