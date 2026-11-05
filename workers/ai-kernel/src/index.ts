@@ -14,7 +14,7 @@ import type { ExecutionContextLike, ScheduledEventLike } from "../../control-pla
 import { errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata } from "../../control-plane-shared/src/http.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, actorOf, authenticate, authorize, identityAllowed, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
-import { CAPABILITIES, getActivePrincipalByIdentity } from "../../control-plane-shared/src/capabilities.ts";
+import { CAPABILITIES, getActivePrincipalByIdentity, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import {
   addAgentPrincipal, agentStatus, listActions, listAgents, revokeAgentPrincipal,
   setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv,
@@ -78,6 +78,16 @@ export default {
         }));
       }
       if (isOperator) {
+        const targetAgentId = request.headers.get("x-cryptophys-agent-id")?.trim();
+        if (targetAgentId) {
+          const targetAgent = await getAgent(env.DB, targetAgentId);
+          if (!targetAgent) return errorResponse(404, "not_found", "agent not found");
+          if (targetAgent.tier_max > 1) return errorResponse(400, "external_tier_limit", "MCP agent session requires tier_max <= 1");
+          return await handleMcp(request, env, callerActor, false, {
+            agentId: targetAgent.agent_id,
+            accessIdentity: `operator:${callerActor}`,
+          });
+        }
         return await handleMcp(request, env, callerActor, await isApprover(request, env));
       }
       if (principal) {

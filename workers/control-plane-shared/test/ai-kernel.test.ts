@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0016_platform_and_xauusd_agents.sql");
+  assert.equal(REQUIRED_MIGRATION, "0017_report_kinds_xauusd_and_hud.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -28,8 +28,8 @@ test("readiness requires the atomic syscall-consumption migration and the newest
   assert.equal(await schemaReady({ DB: db2 } as never), false);
 });
 
-test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-assistant agents (7 active + 14 HUD)", () => {
-  const db = migratedDb();
+test("0016 & 0017 register and activate the 8 AI Worker platform agents and 21 xauusd-ai-trading-assistant agents (7 active + 14 HUD) with platform_digest, xauusd_digest, and hud_digest report kinds", async () => {
+  const { env, db } = kernelEnv();
   const rows = db.raw.prepare("SELECT agent_id, host_worker, tier_max, capabilities_json, status FROM agents ORDER BY agent_id").all() as Array<{
     agent_id: string;
     host_worker: string;
@@ -47,6 +47,8 @@ test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-as
     assert.equal(r.status, "enabled");
     if (r.agent_id !== "supervisor") {
       assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
+      const caps = JSON.parse(r.capabilities_json) as string[];
+      assert.ok(caps.includes("reports.publish"), `${r.agent_id} must be able to publish reports`);
     }
     const caps = JSON.parse(r.capabilities_json) as string[];
     assert.ok(caps.length > 0);
@@ -54,6 +56,65 @@ test("0016 registers the 8 AI Worker platform agents and 21 xauusd-ai-trading-as
       assert.ok(Object.hasOwn(CAPABILITIES, c), `${r.agent_id} capability ${c} must exist in CAPABILITIES`);
     }
   }
+
+  // Any of the 29 agents (tier_max = 1) can be activated on POST /mcp via X-Cryptophys-Agent-Id and publish platform_digest, xauusd_digest, and hud_digest reports.
+  for (const [agentId, kind, subject] of [
+    ["platform-api", "platform_digest", "Platform API posture digest"],
+    ["xauusd-analyst", "xauusd_digest", "XAUUSD H1 Analyst synthesis digest"],
+    ["hud-prophet", "hud_digest", "Prophet R38 HUD reading digest"],
+  ] as const) {
+    const whoamiRes = await call(
+      kernel,
+      env,
+      new Request("https://example.test/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-access-jwt-assertion": OPERATOR_JWT, "x-cryptophys-agent-id": agentId },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_whoami", arguments: {} } }),
+      }),
+    );
+    assert.equal(whoamiRes.status, 200);
+    const whoami = JSON.parse(whoamiRes.body.result.content[0].text);
+    assert.equal(whoami.agent_id, agentId);
+
+    const pubRes = await call(
+      kernel,
+      env,
+      new Request("https://example.test/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-access-jwt-assertion": OPERATOR_JWT, "x-cryptophys-agent-id": agentId },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: {
+            name: "agent_syscall",
+            arguments: {
+              capability: "reports.publish",
+              input: { kind, severity: "info", subject, ai_status: "ok", body: { summary: subject } },
+            },
+          },
+        }),
+      }),
+    );
+    assert.equal(pubRes.status, 200);
+    const pub = JSON.parse(pubRes.body.result.content[0].text);
+    assert.equal(pub.outcome, "succeeded");
+    assert.equal(pub.result.report.kind, kind);
+    assert.equal(pub.result.report.agent_id, agentId);
+  }
+
+  // supervisor (tier_max = 2) cannot be entered via X-Cryptophys-Agent-Id
+  const supDenied = await call(
+    kernel,
+    env,
+    new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-access-jwt-assertion": OPERATOR_JWT, "x-cryptophys-agent-id": "supervisor" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }),
+  );
+  assert.equal(supDenied.status, 400);
+  assert.equal(supDenied.body.error, "external_tier_limit");
 });
 
 function memory() {
