@@ -31,6 +31,11 @@ export type SyscallResult =
   | { outcome: "succeeded"; capability: string; tier: number; decision_id: string | null; result: JsonObject }
   | { outcome: "denied" | "failed"; capability: string; tier: number; decision_id: string | null; reason: string };
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** Tier 0: a consistent read of the platform state the agents reason about. */
 export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
   const latest = await env.DB.prepare(
@@ -74,10 +79,28 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: r.severity,
       subject: String(r.subject).slice(0, 200), created_at: r.created_at,
     }));
-    agentReports24h = { since, counts, latest_attention: latestAttention };
+    // Keep the public alert's fingerprint complete even when warning reports crowd
+    // critical reports out of the five-row latest_attention window.
+    const criticalIds = await env.DB.prepare(
+      "SELECT report_id FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY report_id",
+    ).bind(since).all<{ report_id: string }>();
+    const criticalLatestRows = await env.DB.prepare(
+      "SELECT report_id, agent_id, kind, created_at FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY created_at DESC, rowid DESC LIMIT 5",
+    ).bind(since).all<{ report_id: string; agent_id: string; kind: string; created_at: string }>();
+    const criticalFingerprint = await sha256Hex(criticalIds.results.map((r) => r.report_id).join("\n"));
+    const latestCritical = criticalLatestRows.results.map((r) => ({
+      report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, created_at: r.created_at,
+    }));
+    agentReports24h = {
+      since, counts, latest_attention: latestAttention,
+      critical_fingerprint: criticalFingerprint, latest_critical: latestCritical,
+    };
   } catch (err) {
     console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "agent_reports_overview_failed", message: String((err as Error)?.message ?? err) }));
-    agentReports24h = { since, counts: { critical: 0, warning: 0, info: 0 }, latest_attention: [], error: "reports_unavailable" };
+    agentReports24h = {
+      since, counts: { critical: 0, warning: 0, info: 0 }, latest_attention: [],
+      critical_fingerprint: null, latest_critical: [], error: "reports_unavailable",
+    };
   }
 
   return {
