@@ -6,9 +6,9 @@ name: Drift Alert
 # Read-only towards production; authenticated by the CI Cloudflare Access service token.
 # A second job does the same for critical agent reports (AI Kernel /v1/status,
 # agent_reports_24h): one issue opened while any critical report exists in the last 24 h,
-# updated when the complete report-id fingerprint changes, and closed when none remain.
-# Public issue content is limited to time, agent id and kind; subjects, report ids and bodies
-# stay behind the authenticated AI Kernel endpoint.
+# updated from the complete report-id fingerprint after the kernel rollout, and closed when none remain.
+# A bounded legacy fallback preserves alerting during the rollout. Public issue content is
+# limited to time, agent id and kind; subjects, report ids and bodies stay authenticated.
 # Scheduled runs are excluded from the Orchestrator's CI gate (they are not CI for a commit).
 
 on:
