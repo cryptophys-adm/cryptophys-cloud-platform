@@ -8,8 +8,6 @@
  *
  *  - Persistent drift (two consecutive drifted observations of a managed service, no open
  *    agent plan for it, none proposed in the last 24 h) -> recovery.propose (tier 1).
- *  - Signal ingestion stale (no run for 40 min) or failing (the last two runs failed every
- *    series), at most every 30 min -> signals.reingest (tier 2).
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
@@ -20,8 +18,6 @@ import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 export const AGENT_ID = "supervisor";
 const SERVICE = "cryptophys-ai-kernel";
 const PROPOSAL_COOLDOWN_MS = 24 * 3_600_000;
-const REINGEST_COOLDOWN_MS = 30 * 60_000;
-const INGEST_STALE_MS = 40 * 60_000;
 
 /** Serializes overlapping invocations of one Durable Object agent cycle, including awaits. */
 export class SerialCycleQueue {
@@ -47,7 +43,7 @@ export interface Memory {
 }
 
 interface ServiceObs { service_id: string; drifted: boolean; persistent: boolean; reasons: string[]; desired_version: string | null; observed_version: string | null }
-interface Observation { services: ServiceObs[]; ingest_runs: { started_at: string; series_total: number; series_failed: number }[]; open_agent_plans: { service_id: string }[] }
+interface Observation { services: ServiceObs[]; open_agent_plans: { service_id: string }[] }
 
 export interface Proposal { title: string; rationale: string; steps: { action: string; description: string }[] }
 
@@ -144,21 +140,6 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   }
   await memory.put("proposals", proposals);
 
-  // Ingestion -> tier 2 re-run.
-  const runs = obs.ingest_runs;
-  const stale = !runs.length || now - Date.parse(runs[0].started_at) > INGEST_STALE_MS;
-  const failing = runs.length >= 2 && runs.slice(0, 2).every((r) => r.series_total > 0 && r.series_failed === r.series_total);
-  if (stale || failing) {
-    const last = (await memory.get<number>("last_reingest")) ?? 0;
-    if (now - last < REINGEST_COOLDOWN_MS) {
-      report.findings.push({ kind: "ingest", stale, failing, action: "none", why: "re-run attempted in the last 30 min" });
-    } else {
-      const result = await syscall(env, AGENT_ID, "signals.reingest");
-      report.actions.push(result);
-      report.findings.push({ kind: "ingest", stale, failing, action: "signals.reingest", outcome: result.outcome });
-      await memory.put("last_reingest", now);
-    }
-  }
   await memory.put("last_cycle", report);
   return report;
 }

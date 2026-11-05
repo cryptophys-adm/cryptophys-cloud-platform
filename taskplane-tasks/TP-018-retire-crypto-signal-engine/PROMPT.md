@@ -161,3 +161,28 @@ In `STATUS.md`, list every test file you changed, and why.
    - drift is 0, with `cryptophys-signal-engine` shown as `disabled`;
    - the supervisor runs without `signals.reingest`.
 3. **Owner confirmation, then delete the Worker** `cryptophys-signal-engine` from Cloudflare. This is irreversible. Verify that it is absent and that drift is still 0.
+
+## Required audit addendum — pre-merge conditions (2026-11-05)
+
+1. **Readiness migration completeness.** `workers/control-plane-shared/src/readiness.ts` must require `0017_report_kinds_xauusd_and_hud.sql` as well as 0018, 0019, and 0020. TP-017 still publishes `xauusd_digest`; migration 0017 adds the corresponding report-kind constraint. Add a regression test proving `schemaReady()` returns false when the 0017 migration record is missing. Do not infer production migration state from source alone.
+
+2. **Retirement regression tests.** Update the existing supervisor, syscall, agent-memory, and drift-detector tests to assert that `signals.reingest` is unavailable, the supervisor no longer emits ingest actions, the `signal-engine` agent is suspended, and the disabled registry service is recorded as disabled without probing its binding. The repository-root scan must derive its root from `import.meta.url`; do not hard-code a runner filesystem path. Do not skip or delete these regression tests merely to obtain a green result.
+
+3. **Architecture record.** Add a dated amendment to `architecture/adr/0007-ai-worker-os.md` that preserves the original design as history but supersedes the active Signal Engine, `SignalRpc.reingest`, and tier-2 capability behavior. Record that XAUUSD advisory observation remains read-only and external. Do not edit `architecture/BASELINE.md`.
+
+4. **CI sequencing prerequisite — PR #109.** The original `.github/workflows/validate-control-plane.yml` bundled `signal-engine`, so this PR's Control Plane check failed with ENOENT after deleting `workers/signal-engine/`. This task forbids changing `.github/*`. The orchestrator has opened PR #109 as the separate prerequisite: it removes the retired Worker from the validation bundle matrix and from the future Control Plane `DEPLOY_ORDER`/`EXPECTED_WORKERS`, while deliberately leaving `provision-access.yml` and `drift-summary.sh` unchanged until the owner confirms Worker deletion. PR #109 must be reviewed/merged first; then refresh this PR against the new main and rerun all checks. Neither PR authorizes a production deployment.
+
+5. **Architecture and documentation consistency.** Preserve historical crypto data and tables. Any deployment/Access/drift inventory changes must be explicit and verified; do not claim production retirement until the orchestrator has reconciled those inventories and the owner has confirmed the production Worker disposition.
+
+6. Update this task's `STATUS.md` with the exact latest CI test count and every remaining blocker. A locally reported test count is not a substitute for the GitHub Actions result.
+
+## Additional architecture and operations records
+
+The owner-approved retirement is a material architecture change. In addition to ADR-0007, amend:
+
+- `architecture/adr/0005-cloudflare-transformation.md`: mark the crypto Signal Engine and its crypto Mizan runtime as historical/retired; explicitly preserve the XAUUSD Mizan/Prophet/GMI ownership boundary and the advisory-only prohibition.
+- `architecture/adr/0006-cloudflare-workflows.md`: supersede the active SignalIngestWorkflow decision and usage estimate while retaining the Recovery Manager lifecycle Workflow.
+- `docs/CONTROL-PLANE-WORKERS.md`: mark `cryptophys-signal-engine` retired with no active endpoints; update active Worker and Workflow descriptions.
+- `docs/OPERATIONS.md`: reconcile the agent inventory to 30 enabled tier-1 rows, one suspended tier-1 `signal-engine` row, and the tier-2 supervisor; state that only the Drift Detector currently publishes scheduled platform reports.
+
+Preserve historical ADR text as historical context; add dated amendments rather than silently rewriting accepted decisions. Do not change `architecture/BASELINE.md` or any XAUUSD repository.

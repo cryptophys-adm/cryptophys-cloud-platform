@@ -22,7 +22,6 @@ export interface FetchBinding {
 export interface Env extends BaseEnv {
   /** AI Kernel AgentRpc (ADR-0007 §1.1), pinned to host_worker = cryptophys-drift-detector. */
   AGENTS?: AgentRpcBinding;
-  SVC_SIGNAL_ENGINE: HealthRpcBinding;
   SVC_AI_KERNEL: HealthRpcBinding;
   /** xauusd Workers, deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005 decision 7). */
   EXT_XAUUSD_AI: FetchBinding;
@@ -49,7 +48,6 @@ export function targets(env: Env): Record<string, HealthRpcBinding | undefined> 
     "cryptophys-policy-engine": env.SVC_POLICY_ENGINE,
     "cryptophys-audit-ledger": env.SVC_AUDIT_LEDGER,
     "cryptophys-recovery-manager": env.SVC_RECOVERY_MANAGER,
-    "cryptophys-signal-engine": env.SVC_SIGNAL_ENGINE,
     "cryptophys-ai-kernel": env.SVC_AI_KERNEL,
   };
 }
@@ -148,6 +146,27 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
   const external = externalTargets(env);
   const services: ServiceDrift[] = [];
   for (const row of rows.results) {
+    if (row.status === "disabled") {
+      const observationId = newId("obs");
+      const p = { reachable: true, healthy: true, version_tag: null, error: null };
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          observationId, row.service_id,
+          await sha256Hex(canonicalJson({ desired_version: row.desired_version, healthy: true })),
+          await sha256Hex(canonicalJson({ desired_version: null, healthy: true })),
+          0,
+          JSON.stringify({ run_id: runId, trigger, reasons: ["disabled"], probe: p, desired_version: row.desired_version }),
+          observedAt,
+        ),
+        env.DB.prepare("UPDATE service_registry SET observed_version = ?, status = ?, updated_at = ? WHERE service_id = ?")
+          .bind(null, "disabled", observedAt, row.service_id),
+      ]);
+      services.push({ service_id: row.service_id, desired_version: row.desired_version, observed_version: null, drifted: false, managed: Boolean(row.desired_version), reasons: ["disabled"], status: "disabled", observation_id: observationId, probe: p });
+      continue;
+    }
     let p: Probe;
     if (row.service_id === SERVICE) {
       p = { reachable: true, healthy: true, version_tag: env.CF_VERSION_METADATA?.tag ?? null, error: null };

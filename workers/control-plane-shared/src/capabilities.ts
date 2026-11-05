@@ -15,14 +15,13 @@ export type Tier = 0 | 1 | 2 | 3;
 export interface Capability { tier: Tier; reversible: boolean; description: string; max_per_hour?: number }
 
 export const CAPABILITIES: Record<string, Capability> = {
-  "platform.observe": { tier: 0, reversible: true, description: "Read drift, signal ingestion, recovery plans and agent state" },
-  "signals.observe": { tier: 0, reversible: true, description: "Read the latest Signal Engine confluence, decision, Mizan and macro context" },
+  "platform.observe": { tier: 0, reversible: true, description: "Read drift, recovery plans, agent state and the 24 h report summary" },
+  "signals.observe": { tier: 0, reversible: true, description: "Read the latest XAUUSD advisory decisions from xauusd-ai-trading-assistant" },
   "audit.verify": { tier: 0, reversible: true, description: "Verify the audit hash chain and count 24-hour governance events" },
   "memory.recall": { tier: 0, reversible: true, description: "Recall up to 5 semantically similar memories owned by the calling agent" },
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
   "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
   "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize", max_per_hour: 12 },
-  "signals.reingest": { tier: 2, reversible: true, description: "Run one extra Signal Engine ingestion pass (idempotent writes)", max_per_hour: 2 },
   "deploy.release": { tier: 3, reversible: false, description: "Deploy a new Worker version (GitHub Actions with human gates only)" },
   "secrets.rotate": { tier: 3, reversible: false, description: "Rotate or replace a secret (human only)" },
   "data.delete": { tier: 3, reversible: false, description: "Delete or rewrite stored data (human only)" },
@@ -108,7 +107,7 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
 }
 
 /**
- * Defence in depth for syscall targets (RecoveryRpc, SignalRpc): the target re-checks that
+ * Defence in depth for syscall targets (RecoveryRpc): the target re-checks that
  * the Policy Engine recorded an allow for exactly this agent and capability in the last five
  * minutes, and that the decision has not been used for an action already.
  */

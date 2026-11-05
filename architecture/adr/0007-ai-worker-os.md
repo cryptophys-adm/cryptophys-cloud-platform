@@ -106,3 +106,19 @@ TP-003, TP-004 and TP-005 are cancelled. No kubectl or Vault access is granted, 
 - **A central AI engine Worker shared by all services.** Rejected, as in `AI-ENGINE-REQUIREMENT.md`: per-Worker engines keep budgets, permissions and failures isolated.
 - **Agents that call Worker APIs directly with their own tokens.** Rejected. There would be no single syscall gate, no uniform audit, and no kill switch.
 - **The Cloudflare Agents SDK.** Not adopted for now: the kernel needs only Durable Objects and a small MCP surface, and avoiding the dependency keeps the code testable in Node. The SDK can be adopted later without changing the syscall model.
+
+## Amendment — 2026-11-05: retirement of the crypto Signal Engine
+
+**Status:** Owner-approved retirement, implemented through TP-018.
+
+This amendment supersedes the active Signal Engine runtime and tier-2 re-ingestion behavior described in the original decision while preserving that text as the historical design record.
+
+- The `cryptophys-signal-engine` service is retired and its registry status is disabled. The `signal-engine` agent is suspended.
+- The `signals.reingest` capability is removed from the capability catalog and the supervisor grant. No active tier-2 syscall remains; the supervisor's `tier_max = 2` is retained only as a ceiling, not as an active grant.
+- The supervisor no longer reads `signal_ingest_runs`, evaluates stale/failed crypto ingestion, or dispatches `SignalRpc.reingest`. Its active cycle is limited to platform drift observation and human-gated recovery proposals.
+- `signals.observe` remains a read-only capability for XAUUSD advisory decisions supplied by the external `xauusd-ai-trading-assistant`; it is not a dependency on the retired crypto Signal Engine.
+- Existing crypto market, candle, ingestion, indicator, and historical records are retained. TP-018 retires runtime code and bindings; it does not authorize deleting, rewriting, or migrating away historical crypto data.
+- Any future reactivation of crypto signal processing, or introduction of a replacement ingestion capability, requires a new owner-approved architecture decision and independent security review.
+- Validation, deployment order, Access provisioning, and drift inventory must be reconciled with the retired Worker before any subsequent production deployment. The retirement PR itself does not authorize a deployment.
+
+The original sections describing `SignalRpc`, `signals.reingest`, and the Signal Engine's scheduled ingestion are historical and are superseded for current operation by this amendment.

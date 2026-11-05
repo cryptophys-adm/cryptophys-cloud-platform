@@ -72,3 +72,15 @@ Two control-plane jobs need something a request/response Worker or a single cron
 - **A sweeper cron in the Recovery Manager.** Rejected. It would need polling, adds invocations around the clock, and reacts only at its own cadence.
 - **Queues for ingestion.** Rejected. Queues add a producer, a consumer and a dead-letter queue to get per-series retries, which a Workflow step provides directly.
 - **Deploying from a Workflow instead of GitHub Actions.** Rejected. The Worker would have to hold a deploy-capable API token, and branch protection, required checks and the `production` environment would no longer gate production.
+
+## Amendment — 2026-11-05: SignalIngestWorkflow retired
+
+**Status:** Owner-approved retirement, implemented through TP-018.
+
+- `cryptophys-signal-ingest` and `SignalIngestWorkflow` in `cryptophys-signal-engine` are no longer active or deployed.
+- The Recovery Manager's `cryptophys-recovery-lifecycle` Workflow remains active and retains its existing deadlines, D1 source-of-truth, approval, and audit behavior.
+- Readiness no longer requires a Signal Engine `ingest_workflow` binding. The retired Worker and binding are removed; the historical `signal_ingest_runs` and crypto market data remain stored.
+- The original signal-ingestion step counts, cron cadence, retry model, and retention figures above are historical and must not be used as current usage estimates.
+- Any future ingestion Workflow requires a new owner-approved ADR and a separate security, quota, and data-retention review.
+
+This amendment supersedes Decision 2, the Signal Engine portion of Decision 3, and the signal-ingestion portions of Usage and Consequences. It does not change the Recovery Manager lifecycle Workflow.

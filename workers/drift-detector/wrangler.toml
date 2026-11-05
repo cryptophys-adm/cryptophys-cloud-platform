@@ -66,11 +66,6 @@ service = "cryptophys-recovery-manager"
 entrypoint = "HealthRpc"
 
 [[services]]
-binding = "SVC_SIGNAL_ENGINE"
-service = "cryptophys-signal-engine"
-entrypoint = "HealthRpc"
-
-[[services]]
 binding = "SVC_AI_KERNEL"
 service = "cryptophys-ai-kernel"
 entrypoint = "HealthRpc"

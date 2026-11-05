@@ -298,6 +298,7 @@ test("drift detector compares registry desired versions with live versions over 
     fetch: async (input: Request | string) => { const path = new URL(String(input)).pathname; probed.push(path); return handler(path); },
   });
   const healthy = (tag: string | null) => ({ health: async () => ({ status: "ok", version: tag ? { id: "v", tag } : null }) });
+  let signalEngineProbes = 0;
   const env: any = {
     ...baseEnv("cryptophys-drift-detector", db, { CF_VERSION_METADATA: { id: "self", tag: "aaaaaaaaaaaa" } }),
     SVC_PLATFORM_API: healthy("aaaaaaaaaaaa"),
@@ -306,7 +307,7 @@ test("drift detector compares registry desired versions with live versions over 
     SVC_POLICY_ENGINE: { health: async () => { throw new Error("network"); } },
     SVC_AUDIT_LEDGER: healthy(null),
     SVC_RECOVERY_MANAGER: healthy("aaaaaaaaaaaa"),
-    SVC_SIGNAL_ENGINE: healthy("aaaaaaaaaaaa"),
+    SVC_SIGNAL_ENGINE: { health: async () => { signalEngineProbes++; return { status: "ok", version: { id: "v", tag: "aaaaaaaaaaaa" } }; } },
     SVC_AI_KERNEL: healthy("aaaaaaaaaaaa"),
     // External xauusd Workers: plain fetch service bindings, probed over HTTP.
     EXT_XAUUSD_AI: http((path) => path === "/health" ? Response.json({ status: "ok", service: "xauusd-ai-trading-assistant" }) : new Response("no", { status: 404 })),
@@ -329,7 +330,8 @@ test("drift detector compares registry desired versions with live versions over 
   assert.deepEqual(by["cryptophys-audit-ledger"].reasons, ["observed_version_unavailable"]);
   assert.deepEqual([by["cryptophys-recovery-manager"].drifted, by["cryptophys-recovery-manager"].managed], [false, false]);
   assert.equal(by["cryptophys-drift-detector"].drifted, false);
-  assert.deepEqual([by["cryptophys-signal-engine"].drifted, by["cryptophys-signal-engine"].status], [false, "healthy"]);
+  assert.deepEqual([by["cryptophys-signal-engine"].drifted, by["cryptophys-signal-engine"].status], [false, "disabled"]);
+  assert.equal(signalEngineProbes, 0, "disabled Signal Engine is never probed");
   assert.deepEqual([by["cryptophys-ai-kernel"].drifted, by["cryptophys-ai-kernel"].status], [false, "healthy"]);
   // External services: health-managed only (their version is not observable from outside).
   assert.deepEqual([by["xauusd-ai-trading-assistant"].drifted, by["xauusd-ai-trading-assistant"].managed, by["xauusd-ai-trading-assistant"].status], [false, false, "healthy"]);
