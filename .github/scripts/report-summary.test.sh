@@ -31,7 +31,7 @@ out2="$("$here/report-summary.sh" "$tmp/crit.json")"
 md="$(jq -r .markdown <<<"$out2")"
 if [[ "$(jq -r .state <<<"$out2")" == "critical" && "$(jq -r .critical <<<"$out2")" == "2" ]]; then pass "critical -> critical state"; else bad "critical -> critical state"; fi
 rows="$(grep '^| 2026' <<<"$md" || true)"
-if [[ "$(wc -l <<<"$rows")" == "2" && "$(head -1 <<<"$rows")" == *recovery-manager* ]]; then pass "only allow-listed metadata, newest first"; else bad "only allow-listed metadata, newest first"; fi
+if [[ "$(grep -c "^| 2026" <<<"$rows")" == "2" && "$(head -1 <<<"$rows")" == *recovery-manager* ]]; then pass "only allow-listed metadata, newest first"; else bad "only allow-listed metadata, newest first"; fi
 if grep -Eq 'UNTRUSTED_SECRET_MARKER|SECOND_SECRET_MARKER|@cryptophys-adm|evil.invalid|rpt_[ab]' <<<"$md"; then bad "untrusted subjects and report ids never leave the kernel"; else pass "untrusted subjects and report ids never leave the kernel"; fi
 if [[ "$(jq -r .fingerprint <<<"$out2")" == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ]]; then pass "complete kernel fingerprint preserved"; else bad "complete kernel fingerprint preserved"; fi
 
