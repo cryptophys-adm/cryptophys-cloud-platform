@@ -10,7 +10,7 @@ set -euo pipefail
 status="${1:?usage: report-summary.sh STATUS_JSON}"
 summary="$(jq -c '
   (.agent_reports_24h // error("status has no agent_reports_24h")) as $r
-  | if ($r.error // null) != null then error("report summary unavailable: \\($r.error)") else . end
+  | if ($r.error // null) != null then error("report summary unavailable: \($r.error)") else . end
   | ($r.counts.critical // error("status has no critical count")) as $n
   | if ($n | type) != "number" or $n < 0 or ($n | floor) != $n then error("invalid critical count") else . end
   | ($r.critical_fingerprint
@@ -28,8 +28,8 @@ summary="$(jq -c '
       state: (if $n > 0 then "critical" else "clear" end),
       critical: $n,
       fingerprint: $fp,
-      markdown: (if $n == 0 then "No critical agent report in the last 24 hours (since \\($r.since))."
-        else "\\($n) critical report(s) since \\($r.since). Newest (up to 5; subjects withheld):\\n\\n| Time (UTC) | Agent | Kind |\\n| --- | --- | --- |\\n"
-          + ($safe | map("| \\(.time) | \\(.agent) | \\(.kind) |") | join("\\n")) end)
+      markdown: (if $n == 0 then "No critical agent report in the last 24 hours (since \($r.since))."
+        else "\($n) critical report(s) since \($r.since). Newest (up to 5; subjects withheld):\n\n| Time (UTC) | Agent | Kind |\n| --- | --- | --- |\n"
+          + ($safe | map("| \(.time) | \(.agent) | \(.kind) |") | join("\n")) end)
     }' "$status")"
 printf '%s' "$summary"
