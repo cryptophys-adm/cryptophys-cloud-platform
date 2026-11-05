@@ -1,52 +1,50 @@
 # TP-018 status
 
-State: blocked — waiting for prerequisite PR #109, independent review, and repository governance.
+State: merged — retirement configuration is in main and the control plane deployment completed; deletion of the legacy Cloudflare Worker remains owner-gated.
 
-Current branch head: `be7b557f5a104c656d5cbac71e7ba75e69dfb6d9` (the next docs-only status commit will trigger another validation run).
+## Merge record
 
-## Latest GitHub Actions evidence
+- Prerequisite PR #109 merged at 2026-11-05T13:47:53Z; merge SHA: `8d0d0d97dcc23838610646dd54ac240df0bf5a6c`.
+- PR #110 merged at 2026-11-05T13:50:59Z; merge SHA: `15799daefd670a15bb028a4ef089406d6b16d692`.
+- TP-018 PR #108 merged by `cryptophys-adm` at 2026-11-05T13:52:53Z.
+- PR #108 head: `a5277db8c204adeb92048c0fdd5cf29db87c7dc3`.
+- Merge/main SHA: `d81ce4040ddc89e66b02656f311ba783bd5b4c2d`.
 
-- `Validate` (#42038278649): SUCCESS; Platform API type-check, Deployment Orchestrator type-check, and deployment verification tests all passed.
-- `Validate Control Plane Workers` (#42038278839):
+## Pre-merge validation
+
+- `Validate` run #42039480728: SUCCESS; 3/3 checks passed.
+- `Validate Control Plane Workers` run #42039480809: SUCCESS.
   - Type-check: PASS.
-  - Endpoint/library tests against the real D1 migrations: **117/117 PASS, 0 failed, 0 skipped**.
+  - Endpoint/library tests: **117/117 PASS, 0 failed, 0 skipped, 0 todo**.
   - Isolated SQLite migration tests: PASS.
-  - Worker bundle dry-run: FAIL because the existing `.github/workflows/validate-control-plane.yml` still loops over `signal-engine` and attempts to read the deleted `workers/signal-engine/wrangler.toml` (ENOENT).
-- Exact test log tail from run #42038439162:
-  ```text
-  # tests 117
-  # pass 117
-  # fail 0
-  # skipped 0
-  ```
-- Exact bundle failure tail from the same run:
-  ```text
-  Could not read file: ../signal-engine/wrangler.toml
-  ENOENT: no such file or directory, open '.../workers/signal-engine/wrangler.toml'
-  ```
-- The workflow failure is not a TypeScript, test, migration, or Wrangler bundle-size failure. It is a stale validation matrix entry.
-- External check suites (Claude, Cloudflare Workers & Pages, Cursor) remain queued; they are not approvals.
+  - Dry-run bundles: all 7 remaining active Worker configs passed.
+- Current-head GitHub Actions checks: 4/4 SUCCESS.
+- Copilot reviews failed due quota; Codex review failed due usage limit. No independent human approval was recorded. These failures are not approvals.
 
-## Changes made on this branch
+## Post-merge validation and deployment
 
-- Added `0017_report_kinds_xauusd_and_hud.sql` to `REQUIRED_MIGRATIONS`; added a regression test that readiness fails if its migration record is missing.
-- Rewrote supervisor/syscall/memory/drift tests for the retired `signals.reingest` capability and suspended Signal Engine.
-- Added a real drift test proving the disabled Signal Engine is recorded as disabled and its binding is not probed.
-- Made the repository-root binding test portable using `import.meta.url`; removed the hard-coded runner path.
-- Applied the owner's requested syscall-test corrections: the removed capability assertion checks for `capability_known`, and both rate-limit seed and consumption-count queries use `recovery.propose`. The now-unused `REINGEST_COOLDOWN_MS` and `INGEST_STALE_MS` constants are already absent from `supervisor.ts`.
-- Added dated amendments to ADR-0005, ADR-0006, and ADR-0007. Historical crypto data and the XAUUSD Mizan/Prophet/GMI ownership boundary are preserved.
-- Updated `docs/CONTROL-PLANE-WORKERS.md` and `docs/OPERATIONS.md` to distinguish 30 enabled tier-1 agents, one suspended tier-1 Signal Engine agent, and the tier-2 supervisor.
-- Updated this task packet with the CI sequencing prerequisite.
+- Main push `Validate` run #42039715049: SUCCESS; 3/3 checks.
+- Main push `Validate Control Plane Workers` run #42039715075: SUCCESS; 117/117 tests, migration tests, and all 7 active Worker dry-run bundles passed.
+- Control Plane deployment run #42039749459: SUCCESS, event `workflow_dispatch`, exact commit `d81ce4040ddc89e66b02656f311ba783bd5b4c2d`. This run was triggered externally by the repository owner; this automation did not dispatch it.
+- D1 migrations, including 0020, applied successfully.
+- Six Control Plane Workers were deployed and live-verified: Policy Engine, Audit Ledger, Platform Registry, Recovery Manager, AI Kernel, and Drift Detector. Deployment Orchestrator and Platform API retain their separate workflows.
+- Post-deploy drift observation: **0 drifted services**.
+- The `cryptophys-signal-engine` registry row was reported as `disabled`, with no observed version and no drift. The Drift Detector did not probe it.
+- Supervisor operator cycle completed with `platform.observe` successful.
+- Agent report summary was healthy; the deployment workflow's audit-chain and Policy Engine negative-decision checks passed.
+- The legacy Signal Engine Worker was **not deleted** by this deployment. Deletion remains a separate, explicit owner action.
 
-## External blockers
+## Data and architecture safety
 
-1. Orchestrator prerequisite PR #109 is OPEN at head `f4258648e5d182c28086eb762779aa1512c96e3a`. Its Validate workflow is 3/3 SUCCESS; Control Plane validation is SUCCESS with 137/137 tests, migration tests, and all 7 remaining Worker dry-run bundles passing. Merge #109 first, then refresh #108 against the new main and rerun all checks.
-2. PR #109 removes Signal Engine from the validation matrix and future `DEPLOY_ORDER`/`EXPECTED_WORKERS`, but deliberately leaves `provision-access.yml` and `drift-summary.sh` unchanged until owner-confirmed Worker deletion. No production deployment is authorized by either PR.
-3. Repository `main` is currently unprotected and the repository has no visible rulesets. Required-check enforcement and independent approval are not established; do not merge on the basis of CI alone.
-4. Independent security review and external check suites remain outstanding.
+- Migration 0020 contains only updates to the service registry and agent rows/grants. It has no DROP or DELETE statements.
+- Historical crypto tables and rows remain retained.
+- The XAUUSD Mizan/Prophet/GMI ownership boundary remains external and unchanged.
+- `architecture/BASELINE.md` is unchanged; ADR-0005, ADR-0006, and ADR-0007 carry dated retirement amendments.
+- No secrets, permissions, rulesets, branch protection, or production resources were changed by this automation.
 
-## Data and safety
+## Post-merge operational follow-up
 
-- Migration 0020 updates registry/agent state and removes the supervisor grant; it does not drop crypto tables or delete historical crypto rows.
-- No secrets, permissions, rulesets, branch protection, production configuration, or production resources were changed.
-- No production workflow was dispatched.
+- Keep `cryptophys-signal-engine` in the Cloudflare Access application destinations while the legacy Worker remains deployed. Removing its destination before the Worker is deleted or workers.dev is disabled could remove Access protection from a still-live endpoint.
+- `.github/workflows/provision-access.yml` therefore intentionally retains the legacy Worker in its destination list and now documents why.
+- The drift alert inventory must exclude the disabled legacy service from the active expected Worker count and must not flag a disabled row as stale. A follow-up PR adds this behavior and regression coverage.
+- The repository's `main` branch reports `protected: false`; the repository rulesets endpoint returns an empty list. Branch-protection details remain inaccessible through the integration (HTTP 403). Independent approvals and required-check enforcement are not established.
