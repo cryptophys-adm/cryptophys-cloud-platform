@@ -91,6 +91,10 @@ jobs:
           }
 
           token_id="$("$GITHUB_WORKSPACE/.github/scripts/find-service-token.sh")"
+          # External AI agents (ADR-0007, TP-009): service tokens named cryptophys-agent-*. Access only
+          # admits them; the Workers still require an operator identity for /v1, and the AI Kernel maps
+          # a registered principal to its agent at tier <= 1 on /mcp.
+          agent_tokens="$("$GITHUB_WORKSPACE/.github/scripts/find-agent-service-tokens.sh")"
           scripts="$(call GET /workers/scripts)"
           destinations="[]"
           for name in $PLATFORM_WORKERS; do
@@ -99,7 +103,7 @@ jobs:
             destinations="$(jq -c --arg t "$tag" '. + [{type: "worker", worker_id: $t}]' <<< "$destinations")"
           done
 
-          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --argjson dest "$destinations" \
+          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --argjson dest "$destinations" --argjson agents "$agent_tokens" \
             --argjson emails "$(jq -R . <<< "$emails" | jq -s .)" '{
               name: $name,
               type: "self_hosted",
@@ -109,7 +113,9 @@ jobs:
               policies: [
                 {name: "ci-service-token", decision: "non_identity", precedence: 1, include: [{service_token: {token_id: $token}}]},
                 {name: "platform-operators", decision: "allow", precedence: 2, include: [$emails[] | {email: {email: .}}]}
-              ]
+              ] + (if ($agents | length) > 0 then
+                [{name: "external-agents", decision: "non_identity", precedence: 3, include: [$agents[] | {service_token: {token_id: .}}]}]
+              else [] end)
             }')"
 
           existing="$(call GET "/access/apps?per_page=1000" | jq -c --arg n "$ACCESS_APP_NAME" '[.result[] | select(.name == $n)]')"
@@ -120,7 +126,7 @@ jobs:
           esac
           jq -e --argjson n "$(wc -w <<< "$PLATFORM_WORKERS")" '.result.aud and (.result.destinations | length == $n)' <<< "$result" >/dev/null \
             || { echo "::error::Access application response is missing its AUD or destinations"; exit 1; }
-          echo "Access application ${ACCESS_APP_NAME} ${action}: $(jq -r '.result.destinations | length' <<< "$result") Workers, $(wc -l <<< "$emails") operator email(s), CI service token policy."
+          echo "Access application ${ACCESS_APP_NAME} ${action}: $(jq -r '.result.destinations | length' <<< "$result") Workers, $(wc -l <<< "$emails") operator email(s), CI service token policy, $(jq length <<< "$agent_tokens") external agent token(s)."
           {
             echo "### Cloudflare Access"
             echo "Application \`${ACCESS_APP_NAME}\` ${action}; protects: ${PLATFORM_WORKERS}"
