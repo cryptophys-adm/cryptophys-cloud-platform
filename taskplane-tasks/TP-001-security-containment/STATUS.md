@@ -4,7 +4,7 @@ State: awaiting_owner
 
 ## Evidence (Part A: Read-Only Containment Inventory, A1–A4)
 
-All read-only steps (`A1`–`A4`) authorized in `APPROVAL.md` have been completed without outputting or using any secret, calling any Binance endpoint, or signing any transaction. Validated evidence from PR #46 is preserved and extended below.
+A3 (issuer inventory) and A4 (written-only history plan) are recorded. A1 is pending compliant fingerprint re-validation, and A2 account details were withdrawn after identifying a public-test-vector disclosure risk. The earlier report's partial credential identifier and derived account disclosure are documented below and have been removed from this branch.
 
 ---
 
