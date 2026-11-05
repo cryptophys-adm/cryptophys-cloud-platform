@@ -11,7 +11,6 @@ var SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 var KERNEL_AGENTS = ["supervisor", "signal-analyst", "auditor"];
 var KERNEL_HOST = "cryptophys-ai-kernel";
 var REFRESH_MS = 60000;
-var OBSERVE_LOCK_MS = 30000;
 var who = { actor: "", approver: false };
 var renderId = 0;
 var missionBox = null;
@@ -564,8 +563,8 @@ async function servicesScreen(tok) {
   var v = startView("Services & Drift");
   var observe = button("Observe now", function () {
     observe.disabled = true;
-    setTimeout(function () { observe.disabled = false; }, OBSERVE_LOCK_MS);
-    act({ route: "drift.observe", body: {}, done: "Observation requested.", after: load });
+    act({ route: "drift.observe", body: {}, done: "Observation requested.", after: load })
+      .finally(function () { observe.disabled = false; });
   });
   v.appendChild(el("div", { class: "row" }, [observe]));
   var out = el("div");
