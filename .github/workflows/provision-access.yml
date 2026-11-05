@@ -1,10 +1,10 @@
 name: Provision Cloudflare Access
 
 # Creates or updates ONE self-hosted Cloudflare Access application that protects all
-# eight platform Workers (destination type `worker`, so workers.dev, previews and the
-# orchestrator custom domain are all covered), with exactly two policies:
-#   1. Service Auth for the CI service token (CF_ACCESS_CLIENT_ID), and
-#   2. Allow for the operator emails in the ACCESS_ALLOWED_EMAILS environment variable.
+# eight active platform Workers plus the retired crypto Signal Engine while it remains deployed.
+# Keep the legacy destination until owner-authorized deletion; removing it earlier could remove
+# Access protection from the still-deployed Worker. Destinations cover workers.dev and previews.
+# Policies: CI service token, operator emails, and an optional external-agent service-token policy.
 # Idempotent: re-running converges the application to this definition.
 
 on:
