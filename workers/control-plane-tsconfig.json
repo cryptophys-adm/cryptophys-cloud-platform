@@ -23,6 +23,7 @@
     "audit-ledger/src/**/*.ts",
     "recovery-manager/src/**/*.ts",
     "signal-engine/src/**/*.ts",
-    "ai-kernel/src/**/*.ts"
+    "ai-kernel/src/**/*.ts",
+    "console/src/**/*.ts"
   ]
 }

@@ -74,3 +74,7 @@ The xauusd and HUD agents still need the owner to add the same binding in `xauus
 ## Data retention
 
 Drift observations are pruned daily at 03:00 UTC by the Drift Detector: rows older than 90 days are deleted, but the 2 newest observations per service are always kept. Agent syscall consumptions are pruned daily at 03:07 UTC by the AI Kernel: rows older than 7 days are deleted. Audit events, policy decisions, agent reports, recovery plans, deployment requests, registry rows and crypto history tables are never deleted. Owner decision, 2026-11-05.
+
+## Console
+
+`cryptophys-console` (`console.cryptophys.work`, ADR-0008) is the operator Console. It has no authority of its own: every request needs an Access JWT of an `OPERATOR_IDENTITIES` identity, and `/api/{service}/…` forwards only allow-listed routes (`CONSOLE_ALLOW_LIST` in `workers/console/src/index.ts`) to the platform Workers through Service Bindings, carrying only the operator's own `cf-access-jwt-assertion`. The target Worker verifies it, so the operator rule, approver rule, separation of duties and audit actor are those of the person. The kernel `/mcp` and the audit `POST /v1/events` are never forwarded. Non-GET `/api` calls need a same-origin `Origin` and `x-cryptophys-console: 1`. `/health` and `/ready` follow the other Workers; `/ready` returns 503 when `APPROVER_IDENTITIES` is unset or a binding is missing.
