@@ -186,3 +186,15 @@ The owner-approved retirement is a material architecture change. In addition to 
 - `docs/OPERATIONS.md`: reconcile the agent inventory to 30 enabled tier-1 rows, one suspended tier-1 `signal-engine` row, and the tier-2 supervisor; state that only the Drift Detector currently publishes scheduled platform reports.
 
 Preserve historical ADR text as historical context; add dated amendments rather than silently rewriting accepted decisions. Do not change `architecture/BASELINE.md` or any XAUUSD repository.
+
+
+## Final owner-authorized retirement record — 2026-11-05
+
+The previously listed post-merge steps are complete and superseded by this record:
+
+1. Orchestrator prerequisite PR #109 was merged; PR #110 resolved the cycle-time test conflict.
+2. TP-018 PR #108 was merged as `d81ce4040ddc89e66b02656f311ba783bd5b4c2d`. The owner separately dispatched Control Plane deployment run #42039749459, which applied migration 0020 and verified the disabled registry row, supervisor cycle, zero drift, audit chain and policy negative-decision test.
+3. The owner explicitly confirmed deletion ("ya, hapus"). PR #112 added the allow-listed Retire Worker workflow. Run #42041570698 executed from `main` with exact `DELETE` confirmation in the `production` Environment, deleted Workflow `cryptophys-signal-ingest`, deleted Worker `cryptophys-signal-engine`, and verified HTTP 404.
+4. PR #113 records the deployment and deletion evidence in `APPROVAL.md`.
+
+Do not dispatch the deletion workflow again. The Signal Engine Worker and ingest Workflow are absent. The registry row remains disabled as historical evidence; crypto D1 tables and historical rows were retained. This record does not authorize any additional production action.
