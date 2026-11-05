@@ -108,7 +108,7 @@ export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecisi
     outcome: result.decision,
     payload: { decision_id: decisionId, action: req.action, reason: result.reason },
   });
-  if (result.decision === "deny" && req.action !== "agent.syscall") {
+  if (result.decision === "deny" && req.action !== "agent.syscall" && req.context.deploy_verification !== true) {
     await publishAgentReport(env.AGENTS, "policy-engine", {
       kind: "platform_digest", severity: "warning",
       subject: `Policy denied ${req.action} on ${req.resource.slice(0, 100)}`,

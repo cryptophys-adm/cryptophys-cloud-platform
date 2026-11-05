@@ -1,4 +1,5 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
+import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata, stringField,
 } from "../../control-plane-shared/src/http.ts";
@@ -7,7 +8,7 @@ import { boundedString, engineFor, type AiTask } from "../../control-plane-share
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
 
-export type Env = BaseEnv;
+export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
 
 const SERVICE = "cryptophys-audit-ledger";
 const EVENT_TYPE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
@@ -108,7 +109,29 @@ export default {
     try {
       if (path === "/v1/events" && request.method === "POST") return await appendEvent(request, env, url, operator.actor);
       if (path === "/v1/events" && request.method === "GET") return await listEvents(env, url);
-      if (path === "/v1/verify" && request.method === "GET") return json(await verifyAuditChain(env.DB));
+      if (path === "/v1/verify" && request.method === "GET") {
+        const result = await verifyAuditChain(env.DB);
+        if (result.valid === false) {
+          const subject = `Audit chain invalid at ${result.first_invalid_event_id}`;
+          let shouldPublish = true;
+          try {
+            const row = await env.DB.prepare("SELECT 1 FROM agent_reports WHERE agent_id = 'audit-ledger' AND subject = ? AND created_at > ? LIMIT 1")
+              .bind(subject, new Date(Date.now() - 3600_000).toISOString()).first();
+            if (row) shouldPublish = false;
+          } catch (err) {
+            console.error(JSON.stringify({ service: SERVICE, event: "audit_report_dedup_failed", message: String((err as Error)?.message ?? err) }));
+            shouldPublish = false;
+          }
+          if (shouldPublish) {
+            await publishAgentReport(env.AGENTS, "audit-ledger", {
+              kind: "audit_digest", severity: "critical",
+              subject,
+              body: { events_checked: result.events_checked, first_invalid_event_id: result.first_invalid_event_id, reason: result.reason, head_hash: result.head_hash },
+            });
+          }
+        }
+        return json(result);
+      }
       const match = /^\/v1\/events\/(evt_[0-9a-f-]{36})$/.exec(path);
       if (match && request.method === "GET") {
         const row = await env.DB.prepare(
