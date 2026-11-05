@@ -274,6 +274,46 @@ test("memory.remember writes D1 row and vector with identical memory_id and meta
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 
+// ---------------------------------------------------------------- AC 3: Failing or missing MEMORY or embedding never fails a cycle or changes its actions
+// Restored by the orchestrator after TP-017: the Signal Analyst no longer uses memory recall or AI,
+// so this covers the supervisor and auditor (the TP-017 tests cover the Signal Analyst).
+
+test("failing or missing MEMORY binding or embedding failure never fails a supervisor or auditor cycle or changes its actions", async () => {
+  const db = migratedDb();
+  const t1 = new Date(Date.now() - 20 * 60_000).toISOString();
+  const t2 = new Date(Date.now() - 5 * 60_000).toISOString();
+  db.raw.prepare(
+    `INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+     VALUES ('obs_1', 'cryptophys-platform-api', 'd', 'o', 1, '{"reasons":["version_mismatch"],"desired_version":"aaaaaaaaaaaa","probe":{"version_tag":"bbbbbbbbbbbb"}}', ?),
+            ('obs_2', 'cryptophys-platform-api', 'd', 'o', 1, '{"reasons":["version_mismatch"],"desired_version":"aaaaaaaaaaaa","probe":{"version_tag":"bbbbbbbbbbbb"}}', ?)`,
+  ).run(t1, t2);
+
+  // Case A: MEMORY binding is missing (undefined); readiness reports memory_binding: false (503).
+  const noMem = memoryTestEnv(db, { MEMORY: undefined });
+  const unready = await call(kernel, noMem.env, req("GET", "/ready"));
+  assert.deepEqual([unready.status, unready.body.checks.memory_binding], [503, false]);
+
+  const supCycle = await runCycle(noMem.env as never, noMem.supMem, "scheduled");
+  assert.equal(supCycle.memory, "unavailable");
+  assert.deepEqual(
+    supCycle.findings.map((f) => `${f.kind}:${f.action}:${f.outcome}`),
+    ["drift:recovery.propose:succeeded", "ingest:signals.reingest:succeeded"],
+  );
+
+  // Case B: MEMORY throws on query/upsert and embedding returns malformed data.
+  const brokenVec: VectorizeBinding = {
+    async upsert() { throw new Error("vectorize down"); },
+    async query() { throw new Error("vectorize down"); },
+    async deleteByIds() { throw new Error("vectorize down"); },
+  };
+  const brokenAi = makeAiWithEmbeddings({ embedVector: () => ({ data: [[1, 2, 3]] }) }); // wrong dimension -> embedding fails closed
+  const broken = memoryTestEnv(db, { MEMORY: brokenVec, AI: brokenAi.binding });
+  const audCycle = await runAuditCycle(broken.env as never, broken.audMem, "scheduled", Date.parse("2026-11-04T00:37:00.000Z"));
+  assert.equal(audCycle.memory, "unavailable");
+  assert.equal(audCycle.findings[0].action, "reports.publish");
+  assert.equal(audCycle.findings[0].outcome, "succeeded");
+});
+
 // ---------------------------------------------------------------- AC 5: Retention deletes rows older than 90 days in both D1 and Vectorize, capped at 100 per cycle
 
 test("retention deletes memories older than 90 days in both D1 and Vectorize with a cap of 100 per cycle", async () => {
