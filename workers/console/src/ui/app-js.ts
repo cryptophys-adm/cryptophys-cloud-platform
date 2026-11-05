@@ -23,7 +23,7 @@ var loadedEvents = [];
 function $(id) { return document.getElementById(id); }
 function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
-var PLAIN_PROPS = ["value", "checked", "disabled", "hidden", "href", "download", "target", "rel", "type", "id", "name", "rows", "min", "max", "title", "colSpan", "autocomplete"];
+var PLAIN_PROPS = ["value", "checked", "disabled", "hidden", "href", "download", "target", "rel", "type", "id", "name", "rows", "min", "max", "maxLength", "title", "colSpan", "autocomplete"];
 var EVENT_PROPS = ["click", "change", "input", "keydown"];
 
 function el(tag, props, children) {
@@ -156,7 +156,7 @@ async function call(routeId, params, body, query) {
   var path = route.path.replace(/[{]id[}]/g, function () {
     var v = values.shift();
     if (v === undefined || !SAFE.test(String(v))) { bad = true; return "x"; }
-    return encodeURIComponent(String(v));
+    return String(v);
   });
   if (bad || values.length) { showError("Refused: " + routeId + " needs safe identifiers (A-Z a-z 0-9 . _ @ + : -, up to 128)."); throw new Error("invalid identifier"); }
   if (query && route.method === "GET") {
@@ -236,21 +236,67 @@ async function fillOverview(box, tok) {
   if (stale(tok)) return;
   var o = (body && body.overview) || body || {};
   var dl = el("dl");
-  var drift = o.drift;
-  if (drift && typeof drift === "object" && !Array.isArray(drift) && Array.isArray(drift.services)) drift = drift.services;
-  var drifted = Array.isArray(drift) ? drift.filter(function (s) { return s && s.drifted === true; }) : null;
   addRow(dl, "Agents enabled (kill switch)", o.agents_enabled === undefined ? "unknown" : String(o.agents_enabled));
-  if (drifted === null) addRow(dl, "Drift", drift === undefined ? "unknown" : drift);
-  else addRow(dl, "Drift", drifted.length + " drifted" + (drifted.length ? ": " + drifted.map(function (s) { return fmt(pick(s, ["service_id", "id", "service"])); }).join(", ") : ""));
+
+  var services = Array.isArray(o.services) ? o.services : null;
+  var drifted = services === null ? null : services.filter(function (s) { return s && s.drifted === true; });
+  if (drifted === null) addRow(dl, "Drift", "unknown");
+  else {
+    addRow(dl, "Drift", drifted.length + " drifted");
+    if (drifted.length) addRow(dl, "Drifted services", drifted.map(function (s) {
+      return fmt(s.service_id) + (s.persistent === true ? " (persistent)" : "");
+    }).join(", "));
+  }
+
   var reports = o.agent_reports_24h;
-  addRow(dl, "Agent reports (24h)", reports === undefined ? "none" : (reports && typeof reports === "object" ? pick(reports, ["totals", "total", "counts"]) : reports));
-  addRow(dl, "Latest critical report", reports && typeof reports === "object" ? reports.latest_critical : undefined);
-  addRow(dl, "Open recovery proposals", pick(o, ["open_recovery_plans", "recovery_open", "open_recovery", "recovery", "recovery_plans"]));
+  var latestCritical = [];
+  if (reports && typeof reports === "object" && !reports.error) {
+    var counts = reports.counts && typeof reports.counts === "object" ? reports.counts : {};
+    addRow(dl, "Agent reports (24h)", counts);
+    latestCritical = Array.isArray(reports.latest_critical) ? reports.latest_critical : [];
+    addRow(dl, "Latest critical reports", latestCritical.length);
+  } else if (reports && reports.error) {
+    addRow(dl, "Agent reports (24h)", "unavailable");
+    addRow(dl, "Latest critical reports", "unavailable");
+  } else {
+    addRow(dl, "Agent reports (24h)", "unknown");
+    addRow(dl, "Latest critical reports", "unknown");
+  }
+
+  var plans = Array.isArray(o.open_agent_plans) ? o.open_agent_plans : null;
+  addRow(dl, "Open recovery proposals", plans === null ? "unknown" : plans.length);
+
   var x = o.xauusd_latest;
-  if (x && typeof x === "object") Object.keys(x).forEach(function (k) { addRow(dl, "XAUUSD " + k + " (display only)", x[k]); });
-  else addRow(dl, "XAUUSD latest (display only)", x);
+  if (x && typeof x === "object" && x.error) addRow(dl, "XAUUSD latest (display only)", "unavailable");
+  else if (x && typeof x === "object") {
+    addRow(dl, "XAUUSD decision (display only)", x.decision);
+    addRow(dl, "XAUUSD confidence (display only)", x.confidence);
+    addRow(dl, "XAUUSD candle (display only)", x.candle_key);
+    addRow(dl, "XAUUSD decided at (display only)", x.decided_at);
+  } else addRow(dl, "XAUUSD latest (display only)", x === null ? "none" : "unavailable");
+
   clear(box);
   box.appendChild(dl);
+
+  if (reports && typeof reports === "object" && !reports.error) {
+    var criticalRows = latestCritical.map(function (r) {
+      return [fmt(r.agent_id), fmt(r.kind), fmt(pick(r, ["created_at", "time"]))];
+    });
+    box.appendChild(card("Latest critical reports", [criticalRows.length
+      ? table(["Agent", "Kind", "Time"], criticalRows)
+      : el("p", { class: "muted", text: "No recent critical reports." })]));
+  }
+
+  if (plans && plans.length) {
+    var planLinks = el("ul");
+    plans.forEach(function (plan) {
+      var id = String(plan && plan.plan_id || "");
+      var label = [id, plan && plan.service_id, plan && plan.status].filter(Boolean).join(" · ");
+      if (SAFE.test(id)) planLinks.appendChild(el("li", {}, [el("a", { href: "#/recovery/" + id, text: label })]));
+      else planLinks.appendChild(el("li", { text: label || "Invalid plan identifier" }));
+    });
+    box.appendChild(card("Open recovery proposals", [planLinks]));
+  }
 }
 
 async function mission(tok) {
@@ -461,7 +507,7 @@ async function recoveryDetail(id, tok) {
   }
   var nodes = [];
   if (status === "draft" && who.approver && plan.created_by !== who.actor) nodes.push(button("Approve…", function () {
-    act({ route: "recovery.approve", params: pid, title: "Approve plan " + pid, lines: ["Approval is recorded under your identity.", "A different person must start the execution steps."], done: "Plan approved.", after: rerender });
+    act({ route: "recovery.approve", params: pid, title: "Approve plan " + pid, lines: ["Approval is recorded under your identity. You cannot approve a plan you authored."], done: "Plan approved.", after: rerender });
   }));
   if (status !== "executing") nodes.push(button("Disable…", function () {
     act({ route: "recovery.disable", params: pid, title: "Disable plan " + pid, lines: ["The plan can no longer be approved or executed."], done: "Plan disabled.", after: rerender });
@@ -658,7 +704,7 @@ async function auditScreen(tok) {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 0);
     }),
   ]), verifyBox]));
   await load();
