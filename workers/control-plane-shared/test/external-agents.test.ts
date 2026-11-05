@@ -11,7 +11,8 @@ import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { AUDITOR_ID, runAuditCycle } from "../../ai-kernel/src/auditor.ts";
 import { DISCLAIMER, runSignalCycle } from "../../ai-kernel/src/signal-analyst.ts";
-const SIGNAL_ANALYST_ID = "platform-api";
+// External principals bind to a non-kernel tier-1 agent (TP-022: kernel-hosted agents stay internal).
+const EXTERNAL_AGENT_ID = "platform-api";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 
 type Db = ReturnType<typeof migratedDb>;
@@ -87,19 +88,19 @@ test("unregistered service token gets 403 on /mcp; registered principal gets an 
   );
   assert.equal(deniedMcp.status, 403);
 
-  // Approver binds EXTERNAL_CLIENT_ID to signal-analyst (tier_max = 1).
+  // Approver binds EXTERNAL_CLIENT_ID to platform-api (tier_max = 1).
   const added = await call(
     kernel,
     env,
-    req("POST", `/v1/agents/${SIGNAL_ANALYST_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
+    req("POST", `/v1/agents/${EXTERNAL_AGENT_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
   );
   assert.equal(added.status, 201);
   assert.equal(added.body.principal.access_identity, EXTERNAL_CLIENT_ID);
-  assert.equal(added.body.principal.agent_id, SIGNAL_ANALYST_ID);
+  assert.equal(added.body.principal.agent_id, EXTERNAL_AGENT_ID);
   assert.equal(added.body.principal.revoked_at, null);
 
-  // GET /v1/agents/signal-analyst lists the agent's principals for an operator.
-  const statusRes = await call(kernel, env, req("GET", `/v1/agents/${SIGNAL_ANALYST_ID}`, undefined, OPERATOR_JWT));
+  // GET /v1/agents/platform-api lists the agent's principals for an operator.
+  const statusRes = await call(kernel, env, req("GET", `/v1/agents/${EXTERNAL_AGENT_ID}`, undefined, OPERATOR_JWT));
   assert.equal(statusRes.status, 200);
   assert.equal(statusRes.body.principals.length, 1);
   assert.equal(statusRes.body.principals[0].access_identity, EXTERNAL_CLIENT_ID);
@@ -125,7 +126,7 @@ test("unregistered service token gets 403 on /mcp; registered principal gets an 
   );
   assert.equal(whoamiRes.status, 200);
   const whoami = JSON.parse(whoamiRes.body.result.content[0].text);
-  assert.equal(whoami.agent_id, SIGNAL_ANALYST_ID);
+  assert.equal(whoami.agent_id, EXTERNAL_AGENT_ID);
   assert.equal(whoami.tier_max, 1);
   assert.equal(whoami.access_identity, EXTERNAL_CLIENT_ID);
   assert.ok(whoami.capabilities.some((c: any) => c.capability === "signals.observe" && c.tier === 0));
@@ -138,7 +139,7 @@ test("an agent session cannot call operator tools such as set_agents_enabled, re
   await call(
     kernel,
     env,
-    req("POST", `/v1/agents/${SIGNAL_ANALYST_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
+    req("POST", `/v1/agents/${EXTERNAL_AGENT_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
   );
 
   for (const [idx, toolCall] of [
@@ -167,11 +168,11 @@ test("an agent session cannot call operator tools such as set_agents_enabled, re
 test("a tier-2 capability through agent_syscall is denied with external_tier_limit even for a tier_max 2 agent, while a granted tier-1 capability is allowed, recorded and audited", async () => {
   const { env, db, reingests } = externalTestEnv();
 
-  // Bind EXTERNAL_CLIENT_ID to signal-analyst (tier_max = 1) via the approver API.
+  // Bind EXTERNAL_CLIENT_ID to platform-api (tier_max = 1) via the approver API.
   const added = await call(
     kernel,
     env,
-    req("POST", `/v1/agents/${SIGNAL_ANALYST_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
+    req("POST", `/v1/agents/${EXTERNAL_AGENT_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
   );
   assert.equal(added.status, 201);
 
@@ -202,7 +203,7 @@ test("a tier-2 capability through agent_syscall is denied with external_tier_lim
   assert.equal(wrongTool.body.result.isError, true);
   assert.equal(JSON.parse(wrongTool.body.result.content[0].text).reason, "agent_observe_requires_tier_0");
 
-  // Granted tier-1 capability (reports.publish) through agent_syscall is allowed, recorded in agent_actions, and audited as agent:signal-analyst.
+  // Granted tier-1 capability (reports.publish) through agent_syscall is allowed, recorded in agent_actions, and audited as agent:platform-api.
   const pubRes = await call(
     kernel,
     env,
@@ -227,24 +228,24 @@ test("a tier-2 capability through agent_syscall is denied with external_tier_lim
   );
   const pubPayload = JSON.parse(pubRes.body.result.content[0].text);
   assert.equal(pubPayload.outcome, "succeeded");
-  assert.equal(pubPayload.result.report.agent_id, SIGNAL_ANALYST_ID);
+  assert.equal(pubPayload.result.report.agent_id, EXTERNAL_AGENT_ID);
 
   const actionRow = db.raw.prepare(
     "SELECT agent_id, capability, tier, outcome FROM agent_actions WHERE agent_id = ? AND capability = 'reports.publish'",
-  ).get(SIGNAL_ANALYST_ID) as any;
-  assert.deepEqual([actionRow.agent_id, actionRow.capability, actionRow.tier, actionRow.outcome], [SIGNAL_ANALYST_ID, "reports.publish", 1, "succeeded"]);
+  ).get(EXTERNAL_AGENT_ID) as any;
+  assert.deepEqual([actionRow.agent_id, actionRow.capability, actionRow.tier, actionRow.outcome], [EXTERNAL_AGENT_ID, "reports.publish", 1, "succeeded"]);
 
   const auditRow = db.raw.prepare(
     "SELECT actor, subject, outcome FROM audit_events WHERE event_type = 'agent.action' AND actor = ?",
-  ).get(`agent:${SIGNAL_ANALYST_ID}`) as any;
-  assert.deepEqual([auditRow.actor, auditRow.subject, auditRow.outcome], [`agent:${SIGNAL_ANALYST_ID}`, "reports.publish", "succeeded"]);
+  ).get(`agent:${EXTERNAL_AGENT_ID}`) as any;
+  assert.deepEqual([auditRow.actor, auditRow.subject, auditRow.outcome], [`agent:${EXTERNAL_AGENT_ID}`, "reports.publish", "succeeded"]);
 
-  // Now elevate signal-analyst in D1 to tier_max = 2 and grant a tier-1 capability while elevated to prove external_tier_limit blocks tier 2 even for a tier_max 2 agent!
+  // Now elevate platform-api in D1 to tier_max = 2: an external session is still limited to tier <= 1 (no tier-2 capability exists, so a tier-3 one is used).
   db.raw.prepare(
     `UPDATE agents
      SET tier_max = 2, capabilities_json = '["signals.observe","reports.publish"]'
      WHERE agent_id = ?`,
-  ).run(SIGNAL_ANALYST_ID);
+  ).run(EXTERNAL_AGENT_ID);
 
   const tier2Res = await call(
     kernel,
@@ -330,7 +331,7 @@ test("registering a principal requires an approver (operator alone gets 403) and
   const opTry = await call(
     kernel,
     env,
-    req("POST", `/v1/agents/${SIGNAL_ANALYST_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, OPERATOR_JWT),
+    req("POST", `/v1/agents/${EXTERNAL_AGENT_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, OPERATOR_JWT),
   );
   assert.equal(opTry.status, 403);
 
@@ -350,11 +351,11 @@ test("registering a principal requires an approver (operator alone gets 403) and
 test("operator MCP behaviour is unchanged, and an identity that is both an operator and a principal is treated as an operator with a warning", async () => {
   const { env } = externalTestEnv();
 
-  // Bind OPERATOR_EMAIL (who is also in OPERATOR_IDENTITIES) as a principal on signal-analyst.
+  // Bind OPERATOR_EMAIL (who is also in OPERATOR_IDENTITIES) as a principal on platform-api.
   const added = await call(
     kernel,
     env,
-    req("POST", `/v1/agents/${SIGNAL_ANALYST_ID}/principals`, { access_identity: OPERATOR_EMAIL }, APPROVER_JWT),
+    req("POST", `/v1/agents/${EXTERNAL_AGENT_ID}/principals`, { access_identity: OPERATOR_EMAIL }, APPROVER_JWT),
   );
   assert.equal(added.status, 201);
 

@@ -8,4 +8,12 @@
 - **Deploy verification**, changed by the orchestrator:
   - the supervisor must be `tier_max == 1`;
   - **no agent may have `tier_max >= 2`**.
-- **DEPLOYED AND VERIFIED:** recorded after the Deploy Control Plane run below.
+- **DEPLOYED AND VERIFIED** (orchestrator, 2026-11-05 16:53 UTC): Deploy Control Plane run 42068566310 at `e5bb50c`, success.
+  - Migration 0021 was applied at 16:51:04.
+  - The supervisor is `tier_max = 1`, `enabled`, with unchanged grants.
+  - **0 agents** have `tier_max >= 2`.
+  - The deploy verification (supervisor tier 1, no tier 2) passed, and a supervisor cycle completed.
+  - Drift: 0.
+- **Cleanup (orchestrator):** in `external-agents.test.ts`, the `SIGNAL_ANALYST_ID = "platform-api"` alias was renamed to `EXTERNAL_AGENT_ID`, and the stale comments were fixed. Tests are unchanged in behaviour (143 pass).
+
+The worker is done with TP-022.
