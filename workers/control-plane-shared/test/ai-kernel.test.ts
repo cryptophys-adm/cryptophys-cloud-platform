@@ -184,7 +184,7 @@ test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and r
   db.raw.prepare("UPDATE kernel_controls SET value = '1'").run();
   for (const i of [1, 2, 3, 4, 5, 6]) {
     db.raw.prepare(`INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at)
-      VALUES (?, 'supervisor', 'signals.reingest', ?)`).run(`seed_decision_${i}`, new Date().toISOString());
+      VALUES (?, 'supervisor', 'recovery.propose', ?)`).run(`seed_decision_${i}`, new Date().toISOString());
   }
   assert.ok((await failed(SUB, "recovery.propose")).includes("rate_limit"), `max ${CAPABILITIES["recovery.propose"].max_per_hour}/h`);
 });
@@ -240,7 +240,7 @@ test("syscall decision consumption is atomic under replay and rate-limit races, 
   const results = await Promise.allSettled(decisions.map(d => verifySyscallDecision(rateDb, d.decision_id, "supervisor", "recovery.propose")));
   assert.equal(results.filter(r => r.status === "fulfilled").length, CAPABILITIES["recovery.propose"].max_per_hour);
   assert.equal(results.filter(r => r.status === "rejected").length, decisions.length - CAPABILITIES["recovery.propose"].max_per_hour!);
-  assert.equal((rateDb.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'supervisor' AND capability = 'signals.reingest'").get() as any).n, CAPABILITIES["recovery.propose"].max_per_hour);
+  assert.equal((rateDb.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'supervisor' AND capability = 'recovery.propose'").get() as any).n, CAPABILITIES["recovery.propose"].max_per_hour);
 });
 
 test("reports.publish enforces the 16 KiB JSON body limit before inserting", async () => {
