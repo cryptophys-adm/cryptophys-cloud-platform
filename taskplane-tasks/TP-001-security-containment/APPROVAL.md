@@ -9,7 +9,7 @@ The worker does not read PR comments, so gate decisions for this task are record
 | A1–A4 read-only steps | **AUTHORIZED** (read-only; no secret output; no use of any credential) | orchestrator | 2026-11-05 |
 | B1 Binance | awaiting owner | — | — |
 | B2 Wallet | awaiting owner | — | — |
-| B3 Cluster retirement | **DONE, as stated by the owner** ("cluster talos juge sudah musnah": the Talos cluster has been destroyed). Vault unseal shares, NATS users and ArgoCD reconcile tokens are contained by retirement. Provider evidence is optional; attach it to `STATUS.md` if available. | owner | 2026-11-05 |
+| B3 Cluster retirement | **DONE, as stated by the owner** ("cluster talos juga sudah musnah": the Talos cluster has been destroyed). Vault unseal shares, NATS users and ArgoCD reconcile tokens are contained by retirement. Provider evidence is optional; attach it to `STATUS.md` if available. | owner | 2026-11-05 |
 | B4 External issuer rotation | awaiting owner, after A3 | — | — |
 | B5 Archive or delete the gitops repositories | awaiting owner | — | — |
 
