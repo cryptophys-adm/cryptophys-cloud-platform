@@ -25,7 +25,7 @@ summary="$(jq -c --argjson now "$now" --argjson max "$max_age" --argjson expecte
       state: (if ($p | length) == 0 then "in_sync" else "drift" end),
       problems: $p,
       fingerprint: ($p | map("\(.service_id):\(.problem)") | join(";")),
-      markdown: (if ($p | length) == 0 then "All \($expected | length) active Workers are healthy and at their desired versions."
+      markdown: (if ($p | length) == 0 then "No drift or stale observations were reported for the \($expected | length) active Worker services."
         else "| Service | Problem | Desired | Observed |\n| --- | --- | --- | --- |\n"
           + ($p | map("| `\(.service_id)` | \(.problem) | \(.desired // "-") | \(.observed // "-") |") | join("\n")) end)
     }' "$report")"
