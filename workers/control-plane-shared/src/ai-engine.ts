@@ -89,10 +89,11 @@ export function violatesAdvisoryLanguage(value: unknown): boolean {
   let done = false;
   function walk(v: unknown, depth: number): boolean {
     if (done) return false;
-    if (depth > 6) return false;
+    // An incomplete scan must never allow an uninspected model draft through.
+    if (depth > 6) { done = true; return true; }
     if (typeof v === "string") {
       strings++;
-      if (strings > 200) { done = true; return false; }
+      if (strings > 200) { done = true; return true; }
       for (const re of ADVISORY_LANGUAGE) {
         if (re.test(v)) { done = true; return true; }
       }
@@ -117,7 +118,8 @@ export function violatesAdvisoryLanguage(value: unknown): boolean {
   try {
     return walk(value, 0);
   } catch {
-    return false;
+    // Unexpected/uninspectable output is untrusted; fail closed.
+    return true;
   }
 }
 

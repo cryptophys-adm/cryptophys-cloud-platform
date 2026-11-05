@@ -50,14 +50,20 @@ test("TP-019 engine passes clean drafts", async () => {
   assert.equal(res.status, "ok");
 });
 
-test("TP-019 bounded walk", async () => {
+test("TP-019 bounded walk fails closed when the scan is incomplete", async () => {
   const deep: any = {};
   let cur = deep;
-  for (let i = 0; i < 10; i++) { cur.n = {}; cur = cur.n; }
-  cur.s = "buy now";
-  assert.doesNotThrow(() => violatesAdvisoryLanguage(deep));
-  const arr = Array.from({ length: 1000 }, (_, i) => (i === 999 ? "buy now" : "ok"));
-  assert.doesNotThrow(() => violatesAdvisoryLanguage(arr));
+  for (let i = 0; i < 7; i++) { cur.n = {}; cur = cur.n; }
+  cur.s = "neutral description";
+  assert.equal(violatesAdvisoryLanguage(deep), true);
+
+  const arr = Array.from({ length: 201 }, () => "neutral description");
+  assert.equal(violatesAdvisoryLanguage(arr), true);
+
+  const uninspectable = new Proxy({}, {
+    ownKeys() { throw new Error("uninspectable model output"); },
+  });
+  assert.equal(violatesAdvisoryLanguage(uninspectable), true);
 });
 
 test("TP-019 overview latest decision", async () => {
