@@ -30,3 +30,17 @@ Durable state lives only in D1 `cryptophys-control-plane` (owner `cryptophys-adm
 - RPO: minutes (Time Travel granularity). RTO: under 30 minutes (restore + redeploy through the workflow).
 - Restore verification: after any restore, run `GET /v1/verify` on the Audit Ledger and a drift observation, and record the restore as a new audit event.
 - Recovery plans for each service are stored in the Recovery Manager and need a second person to approve.
+
+## Registering an external AI agent (ADR-0007, TP-009)
+
+An external agent (an IDE agent, another AI session) reaches the AI Kernel's MCP endpoint `POST /mcp` with **its own** Cloudflare Access service token. It acts as a registered agent at tier ≤ 1, through the same policy-gated syscalls as internal agents.
+
+1. **Owner: create the service token.** In Cloudflare Zero Trust, go to Access → Service credentials → Service tokens → Create.
+   - Name it `cryptophys-agent-<agent-id>`; the prefix matters.
+   - Give the **Client Secret only to the agent's MCP configuration**. Never paste it in git, an issue, a PR or a chat.
+   - Send the orchestrator the **Client ID**. A Client ID is an identifier, not a secret.
+2. **Orchestrator: Provision Access.** Run the Provision Access workflow. It adds every `cryptophys-agent-*` token to the policy `external-agents` (`non_identity`). Access then admits the token, but the Workers still refuse it on `/v1` because it is not in `OPERATOR_IDENTITIES`.
+3. **Owner approves the agent definition in writing:** its `agent_id`, `tier_max` ≤ 1 and capabilities. The orchestrator then adds a migration that registers the agent and its principal (`agent_principals.access_identity` = Client ID) and deploys the control plane.
+4. **The agent connects.** It sends `POST https://cryptophys-ai-kernel.<subdomain>.workers.dev/mcp` with the headers `CF-Access-Client-Id` and `CF-Access-Client-Secret`. `tools/list` shows only `agent_whoami`, `agent_observe` and `agent_syscall`.
+
+**Revocation.** An approver can revoke a principal with `DELETE /v1/agents/{id}/principals/{client_id}`. Deleting the service token in Zero Trust and re-running Provision Access removes it at the edge.

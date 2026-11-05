@@ -97,7 +97,7 @@
       - **Decision:** BTC at 42.7 and ETH at 53.3 moved from SELL to NEUTRAL. SOL at 34.5 stayed SELL.
       - **phi:** rose from 0–0.015 to 0.05–0.09.
     - **Finding resolved by decision 11.** phi could not reach the signal threshold in ordinary markets. The router's momentum and volume dimensions were `|Δkww| / price` and `volume / (volume + price)`, which sit near 1e-4, so `dim_score` stayed near 0.23 of a 0.667 maximum. Production showed phi at most 0.18–0.24 with `regime_score` averaging 0.56–0.62, so the dimensions were the bottleneck, not the regime.
-11. **Mizan dimensions rescaled** (owner decision 2026-11-05: "skala ulang mizan"; `mizan-revised/2`, `revised.ts` `dimensionScaled`). The faithful port in `mizan.ts` is unchanged and parity-tested.
+11. **Proposed Mizan dimension rescaling — pending explicit owner authorization** (`mizan-revised/2`, `revised.ts` `dimensionScaled`). The faithful source port in `mizan.ts` remains unchanged. This revised router is a new heuristic, not source parity. The current main context records the rescaling decision as pending; this proposal must not be treated as an approved production formula until the owner records explicit authorization in `APPROVAL.md` and the revised behavior is validated against aligned historical candle fixtures.
     - **Momentum:** |KWW momentum| as a z-score against the spread of its own history over the window.
     - **Trend strength:** |ln(last/first)| / (σ of log returns · √(n−1)), a z-score against a random walk.
     - **Volume:** the latest volume relative to the window median.

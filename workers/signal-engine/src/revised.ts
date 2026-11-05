@@ -132,10 +132,12 @@ export function dimensionScaled(window: number[], volumes: number[], candlesSinc
   // Direction: momentum agreeing with the trend scores in either direction (long or short).
   const agreement = kwwMom === 0 || drift === 0 ? 0.5 : Math.sign(kwwMom) === Math.sign(drift) ? 1 : 0;
   const cycle_score = 1 - Math.abs((candlesSinceSignal % K.BASE) / K.BASE - 0.5) * 2;
-  const vols = volumes.slice(-n).filter((v) => Number.isFinite(v) && v >= 0);
-  const med = vols.length ? median(vols) : 0;
-  const lastVol = vols.at(-1) ?? 0;
-  const volume_score = med > 0 ? clamp01(lastVol / med / FULL_SCORE_Z) : 0;
+  // Preserve candle alignment: never replace a missing/invalid latest sample with an older volume.
+  const volumeWindow = n > 0 ? volumes.slice(-n) : [];
+  const volumeWindowValid = volumeWindow.length === n && volumeWindow.every((v) => Number.isFinite(v) && v >= 0);
+  const med = volumeWindowValid && volumeWindow.length ? median(volumeWindow) : 0;
+  const lastVol = volumeWindowValid ? (volumeWindow.at(-1) ?? 0) : 0;
+  const volume_score = volumeWindowValid && med > 0 ? clamp01(lastVol / med / FULL_SCORE_Z) : 0;
   const dim_score = clamp01(
     agreement * DIM_WEIGHTS.direction + momentum_score * DIM_WEIGHTS.momentum + trend_strength * DIM_WEIGHTS.strength
     + cycle_score * DIM_WEIGHTS.cycle + volume_score * DIM_WEIGHTS.volume,
