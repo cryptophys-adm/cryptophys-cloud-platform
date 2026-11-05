@@ -18,8 +18,6 @@ import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 export const AGENT_ID = "supervisor";
 const SERVICE = "cryptophys-ai-kernel";
 const PROPOSAL_COOLDOWN_MS = 24 * 3_600_000;
-const REINGEST_COOLDOWN_MS = 30 * 60_000;
-const INGEST_STALE_MS = 40 * 60_000;
 
 /** Serializes overlapping invocations of one Durable Object agent cycle, including awaits. */
 export class SerialCycleQueue {
