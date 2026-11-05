@@ -259,6 +259,8 @@ test("reports.publish enforces the 16 KiB JSON body limit before inserting", asy
   assert.equal(oversized.reason, "report_body_too_large");
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports").get() as any).n, 0);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_actions WHERE capability = 'reports.publish' AND outcome = 'failed'").get() as any).n, 1);
+  const auditRow = db.raw.prepare("SELECT input_json FROM agent_actions WHERE capability = 'reports.publish' AND outcome = 'failed'").get() as { input_json: string };
+  assert.equal(JSON.parse(auditRow.input_json).truncated, true, "oversized audit input is replaced by a valid truncation marker");
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 
@@ -457,5 +459,5 @@ test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <=
   // An ungranted capability is still denied by the normal syscall checks, and that is ledgered.
   assert.equal((await rpcSyscall(env as never, api, "platform-api", "recovery.propose", {})).outcome, "denied");
   const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY created_at").all() as Array<{ outcome: string }>;
-  assert.deepEqual(rows.map((r) => r.outcome), ["denied"]);
+  assert.deepEqual(rows.map((r) => r.outcome), ["succeeded", "denied"]);
 });
