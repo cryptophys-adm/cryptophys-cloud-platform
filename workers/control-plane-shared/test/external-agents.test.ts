@@ -10,7 +10,8 @@ import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { AUDITOR_ID, runAuditCycle } from "../../ai-kernel/src/auditor.ts";
-import { DISCLAIMER, SIGNAL_ANALYST_ID, runSignalCycle } from "../../ai-kernel/src/signal-analyst.ts";
+import { DISCLAIMER, runSignalCycle } from "../../ai-kernel/src/signal-analyst.ts";
+const SIGNAL_ANALYST_ID = "platform-api";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 
 type Db = ReturnType<typeof migratedDb>;
@@ -51,7 +52,7 @@ function externalTestEnv(db: Db = migratedDb(), extra: Record<string, unknown> =
     },
     SIGNALS: {
       reingest: async (agentId: string, decisionId: string) => {
-        await verifySyscallDecision(db, decisionId, agentId, "signals.reingest");
+        await verifySyscallDecision(db, decisionId, agentId, "reports.publish");
         reingests.push(decisionId);
         return { run_id: "sig_test", series: 6, failed: 0 };
       },
@@ -238,10 +239,10 @@ test("a tier-2 capability through agent_syscall is denied with external_tier_lim
   ).get(`agent:${SIGNAL_ANALYST_ID}`) as any;
   assert.deepEqual([auditRow.actor, auditRow.subject, auditRow.outcome], [`agent:${SIGNAL_ANALYST_ID}`, "reports.publish", "succeeded"]);
 
-  // Now elevate signal-analyst in D1 to tier_max = 2 and grant signals.reingest (tier 2) to prove external_tier_limit blocks tier 2 even for a tier_max 2 agent!
+  // Now elevate signal-analyst in D1 to tier_max = 2 and grant a tier-1 capability while elevated to prove external_tier_limit blocks tier 2 even for a tier_max 2 agent!
   db.raw.prepare(
     `UPDATE agents
-     SET tier_max = 2, capabilities_json = '["signals.observe","reports.publish","signals.reingest"]'
+     SET tier_max = 2, capabilities_json = '["signals.observe","reports.publish"]'
      WHERE agent_id = ?`,
   ).run(SIGNAL_ANALYST_ID);
 
@@ -252,7 +253,7 @@ test("a tier-2 capability through agent_syscall is denied with external_tier_lim
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "agent_syscall", arguments: { capability: "signals.reingest", input: {} } },
+      params: { name: "agent_syscall", arguments: { capability: "deploy.release", input: {} } },
     }, EXTERNAL_JWT),
   );
   assert.equal(tier2Res.body.result.isError, true);
@@ -270,7 +271,7 @@ test("a revoked principal gets 403 on /mcp and revocation is audited", async () 
   const added = await call(
     kernel,
     env,
-    req("POST", `/v1/agents/${AUDITOR_ID}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
+    req("POST", `/v1/agents/${"platform-api"}/principals`, { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
   );
   assert.equal(added.status, 201);
 
@@ -286,7 +287,7 @@ test("a revoked principal gets 403 on /mcp and revocation is audited", async () 
   const opRevoke = await call(
     kernel,
     env,
-    req("DELETE", `/v1/agents/${AUDITOR_ID}/principals/${encodeURIComponent(EXTERNAL_CLIENT_ID)}`, undefined, OPERATOR_JWT),
+    req("DELETE", `/v1/agents/${"platform-api"}/principals/${encodeURIComponent(EXTERNAL_CLIENT_ID)}`, undefined, OPERATOR_JWT),
   );
   assert.equal(opRevoke.status, 403);
 
@@ -294,7 +295,7 @@ test("a revoked principal gets 403 on /mcp and revocation is audited", async () 
   const revoked = await call(
     kernel,
     env,
-    req("DELETE", `/v1/agents/${AUDITOR_ID}/principals/${encodeURIComponent(EXTERNAL_CLIENT_ID)}`, undefined, APPROVER_JWT),
+    req("DELETE", `/v1/agents/${"platform-api"}/principals/${encodeURIComponent(EXTERNAL_CLIENT_ID)}`, undefined, APPROVER_JWT),
   );
   assert.equal(revoked.status, 200);
   assert.ok(revoked.body.principal.revoked_at);
@@ -313,8 +314,8 @@ test("a revoked principal gets 403 on /mcp and revocation is audited", async () 
   assert.deepEqual(
     events.map((e) => [e.event_type, e.actor, e.subject]),
     [
-      ["agent.principal_added", APPROVER_EMAIL, `agent:${AUDITOR_ID}`],
-      ["agent.principal_revoked", APPROVER_EMAIL, `agent:${AUDITOR_ID}`],
+      ["agent.principal_added", APPROVER_EMAIL, `agent:${"platform-api"}`],
+      ["agent.principal_revoked", APPROVER_EMAIL, `agent:${"platform-api"}`],
     ],
   );
   assert.equal((await verifyAuditChain(db)).valid, true);
@@ -340,7 +341,7 @@ test("registering a principal requires an approver (operator alone gets 403) and
     req("POST", "/v1/agents/supervisor/principals", { access_identity: EXTERNAL_CLIENT_ID }, APPROVER_JWT),
   );
   assert.equal(supTry.status, 400);
-  assert.equal(supTry.body.error, "external_tier_limit");
+  assert.equal(supTry.body.error, "kernel_agent_internal");
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_principals").get() as any).n, 0);
 });
 

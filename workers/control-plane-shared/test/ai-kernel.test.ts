@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0020_retire_signal_engine.sql");
+  assert.equal(REQUIRED_MIGRATION, "0021_supervisor_tier_1.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -151,10 +151,10 @@ const AI_PLAN = { response: JSON.stringify({ title: "Redeploy Platform API", rat
 
 // ---------------------------------------------------------------- catalog and policy
 
-test("migration 0010 seeds the supervisor at tier 2, the kill switch on, and the kernel in the registry", () => {
+test("migration 0010 seeds the supervisor at tier 1, the kill switch on, and the kernel in the registry", () => {
   const db = migratedDb();
   const a = db.raw.prepare("SELECT tier_max, status, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;
-  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [2, "enabled", ["platform.observe", "recovery.propose", "memory.recall", "memory.remember"]]);
+  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [1, "enabled", ["platform.observe", "recovery.propose", "memory.recall", "memory.remember"]]);
   assert.equal((db.raw.prepare("SELECT value FROM kernel_controls").get() as any).value, "1");
   assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
   assert.ok(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_syscall_consumptions'").get());
@@ -433,7 +433,7 @@ test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <=
   // A Worker cannot impersonate another Worker's agent, nor the tier 2 supervisor.
   assert.deepEqual(await rpcWhoami(env as never, api, "xauusd-analyst"), { error: "agent_not_hosted_by_caller" });
   assert.equal((await rpcSyscall(env as never, xau, "platform-api", "platform.observe", {})).reason, "agent_not_hosted_by_caller");
-  assert.equal((await rpcSyscall(env as never, { host_worker: "cryptophys-ai-kernel" }, "supervisor", "platform.observe", {})).reason, "external_tier_limit");
+  assert.equal((await rpcSyscall(env as never, { host_worker: "cryptophys-ai-kernel" }, "supervisor", "platform.observe", {})).reason, "kernel_agent_internal");
   assert.equal((await rpcWhoami(env as never, xau, "nope")).error, "agent_not_registered");
 
   // observe is tier 0 only; a granted tier 0 read goes through (tier 0 reads are not ledgered).

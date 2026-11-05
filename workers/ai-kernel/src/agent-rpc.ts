@@ -7,8 +7,9 @@
 // identities authorized to change/deploy the caller Worker configuration; this is not attestation
 // against a malicious account deployer. A Worker can act only as agents whose agents.host_worker
 // equals its pinned host_worker.
-// Agents with tier_max > 1 (supervisor) are never reachable this way.
+// Agents hosted by the AI Kernel (supervisor, signal-analyst, auditor) are never reachable this way.
 import { syscall, type SyscallEnv } from "./syscall.ts";
+import { KERNEL_HOST } from "./kernel.ts";
 import { CAPABILITIES, getAgent, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 
@@ -29,6 +30,7 @@ async function resolve(env: SyscallEnv, props: unknown, agentId: string): Promis
   if (typeof agentId !== "string" || !agentId) return { error: "agent_not_registered" };
   const agent = await getAgent(env.DB, agentId);
   if (!agent) return { error: "agent_not_registered" };
+  if (agent.host_worker === KERNEL_HOST) return { error: "kernel_agent_internal" };
   if (agent.host_worker !== host) return { error: "agent_not_hosted_by_caller" };
   if (agent.tier_max > AGENT_RPC_TIER_MAX) return { error: "external_tier_limit" };
   return { agent };

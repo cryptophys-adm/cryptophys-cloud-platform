@@ -122,3 +122,7 @@ This amendment supersedes the active Signal Engine runtime and tier-2 re-ingesti
 - Validation, deployment order, Access provisioning, and drift inventory must be reconciled with the retired Worker before any subsequent production deployment. The retirement PR itself does not authorize a deployment.
 
 The original sections describing `SignalRpc`, `signals.reingest`, and the Signal Engine's scheduled ingestion are historical and are superseded for current operation by this amendment.
+
+## Amendment 2026-11-05: supervisor tier 1
+
+Owner decision 2026-11-05: lower the supervisor to tier_max = 1. No agent currently has tier_max = 2. The explicit kernel-internal rule (agents hosted by cryptophys-ai-kernel cannot have external principals or AgentRpc callers) replaces the implicit tier shield. Raising any agent back to tier 2 requires a new owner decision and a tier-2 capability in the catalog.
