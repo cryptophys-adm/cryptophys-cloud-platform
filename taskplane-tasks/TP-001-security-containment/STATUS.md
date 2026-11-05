@@ -1,6 +1,6 @@
 # TP-001 Security Containment (v2) — STATUS
 
-State: done
+State: awaiting_owner
 
 ## Evidence (Part A: Read-Only Containment Inventory, A1–A4)
 
@@ -19,7 +19,7 @@ Inspection of `cryptophys-work/apps-gitops` Git history identified historical `a
 - **Secret handling:** no credential value is included here and no Binance API endpoint may be called.
 - **Current tree:** the historical file is absent from `HEAD` of `cryptophys-work/apps-gitops`.
 
-A1 is **pending compliant re-validation**. The owner must revoke the affected key and any other unused keys at Binance; this worker does not perform revocation.
+A1's compliant value fingerprint is not recorded. B1 is marked done by owner statement in `APPROVAL.md`, but the revocation is not independently verifiable; this worker does not use the credential. A1 remains pending compliant non-revealing validation, and no fingerprint is inferred from the B1 statement.
 
 ---
 
@@ -37,7 +37,7 @@ Because the source key was stored in repository history that was readable before
 - **Prior activity:** the previous worker report stated that no transaction was signed or sent. That does not make the source key safe.
 - **Owner gate B2:** owner must independently verify wallet ownership and determine the safe disposition. Do not rely on the withdrawn public report as proof of wallet ownership or zero exposure.
 
-A2 is **awaiting owner validation**. No funds were moved and no wallet action was performed by this worker.
+The owner reports B2 done in `APPROVAL.md`; this worker has not independently validated wallet ownership or account details and will not derive an address or query a chain. The historical key remains compromised and must never be reused. No funds were moved and no wallet action was performed by this worker.
 
 ---
 
@@ -92,11 +92,11 @@ Because `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` are 
 | Step 2 (v1): Make `platform-gitops` & `apps-gitops` private | **DONE** (2026-11-04) | Both repositories verified `PRIVATE`. |
 | Plan v2: Containment by cluster retirement | **GRANTED** (2026-11-05) | Authorized by owner ("setuju"). |
 | Part A (`A1`–`A4`): Read-only containment inventory | **PARTIAL** | A3 inventory and A4 written plan are recorded. A1 requires compliant fingerprint re-validation; A2 account details were withdrawn and require owner validation. |
-| **B1: Binance** | `awaiting_owner` | Owner to revoke the historical Binance key and any unused keys. A1 must first be revalidated using only the approved SHA-256 value fingerprint; no partial identifier is retained here. |
-| **B2: Wallet** | `awaiting_owner` | Treat the historical source key as compromised because the withdrawn report linked its derivation to a publicly known test-vector key. Owner to validate wallet ownership and balances securely and determine disposition; no address or key fingerprint is published here. |
+| **B1: Binance** | **OWNER-REPORTED DONE** | Owner states the historical Binance key and unused keys were handled; not independently verifiable because this worker must not use the credential. A1's compliant fingerprint remains unrecorded. |
+| **B2: Wallet** | **OWNER-REPORTED DONE** | Owner states wallet handling is complete. The source key remains compromised; no address, balance, key fingerprint or account metadata is published or independently checked by this worker. |
 | **B3: Cluster retirement** | **DONE** (2026-11-05) | Owner confirmed in `APPROVAL.md` ("cluster talos juga sudah musnah"). Contained all `cluster-internal only` items (#21–#28 in `credential-issuers.md`). |
-| **B4: External issuer rotation** | `awaiting_owner` | Owner to revoke/rotate external items #1–#20 in `credential-issuers.md` (Binance, exchanges/market data, Cloudflare API token & tunnel, GitHub tokens, LLM keys, SMTP key, Docker Hub/Terraform/Quay, Telegram/X/Brave/Slack/Stripe). |
-| **B5: Archive or delete gitops repositories** | `awaiting_owner` | Owner to execute Option 1 (Archive) or Option 2 (Delete after offline backup) from Step A4. |
+| **B4: External issuer rotation** | **OWNER-REPORTED DONE** | Owner states external issuer items #1–#20 were handled; not independently verifiable by this worker. |
+| **B5: Archive or delete gitops repositories** | **PARTIAL / AWAITING_OWNER** | `apps-gitops`: `private: true, archived: true`; `platform-gitops`: `private: true, archived: false` per current GitHub API. Owner statement that `platform-gitops` was archived conflicts with this response. No archive/delete action was performed by this worker. |
 
 ---
 
@@ -109,17 +109,15 @@ Because `cryptophys-work/platform-gitops` and `cryptophys-work/apps-gitops` are 
 
 ---
 
-## Part C: orchestrator verification (2026-11-05)
+## Part C: orchestrator verification (2026-11-05, 12:48 WIB)
 
-- **Part A** (PR #75): validated. No credential values, partial identifiers, derived addresses or key fingerprints appear in the merged artifacts.
-- PR #74 and PR #71 were closed unmerged. #74 contained partial Binance key characters and a derived wallet association, both now withdrawn. Its branch should be deleted; the owner may also ask GitHub support to purge the PR diff if desired.
-- **B1, B2, B4:** recorded as done on the owner's statement. They cannot be independently verified without using the credentials, which is prohibited.
-- **B3:** done (cluster destroyed, owner statement).
-- **B5:**
-  - `platform-gitops`: an anonymous `git ls-remote` fails, so it is not publicly readable.
-  - `apps-gitops`: the GitHub API reports `private: true, archived: false`. It is private but **not archived**.
-  - B5 closes when `apps-gitops` is archived (`gh repo archive cryptophys-work/apps-gitops --yes`) or deleted, or when the owner records that private-only is the final state.
-
-### Closure (2026-11-05)
-
-B5 is complete. `apps-gitops` is verified as `private: true, archived: true`; `platform-gitops` is not anonymously readable and was archived by the owner. All TP-001 gates are done. The historical credentials remain compromised by definition and must never be reused.
+- **Part A artifacts** (PR #75): validated for non-disclosure. This validates the shared documentation only; it does not assert that the A1 value fingerprint was revalidated or that the worker independently validated A2 wallet ownership.
+- **B1, B2, B4:** recorded as done on the owner's statement in `APPROVAL.md`. They are not independently verifiable by this worker, and no credential is used.
+- **B3:** owner-stated done (Talos cluster destroyed); no cluster access or destructive action was performed by this worker.
+- **B5 — current GitHub API verification:**
+  - `cryptophys-work/apps-gitops`: `visibility=private`, `archived=true`.
+  - `cryptophys-work/platform-gitops`: `visibility=private`, `archived=false`.
+  - The owner stated that `platform-gitops` was archived, but the current repository API response contradicts that statement. The API state is the evidence used for this record.
+  - B5 remains partial. This worker did not archive or delete either repository.
+- **Correction:** the prior closure sentence claiming both repositories were archived and every TP-001 gate was done is withdrawn. TP-001 remains `awaiting_owner` until `platform-gitops` is verified archived/deleted or the owner formally amends the B5 requirement.
+- Historical credentials remain compromised and must never be reused.
