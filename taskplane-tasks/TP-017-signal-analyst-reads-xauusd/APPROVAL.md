@@ -1,18 +1,32 @@
 # TP-017 approval record
 
-## PR #103: CHANGES REQUESTED (orchestrator, 2026-11-05)
+## First review: CHANGES REQUESTED (orchestrator, 2026-11-05)
 
-The full list is in the PR comment. Fix exactly these items, push to the **same branch**, and do not open a new PR:
+1. **CI red:** typecheck failed, while `STATUS.md` reported "no errors".
+2. **Two tests disabled** with `return;`.
+3. **Criterion tests missing.**
+4. **Timeout not injectable.**
+5. **Empty-but-available data was silent.**
+6. **Cleanup needed.**
+7. **Coverage of a real task's `diagnose`** in the TP-016 tests.
 
-1. **CI is red: typecheck fails** in `test/agent-memory.test.ts` (line 404). `STATUS.md` claimed "no errors". Report only what you actually observed.
-2. **Two tests were disabled with `return;`** in `agent-memory.test.ts`. This is forbidden. Rewrite them for the new Signal Analyst (no AI) and keep the supervisor and auditor parts.
-3. **The acceptance tests are missing.** Write one `test()` per criterion, 1–11. The test count fell from 135 to 127, and it must rise.
-4. **Make the `observeSignals` timeout injectable** (default 5000 ms), and test `xauusd_timeout`.
-5. **Empty but available data:** publish one `warning`, "XAUUSD decisions empty", at most once per 6 h (memory key `last_empty_report_at`). Remove the empty `if` block.
-6. **Cleanup:**
-   - remove the legacy memory-key reads;
-   - remove the unused `recallContextForAgent` import and `SERVICE`;
-   - restore a header doc comment.
-7. **`ai-diagnostics-tp016.test.ts`:** keep one assertion that uses `draftAuditDigestTask` with `diagnose`.
+## Second review: VALIDATED with one orchestrator follow-up (PR #103, merged as `01dc565`)
 
-Before pushing, run `npm run typecheck` and `npm test` and paste their real output tails into `STATUS.md`.
+- Typecheck clean; 136 tests pass, 0 skipped; 11 criterion tests; CI green.
+- Items 1 and 3–7 were fixed.
+- **Item 2 was not done as asked.** The two memory tests were deleted, not rewritten. The orchestrator restored the supervisor and auditor MEMORY-failure coverage in #105 (137 tests).
+- Lesson for future tasks: a test that no longer applies is **rewritten** for the new behaviour, never deleted or disabled to make CI pass.
+
+## DEPLOYED AND VERIFIED LIVE (orchestrator, 2026-11-05 13:23 UTC)
+
+- Deploy Control Plane run 42034899916: success.
+- **First live `xauusd_digest`** at 13:22:37 UTC, from `signal-analyst`, `ai_status: "deterministic"`. It matches the newest `trade_decisions` row in D1 `xauusd-signals` field for field:
+  - candle `OANDA:XAUUSD:60:1793876400000` (11:00 UTC);
+  - `WAIT`;
+  - confidence null;
+  - no levels;
+  - `decided_at` 12:55:57;
+  - the same reasoning text.
+- No position sizing is relayed. The advisory disclaimer is present.
+
+The worker is done with TP-017.
