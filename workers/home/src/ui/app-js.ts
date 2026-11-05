@@ -9,7 +9,10 @@ function el(tag,props,children){
     if(v===undefined||v===null||v===false)return;
     if(k==="text")node.textContent=String(v);
     else if(k==="class")node.className=String(v);
-    else node.setAttribute(k,String(v));
+    else if(k==="for")node.htmlFor=String(v);
+    else if(k==="click"||k==="change"||k==="input"||k==="keydown")node.addEventListener(k,v);
+    else if(["value","checked","disabled","hidden","href","download","target","rel","type","id","name","rows","min","max","maxLength","title","colSpan","autocomplete"].indexOf(k)>=0)node[k]=v;
+    else if(k==="role"||k.indexOf("aria-")===0)node.setAttribute(k,String(v));
   });
   (children||[]).forEach(function(c){
     if(c===undefined||c===null||c===false)return;
@@ -17,46 +20,67 @@ function el(tag,props,children){
   });
   return node;
 }
+function fmt(v){if(v===undefined||v===null)return "unknown";return typeof v==="string"?v:JSON.stringify(v);}
 function api(path){
-  return fetch(path,{credentials:"same-origin"}).then(function(r){if(!r.ok)throw new Error(path+": "+r.status+" error");return r.json();});
+  return fetch(path,{credentials:"same-origin"}).then(function(r){
+    if(!r.ok){return r.json().catch(function(){return {};}).then(function(b){throw new Error("GET "+path+": "+r.status+" "+(b.error||"error"));});}
+    return r.json();
+  });
 }
 function banner(msg){var b=$("banner");b.hidden=false;b.textContent=msg;}
+function val(v){return (v===undefined||v===null)?"unknown":v;}
 async function load(){
   try{
     var who=await api("/api/whoami");
     $("actor").textContent=who.actor;
     if(who.approver)$("approver").hidden=false;
-    var o=await api("/api/platform/v1/overview");
+    var body=await api("/api/platform/v1/overview");
+    var o=(body&&body.overview)||{};
     var main=$("main");
     clear(main);
-    var agents=el("p",{text:"Agents: "+(o.agents_enabled?"running":"stopped (kill switch)")});
-    main.appendChild(agents);
-    var drifted=(o.services||[]).filter(function(s){return s.drifted;});
-    var drift=el("p",{text:"Drift: "+drifted.length});
-    main.appendChild(drift);
+    // nav active
+    var homeNav=$("nav-home");
+    if(homeNav)homeNav.setAttribute("aria-current","page");
+
+    var agentsText="Agents: "+(typeof o.agents_enabled==="boolean"?(o.agents_enabled?"running":"stopped (kill switch)"):"unknown");
+    main.appendChild(el("p",{text:agentsText}));
+
+    var drifted=Array.isArray(o.services)?o.services.filter(function(s){return s&&s.drifted;}):[];
+    var driftLine=el("p",{text:"Drift: "+(Array.isArray(o.services)?drifted.length:"unknown")});
+    main.appendChild(driftLine);
     if(drifted.length>0){
       var ul=el("ul",{});
-      drifted.forEach(function(s){var li=el("li",{text:s.service_id+(s.persistent?" (persistent)":"")});ul.appendChild(li);});
+      drifted.forEach(function(s){ul.appendChild(el("li",{text:s.service_id+(s.persistent?" (persistent)":"")}));});
       main.appendChild(ul);
     }
-    var ar=o.agent_reports_24h||{counts:{critical:0,warning:0,info:0},latest_attention:[]};
-    var reports=el("p",{text:"Agent reports 24h: critical "+ar.counts.critical+" warning "+ar.counts.warning+" info "+ar.counts.info+" latest "+(ar.latest_attention||[]).length});
+
+    var ar=o.agent_reports_24h||{};
+    var counts=(ar&&ar.counts)||{};
+    var latestCritical=Array.isArray(ar.latest_critical)?ar.latest_critical:[];
+    var reports=el("p",{text:"Agent reports 24h: critical "+val(counts.critical)+" warning "+val(counts.warning)+" info "+val(counts.info)+" latest_critical "+latestCritical.length});
     main.appendChild(reports);
-    var plans=el("p",{});
-    var link=el("a",{href:"https://console.cryptophys.work/#/recovery",text:"Review in Console"});
-    plans.appendChild(document.createTextNode("Open recovery proposals: "+((o.open_agent_plans||[]).length)+" "));
-    plans.appendChild(link);
-    main.appendChild(plans);
+
+    var plans=o.open_agent_plans||[];
+    var planCount=Array.isArray(plans)?plans.length:"unknown";
+    var planP=el("p",{});
+    planP.appendChild(document.createTextNode("Open recovery proposals: "+planCount+" "));
+    planP.appendChild(el("a",{href:"https://console.cryptophys.work/#/recovery",text:"Review in Console"}));
+    main.appendChild(planP);
+
     var xl=o.xauusd_latest;
-    var xtext="XAUUSD: ";
-    if(xl&&xl.error)xtext+="unavailable";
-    else if(!xl)xtext+="none";
-    else xtext+=xl.decision+" "+xl.confidence+" "+xl.candle_key+" "+xl.decided_at;
-    main.appendChild(el("p",{text:xtext}));
-    main.appendChild(el("a",{href:"https://console.cryptophys.work",text:"Console"}));
-    main.appendChild(el("a",{href:"https://nexus.cryptophys.work",target:"_blank",rel:"noopener noreferrer",text:"Nexus"}));
-  }catch(e){banner(String(e.message||e));}
+    var box=el("div",{});
+    box.appendChild(el("p",{text:"XAUUSD decision: "+(xl&&xl.error?"unavailable":(xl?xl.decision:"none"))}));
+    box.appendChild(el("p",{text:"XAUUSD confidence: "+(xl&&xl.error?"unavailable":(xl?xl.confidence:"none"))}));
+    box.appendChild(el("p",{text:"XAUUSD candle_key: "+(xl&&xl.error?"unavailable":(xl?xl.candle_key:"none"))}));
+    box.appendChild(el("p",{text:"XAUUSD decided_at: "+(xl&&xl.error?"unavailable":(xl?xl.decided_at:"none"))}));
+    main.appendChild(box);
+
+    main.appendChild(el("a",{href:"https://console.cryptophys.work",text:"Console tile: operator console"}));
+    main.appendChild(el("a",{href:"https://nexus.cryptophys.work",target:"_blank",rel:"noopener noreferrer",text:"Nexus tile: XAUUSD room"}));
+    main.appendChild(el("button",{type:"button",id:"refresh",text:"Refresh",click:load}));
+  }catch(e){banner(String(e&&e.message?e.message:e));}
 }
-$("refresh").addEventListener("click",load);
+var refreshBtn=document.getElementById("refresh");
+if(refreshBtn)refreshBtn.addEventListener("click",load);
 load();
 `;

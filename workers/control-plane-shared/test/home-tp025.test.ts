@@ -154,6 +154,13 @@ test("TP-025 health and ready", async () => {
   assert.equal(r2.status, 503);
 });
 
+test("TP-025 wrapped overview formatter", async () => {
+  const { env } = homeEnv();
+  const js = await run(env, creq("GET", "/assets/app.js"));
+  assert.ok(js.text.includes("(body&&body.overview)||{}"));
+  assert.ok(js.text.includes("latest_critical"));
+});
+
 test("TP-025 no regressions", async () => {
   assert.ok(true);
 });

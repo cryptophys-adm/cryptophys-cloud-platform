@@ -113,10 +113,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  if (segments.length === 4 && segments[0] === "platform" && segments[1] === "v1" && segments[2] === "overview" && segments[3] === undefined) {
-    // handled below? Actually segments length 3 for /api/platform/v1/overview
-  }
-
   if (segments.length === 3 && segments[0] === "platform" && segments[1] === "v1" && segments[2] === "overview") {
     return forward(request, env, request.headers.get("cf-access-jwt-assertion") as string);
   }
