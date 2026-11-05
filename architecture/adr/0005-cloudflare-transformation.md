@@ -128,3 +128,17 @@ None of these secrets is carried into Cloudflare. The equivalents are new Worker
 - Kubernetes-only machinery (53 components) is retired. 37 components are already replaced by operational Cloudflare capabilities. 8 have a named Cloudflare equivalent and migrate when a consumer needs them.
 - 13 components are blocked for lack of source, and 9 are prohibited. They are listed, not silently dropped.
 - The cluster can be decommissioned once the owner confirms that nothing outside this inventory depends on it. Decommissioning is an owner action on the cluster and is not automated from here.
+
+## Amendment — 2026-11-05: retirement of the first migrated crypto workload
+
+**Status:** Owner-approved retirement, implemented through TP-018.
+
+The original first-workload decision and recovered crypto-engine descriptions remain historical. They are superseded for current operation as follows:
+
+- `cryptophys-signal-engine` is retired; no active crypto indicator, Mizan, macro, or signal-ingestion runtime remains in this Cloudflare control-plane repository.
+- The crypto-specific `mizan.ts` and `revised.ts` implementations in that Worker are retired with it. The XAUUSD Mizan/Prophet/GMI engines remain owned by `cryptophys-adm/xauusd-ai-trading-assistant` and are not changed by TP-018.
+- Historical crypto tables and rows, including market candles, indicator history, macro context, and `signal_ingest_runs`, are retained. TP-018 does not authorize data deletion or rewriting.
+- The advisory-only prohibition on trade execution, broker/exchange order APIs, signing, and autonomous trading remains unchanged.
+- Any future crypto signal-processing workload requires a new owner-approved ADR, source/parity evidence, and independent security review. It must not be reintroduced by reactivating the retired Worker implicitly.
+
+This amendment supersedes the active-workload claims in Decision 6 and the active runtime claims in Decisions 8–11 only for the retired crypto Signal Engine. The XAUUSD ownership boundary in Decision 7 remains in force.
