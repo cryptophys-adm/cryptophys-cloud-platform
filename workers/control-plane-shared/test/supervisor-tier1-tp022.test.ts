@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, migratedDb, req, call, signAccessJwt } from "./harness.ts";
 import { parsePolicyRequest, decide } from "../../policy-engine/src/index.ts";
+import kernel from "../../ai-kernel/src/index.ts";
 function kernelEnv(db: any, extra: any = {}) {
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
   const env: any = {
