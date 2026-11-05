@@ -31,14 +31,17 @@ summary="$(jq -c '
      | if $has_fp != $has_latest then error("partial critical-report v2 metadata")
        elif $has_fp then
          ($r.critical_fingerprint | if type == "string" and test("^[0-9a-f]{64}$") then . else error("invalid critical report fingerprint") end) as $fp
+         | if (($n == 0 and $fp != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") or ($n > 0 and $fp == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")) then error("critical count and fingerprint disagree") else . end
          | ($r.latest_critical | if type == "array" and length <= 5 then . else error("invalid latest_critical list") end | sort_by(.created_at) | reverse) as $raw
-         | if $n > 0 and ($raw | length) == 0 then error("critical reports exist but no critical metadata was returned") else . end
+         | if ($n == 0 and ($raw | length) > 0) then error("critical metadata exists while critical count is zero")
+           elif ($n > 0 and ($raw | length) == 0) then error("critical reports exist but no critical metadata was returned") else . end
          | ($raw | safe_rows) as $rows
          | {state:(if $n > 0 then "critical" else "clear" end),critical:$n,fingerprint_input:("v2:" + $fp),markdown:render($n;$r.since;$rows;false)}
        else
          ($r.latest_attention | if type == "array" and length <= 5 then . else error("invalid legacy latest_attention list") end
           | map(select(.severity == "critical") | {report_id,agent_id,kind,created_at})
           | sort_by(.created_at) | reverse) as $raw
+         | if $n == 0 and ($raw | length) > 0 then error("critical metadata exists while critical count is zero") else . end
          | ($raw | safe_rows) as $rows
          | {state:(if $n > 0 then "critical" else "clear" end),critical:$n,
             fingerprint_input:("legacy:" + ($n|tostring) + ":" + ($raw | map(.report_id // "") | sort | join(";"))),

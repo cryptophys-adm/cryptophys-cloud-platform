@@ -59,6 +59,22 @@ J
 crowded="$("$here/report-summary.sh" "$tmp/legacy-crowded.json")"
 if [[ "$(jq -r .state <<<"$crowded")" == "critical" ]] && jq -e '.markdown | contains("metadata is unavailable") and (contains("WARNING_SECRET_MUST_NOT_BE_PUBLIC") | not)' <<<"$crowded" >/dev/null; then pass "legacy crowded critical set remains visible without leaking"; else bad "legacy crowded critical set remains visible without leaking"; fi
 
+
+cat > "$tmp/v2-count-stale.json" <<'J'
+{"agent_reports_24h":{"since":"2026-11-04T14:00:00.000Z","counts":{"critical":0,"warning":0,"info":0},"critical_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","latest_critical":[]}}
+J
+if "$here/report-summary.sh" "$tmp/v2-count-stale.json" >/dev/null 2>&1; then bad "v2 count/fingerprint race cannot clear a critical alert"; else pass "v2 count/fingerprint race fails closed"; fi
+
+cat > "$tmp/v2-list-stale.json" <<'J'
+{"agent_reports_24h":{"since":"2026-11-04T14:00:00.000Z","counts":{"critical":0,"warning":0,"info":0},"critical_fingerprint":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","latest_critical":[{"report_id":"rpt_race","agent_id":"auditor","kind":"audit_digest","created_at":"2026-11-05T14:00:00.000Z"}]}}
+J
+if "$here/report-summary.sh" "$tmp/v2-list-stale.json" >/dev/null 2>&1; then bad "v2 count/list race cannot clear a critical alert"; else pass "v2 count/list race fails closed"; fi
+
+cat > "$tmp/legacy-count-stale.json" <<'J'
+{"agent_reports_24h":{"since":"2026-11-04T14:00:00.000Z","counts":{"critical":0,"warning":0,"info":0},"latest_attention":[{"report_id":"rpt_legacy_race","agent_id":"auditor","kind":"audit_digest","severity":"critical","created_at":"2026-11-05T14:00:00.000Z"}]}}
+J
+if "$here/report-summary.sh" "$tmp/legacy-count-stale.json" >/dev/null 2>&1; then bad "legacy count/list race cannot clear a critical alert"; else pass "legacy count/list race fails closed"; fi
+
 echo '{"agent_reports_24h":{"since":"x","counts":{"critical":0,"warning":0,"info":0},"latest_attention":[],"critical_fingerprint":"partial"}}' > "$tmp/partial.json"
 if "$here/report-summary.sh" "$tmp/partial.json" >/dev/null 2>&1; then bad "partial v2 schema fails loudly"; else pass "partial v2 schema fails loudly"; fi
 echo '{"agent_reports_24h":{"since":"x","counts":{"critical":0,"warning":0,"info":0},"latest_attention":[],"error":"reports_unavailable"}}' > "$tmp/err.json"
