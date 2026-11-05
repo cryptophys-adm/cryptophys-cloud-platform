@@ -11,6 +11,8 @@
 
 The revised router is dimensionless and symmetric in the tested rising/falling cases. The exact implementation is:
 
+**Known neutral-direction edge case:** `dimensionScaled` currently maps `kwwMom === 0` to `trend_direction = 1`, and `mizanSymbol` treats a weighted direction of exactly `0.5` as `long`. The signal threshold still gates whether a signal is emitted, but the direction label itself is not neutral at exact zero momentum. The current tests cover positive/negative drift symmetry, not this zero-momentum label. This is a separate Mizan behavior fix and is not changed by TP-011.
+
 - **Dimension weights** (`DIM_WEIGHTS`): direction `0.30`, momentum `0.30`, strength `0.25`, cycle `0.10`, volume `0.05`. They sum to `1.00`.
 - **Direction component:** `1.0` when KWW momentum and log-return drift have the same sign, `0.5` when either is zero, and `0.0` when their signs disagree.
 - **Momentum component:** `clamp01(abs(kwwMom) / (stdev(kwwMomentumHistory) * FULL_SCORE_Z))`. The history is the sequence of prefix KWW-momentum values inside the current window; `FULL_SCORE_Z = 2`. When that standard deviation is zero, a non-zero current momentum scores `1`, otherwise `0`.
