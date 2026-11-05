@@ -2,7 +2,6 @@
 
 - **No secret values, partial credential identifiers, derived wallet addresses, or key-file fingerprints are included anywhere in this document.**
 
-- **No secret values are included anywhere in this document.**
 - Items whose issuer is **`cluster-internal only`** are contained and closed by **Step B3** (Talos/Kubernetes cluster retirement, confirmed **DONE** by the owner on 2026-11-05 in `APPROVAL.md`).
 - Every non-internal item requires **owner revocation/rotation at the external issuer** under **Step B1**, **Step B2**, or **Step B4**.
 
