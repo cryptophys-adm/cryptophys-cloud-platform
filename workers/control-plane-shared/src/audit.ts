@@ -71,6 +71,10 @@ export async function chainHead(db: D1Database): Promise<string> {
   return row?.event_hash ?? GENESIS_HASH;
 }
 
+export class AuditMutationConflictError extends Error {
+  constructor() { super("audit mutation did not match the expected state"); this.name = "AuditMutationConflictError"; }
+}
+
 type AuditMutation = (event: AuditEvent) => D1PreparedStatement;
 
 async function appendAuditEventInternal(db: D1Database, input: AuditInput, mutation?: AuditMutation): Promise<AuditEvent> {
@@ -89,15 +93,24 @@ async function appendAuditEventInternal(db: D1Database, input: AuditInput, mutat
     };
     const event: AuditEvent = { ...base, event_hash: await computeEventHash(base) };
     try {
-      const insert = db.prepare(
-        `INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(event.event_id, event.event_type, event.actor, event.subject, event.outcome, event.payload_json,
-        event.previous_hash, event.event_hash, event.created_at);
+      const insert = mutation
+        ? db.prepare(
+          `INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN changes() = 1 THEN ? ELSE NULL END, ?)`,
+        ).bind(event.event_id, event.event_type, event.actor, event.subject, event.outcome, event.payload_json,
+          event.previous_hash, event.event_hash, event.created_at)
+        : db.prepare(
+          `INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(event.event_id, event.event_type, event.actor, event.subject, event.outcome, event.payload_json,
+          event.previous_hash, event.event_hash, event.created_at);
       // D1 batch is transactional: a companion state mutation and its audit event either both commit or neither does.
       await db.batch(mutation ? [mutation(event), insert] : [insert]);
       return event;
     } catch (err) {
+      if (mutation && /NOT NULL constraint failed: audit_events\.event_hash/i.test(String((err as Error)?.message ?? err))) {
+        throw new AuditMutationConflictError();
+      }
       if (!isUniqueViolation(err) || attempt === MAX_APPEND_ATTEMPTS) throw err;
       // Another writer extended the head first; the batch rolls back and we retry against the new head.
       await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 5 * attempt)));
