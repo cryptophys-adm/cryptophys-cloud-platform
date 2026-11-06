@@ -6,12 +6,10 @@ workers_dev = true
 # Workers route on the Nexus hostname takes precedence over the Nexus Worker's Custom Domain for
 # /console*. console.cryptophys.work stays attached only to redirect there, until it is removed.
 #
-# STAGED (2026-11-06): the deploy token lacks "Workers Routes: Edit" on the cryptophys.work zone
-# (run 42205741321 failed at the route and rolled back). Until the owner adds that permission,
-# the route and the redirect stay off and the Console keeps serving console.cryptophys.work.
-# To enable: uncomment the Nexus route and set LEGACY_HOSTS = "console.cryptophys.work".
+# The zone route nexus.cryptophys.work/console* is NOT managed here: the Workers deploy token
+# cannot hold "Workers Routes: Edit" (owner decision 2026-11-06), so deploy-console.yml attaches
+# it after the deploy with CLOUDFLARE_ACCESS_API_TOKEN through the zone routes API (idempotent).
 routes = [
-  # { pattern = "nexus.cryptophys.work/console*", zone_name = "cryptophys.work" },
   { pattern = "console.cryptophys.work", custom_domain = true },
 ]
 
@@ -26,7 +24,7 @@ SERVICE_NAME = "cryptophys-console"
 SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
 NEXUS_ORIGIN = "https://nexus.cryptophys.work"
-LEGACY_HOSTS = ""
+LEGACY_HOSTS = "console.cryptophys.work"
 
 # No AI, D1, Durable Objects or secrets. ACCESS_TEAM_DOMAIN, ACCESS_AUD, OPERATOR_IDENTITIES and
 # APPROVER_IDENTITIES are set at deploy time. The Console has no authority of its own (ADR-0008 §3):

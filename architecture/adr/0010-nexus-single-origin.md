@@ -66,3 +66,8 @@
 | Deploy Home, run 42206302631 | **Success.** `home.cryptophys.work` redirects to Nexus. |
 
 **Staged until the owner acts.** The Nexus route and the Console redirect are disabled in `workers/console/wrangler.toml`; the Console keeps serving `console.cryptophys.work` with the mount-aware code, and the deploy smoke test checks the Nexus route only once it is enabled. **Owner action:** in Cloudflare → My Profile → API Tokens, edit the token stored as the `CLOUDFLARE_API_TOKEN` GitHub secret and add **Zone → Workers Routes → Edit** for `cryptophys.work`. This adds a permission to the existing token; no new secret is needed. The orchestrator then re-enables the route and the redirect and deploys the Console.
+
+**Owner decision (2026-11-06): "Gunakan CLOUDFLARE_ACCESS_API_TOKEN".** The Workers deploy token cannot be given the **Workers Routes: Edit** permission. The zone route `nexus.cryptophys.work/console*` is therefore not managed by `wrangler deploy`:
+- `deploy-console.yml` attaches the route right after the Worker deploy, with `CLOUDFLARE_ACCESS_API_TOKEN`, through the zone routes API (`.github/scripts/ensure-zone-route.sh`). The script is idempotent and has a hermetic test.
+- The smoke test then verifies `nexus.cryptophys.work/console/health` through Access, and the redirect from `console.cryptophys.work`, which is now enabled again.
+- If that token cannot read the zone or edit its routes, the step fails with the missing permission named, and the automatic rollback restores the previous Console, whose redirect is off.

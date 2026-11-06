@@ -102,6 +102,16 @@ jobs:
           npx wrangler deploy --config ../console/wrangler.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" \
             --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" \
             --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}" --var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}"
+      - name: Attach the Nexus route nexus.cryptophys.work/console* (ADR-0010, CLOUDFLARE_ACCESS_API_TOKEN)
+        # The Workers deploy token cannot hold zone route permissions, so the route is attached here
+        # with the Access/D1 token through the zone routes API. Idempotent; a failure fails the deploy,
+        # and the automatic rollback restores the previous Console (whose redirect is off).
+        env:
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          ZONE_NAME: cryptophys.work
+          ROUTE_PATTERN: nexus.cryptophys.work/console*
+          SCRIPT: cryptophys-console
+        run: '"$GITHUB_WORKSPACE/.github/scripts/ensure-zone-route.sh"'
       - name: Verify live health, readiness and active version
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -158,13 +168,7 @@ jobs:
           probe GET /console/api/whoami 200 '.operator == true'
           probe GET /console/api/kernel/v1/kernel 200 '.agents | type == "array"'
           # The Nexus hostname routes /console* to this Worker (route precedence over the Nexus Custom
-          # Domain), and the retired console.cryptophys.work redirects there. Checked once the route
-          # is enabled in wrangler.toml (ADR-0010 staging: it needs the Workers Routes permission).
-          if ! grep -Eq '^[[:space:]]*\{ pattern = "nexus\.cryptophys\.work/console\*"' "$GITHUB_WORKSPACE/workers/console/wrangler.toml"; then
-            echo "::notice::Nexus route not enabled yet (ADR-0010 staging); console.cryptophys.work keeps serving the Console."
-            printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-            exit 0
-          fi
+          # Domain), and the retired console.cryptophys.work redirects there.
           nexus="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output "$out" --write-out '%{http_code}' https://nexus.cryptophys.work/console/health)"
           [[ "$nexus" == "200" ]] && jq -e '.service == "cryptophys-console"' "$out" >/dev/null \
             || { echo "::error::nexus.cryptophys.work/console/health: HTTP ${nexus}: $(head -c 300 "$out")"; exit 1; }

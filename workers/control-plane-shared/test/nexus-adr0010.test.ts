@@ -99,10 +99,14 @@ test("5. home.cryptophys.work (Cerebrum, retired) redirects to Nexus; health sta
 
 test("6. wiring: Workers route on the Nexus host, the UI is mount-relative, Access covers nexus.cryptophys.work with Google and Microsoft", () => {
   const toml = readFileSync(new URL("workers/console/wrangler.toml", ROOT), "utf8");
-  // Staged until the deploy token can create zone routes; the line is present (commented or not).
-  assert.match(toml, /\{ pattern = "nexus\.cryptophys\.work\/console\*", zone_name = "cryptophys\.work" \}/);
-  const enabled = /^\s*\{ pattern = "nexus\.cryptophys\.work\/console\*"/m.test(toml);
-  assert.equal(/^LEGACY_HOSTS = "console\.cryptophys\.work"/m.test(toml), enabled, "the redirect is on exactly when the route is on");
+  // The zone route is attached by the deploy workflow with CLOUDFLARE_ACCESS_API_TOKEN (the Workers
+  // deploy token cannot hold zone route permissions), before verification; the redirect is on.
+  assert.doesNotMatch(toml, /^\s*\{ pattern = "nexus/m, "wrangler does not manage the zone route");
+  assert.match(toml, /^LEGACY_HOSTS = "console\.cryptophys\.work"/m);
+  const wf = readFileSync(new URL(".github/workflows/deploy-console.yml", ROOT), "utf8");
+  const deploy = wf.indexOf("npx wrangler deploy"), route = wf.indexOf("ensure-zone-route.sh"), verify = wf.indexOf("nexus.cryptophys.work/console/health");
+  assert.ok(deploy > 0 && route > deploy && verify > route, "deploy, then attach the route, then verify it through Access");
+  assert.match(wf, /CLOUDFLARE_ACCESS_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_ACCESS_API_TOKEN \}\}\n\s+ZONE_NAME: cryptophys\.work\n\s+ROUTE_PATTERN: nexus\.cryptophys\.work\/console\*/);
   assert.match(toml, /NEXUS_ORIGIN = "https:\/\/nexus\.cryptophys\.work"/);
   assert.match(readFileSync(new URL("workers/console/ui/vite.config.ts", ROOT), "utf8"), /base: "\.\/"/);
   const shell = readFileSync(new URL("workers/console/ui/src/components/AppShell.tsx", ROOT), "utf8");
