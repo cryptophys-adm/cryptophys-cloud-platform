@@ -253,3 +253,12 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
 **Follow-up.** The supervisor now makes at most one `deploy_commit` proposal per cycle (`MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1`); the other units follow in the next cycles.
 - **Second rollback, then the fix (07:53 UTC).** Control-plane run 42183552848 at `903bb8c` failed the same probe and was rolled back automatically again. A single proposal took about 25 seconds, and the kernel's scheduled cycle at :52 ran on the same Durable Object at the same time. The fix: **deploy proposals are made only in scheduled cycles**. An operator wake, which the deploy verification calls, now records "deploy proposals run in scheduled cycles only" (test 11).
 - **Operational rule.** Deploys are dispatched outside both the drift cron minutes (:00/:15/:30/:45) and the kernel cron minutes (:07/:22/:37/:52).
+- **Fix deployed.** Control-plane run 42184714573 at `3a1cd76` succeeded; it was dispatched at 08:01 UTC, between the :00 and :07 crons. **D1 at 08:04 UTC:**
+  - the mode is `shadow`;
+  - 4 proposals: 3 `shadow_passed` and 1 `shadow_blocked` (Console at `903bb8c`, denied by the one-per-target-per-hour policy limit);
+  - 0 executed and 0 consensus deployment requests;
+  - the kill switch is on;
+  - 0 drifted services, and the 6 control-plane services are at `3a1cd76`;
+  - 0 critical reports.
+
+  Phase 3 code is complete. Promotion to `routine` and then to `deploy` waits for the shadow review (earliest 2026-11-13).
