@@ -175,8 +175,8 @@ access_login_check() {
   fi
   [[ "$status" == "302" ]] \
     || fail "${name} did not return the Cloudflare Access login redirect (HTTP ${status})"
-  location="$(awk 'tolower($1) == "location:" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\\r$/, ""); print }' "$headers" | tail -n 1)"
-  [[ "$location" =~ ^https://[A-Za-z0-9-]+\\.cloudflareaccess\\.com/cdn-cgi/access/login/ ]] \
+  location="$(awk 'tolower($1) == "location:" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' "$headers" | tail -n 1)"
+  [[ "$location" =~ ^https://[A-Za-z0-9-]+\.cloudflareaccess\.com/cdn-cgi/access/login/ ]] \
     || fail "${name} did not redirect to a Cloudflare Access login endpoint"
   echo "Cloudflare Access login challenge verified for ${name}"
 }
