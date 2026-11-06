@@ -182,7 +182,7 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
 const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
 
 /** Consensus deploys require commit statuses, complete main push workflows, and all Check Runs/Suites.
- * Checks: Read is intentionally required. If the token cannot read external suites, deployment fails closed. */
+ * This public repository may use anonymous read-only check access after a PAT 401/403; private repositories require Checks: Read. */
 export async function ciGreen(token: string, sha: string): Promise<{ green: boolean; workflows: { name: string; conclusion: string | null }[] }> {
   const prefix = "/repos/" + REPOSITORY + "/commits/" + sha;
   const [statusRes, runsRes, checksRes, suitesRes] = await Promise.all([
