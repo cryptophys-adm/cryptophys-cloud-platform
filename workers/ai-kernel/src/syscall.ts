@@ -27,6 +27,7 @@ export interface DriftRpcBinding { observeForConsensus(proposalId: string, decis
 export interface DeployRpcBinding {
   pendingDeploys(): Promise<{ main_sha: string | null; ci_green: boolean; units: { unit: string; workflow: string; target: string; reason: string }[]; skipped: { unit: string; reason: string }[] }>;
   deployForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
+  retireForConsensus(proposalId: string, decisionId: string, target: string): Promise<JsonObject>;
 }
 
 export interface SyscallEnv extends BaseEnv {

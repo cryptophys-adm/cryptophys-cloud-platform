@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Gavel, Minus, Vote, X } from "lucide-react";
+import { Check, Gavel, Minus, ShieldAlert, Vote, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -32,9 +32,53 @@ function Votes({ id }: { id: string }) {
   );
 }
 
+/** ADR-0009 phase 4: the actions the platform can execute after an owner click. Others are done by runbook. */
+const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker"]);
+
+function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload: () => void }) {
+  const { who, act } = useSession();
+  const pending = rows.filter((p) => p.status === "pending_owner");
+  return (
+    <Panel title="Owner Approval Queue" icon={<ShieldAlert className="h-3.5 w-3.5 text-fuchsia-300" />} right={<Badge tone={pending.length ? "purple" : "slate"}>{pending.length}</Badge>}>
+      {pending.length === 0 ? (
+        <Empty>Nothing waits for you. Critical actions reach this queue only in mode critical, after the agents pass them and the Policy Engine allows them.</Empty>
+      ) : (
+        <div className="space-y-2">
+          {pending.map((p: any) => {
+            const runnable = OWNER_EXECUTABLE.has(p.action);
+            return (
+              <div key={p.proposal_id} className="glass-inner px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Dot tone="purple" pulse />
+                  <span className="mono text-[12px] text-fuchsia-200">{p.action}</span>
+                  <span className="mono break-all text-[11px] text-slate-300">→ {p.target}</span>
+                  <span className="mono text-[11px] text-slate-400">{p.approvals}/{p.eligible} agents approve</span>
+                  <span className="ml-auto text-[10px] text-slate-500">{ago(p.created_at)} · expires after 24 h</span>
+                </div>
+                {!runnable && <div className="mt-1 text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject this proposal to close it.</div>}
+                {who.approver ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {runnable && mode === "critical" && (
+                      <button type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
+                        lines: ["Your click is recorded under your Access identity and is final.", "The Policy Engine re-checks, then the platform executes it immediately.", p.action === "retire_worker" ? "Retiring deletes the Worker from Cloudflare. D1 data is not touched." : "The principal can act as this agent until revoked."],
+                        done: "Approved and executed.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>
+                    )}
+                    <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
+                      lines: ["The proposal is closed as rejected; nothing executes."], done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
+                  </div>
+                ) : <div className="mt-1 text-[11px] text-slate-500">Only an approver can decide.</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export default function Consensus() {
   useSession();
-  const { data, loading, error } = usePoll(() => call("kernel.consensus", undefined, undefined, { limit: "50" }), 60_000);
+  const { data, loading, error, refresh } = usePoll(() => call("kernel.consensus", undefined, undefined, { limit: "50" }), 60_000);
   const [open, setOpen] = useState<string | null>(null);
   const rows = listOf(data, "proposals");
   const stats: Record<string, number> = data?.stats_24h ?? {};
@@ -44,9 +88,10 @@ export default function Consensus() {
       <Panel title="Consensus Engine" icon={<Gavel className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone={mode === "shadow" ? "amber" : "purple"}>mode · {mode}</Badge>}>
         <p className="text-[12px] leading-relaxed text-slate-400">{MODE_TEXT[mode] ?? "Loading mode…"} A proposal passes with a simple majority of the eligible control-plane agents (the proposer does not vote) and a Policy Engine allow. Trading is never proposable.</p>
         <div className="mt-3 flex flex-wrap gap-2">
-          {["shadow_passed", "shadow_blocked", "rejected", "pending_owner", "executed", "failed"].map((k) => <Badge key={k} tone={statusTone(k)}>{k.replace("_", " ")} · {stats[k] ?? 0}</Badge>)}
+          {["shadow_passed", "shadow_blocked", "rejected", "pending_owner", "executed", "failed", "expired"].map((k) => <Badge key={k} tone={statusTone(k)}>{k.replace("_", " ")} · {stats[k] ?? 0}</Badge>)}
         </div>
       </Panel>
+      <OwnerQueue rows={rows} mode={mode} reload={() => void refresh()} />
       <Panel title="Proposals" icon={<Vote className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : rows.length === 0 ? <Empty>No proposals yet. The supervisor proposes when it sees persistent drift.</Empty> : (
           <div className="space-y-1.5">

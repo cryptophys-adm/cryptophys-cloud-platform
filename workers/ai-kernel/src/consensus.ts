@@ -15,7 +15,7 @@ import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/s
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
 import { observe } from "./syscall.ts";
-import { setAgentStatus } from "./kernel.ts";
+import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
@@ -245,13 +245,13 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   const executable = allowed && cls === "routine" && executableIn(mode).has(action);
   let status = !allowed ? (cls === "prohibited" || !passed ? "rejected" : "shadow_blocked")
     : mode === "shadow" ? "shadow_passed"
-    : cls === "critical" ? "pending_owner"
+    : cls === "critical" ? (mode === "critical" ? "pending_owner" : "shadow_passed")
     : executable ? "executing"
     : "shadow_passed"; // a passed routine action with no executor yet (deploys arrive in phase 3)
   let outcome: JsonObject = {
     executed: false,
     reason: mode === "shadow" ? "shadow mode: phase 1 records only"
-      : cls === "critical" && allowed ? "waiting for an owner approval click"
+      : cls === "critical" && allowed ? (mode === "critical" ? "waiting for an owner approval click" : "critical actions reach the owner only in mode critical")
       : allowed && !executable ? `no executor for ${action} in this phase` : "not executed",
   };
 
@@ -314,5 +314,112 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
   const r = await env.DB.prepare("SELECT * FROM consensus_proposals WHERE proposal_id = ?").bind(id).first<Record<string, unknown>>();
   if (!r) return null;
   const votes = await env.DB.prepare("SELECT voter_agent_id, vote, reason, created_at FROM consensus_votes WHERE proposal_id = ? ORDER BY voter_agent_id").bind(id).all();
-  return { proposal: { ...r, params: JSON.parse(String(r.params_json)), evidence: JSON.parse(String(r.evidence_json)), outcome: r.outcome_json ? JSON.parse(String(r.outcome_json)) : null, params_json: undefined, evidence_json: undefined, outcome_json: undefined, passed: r.passed === 1 }, votes: votes.results };
+  const owner = await env.DB.prepare("SELECT decision, decided_by, reason, created_at FROM consensus_owner_decisions WHERE proposal_id = ?").bind(id).first<JsonObject>();
+  return { owner_decision: owner ?? null, proposal: { ...r, params: JSON.parse(String(r.params_json)), evidence: JSON.parse(String(r.evidence_json)), outcome: r.outcome_json ? JSON.parse(String(r.outcome_json)) : null, params_json: undefined, evidence_json: undefined, outcome_json: undefined, passed: r.passed === 1 }, votes: votes.results };
+}
+
+/**
+ * ADR-0009 phase 4: critical actions. After consensus and a Policy Engine allow, a critical
+ * proposal waits (status pending_owner, mode 'critical' only) for one click by a person in
+ * APPROVER_IDENTITIES. Approval re-runs the Policy Engine with the owner decision on record,
+ * then executes through the owning path, which re-verifies everything again.
+ *
+ * Executors exist only where the platform already owns the operation:
+ *  - register_principal: the kernel's own principal registry (params.access_identity);
+ *  - retire_worker: the Deployment Orchestrator dispatches the narrow Retire Worker workflow,
+ *    which deletes only Workers in its RETIRABLE list whose source is gone from main.
+ * Restoring D1, rotating secrets, changing Access and turning agents back on stay manual:
+ * they need credentials no Worker holds, or already have a direct approver control.
+ */
+export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker"]);
+
+export class OwnerDecisionError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string, message: string) { super(`${code}: ${message}`); this.status = status; this.code = code; }
+}
+
+async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: string, p: { action: string; target: string; params: JsonObject }, approver: string): Promise<JsonObject> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, p.action, p.target);
+  if (p.action === "register_principal") {
+    const res = await addAgentPrincipal(env as never, p.target, p.params.access_identity, `owner:${approver} via consensus:${proposalId}`);
+    if (res.status >= 400) throw new Error(String(res.body.error ?? `principal_failed_${res.status}`));
+    return res.body;
+  }
+  if (p.action === "retire_worker") {
+    if (!env.DEPLOY) throw new Error("deploy_binding_missing");
+    return await env.DEPLOY.retireForConsensus(proposalId, decisionId, p.target);
+  }
+  throw new Error("manual_only");
+}
+
+export async function ownerDecide(env: SyscallEnv, proposalId: string, decision: "approve" | "reject", approver: string, reasonRaw: unknown, now = Date.now()): Promise<JsonObject> {
+  if (!/^cns_[0-9a-f-]{36}$/.test(proposalId)) throw new OwnerDecisionError(404, "not_found", "unknown proposal");
+  // A person decides: Access service tokens (CI, agents) are never owners.
+  if (!/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(approver)) throw new OwnerDecisionError(403, "person_required", "an owner decision needs a person's Access identity");
+  const reason = typeof reasonRaw === "string" && reasonRaw.trim() ? reasonRaw.trim().slice(0, 500) : null;
+  const p = await env.DB.prepare("SELECT proposal_id, proposer_agent_id, action, target, class, params_json, passed, status, created_at FROM consensus_proposals WHERE proposal_id = ?")
+    .bind(proposalId).first<{ proposal_id: string; proposer_agent_id: string; action: string; target: string; class: string; params_json: string; passed: number; status: string; created_at: string }>();
+  if (!p) throw new OwnerDecisionError(404, "not_found", "unknown proposal");
+  if (p.class !== "critical" || p.status !== "pending_owner") throw new OwnerDecisionError(409, "not_pending_owner", `proposal is ${p.status}`);
+  if (now - Date.parse(p.created_at) > OWNER_DECISION_WINDOW_MS) {
+    await env.DB.prepare("UPDATE consensus_proposals SET status = 'expired', decided_at = ? WHERE proposal_id = ? AND status = 'pending_owner'").bind(nowIso(), proposalId).run();
+    throw new OwnerDecisionError(409, "expired", "the 24 h owner window has passed; the agents must propose again");
+  }
+  const subject = `${p.action}:${p.target}`;
+  if (decision === "approve") {
+    if ((await consensusMode(env)) !== "critical") throw new OwnerDecisionError(409, "mode_not_critical", "critical actions execute only in consensus mode 'critical'");
+    if (!PHASE4_EXECUTABLE.has(p.action)) throw new OwnerDecisionError(409, "manual_only", `${p.action} has no platform executor; carry it out by its runbook and reject this proposal`);
+  }
+  try {
+    await env.DB.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(proposalId, decision, approver, reason, nowIso()).run();
+  } catch {
+    throw new OwnerDecisionError(409, "already_decided", "this proposal already has an owner decision");
+  }
+  await appendAuditEvent(env.DB, {
+    event_type: decision === "approve" ? "consensus.owner_approved" : "consensus.owner_rejected",
+    actor: approver, subject, outcome: decision, payload: { proposal_id: proposalId, reason },
+  });
+  if (decision === "reject") {
+    const outcome = { executed: false, owner_rejected_by: approver, reason };
+    await env.DB.prepare("UPDATE consensus_proposals SET status = 'rejected', outcome_json = ?, decided_at = ? WHERE proposal_id = ?")
+      .bind(JSON.stringify(outcome), nowIso(), proposalId).run();
+    return { proposal_id: proposalId, status: "rejected", outcome };
+  }
+  // Fresh Policy Engine decision with the owner approval on record (the tally-time decision is older than 10 min).
+  let policy: { decision: "allow" | "deny"; decision_id: string; reason: string } | null = null;
+  try {
+    policy = await env.POLICY.evaluate({ subject: `owner:${approver}`, action: "consensus.execute", resource: subject,
+      context: { class: "critical", passed: p.passed === 1, stage: "execute", proposal_id: proposalId } });
+  } catch { policy = null; }
+  if (policy?.decision !== "allow") {
+    const outcome = { executed: false, error: `policy_denied: ${policy?.reason ?? "policy_unavailable"}`, approved_by: approver };
+    await env.DB.prepare("UPDATE consensus_proposals SET status = 'failed', outcome_json = ?, policy_decision_id = ?, policy_decision = ?, decided_at = ? WHERE proposal_id = ?")
+      .bind(JSON.stringify(outcome), policy?.decision_id ?? null, policy?.decision ?? null, nowIso(), proposalId).run();
+    await appendAuditEvent(env.DB, { event_type: "consensus.executed", actor: approver, subject, outcome: "failed", payload: { proposal_id: proposalId, outcome } });
+    return { proposal_id: proposalId, status: "failed", outcome };
+  }
+  await env.DB.prepare("UPDATE consensus_proposals SET status = 'executing', policy_decision_id = ?, policy_decision = 'allow', decided_at = ? WHERE proposal_id = ?")
+    .bind(policy.decision_id, nowIso(), proposalId).run();
+  let status = "executed";
+  let outcome: JsonObject;
+  try {
+    outcome = { executed: true, approved_by: approver, result: await executeCritical(env, proposalId, policy.decision_id, { action: p.action, target: p.target, params: JSON.parse(p.params_json) }, approver) };
+  } catch (err) {
+    status = "failed";
+    outcome = { executed: false, approved_by: approver, error: String((err as Error)?.message ?? err).slice(0, 300) };
+  }
+  await env.DB.prepare("UPDATE consensus_proposals SET status = ?, outcome_json = ?, decided_at = ? WHERE proposal_id = ?")
+    .bind(status, JSON.stringify(outcome), nowIso(), proposalId).run();
+  await appendAuditEvent(env.DB, { event_type: "consensus.executed", actor: approver, subject, outcome: status, payload: { proposal_id: proposalId, policy_decision_id: policy.decision_id, outcome } });
+  return { proposal_id: proposalId, status, outcome };
+}
+
+/** Pending owner decisions lapse after 24 h; the scheduled supervisor cycle sweeps them. */
+export async function expireOwnerProposals(env: SyscallEnv, now = Date.now()): Promise<number> {
+  const res = await env.DB.prepare("UPDATE consensus_proposals SET status = 'expired', decided_at = ? WHERE status = 'pending_owner' AND created_at < ?")
+    .bind(nowIso(), new Date(now - OWNER_DECISION_WINDOW_MS).toISOString()).run();
+  return res.meta.changes ?? 0;
 }

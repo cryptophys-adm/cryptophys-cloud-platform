@@ -262,3 +262,37 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
   - 0 critical reports.
 
   Phase 3 code is complete. Promotion to `routine` and then to `deploy` waits for the shadow review (earliest 2026-11-13).
+
+## Amendment 2026-11-06: phase 4 code (owner click for critical actions; production stays in shadow)
+
+The phase 4 code ships ahead of its promotion, for audit by pi and agy. **`consensus_controls.mode` stays `shadow`.**
+
+- **Reaching the owner.** A critical proposal reaches the owner (status `pending_owner`) only in mode `critical`, after a simple majority and a Policy Engine allow. In `shadow`, `routine` and `deploy` it is only recorded.
+- **The click.** `POST /v1/consensus/{id}/approve` or `/reject` on the AI Kernel. The rules:
+  - **Who:** the caller must be in `APPROVER_IDENTITIES` and must be a person (an email identity); Access service tokens, including CI, are refused.
+  - **One decision:** migration 0024 adds `consensus_owner_decisions`, keyed by the proposal, so a second click or a replay is impossible.
+  - **Window:** 24 hours. The scheduled supervisor cycle marks older proposals `expired`, and the agents must propose again.
+  - **Mode:** if the mode has left `critical`, approval is refused.
+- **Execution after approval.**
+  1. The kernel asks the Policy Engine again (`stage: execute`). The new `owner_approved` check reads the owner decision row.
+  2. The kernel executes through the owning path. That path re-runs `verifyConsensusExecution`, which now also requires the owner approval row for critical proposals.
+  3. Every click and execution is audited under the person's identity.
+- **Executors:**
+  - `register_principal`: the kernel's own principal registry (`params.access_identity`).
+  - `retire_worker`: the Deployment Orchestrator (`DeployRpc.retireForConsensus`) dispatches the existing Retire Worker workflow (`DELETE`). It does so only for a Worker that is disabled in the registry and is not an active deploy unit. The workflow keeps its own gates: the owner-curated `RETIRABLE` list, source gone from `main`, and the production Environment. D1 is never touched.
+- **Manual only:** `restore_d1_bookmark`, `rotate_secret`, `change_access` and `agents_enable`. They need credentials no Worker holds, or already have a direct approver control. The Console shows them in the queue with "carry it out by its runbook, then reject this proposal to close it", and the approve call returns `manual_only`.
+- **Proposals:** the supervisor proposes no critical action automatically yet. When a supervisor rule or an agent proposes one in mode `critical`, it appears in the queue.
+- **Console.** The Consensus screen has an **Owner Approval Queue**, with Approve and Reject buttons for approvers. Both use typed confirmations (`APPROVE <id13>`, `REJECT <id13>`). Two allow-list rows were added (37 in total), and the route table has 38 ids.
+- **Deploy order:** the control plane first (it applies migration 0024, which every service's readiness now requires), then the Deployment Orchestrator (it adds `retireForConsensus`), then the Console.
+- **Tests:** `test/consensus-phase4.test.ts`, 9 criteria:
+  - the migration;
+  - mode gating;
+  - approve executes, with a fresh policy decision and an audit record;
+  - reject;
+  - person-only, the 24-hour expiry and manual-only actions;
+  - mode change and the shared check;
+  - retire guards and the dispatch;
+  - HTTP approver-only;
+  - expiry by the scheduled cycle.
+
+  221 of 221 tests pass.

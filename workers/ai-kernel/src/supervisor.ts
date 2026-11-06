@@ -14,6 +14,7 @@ import { boundedString, engineFor, type AiTask } from "../../control-plane-share
 import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
+import { expireOwnerProposals } from "./consensus.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -157,6 +158,10 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   // deployment, once per deploy unit and commit. Executed only in the 'deploy' consensus mode.
   // Only scheduled cycles propose deploys: a proposal takes 15-25 s (evidence, audit chain, nine
   // votes, policy), and an operator wake is a synchronous request (deploy verification probes it).
+  if (trigger === "scheduled") {
+    const expired = await expireOwnerProposals(env, now);
+    if (expired > 0) report.findings.push({ kind: "consensus", action: "expire", why: `${expired} owner decision(s) lapsed after 24 h` });
+  }
   if (env.DEPLOY && trigger === "operator") {
     report.findings.push({ kind: "deploy", action: "none", why: "deploy proposals run in scheduled cycles only" });
   } else if (env.DEPLOY) {

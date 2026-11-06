@@ -27,7 +27,7 @@ import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { pruneSyscallConsumptions } from "./retention.ts";
 import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
-import { getProposal, listProposals } from "./consensus.ts";
+import { OwnerDecisionError, getProposal, listProposals, ownerDecide } from "./consensus.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -56,7 +56,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/consensus", "GET /v1/consensus/{id}", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/consensus", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
           "POST /v1/agents/{id}/principals (APPROVER_IDENTITIES)", "DELETE /v1/agents/{id}/principals/{access_identity} (APPROVER_IDENTITIES)",
@@ -109,6 +109,20 @@ export default {
       if (path === "/v1/kernel" && request.method === "GET") return json({ ...(await listAgents(env)), capabilities: CAPABILITIES });
       if (path === "/v1/status" && request.method === "GET") return json(await observe(env));
       if (path === "/v1/consensus" && request.method === "GET") return json(await listProposals(env, limitParam(url)));
+      const ownerMatch = /^\/v1\/consensus\/(cns_[0-9a-f-]{36})\/(approve|reject)$/.exec(path);
+      if (ownerMatch) {
+        // ADR-0009 phase 4: one owner click on a critical proposal. Approvers only; a person, never a token.
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "an owner decision needs an approver");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        try {
+          return json(await ownerDecide(env, ownerMatch[1], ownerMatch[2] === "approve" ? "approve" : "reject", operator.actor, body.value.reason));
+        } catch (err) {
+          if (err instanceof OwnerDecisionError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
+      }
       if (path.startsWith("/v1/consensus/") && request.method === "GET") {
         const id = path.slice("/v1/consensus/".length);
         if (!/^cns_[0-9a-f-]{36}$/.test(id)) return errorResponse(404, "not_found");
