@@ -93,3 +93,27 @@ Each phase is a reviewed PR, deployed and verified, and audited by pi and agy.
 4. **Phase 4, critical actions with the owner click.**
 
 The owner can stop or reverse the rollout at any phase.
+
+## Amendment 2026-11-06: phase 1 implementation (shadow consensus)
+
+- **Migration 0023:**
+  - adds the `consensus_controls` table, with `mode` set to `shadow`;
+  - adds the `consensus_proposals` and `consensus_votes` tables;
+  - grants `consensus.propose` (tier 1, at most 4 per hour) to the `supervisor` only.
+- **Proposals.** When the supervisor sees persistent drift on a managed service, it proposes `redeploy_desired_version`. It does this next to the recovery-plan draft it already writes.
+- **Votes.**
+  - Each of the 9 voters, except the proposer, applies a deterministic rule from its own domain to **one evidence snapshot** that the kernel takes at proposal time: drift, registry, audit chain, open recovery plans, recent proposals, the kill switch, and critical reports.
+  - Each voter also applies a common safety gate: the kill switch must be on, the audit chain valid, and no critical report open.
+  - **Limitation.** The voters run inside the AI Kernel against shared D1 data; they are not separate Workers voting over RPC. This keeps phase 1 within one deploy. Moving votes into each Worker is an option before phase 3.
+- **Tally.** A proposal needs a simple majority of the eligible voters. The Policy Engine then evaluates `consensus.execute` (`<action>:<target>`), checking:
+  - the class;
+  - that the consensus passed;
+  - the kill switch;
+  - one action per target per hour;
+  - at most 6 deploys or rollbacks per day.
+- **Statuses:** `shadow_passed`, `shadow_blocked` (passed the vote but the policy denied it) and `rejected`. **Nothing executes.** The deploy verification fails if any proposal is `executing` or `executed` while the mode is `shadow`.
+- **Read API:** `GET /v1/consensus` and `GET /v1/consensus/{id}` on the kernel (operators). The Console has a Consensus screen and a Command panel; both are read-only.
+- **Promotion to phase 2** needs:
+  - at least 7 days in shadow;
+  - every `shadow_passed` proposal matching what a person would have done, checked against the drift outcome and the recovery plans;
+  - a reviewed change that sets `mode` to `routine` and adds the execution paths.

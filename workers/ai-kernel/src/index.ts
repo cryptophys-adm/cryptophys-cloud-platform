@@ -27,6 +27,7 @@ import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { pruneSyscallConsumptions } from "./retention.ts";
 import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
+import { getProposal, listProposals } from "./consensus.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -55,7 +56,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/consensus", "GET /v1/consensus/{id}", "GET /v1/reports?agent_id=&kind=&limit=",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
           "POST /v1/agents/{id}/principals (APPROVER_IDENTITIES)", "DELETE /v1/agents/{id}/principals/{access_identity} (APPROVER_IDENTITIES)",
@@ -107,6 +108,13 @@ export default {
     try {
       if (path === "/v1/kernel" && request.method === "GET") return json({ ...(await listAgents(env)), capabilities: CAPABILITIES });
       if (path === "/v1/status" && request.method === "GET") return json(await observe(env));
+      if (path === "/v1/consensus" && request.method === "GET") return json(await listProposals(env, limitParam(url)));
+      if (path.startsWith("/v1/consensus/") && request.method === "GET") {
+        const id = path.slice("/v1/consensus/".length);
+        if (!/^cns_[0-9a-f-]{36}$/.test(id)) return errorResponse(404, "not_found");
+        const found = await getProposal(env, id);
+        return found ? json(found) : errorResponse(404, "not_found");
+      }
       if (path === "/v1/reports" && request.method === "GET") {
         return json(await listReports(env.DB, {
           agent_id: url.searchParams.get("agent_id"),

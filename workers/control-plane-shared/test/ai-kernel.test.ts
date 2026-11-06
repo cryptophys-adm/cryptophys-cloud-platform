@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0022_register_console_and_home.sql");
+  assert.equal(REQUIRED_MIGRATION, "0023_consensus_shadow.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -154,7 +154,7 @@ const AI_PLAN = { response: JSON.stringify({ title: "Redeploy Platform API", rat
 test("migration 0010 seeds the supervisor at tier 1, the kill switch on, and the kernel in the registry", () => {
   const db = migratedDb();
   const a = db.raw.prepare("SELECT tier_max, status, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;
-  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [1, "enabled", ["platform.observe", "recovery.propose", "memory.recall", "memory.remember"]]);
+  assert.deepEqual([a.tier_max, a.status, JSON.parse(a.capabilities_json)], [1, "enabled", ["platform.observe", "recovery.propose", "memory.recall", "memory.remember", "consensus.propose"]]);
   assert.equal((db.raw.prepare("SELECT value FROM kernel_controls").get() as any).value, "1");
   assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
   assert.ok(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_syscall_consumptions'").get());
@@ -313,7 +313,7 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   drift(db, "cryptophys-policy-engine", true, 5); // transient: not persistent
   const report = await runCycle(env as never, mem, "scheduled");
   const kinds = report.findings.map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
-  assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded"]);
+  assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded", "drift:cryptophys-platform-api:consensus.propose:succeeded"]);
   const plan = db.raw.prepare("SELECT plan_id, status, created_by, steps_json FROM recovery_plans").get() as any;
   assert.deepEqual([JSON.parse(plan.steps_json).title, plan.status, plan.created_by], ["Redeploy Platform API", "draft", "agent:supervisor"]);
 
@@ -322,7 +322,8 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   const approved = await call(recovery, recoveryEnv, req("POST", `/v1/plans/${plan.plan_id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
   const trail = db.raw.prepare("SELECT event_type, actor FROM audit_events WHERE event_type = 'agent.action' ORDER BY rowid").all().map((r: any) => r.actor);
-  assert.deepEqual(trail, [SUB]);
+  // recovery.propose, then the same remediation proposed to the shadow consensus (ADR-0009).
+  assert.deepEqual(trail, [SUB, SUB]);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 
@@ -356,7 +357,7 @@ test("kernel HTTP: readiness, agents, suspension by any operator, resumption and
   assert.equal((await call(kernel, env, req("GET", "/v1/agents", undefined, OUTSIDER_JWT))).status, 403);
   const agents = await call(kernel, env, req("GET", "/v1/agents"));
   const supAgent = agents.body.agents.find((a: any) => a.agent_id === "supervisor");
-  assert.deepEqual(supAgent.capabilities.map((c: any) => c.tier), [0, 1, 0, 1]);
+  assert.deepEqual(supAgent.capabilities.map((c: any) => c.tier), [0, 1, 0, 1, 1]);
   const suspended = await call(kernel, env, req("POST", "/v1/agents/supervisor/suspend", { reason: "test" }, OPERATOR_JWT));
   assert.equal(suspended.body.agent.status, "suspended");
   assert.equal((await call(kernel, env, req("POST", "/v1/agents/supervisor/resume", {}, OPERATOR_JWT))).status, 403);

@@ -132,6 +132,16 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     });
     report.actions.push(result);
     report.findings.push({ kind: "drift", service_id: s.service_id, action: "recovery.propose", outcome: result.outcome, ai: ai.status });
+    // ADR-0009: the same remediation goes to the control-plane consensus. In shadow mode it is
+    // voted, tallied and policy-checked but never executed.
+    if (s.desired_version) {
+      const consensus = await syscall(env, AGENT_ID, "consensus.propose", {
+        action: "redeploy_desired_version", target: s.service_id,
+        params: { version: s.desired_version, observed_version: s.observed_version, reasons: s.reasons.slice(0, 5) },
+      });
+      report.actions.push(consensus);
+      report.findings.push({ kind: "drift", service_id: s.service_id, action: "consensus.propose", outcome: consensus.outcome });
+    }
     if (result.outcome === "succeeded") {
       proposals[s.service_id] = now;
       const planId = String(((result.result.plan as JsonObject | undefined)?.plan_id) ?? s.service_id);

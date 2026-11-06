@@ -13,7 +13,7 @@ import { agentSyscallChecks } from "../../control-plane-shared/src/capabilities.
 export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
 
 const SERVICE = "cryptophys-policy-engine";
-export const ACTIONS = ["deploy", "recovery.execute", "registry.update", "agent.syscall"] as const;
+export const ACTIONS = ["deploy", "recovery.execute", "registry.update", "agent.syscall", "consensus.execute"] as const;
 export type PolicyAction = (typeof ACTIONS)[number];
 
 export interface PolicyCheck { id: string; passed: boolean; detail: string }
@@ -51,6 +51,29 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     // AI Worker OS (ADR-0007): the resource is the capability; the subject must be agent:<id>.
     // Over HTTP the subject is the caller's Access identity, so a person cannot pose as an agent.
     checks.push(...(await agentSyscallChecks(db, String(context.__subject ?? ""), resource)));
+  } else if (action === "consensus.execute") {
+    // ADR-0009: the Policy Engine is a veto on every consensus outcome, whatever the vote.
+    // The resource is "<action>:<target>"; the kernel passes the class it computed.
+    const cls = String(context.class ?? "");
+    const [act, ...rest] = resource.split(":");
+    const target = rest.join(":");
+    checks.push(check("class_known", cls === "routine" || cls === "critical", "class must be routine or critical"));
+    checks.push(check("not_prohibited", cls !== "prohibited" && !/trad(e|ing)|order|wallet|withdraw|transfer|swap/i.test(resource), "prohibited actions never execute"));
+    checks.push(check("consensus_passed", context.passed === true, "a simple majority of eligible voters must approve"));
+    const ks = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
+    checks.push(check("agents_enabled", ks?.value === "1", "the global agent kill switch must be on"));
+    const now = Date.now();
+    const hour = new Date(now - 3_600_000).toISOString();
+    const day = new Date(now - 86_400_000).toISOString();
+    const sameTarget = await db.prepare(
+      "SELECT COUNT(*) AS n FROM consensus_proposals WHERE target = ? AND action = ? AND status IN ('executing','executed','shadow_passed') AND decided_at >= ?",
+    ).bind(target, act, hour).first<{ n: number }>();
+    checks.push(check("target_rate_limit", (sameTarget?.n ?? 0) === 0, "at most one executed action per action and target per hour"));
+    const platform = await db.prepare(
+      "SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ('executing','executed','shadow_passed') AND decided_at >= ?",
+    ).bind(day).first<{ n: number }>();
+    checks.push(check("platform_daily_limit", !["deploy_commit", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < 6,
+      "at most 6 deploys or rollbacks per day across the platform"));
   } else {
     checks.push(check("known_action", false, `action must be one of ${ACTIONS.join(", ")}`));
   }

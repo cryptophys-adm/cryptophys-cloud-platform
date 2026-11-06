@@ -13,6 +13,7 @@ import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/s
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { publishReport } from "./reports.ts";
+import { propose as consensusPropose } from "./consensus.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -290,6 +291,7 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "recovery.propose": return { plan: await env.RECOVERY.propose(agentId, decisionId, input) };
     case "reports.publish": return { report: await publishReport(env.DB, agentId, decisionId, input) };
     case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
+    case "consensus.propose": return { proposal: await consensusPropose(env, agentId, decisionId, input) };
     default: throw new Error("capability_not_dispatchable");
   }
 }

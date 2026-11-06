@@ -297,7 +297,7 @@ test("failing or missing MEMORY binding or embedding failure never fails a super
   assert.equal(supCycle.memory, "unavailable");
   assert.deepEqual(
     supCycle.findings.map((f) => `${f.kind}:${f.action}:${f.outcome}`),
-    ["drift:recovery.propose:succeeded"],
+    ["drift:recovery.propose:succeeded", "drift:consensus.propose:succeeded"],
   );
 
   // Case B: MEMORY throws on query/upsert and embedding returns malformed data.

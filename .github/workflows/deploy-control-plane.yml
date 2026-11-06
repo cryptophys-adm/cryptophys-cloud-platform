@@ -265,6 +265,10 @@ jobs:
           api GET "${kernel}/v1/kernel" \
             | jq -e '.agents_enabled == true and ([.agents[] | select(.agent_id == "supervisor" and .tier_max == 1 and .status == "enabled")] | length == 1) and ([.agents[] | select(.tier_max >= 2)] | length == 0)' >/dev/null \
             || { echo "::error::Supervisor agent is not registered and enabled"; exit 1; }
+          # ADR-0009 phase 1: the consensus engine answers, in shadow mode, and nothing has executed.
+          api GET "${kernel}/v1/consensus?limit=50" \
+            | jq -e '.mode == "shadow" and ([.proposals[] | select(.status == "executed" or .status == "executing")] | length == 0)' >/dev/null \
+            || { echo "::error::Consensus engine is not in shadow mode or something executed"; exit 1; }
           cycle="$(api POST "${kernel}/v1/agents/supervisor/wake" '{}')"
           printf '%s' "$cycle" | jq '{trigger, skipped, findings}'
           printf '%s' "$cycle" | jq -e '.trigger == "operator" and (.skipped | not) and ([.actions[] | select(.capability == "platform.observe" and .outcome == "succeeded")] | length == 1)' >/dev/null \

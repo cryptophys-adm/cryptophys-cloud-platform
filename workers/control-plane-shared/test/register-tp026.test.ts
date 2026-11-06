@@ -64,7 +64,7 @@ test("1. Migration: service_registry has 15 rows, console and home registered, s
   assert.equal(homeMeta.data_classification, "internal");
   assert.equal(homeMeta.source, "workers/home");
 
-  assert.equal(REQUIRED_MIGRATION, "0022_register_console_and_home.sql");
+  assert.equal(REQUIRED_MIGRATION, "0023_consensus_shadow.sql");
   const env = baseEnv("cryptophys-drift-detector", db);
   assert.equal(await schemaReady(env), true);
 });
