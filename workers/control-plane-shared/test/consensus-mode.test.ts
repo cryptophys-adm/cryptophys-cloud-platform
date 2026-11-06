@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, baseEnv, call, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, baseEnv, call, migratedDb, signAccessJwt } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { setConsensusMode } from "../../ai-kernel/src/consensus.ts";
@@ -17,7 +17,7 @@ test("raising the mode needs an approver who is a person; the CI token cannot", 
   const ci = await call(kernel, e, post(CI_JWT, { mode: "deploy" }));
   assert.deepEqual([ci.status, ci.body.error], [403, "approver_required"]);
   assert.equal(mode(db), "shadow");
-  await assert.rejects(setConsensusMode(e as never, "deploy", "ci-client.access", true, null), /person_required/);
+  await assert.rejects(setConsensusMode(e as never, "deploy", "ci-client.access", "service_token", true, null), /person_required/);
   const ok = await call(kernel, e, post(APPROVER_JWT, { mode: "deploy", reason: "owner override of the 7-day shadow window" }));
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.deepEqual([ok.body.previous, ok.body.mode, ok.body.changed], ["shadow", "deploy", true]);
@@ -31,12 +31,12 @@ test("raising the mode needs an approver who is a person; the CI token cannot", 
 
 test("any operator can brake back to shadow; invalid modes are refused; no-op changes are not audited", async () => {
   const { db, env: e } = env();
-  await setConsensusMode(e as never, "deploy", APPROVER_EMAIL, true, null);
+  await setConsensusMode(e as never, "deploy", APPROVER_EMAIL, "user", true, null);
   const brake = await call(kernel, e, post(CI_JWT, { mode: "shadow" }));
   assert.equal(brake.status, 200);
   assert.equal(mode(db), "shadow");
   assert.equal((await call(kernel, e, post(APPROVER_JWT, { mode: "autonomous" }))).status, 400);
-  const same = await setConsensusMode(e as never, "shadow", APPROVER_EMAIL, true, null);
+  const same = await setConsensusMode(e as never, "shadow", APPROVER_EMAIL, "user", true, null);
   assert.equal(same.changed, false);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'consensus.mode_changed'").get() as any).n, 2);
 });
@@ -45,4 +45,21 @@ test("deploy verification accepts any known mode but fails on a stuck execution"
   const wf = readFileSync(new URL("../../../.github/workflows/deploy-control-plane.yml", import.meta.url), "utf8");
   assert.match(wf, /\(\.mode \| IN\("shadow", "routine", "deploy", "critical"\)\)/);
   assert.match(wf, /select\(\.status == "executing" and \.decided_at < \$cutoff\)/);
+});
+
+
+test("a service-token common_name that looks like an email is never a human approver", async () => {
+  const { db, env: e } = env();
+  const serviceIdentity = "owner@cryptophys.work";
+  const serviceJwt = await signAccessJwt({ common_name: serviceIdentity });
+  e.env.OPERATOR_IDENTITIES = `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL},${serviceIdentity}`;
+  e.env.APPROVER_IDENTITIES = serviceIdentity;
+
+  const response = await call(kernel, e, post(serviceJwt, { mode: "deploy" }));
+  assert.deepEqual([response.status, response.body.error], [403, "approver_required"]);
+  assert.equal(mode(db), "shadow");
+  await assert.rejects(
+    setConsensusMode(e as never, "deploy", serviceIdentity, "service_token", true, null),
+    /person_required/,
+  );
 });
