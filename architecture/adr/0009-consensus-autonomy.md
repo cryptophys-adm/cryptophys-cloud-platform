@@ -415,3 +415,25 @@ This closes the phase 1 limitation, under which the voters ran inside the AI Ker
   - Each proposal's evidence records `votes_via` (rpc, kernel, unreachable).
 - **Deploy order:** Platform API and Deployment Orchestrator first, then the control plane. The control plane deploys the AI Kernel last, so every `VoteRpc` exists before the kernel binds to it.
 - **Tests:** `test/wave-c1-votes.test.ts` (4).
+
+## Amendment 2026-11-06: owner override, promotion to `deploy`
+
+**Owner decision (2026-11-06), "Align + promote to deploy now".** The owner waives the 7-day shadow window of §6 and promotes the consensus to mode `deploy`. In mode `deploy`, agents execute these passed actions themselves:
+- reversible routine actions: suspend and resume agents, registry changes, drift observation;
+- deploys of CI-green `main` commits, and rollbacks to the previous recorded version.
+
+The following still applies:
+- the safety rails of §3: kill switch; one action per target per hour; 6 deploys or rollbacks per day; automatic rollback;
+- the Policy Engine veto;
+- re-verification by each target Worker.
+
+Critical actions are only recorded until the mode is `critical`. The risk is accepted by the owner.
+
+- **How the mode changes.** `POST /v1/consensus/mode` on the kernel, from the Console's Consensus screen.
+  - **Raising** the mode needs an approver who is a person, with a typed confirmation `RAISE MODE`.
+  - **Lowering** to `shadow` is an emergency brake that any operator may pull (`SHADOW`).
+  - Every change is audited as `consensus.mode_changed`.
+
+  Migrations never change the mode. Agents cannot change it, and the voters, rules and classes remain unchangeable (§1).
+- **Deploy verification** now accepts any known mode, and fails when an execution has been `executing` for more than 30 minutes.
+- **Tests:** `test/consensus-mode.test.ts` (3). 257 of 257 tests pass.
