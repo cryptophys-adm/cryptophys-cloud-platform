@@ -132,7 +132,14 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     assert.deepEqual(p.units.map((u) => u.unit), ["console"]);
     github({ files: ["workers/control-plane-shared/src/http.ts"] });
     p = await pendingDeploys(orchestratorEnv(db) as never);
-    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "deployment-orchestrator", "home", "platform-api"]);
+    // A shared-library change touches every unit; the orchestrator goes first and the rest wait a cycle.
+    assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
+    assert.deepEqual(p.skipped.filter((s) => s.reason === "deployment_orchestrator_must_complete_first").map((s) => s.unit).sort(),
+      ["console", "control-plane", "home", "platform-api"]);
+    db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
+    db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);

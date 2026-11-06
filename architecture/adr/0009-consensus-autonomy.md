@@ -221,3 +221,13 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
     - a stale `main` or red CI fails without dispatching;
     - the workflow wiring.
   - `.github/scripts/worker-rollback.test.sh` (hermetic).
+- **Validator hardening (2026-11-06, commits pushed by the audit role):**
+  - **CI gate.** A consensus deploy now requires:
+    - the combined commit status;
+    - both push validations on `main` (`Validate` and `Validate Control Plane Workers`), present and green.
+
+    Missing, pending, skipped, truncated or non-`main` evidence fails closed.
+  - **Unit paths** are whole directories, so manifests, lockfiles and bundler config count.
+  - **Order.** When the Deployment Orchestrator is pending, it is the only unit proposed in that cycle; the others follow once its version is recorded.
+  - **Rollback** also runs when a deploy run is cancelled.
+  - The orchestrator re-reviewed the changes and updated the phase 3 test to the orchestrator-first rule. 211/211 tests pass.
