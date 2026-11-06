@@ -156,3 +156,22 @@ The execution code ships ahead of the promotion so that pi and agy can audit it 
   An executed proposal cannot be replayed. Every change is attributed to the actor `consensus:<proposal id>`.
 - **Deploy order.** The Drift Detector now deploys before the AI Kernel, so that `DriftRpc` exists when the kernel binds to it.
 - **Tests:** `test/consensus-phase2.test.ts` (7 criteria): shadow never executes; suspend/resume and registry actions execute in routine mode; deploys and critical actions do not; executor failures are recorded as `failed`; the target Workers refuse malformed ids, swapped actions or targets, foreign, stale or replayed decisions, the kill switch and shadow mode.
+
+### Phase 2 code deployment, 2026-11-06
+
+**DEPLOYED AND VERIFIED** (orchestrator). The mode is unchanged.
+
+| Run | Result |
+|---|---|
+| Deploy Console, run 42176545976 | Success at `4004864` (#152, the Dependabot fix for the build toolchain). Dispatched at 06:46 UTC, after the :45 cron. |
+| Deploy Control Plane, run 42178110823 | Success at `e293b4a` (#153). The Drift Detector deployed before the AI Kernel. The deploy verification confirmed the mode is `shadow` and no proposal is executing or executed. Dispatched at 07:01 UTC, after the :00 cron. |
+
+**D1 check at 07:03 UTC:**
+- `consensus_controls.mode = shadow`;
+- the last migration is `0023_consensus_shadow.sql` (phase 2 adds none);
+- there are 0 proposals and 0 executing, executed or failed;
+- the kill switch is on;
+- 6 control-plane services have the desired version `e293b4a`;
+- the 07:02 drift run shows 0 drifted.
+
+The promotion to `routine` still waits for the 7-day shadow review (earliest 2026-11-13).
