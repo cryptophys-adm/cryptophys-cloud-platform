@@ -125,12 +125,12 @@ function ModeControl({ mode, reload }: { mode: string; reload: () => void }) {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2">
       {who.approver && MODES.filter((_, i) => i > idx).map((m) => (
-        <button key={m} type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.consensus_mode_raise", body: { mode: m, reason: "owner raised the mode in the Console" },
+        <button key={m} type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.consensus_mode_raise", body: { mode: m, confirm: "RAISE MODE", reason: "owner raised the mode in the Console" },
           title: `Raise the consensus mode to ${m}`, lines: [MODE_EFFECT[m], "Recorded in the audit chain under your identity. Any operator can return to shadow at any time."],
           done: `Mode is now ${m}.`, after: reload })}><ArrowUpCircle className="h-3.5 w-3.5" />Mode: {m}…</button>
       ))}
       {idx > 0 && (
-        <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.consensus_mode_shadow", body: { mode: "shadow", reason: "brake: back to shadow from the Console" },
+        <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.consensus_mode_shadow", body: { mode: "shadow", confirm: "SHADOW", reason: "brake: back to shadow from the Console" },
           title: "Back to shadow", lines: ["Agents stop executing at once; proposals are only recorded again."], done: "Mode is now shadow.", after: reload })}><OctagonX className="h-3.5 w-3.5" />Back to shadow…</button>
       )}
     </div>
