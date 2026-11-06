@@ -433,17 +433,25 @@ export async function collectVotes(env: SyscallEnv, eligible: Voter[], p: Propos
  */
 export const MODE_ORDER: ConsensusMode[] = ["shadow", "routine", "deploy", "critical"];
 
-export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor: string, actorType: "user" | "service_token", isApprover: boolean, reasonRaw: unknown): Promise<JsonObject> {
+export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor: string, actorType: "user" | "service_token", isApprover: boolean, confirmationRaw: unknown, reasonRaw: unknown): Promise<JsonObject> {
   const mode = String(modeRaw ?? "") as ConsensusMode;
   if (!MODE_ORDER.includes(mode)) throw new OwnerDecisionError(400, "invalid_mode", `mode must be one of ${MODE_ORDER.join(", ")}`);
   const current = await consensusMode(env);
   const reason = typeof reasonRaw === "string" && reasonRaw.trim() ? reasonRaw.trim().slice(0, 300) : null;
-  const raising = MODE_ORDER.indexOf(mode) > MODE_ORDER.indexOf(current);
+  const currentIndex = MODE_ORDER.indexOf(current);
+  const targetIndex = MODE_ORDER.indexOf(mode);
+  const raising = targetIndex > currentIndex;
+  const lowering = targetIndex < currentIndex;
+  if (lowering && mode !== "shadow") throw new OwnerDecisionError(400, "invalid_transition", "lowering the consensus mode must use the shadow emergency brake");
   if (raising) {
     if (!isApprover) throw new OwnerDecisionError(403, "approver_required", "raising the consensus mode needs an approver");
-    if (actorType !== "user" || !/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(actor)) throw new OwnerDecisionError(403, "person_required", "raising the consensus mode needs a person's Access identity");
+    if (actorType !== "user" || !/^[^@\\s]{1,100}@[^@\\s]{1,100}$/.test(actor)) throw new OwnerDecisionError(403, "person_required", "raising the consensus mode needs a person's Access identity");
   }
   if (mode !== current) {
+    const requiredConfirmation = raising ? "RAISE MODE" : mode === "shadow" ? "SHADOW" : null;
+    if (requiredConfirmation && confirmationRaw !== requiredConfirmation) {
+      throw new OwnerDecisionError(400, "confirmation_required", `mode change requires the exact confirmation ${requiredConfirmation}`);
+    }
     await env.DB.prepare("UPDATE consensus_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'mode'").bind(mode, actor, nowIso()).run();
     await appendAuditEvent(env.DB, { event_type: "consensus.mode_changed", actor, subject: "consensus", outcome: mode, payload: { previous: current, mode, reason } });
   }
