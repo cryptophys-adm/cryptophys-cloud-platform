@@ -195,6 +195,7 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
 
   Every unit also counts `workers/control-plane-shared/src/`. XAUUSD Workers are never deployed by platform consensus.
 - **Proposals.** Each supervisor cycle asks the orchestrator's new `DeployRpc.pendingDeploys()` which units have files changed on a CI-green `main` since the registry desired version. "CI-green" means every push-event validation workflow on the commit succeeded. The supervisor then proposes `deploy_commit` once per unit and commit, `{commit_sha, unit, workflow}`. The check reads GitHub (ref, runs, compare) with the orchestrator's existing token; when a lookup fails, the unit is skipped. No new secret.
+  - **Check Runs and Check Suites.** In addition to combined commit status and the two required main push workflows, the orchestrator reads Check Runs and Check Suites for the exact main SHA. It includes all external-app suites and only GitHub Actions suites linked by `check_suite_id` to push-event workflows on `main`; scheduled observers, operator-branch dispatches and production `workflow_dispatch` attempts are not commit CI and are excluded. This prevents an old failed deployment attempt from permanently poisoning a later retry while queued external reviews still fail closed. For this public repository it first uses the scoped PAT, then falls back to unauthenticated read-only access only after HTTP 401/403. A private repository requires a GitHub App token with `Checks: Read`; otherwise the gate fails closed. Queued/in-progress/failed/cancelled/skipped/action-required results, truncated responses, missing suite mappings or unreadable evidence fail closed. This PR does not change secrets or permissions.
 - **Execution** (`DeployRpc.deployForConsensus`). The orchestrator:
   1. re-verifies the proposal, as in phase 2 (`verifyConsensusExecution`);
   2. requires the commit to be current `main` with green CI;
@@ -321,6 +322,10 @@ All four phases are now coded and deployed behind the mode gate. The rollout con
 - then `critical`.
 
 Each promotion is a separate reviewed change, audited by pi and agy.
+
+### Audit completion ordering correction (2026-11-06)
+
+Read-only D1 inspection found `deployment.control_plane_completed` events with `outcome = 'success'` for Control Plane workflow runs 42182183884 and 42183552848, although both runs subsequently failed final verification and rolled back. The workflow had appended the completion event before the final AI Kernel checks. PR #157 moves audit-chain verification after all live checks and appends the completion event as the final API mutation, so a later verification failure cannot leave a false success event. Historical audit rows are retained; this change does not rewrite production records.
 
 ## Amendment 2026-11-06: autonomous recovery execution after the approval click
 
