@@ -231,6 +231,7 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
   - **Order.** When the Deployment Orchestrator is pending, it is the only unit proposed in that cycle; the others follow once its version is recorded.
   - **Rollback** also runs when a deploy run is cancelled.
   - The orchestrator re-reviewed the changes and updated the phase 3 test to the orchestrator-first rule. 211/211 tests pass.
+  - **Check Runs and Check Suites.** In addition to combined commit status and the two required main push workflows, the orchestrator reads all Check Runs and Check Suites for the exact main SHA. Missing `Checks: Read` permission, queued/in-progress/failed/cancelled/skipped/action-required results, truncated responses or unreadable evidence fail closed. The token permission is an external prerequisite and is not changed by this PR.
 
 ### Phase 3 code deployment, 2026-11-06
 
@@ -253,3 +254,8 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
 **Follow-up.** The supervisor now makes at most one `deploy_commit` proposal per cycle (`MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1`); the other units follow in the next cycles.
 - **Second rollback, then the fix (07:53 UTC).** Control-plane run 42183552848 at `903bb8c` failed the same probe and was rolled back automatically again. A single proposal took about 25 seconds, and the kernel's scheduled cycle at :52 ran on the same Durable Object at the same time. The fix: **deploy proposals are made only in scheduled cycles**. An operator wake, which the deploy verification calls, now records "deploy proposals run in scheduled cycles only" (test 11).
 - **Operational rule.** Deploys are dispatched outside both the drift cron minutes (:00/:15/:30/:45) and the kernel cron minutes (:07/:22/:37/:52).
+
+
+### Audit completion ordering correction (2026-11-06)
+
+Read-only D1 inspection found `deployment.control_plane_completed` events with `outcome = 'success'` for Control Plane workflow runs 42182183884 and 42183552848, although both runs subsequently failed final verification and rolled back. The workflow had appended the completion event before the final AI Kernel checks. PR #157 moves audit-chain verification after all live checks and appends the completion event as the final API mutation, so a later verification failure cannot leave a false success event. Historical audit rows are retained; this change does not rewrite production records.

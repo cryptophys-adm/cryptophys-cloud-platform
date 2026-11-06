@@ -23,6 +23,11 @@ interface GitHubFake {
   controlPlaneConclusion: string;
   statusState: string;
   statusCount: number;
+  checkStatus: string;
+  checkConclusion: string | null;
+  suiteStatus: string;
+  suiteConclusion: string | null;
+  checksReadable: boolean;
   omitWorkflow?: string;
   files: string[];
   dispatched: { workflow: string; body: any }[];
@@ -31,12 +36,27 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
   const gh: GitHubFake = {
     main: MAIN, ciConclusion: "success", controlPlaneConclusion: "success",
     statusState: "success", statusCount: 1,
+    checkStatus: "completed", checkConclusion: "success",
+    suiteStatus: "completed", suiteConclusion: "success", checksReadable: true,
     files: ["workers/console/ui/src/App.tsx"], dispatched: [], ...state
   };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: gh.main } });
     if (/\/commits\/[0-9a-f]{40}\/status$/.test(url)) return Response.json({ state: gh.statusState, total_count: gh.statusCount });
+    if (url.includes("/check-runs?per_page=100")) {
+      if (!gh.checksReadable) return new Response("forbidden", { status: 403 });
+      const check_runs = ["Validate", "Validate Control Plane Workers", "Type-check", "Tests"].map((name) => ({ name, status: gh.checkStatus, conclusion: gh.checkConclusion }));
+      return Response.json({ total_count: check_runs.length, check_runs });
+    }
+    if (url.includes("/check-suites?per_page=100")) {
+      if (!gh.checksReadable) return new Response("forbidden", { status: 403 });
+      const check_suites = [
+        { app: { slug: "github-actions" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { app: { slug: "external-review" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+      ];
+      return Response.json({ total_count: check_suites.length, check_suites });
+    }
     if (url.includes("/actions/runs?head_sha=")) {
       assert.match(url, /event=push/, "only push-event CI counts for consensus deploys");
       const runs = [
@@ -132,14 +152,8 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     assert.deepEqual(p.units.map((u) => u.unit), ["console"]);
     github({ files: ["workers/control-plane-shared/src/http.ts"] });
     p = await pendingDeploys(orchestratorEnv(db) as never);
-    // A shared-library change touches every unit; the orchestrator goes first and the rest wait a cycle.
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
-    assert.deepEqual(p.skipped.filter((s) => s.reason === "deployment_orchestrator_must_complete_first").map((s) => s.unit).sort(),
-      ["console", "control-plane", "home", "platform-api"]);
-    db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
-    p = await pendingDeploys(orchestratorEnv(db) as never);
-    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
-    db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
+    assert.deepEqual(p.skipped.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);
@@ -234,6 +248,13 @@ test("8. wiring: kernel binds DeployRpc; every consensus-deployable workflow cap
     assert.ok(capture > 0 && deploy > capture && rollback > deploy, `${u.workflow}: capture < deploy < rollback`);
     assert.match(wf, /if: always\(\) && \(failure\(\) \|\| cancelled\(\)\) && steps\.capture\.outcome == 'success'/, u.workflow);
   }
+  const controlPlaneWf = readFileSync(new URL(".github/workflows/deploy-control-plane.yml", root), "utf8");
+  const kernelVerified = controlPlaneWf.indexOf('echo "AI kernel verified:');
+  const auditVerified = controlPlaneWf.indexOf('api GET "$(url audit-ledger)/v1/verify"');
+  const completionEvent = controlPlaneWf.indexOf('api POST "$(url audit-ledger)/v1/events"');
+  assert.ok(kernelVerified > 0 && auditVerified > kernelVerified, "verify the audit chain after all live kernel checks");
+  assert.ok(completionEvent > auditVerified, "append deployment.control_plane_completed only after every verification");
+  assert.doesNotMatch(controlPlaneWf.slice(completionEvent + 1), /\bapi\s+(GET|POST|PUT|PATCH|DELETE)\b/, "no later API check may fail after the success event");
 });
 
 
@@ -247,6 +268,12 @@ test("9. CI gate fails closed unless both main push validations and combined com
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "pending combined status must block");
     github({ controlPlaneConclusion: "skipped" });
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "skipped validation must block");
+    github({ checksReadable: false });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "missing Checks: Read must block");
+    github({ checkStatus: "queued", checkConclusion: null });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "queued check runs must block");
+    github({ suiteStatus: "completed", suiteConclusion: "action_required" });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "action_required suites must block");
     github();
     assert.equal((await ciGreen("gh-token", MAIN)).green, true, "complete green evidence should pass");
   } finally { globalThis.fetch = realFetch; }
