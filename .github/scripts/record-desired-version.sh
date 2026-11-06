@@ -3,14 +3,15 @@
 # the Drift Detector compares the live version against it. Authenticated only by the CI
 # Cloudflare Access service token (an OPERATOR_IDENTITIES member); no shared token exists.
 #
-# Usage: record-desired-version.sh SERVICE_ID COMMIT_SHA
+# Usage: record-desired-version.sh SERVICE_ID COMMIT_SHA|VERSION_TAG
+# A 12-character version tag is accepted for rollbacks to an earlier version (Wave B).
 # Env:   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN (Workers read), CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET
 set -euo pipefail
 
 service="${1:?usage: record-desired-version.sh SERVICE_ID COMMIT_SHA}"
 sha="${2:?usage: record-desired-version.sh SERVICE_ID COMMIT_SHA}"
 [[ "$service" =~ ^cryptophys-[a-z0-9-]+$ ]] || { echo "::error::invalid service id" >&2; exit 1; }
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::full lowercase commit SHA required" >&2; exit 1; }
+[[ "$sha" =~ ^[0-9a-f]{40}$ || "$sha" =~ ^[0-9a-f]{12}$ ]] || { echo "::error::full lowercase commit SHA or 12-character version tag required" >&2; exit 1; }
 tag="${sha:0:12}"
 api_base="${CLOUDFLARE_API_BASE:-https://api.cloudflare.com/client/v4}"
 

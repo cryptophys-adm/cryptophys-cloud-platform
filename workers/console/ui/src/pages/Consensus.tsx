@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Gavel, Minus, ShieldAlert, Vote, X } from "lucide-react";
+import { Check, Gavel, LineChart, Minus, ShieldAlert, Vote, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -76,6 +76,41 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
   );
 }
 
+/** Wave B: does the shadow consensus agree with what people did? Evidence for promoting the mode. */
+function Agreement() {
+  const { data, loading } = usePoll(() => call("kernel.consensus_report", undefined, undefined, { days: "7" }), 300_000);
+  const rate = typeof data?.agreement_rate === "number" ? Math.round(data.agreement_rate * 100) : null;
+  const items = listOf(data, "items").filter((i: any) => i.verdict !== "pending").slice(0, 8);
+  return (
+    <Panel title="Shadow Agreement · 7 days" icon={<LineChart className="h-3.5 w-3.5 text-emerald-300" />}
+      right={<Badge tone={rate === null ? "slate" : rate >= 90 ? "green" : rate >= 70 ? "amber" : "red"}>{rate === null ? "not enough data" : `${rate}% agree`}</Badge>}>
+      {loading && !data ? <Skeleton rows={3} /> : (
+        <>
+          <p className="text-[12px] leading-relaxed text-slate-400">Each proposal is compared with what people did afterwards. Promotion out of shadow needs at least 7 days and no false positive (ADR-0009).</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Badge tone="green">agree · {data?.agree ?? 0}</Badge>
+            <Badge tone="red">false positive · {data?.false_positive ?? 0}</Badge>
+            <Badge tone="amber">false negative · {data?.false_negative ?? 0}</Badge>
+            <Badge tone="slate">pending · {data?.pending ?? 0}</Badge>
+          </div>
+          {items.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {items.map((i: any) => (
+                <div key={i.proposal_id} className="glass-inner flex flex-wrap items-center gap-2 px-3 py-1.5 text-[11px]">
+                  <Badge tone={i.verdict === "agree" ? "green" : i.verdict === "false_positive" ? "red" : "amber"}>{String(i.verdict).replace("_", " ")}</Badge>
+                  <span className="mono text-cyan-200">{i.action}</span>
+                  <span className="mono break-all text-slate-300">→ {i.target}</span>
+                  <span className="text-slate-500">{i.evidence}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
 export default function Consensus() {
   useSession();
   const { data, loading, error, refresh } = usePoll(() => call("kernel.consensus", undefined, undefined, { limit: "50" }), 60_000);
@@ -92,6 +127,7 @@ export default function Consensus() {
         </div>
       </Panel>
       <OwnerQueue rows={rows} mode={mode} reload={() => void refresh()} />
+      <Agreement />
       <Panel title="Proposals" icon={<Vote className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : rows.length === 0 ? <Empty>No proposals yet. The supervisor proposes when it sees persistent drift.</Empty> : (
           <div className="space-y-1.5">

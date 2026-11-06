@@ -1,0 +1,116 @@
+name: Rollback Worker
+
+# Wave B: roll one platform Worker back to a version it ran before, identified by its version tag
+# (the first 12 characters of the commit it was deployed from). Dispatched by the Deployment
+# Orchestrator for an approved recovery plan or a passed consensus proposal, or through an ops
+# request. It deploys an existing Worker version: no build, no migration, no new code.
+#
+# Gates: main only, the exact confirmation ROLLBACK, a known platform Worker, a version that
+# exists on Cloudflare, the cron-window guard, live verification of the rolled-back version
+# through Access, and an automatic restore of the captured versions if anything fails.
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: "Platform Worker to roll back (cryptophys-*)"
+        required: true
+        type: string
+      version_tag:
+        description: "12-character version tag (commit prefix) the Worker ran before"
+        required: true
+        type: string
+      confirm_production:
+        description: "Type ROLLBACK to confirm"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-rollback-${{ inputs.worker }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate the request
+        env:
+          WORKER: ${{ inputs.worker }}
+          TAG: ${{ inputs.version_tag }}
+          CONFIRM: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch from main only"; exit 1; }
+          [[ "$CONFIRM" == "ROLLBACK" ]] || { echo "::error::Exact confirmation ROLLBACK required"; exit 1; }
+          [[ "$TAG" =~ ^[0-9a-f]{12}$ ]] || { echo "::error::version_tag must be 12 lowercase hex characters"; exit 1; }
+          case "$WORKER" in
+            cryptophys-policy-engine|cryptophys-audit-ledger|cryptophys-platform-registry|cryptophys-recovery-manager|cryptophys-drift-detector|cryptophys-ai-kernel|cryptophys-console|cryptophys-home|cryptophys-platform-api|cryptophys-deployment-orchestrator) ;;
+            *) echo "::error::${WORKER} is not a platform Worker that can be rolled back"; exit 1 ;;
+          esac
+      - name: Checkout main (scripts only)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Wait for a deploy window outside the drift and kernel cron minutes
+        run: '"$GITHUB_WORKSPACE/.github/scripts/wait-cron-window.sh"'
+      - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
+        id: capture
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKER: ${{ inputs.worker }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/worker-rollback.sh" capture "$RUNNER_TEMP/rollback.json" "$WORKER"'
+      - name: Deploy the earlier version and verify it live
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          WORKER: ${{ inputs.worker }}
+          TAG: ${{ inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER}"
+          auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          version_id="$(curl --fail --silent --show-error --proto '=https' --max-time 30 --retry 3 --header "$auth" "${api}/versions?per_page=100" \
+            | jq -er --arg t "$TAG" '[.result.items[] | select(.annotations["workers/tag"] == $t)] | sort_by(.metadata.created_on) | last | .id | select(test("^[0-9a-f-]{36}$"))')" \
+            || { echo "::error::${WORKER} has no version tagged ${TAG}"; exit 1; }
+          echo "Rolling ${WORKER} back to version ${version_id} (tag ${TAG})"
+          body="$(jq -cn --arg v "$version_id" --arg m "rollback to ${TAG}, run ${GITHUB_RUN_ID}" '{strategy: "percentage", versions: [{version_id: $v, percentage: 100}], annotations: {"workers/message": $m}}')"
+          curl --fail --silent --show-error --proto '=https' --max-time 30 --request POST --header "$auth" --header "Content-Type: application/json" \
+            --data "$body" "${api}/deployments" | jq -e '.success == true' >/dev/null
+          access="$(mktemp)"; out="$(mktemp)"; trap 'rm -f "$access" "$out"' EXIT
+          "$GITHUB_WORKSPACE/.github/scripts/access-headers.sh" "$access"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 --header "$auth" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" | jq -er '.result.subdomain')"
+          for _ in $(seq 1 12); do
+            status="$(curl --silent --proto '=https' --max-time 20 --header "@${access}" --output "$out" --write-out '%{http_code}' "https://${WORKER}.${subdomain}.workers.dev/health" || true)"
+            if [[ "$status" == "200" ]] && jq -e --arg t "$TAG" '.status == "ok" and .version.tag == $t' "$out" >/dev/null; then
+              echo "${WORKER} is live at ${TAG}"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::${WORKER} did not report version ${TAG} after the rollback (last HTTP ${status})"; exit 1
+      - name: Record the rolled-back version as desired (drift baseline)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          WORKER: ${{ inputs.worker }}
+          TAG: ${{ inputs.version_tag }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/record-desired-version.sh" "$WORKER" "$TAG"'
+      - name: Restore the captured versions if the rollback failed
+        if: always() && (failure() || cancelled()) && steps.capture.outcome == 'success'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ROLLBACK_MESSAGE: "rollback run ${{ github.run_id }} failed; restoring"
+        run: '"$GITHUB_WORKSPACE/.github/scripts/worker-rollback.sh" restore "$RUNNER_TEMP/rollback.json"'

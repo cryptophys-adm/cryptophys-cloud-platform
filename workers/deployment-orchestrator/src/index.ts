@@ -297,21 +297,26 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
  */
 export const RECOVERY_DECISION_WINDOW_MS = 2 * 3_600_000;
 
-export async function deployForRecovery(env: Env, planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>> {
+/** The plan is executing, names this service, and its own recovery.execute allow is fresh (2 h). */
+async function verifyRecoveryExecution(env: Env, planId: string, decisionId: string, serviceId: string): Promise<{ plan_version: string }> {
   if (!/^plan_[0-9a-f-]{36}$/.test(planId) || !/^dec_[0-9a-f-]{36}$/.test(decisionId)) throw new Error("invalid_ids");
-  if (!/^[0-9a-f]{7,40}$/.test(version)) throw new Error("invalid_version");
   const plan = await env.DB.prepare("SELECT service_id, status, plan_version, last_execution_json FROM recovery_plans WHERE plan_id = ?")
     .bind(planId).first<{ service_id: string; status: string; plan_version: string; last_execution_json: string | null }>();
   const exec = plan?.last_execution_json ? JSON.parse(plan.last_execution_json) : {};
-  if (!plan || plan.status !== "executing" || plan.service_id !== serviceId || plan.plan_version !== version || exec.policy_decision_id !== decisionId) {
-    throw new Error("plan_not_executing");
-  }
+  if (!plan || plan.status !== "executing" || plan.service_id !== serviceId || exec.policy_decision_id !== decisionId) throw new Error("plan_not_executing");
   const d = await env.DB.prepare("SELECT action, resource, decision, created_at FROM policy_decisions WHERE decision_id = ?")
     .bind(decisionId).first<{ action: string; resource: string; decision: string; created_at: string }>();
   const age = d ? Date.now() - Date.parse(d.created_at) : Number.NaN;
   if (!d || d.action !== "recovery.execute" || d.resource !== planId || d.decision !== "allow" || !(age >= 0 && age <= RECOVERY_DECISION_WINDOW_MS)) {
     throw new Error("recovery_decision_invalid");
   }
+  return { plan_version: plan.plan_version };
+}
+
+export async function deployForRecovery(env: Env, planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>> {
+  if (!/^[0-9a-f]{7,40}$/.test(version)) throw new Error("invalid_version");
+  const plan = await verifyRecoveryExecution(env, planId, decisionId, serviceId);
+  if (plan.plan_version !== version) throw new Error("plan_not_executing");
   const unit = unitForService(serviceId);
   if (!unit) throw new Error("no_deploy_unit_for_service");
   if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
@@ -345,14 +350,85 @@ export async function deployForRecovery(env: Env, planId: string, decisionId: st
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
 }
 
-/** Read-only: the newest dispatched run of one deploy workflow on one commit (for pipeline progress). */
+/** Read-only: the newest dispatched run of one deploy (or rollback) workflow on one commit (for pipeline progress). */
 export async function runStatus(env: Env, workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }> {
-  if (!DEPLOY_UNITS.some((u) => u.workflow === workflow) || !/^[0-9a-f]{40}$/.test(commitSha) || !env.GH_ACTIONS_TOKEN) return { found: false };
+  if (!(DEPLOY_UNITS.some((u) => u.workflow === workflow) || workflow === ROLLBACK_WORKFLOW) || !/^[0-9a-f]{40}$/.test(commitSha) || !env.GH_ACTIONS_TOKEN) return { found: false };
   const res = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + workflow + "/runs?event=workflow_dispatch&head_sha=" + commitSha + "&per_page=5");
   if (!res.ok) return { found: false };
   const runs = ((await res.json()) as { workflow_runs?: { id: number; status: string; conclusion: string | null; html_url: string; run_number: number }[] }).workflow_runs ?? [];
   const run = runs.sort((a, b) => b.run_number - a.run_number)[0];
   return run ? { found: true, status: run.status, conclusion: run.conclusion, run_id: run.id, url: run.html_url } : { found: false };
+}
+
+/**
+ * Wave B: roll a Worker back to the version it ran before. The target is the registry's previous
+ * desired version (the version tag recorded before the current one, from the audit trail), so
+ * a rollback always returns to a version that production ran and recorded. The Rollback Worker
+ * workflow deploys that existing Worker version, verifies it live, records it as desired, and
+ * restores the captured version if anything fails.
+ */
+export const ROLLBACK_WORKFLOW = "rollback-worker.yml";
+
+export async function previousVersion(env: Env, serviceId: string): Promise<string | null> {
+  const reg = await env.DB.prepare("SELECT desired_version FROM service_registry WHERE service_id = ?").bind(serviceId).first<{ desired_version: string | null }>();
+  const current = reg?.desired_version ?? null;
+  if (!current) return null;
+  const rows = await env.DB.prepare(
+    "SELECT payload_json FROM audit_events WHERE event_type = 'registry.desired_version_set' AND subject = ? ORDER BY rowid DESC LIMIT 50",
+  ).bind(serviceId).all<{ payload_json: string }>();
+  for (const r of rows.results) {
+    let p: { previous?: unknown; desired_version?: unknown } = {};
+    try { p = JSON.parse(r.payload_json); } catch { continue; }
+    const prev = typeof p.previous === "string" ? p.previous.slice(0, 12) : "";
+    if (p.desired_version === current && /^[0-9a-f]{12}$/.test(prev) && prev !== current.slice(0, 12)) return prev;
+  }
+  return null;
+}
+
+async function dispatchRollback(env: Env, actor: string, serviceId: string, tag: string, link: Record<string, string>): Promise<Record<string, unknown>> {
+  if (!unitForService(serviceId)) throw new Error("no_deploy_unit_for_service");
+  if (!/^[0-9a-f]{12}$/.test(tag)) throw new Error("invalid_version_tag");
+  if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const sha = await mainSha(env.GH_ACTIONS_TOKEN);
+  if (!sha) throw new Error("main_lookup_failed");
+  const key = `rollback:${serviceId}:${tag}:${Object.values(link).join(":")}`;
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(key))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { dispatched: false, reason: "already_dispatched", workflow: ROLLBACK_WORKFLOW, commit_sha: sha, version_tag: tag };
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
+  ).bind(requestId, serviceId, tag, actor, Object.values(link)[0] ?? null, key, JSON.stringify({ workflow: ROLLBACK_WORKFLOW, version_tag: tag, ...link }), at, at).run();
+  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + ROLLBACK_WORKFLOW + "/dispatches",
+    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { worker: serviceId, version_tag: tag, confirm_production: "ROLLBACK" } }) });
+  const status = dispatch.status === 204 ? "running" : "failed";
+  await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
+  await appendAuditEvent(env.DB, {
+    event_type: dispatch.status === 204 ? "deployment.rollback_dispatched" : "deployment.dispatch_failed", actor, subject: serviceId, outcome: status,
+    payload: { request_id: requestId, workflow: ROLLBACK_WORKFLOW, version_tag: tag, github_status: dispatch.status, ...link },
+  });
+  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  return { dispatched: true, request_id: requestId, workflow: ROLLBACK_WORKFLOW, commit_sha: sha, version_tag: tag };
+}
+
+/** Recovery step rollback_worker_version of an approved, executing plan (same checks as deployForRecovery). */
+export async function rollbackForRecovery(env: Env, planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>> {
+  await verifyRecoveryExecution(env, planId, decisionId, serviceId);
+  const tag = await previousVersion(env, serviceId);
+  if (!tag) throw new Error("no_previous_version_recorded");
+  return dispatchRollback(env, `recovery:${planId}`, serviceId, tag, { plan_id: planId });
+}
+
+/** Consensus action rollback_worker_version (deploy mode): params.version is the tag, re-verified like every consensus action. */
+export async function rollbackForConsensus(env: Env, proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, "rollback_worker_version", target);
+  const tag = String(params.version ?? "").slice(0, 12);
+  const previous = await previousVersion(env, target);
+  if (!previous || previous !== tag) throw new Error("version_is_not_the_previous_recorded_version");
+  return dispatchRollback(env, `consensus:${proposalId}`, target, tag, { proposal_id: proposalId });
 }
 
 /**
