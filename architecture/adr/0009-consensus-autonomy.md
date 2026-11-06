@@ -251,3 +251,5 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
 - there are 0 critical reports.
 
 **Follow-up.** The supervisor now makes at most one `deploy_commit` proposal per cycle (`MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1`); the other units follow in the next cycles.
+- **Second rollback, then the fix (07:53 UTC).** Control-plane run 42183552848 at `903bb8c` failed the same probe and was rolled back automatically again. A single proposal took about 25 seconds, and the kernel's scheduled cycle at :52 ran on the same Durable Object at the same time. The fix: **deploy proposals are made only in scheduled cycles**. An operator wake, which the deploy verification calls, now records "deploy proposals run in scheduled cycles only" (test 11).
+- **Operational rule.** Deploys are dispatched outside both the drift cron minutes (:00/:15/:30/:45) and the kernel cron minutes (:07/:22/:37/:52).

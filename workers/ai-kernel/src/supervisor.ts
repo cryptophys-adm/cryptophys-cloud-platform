@@ -155,7 +155,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
 
   // ADR-0009 phase 3: a CI-green main commit that production does not run yet is proposed for
   // deployment, once per deploy unit and commit. Executed only in the 'deploy' consensus mode.
-  if (env.DEPLOY) {
+  // Only scheduled cycles propose deploys: a proposal takes 15-25 s (evidence, audit chain, nine
+  // votes, policy), and an operator wake is a synchronous request (deploy verification probes it).
+  if (env.DEPLOY && trigger === "operator") {
+    report.findings.push({ kind: "deploy", action: "none", why: "deploy proposals run in scheduled cycles only" });
+  } else if (env.DEPLOY) {
     try {
       const pending = await env.DEPLOY.pendingDeploys();
       // At most one deploy proposal per cycle: each proposal gathers evidence, verifies the audit
