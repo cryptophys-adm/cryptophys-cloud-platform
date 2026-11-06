@@ -231,7 +231,7 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
   - **Order.** When the Deployment Orchestrator is pending, it is the only unit proposed in that cycle; the others follow once its version is recorded.
   - **Rollback** also runs when a deploy run is cancelled.
   - The orchestrator re-reviewed the changes and updated the phase 3 test to the orchestrator-first rule. 211/211 tests pass.
-  - **Check Runs and Check Suites.** In addition to combined commit status and the two required main push workflows, the orchestrator reads all Check Runs and Check Suites for the exact main SHA. Missing `Checks: Read` permission, queued/in-progress/failed/cancelled/skipped/action-required results, truncated responses or unreadable evidence fail closed. The token permission is an external prerequisite and is not changed by this PR.
+  - **Check Runs and Check Suites.** In addition to combined commit status and the two required main push workflows, the orchestrator reads all Check Runs and Check Suites for the exact main SHA. For this public repository it first uses the scoped PAT, then falls back to unauthenticated read-only access only after HTTP 401/403. A private repository requires a GitHub App token with `Checks: Read`; otherwise the gate fails closed. Queued/in-progress/failed/cancelled/skipped/action-required results, truncated responses or unreadable evidence fail closed. This PR does not change secrets or permissions.
 
 ### Phase 3 code deployment, 2026-11-06
 
