@@ -44,6 +44,17 @@ binding = "RECOVERY"
 service = "cryptophys-recovery-manager"
 entrypoint = "RecoveryRpc"
 
+# ADR-0009 phase 2 executors. Each target re-verifies the proposal and its policy decision.
+[[services]]
+binding = "REGISTRY"
+service = "cryptophys-platform-registry"
+entrypoint = "RegistryRpc"
+
+[[services]]
+binding = "DRIFT"
+service = "cryptophys-drift-detector"
+entrypoint = "DriftRpc"
+
 # Read-only access to the XAUUSD advisory decision chain (TP-017).
 [[services]]
 binding = "XAUUSD_AI"

@@ -1,4 +1,5 @@
 import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
+import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   errorResponse, healthResponse, json, newId, nowIso, serviceMetadata,
@@ -142,6 +143,13 @@ function healthPath(row: RegistryRow): string {
   } catch {
     return "/health";
   }
+}
+
+/** ADR-0009 phase 2: a passed observe_drift consensus action, re-verified here before it runs. */
+export async function observeForConsensus(env: Env, proposalId: string, decisionId: string): Promise<{ run_id: string; drifted: number; services: number }> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, "observe_drift", "platform");
+  const r = await observe(env, "consensus", `consensus:${proposalId}`);
+  return { run_id: r.run_id, drifted: r.drifted, services: r.services.length };
 }
 
 /** Compare desired (registry) with observed (live health/version) for every registered service. */

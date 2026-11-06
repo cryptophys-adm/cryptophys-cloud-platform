@@ -31,7 +31,7 @@ concurrency:
 
 env:
   D1_DATABASE_NAME: cryptophys-control-plane
-  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager ai-kernel drift-detector"
+  DEPLOY_ORDER: "policy-engine audit-ledger platform-registry recovery-manager drift-detector ai-kernel"
 
 jobs:
   validate:

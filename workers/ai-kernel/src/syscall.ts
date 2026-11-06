@@ -20,12 +20,17 @@ export interface PolicyRpcBinding {
     Promise<{ decision: "allow" | "deny"; decision_id: string; reason: string }>;
 }
 export interface RecoveryRpcBinding { propose(agentId: string, decisionId: string, input: Record<string, unknown>): Promise<JsonObject> }
+/** ADR-0009 phase 2 targets: each re-verifies the consensus proposal and its policy decision. */
+export interface RegistryRpcBinding { applyConsensus(proposalId: string, decisionId: string, action: string, target: string, params: Record<string, unknown>): Promise<JsonObject> }
+export interface DriftRpcBinding { observeForConsensus(proposalId: string, decisionId: string): Promise<JsonObject> }
 
 export interface SyscallEnv extends BaseEnv {
   XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> };
   POLICY: PolicyRpcBinding;
   RECOVERY: RecoveryRpcBinding;
   MEMORY?: VectorizeBinding;
+  REGISTRY?: RegistryRpcBinding;
+  DRIFT?: DriftRpcBinding;
 }
 
 export type SyscallResult =

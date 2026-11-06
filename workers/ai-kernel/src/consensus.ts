@@ -15,6 +15,8 @@ import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/s
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
 import { observe } from "./syscall.ts";
+import { setAgentStatus } from "./kernel.ts";
+import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -166,6 +168,34 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   }
 }
 
+/** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
+export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent"]);
+
+/** Run one passed routine action through its owning path. Targets re-verify the proposal. */
+async function executeAction(env: SyscallEnv, proposalId: string, decisionId: string, p: Proposal): Promise<JsonObject> {
+  const actor = `consensus:${proposalId}`;
+  switch (p.action) {
+    case "suspend_agent":
+    case "resume_agent": {
+      if (KERNEL_AGENTS.has(p.target)) throw new Error("kernel_agent_internal");
+      await verifyConsensusExecution(env.DB, proposalId, decisionId, p.action, p.target);
+      const status = p.action === "suspend_agent" ? "suspended" : "enabled";
+      const reason = String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200);
+      return { agent: await setAgentStatus(env as never, p.target, status, actor, reason) };
+    }
+    case "set_desired_version":
+    case "registry_disable_service":
+    case "registry_enable_service":
+      if (!env.REGISTRY) throw new Error("registry_binding_missing");
+      return await env.REGISTRY.applyConsensus(proposalId, decisionId, p.action, p.target, p.params);
+    case "observe_drift":
+      if (!env.DRIFT) throw new Error("drift_binding_missing");
+      return await env.DRIFT.observeForConsensus(proposalId, decisionId);
+    default:
+      throw new Error("no_executor");
+  }
+}
+
 export interface ProposeResult extends JsonObject {
   proposal_id: string; class: ConsensusClass; mode: ConsensusMode; eligible: number; approvals: number; rejections: number;
   passed: boolean; policy_decision: "allow" | "deny" | null; status: string;
@@ -200,10 +230,18 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   }
   const mode = await consensusMode(env);
   const allowed = passed && policy?.decision === "allow";
-  const status = !allowed ? (cls === "prohibited" || !passed ? "rejected" : "shadow_blocked")
+  const executable = allowed && mode !== "shadow" && cls === "routine" && PHASE2_EXECUTABLE.has(action);
+  let status = !allowed ? (cls === "prohibited" || !passed ? "rejected" : "shadow_blocked")
     : mode === "shadow" ? "shadow_passed"
     : cls === "critical" ? "pending_owner"
-    : "shadow_passed"; // execution phases replace this branch; phase 1 never executes
+    : executable ? "executing"
+    : "shadow_passed"; // a passed routine action with no executor yet (deploys arrive in phase 3)
+  let outcome: JsonObject = {
+    executed: false,
+    reason: mode === "shadow" ? "shadow mode: phase 1 records only"
+      : cls === "critical" && allowed ? "waiting for an owner approval click"
+      : allowed && !executable ? `no executor for ${action} in this phase` : "not executed",
+  };
 
   const proposalId = newId("cns");
   const at = new Date(now).toISOString();
@@ -218,10 +256,26 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(proposalId, proposer, action, target, cls, JSON.stringify(params), JSON.stringify(evidenceSummary), mode, eligible.length,
     approvals, rejections, passed ? 1 : 0, policy?.decision_id ?? null, policy?.decision ?? null, status,
-    JSON.stringify({ executed: false, reason: mode === "shadow" ? "shadow mode: phase 1 records only" : "not executed" }), at, nowIso()).run();
+    JSON.stringify(outcome), at, nowIso()).run();
   for (const x of votes) {
     await env.DB.prepare("INSERT INTO consensus_votes (proposal_id, voter_agent_id, vote, reason, created_at) VALUES (?, ?, ?, ?, ?)")
       .bind(proposalId, x.voter, x.vote, x.reason, at).run();
+  }
+  if (executable) {
+    try {
+      const result = await executeAction(env, proposalId, policy!.decision_id, p);
+      status = "executed";
+      outcome = { executed: true, result };
+    } catch (err) {
+      status = "failed";
+      outcome = { executed: false, error: String((err as Error)?.message ?? err).slice(0, 300) };
+    }
+    await env.DB.prepare("UPDATE consensus_proposals SET status = ?, outcome_json = ?, decided_at = ? WHERE proposal_id = ?")
+      .bind(status, JSON.stringify(outcome), nowIso(), proposalId).run();
+    await appendAuditEvent(env.DB, {
+      event_type: "consensus.executed", actor: `agent:${proposer}`, subject: `${action}:${target}`, outcome: status,
+      payload: { proposal_id: proposalId, policy_decision_id: policy!.decision_id, outcome },
+    });
   }
   await appendAuditEvent(env.DB, {
     event_type: "consensus.tallied", actor: `agent:${proposer}`, subject: `${action}:${target}`, outcome: status,
