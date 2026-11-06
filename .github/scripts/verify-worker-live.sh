@@ -23,11 +23,13 @@
 #
 # Usage:
 #   verify-worker-live.sh --script NAME --commit SHA \
-#     --health-filter JQ --ready-filter JQ [--require-access] [--custom-domain HOSTNAME]
+#     --health-filter JQ --ready-filter JQ [--require-access] [--custom-domain HOSTNAME] [--require-custom-domain]
 #
-# --custom-domain is advisory: it is probed with full TLS verification and its
-# Cloudflare registration is reported, but a failure there is surfaced as a
-# workflow warning rather than masking the result of the deployed Worker itself.
+# --custom-domain is advisory by default: a failure is surfaced as a warning.
+# --require-custom-domain makes the hostname part of the deployment contract: it must be
+# registered as an enabled production Worker domain, reject unauthenticated requests via
+# Access, and serve the expected health/readiness contracts over verified TLS.
+# This strict mode also requires --require-access.
 set -euo pipefail
 
 script_name=""
@@ -36,6 +38,7 @@ health_filter=""
 ready_filter=""
 custom_domain=""
 require_access=false
+require_custom_domain=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,11 +48,18 @@ while [[ $# -gt 0 ]]; do
     --ready-filter) ready_filter="${2:-}"; shift 2 ;;
     --custom-domain) custom_domain="${2:-}"; shift 2 ;;
     --require-access) require_access=true; shift ;;
+    --require-custom-domain) require_custom_domain=true; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 fail() { echo "::error::$*" >&2; exit 1; }
+
+[[ "$require_custom_domain" != true || -n "$custom_domain" ]] || fail "--require-custom-domain requires --custom-domain HOSTNAME"
+[[ "$require_custom_domain" != true || "$require_access" == true ]] || fail "--require-custom-domain requires --require-access"
+if [[ -n "$custom_domain" ]]; then
+  [[ "$custom_domain" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fail "--custom-domain must be a lowercase DNS hostname"
+fi
 
 [[ "$script_name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "--script must be a Worker script name"
 [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || fail "--commit must be a full lowercase 40-character SHA"
@@ -154,6 +164,26 @@ http_check() {
   fail "${name} check failed for ${url}"
 }
 
+# A status code alone is not proof of Cloudflare Access: an origin or WAF can also
+# return 401/403. For the canonical portal hostname, require the actual Access login
+# redirect and validate its destination before treating the hostname as protected.
+access_login_check() {
+  local name="$1" url="$2" headers="$workdir/access-challenge.headers" status location
+  if ! status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+      --dump-header "$headers" --output /dev/null --write-out '%{http_code}' "$url")"; then
+    fail "Unauthenticated ${name} probe failed to connect over verified TLS"
+  fi
+  [[ "$status" == "302" ]] \
+    || fail "${name} did not return the Cloudflare Access login redirect (HTTP ${status})"
+  location="$(awk 'tolower($1) == "location:" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' "$headers" | tail -n 1)"
+  [[ "${ACCESS_TEAM_DOMAIN:-}" =~ ^[a-z0-9-]+\.cloudflareaccess\.com$ ]] \
+    || fail "ACCESS_TEAM_DOMAIN must be resolved before strict custom-domain verification"
+  expected_prefix="https://${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/login/"
+  [[ "$location" == "$expected_prefix"* ]] \
+    || fail "${name} did not redirect to the configured Cloudflare Access team login endpoint"
+  echo "Cloudflare Access login challenge verified for ${name}"
+}
+
 if [[ "$require_access" == true ]]; then
   # Without credentials, Cloudflare Access must stop the request before the Worker.
   unauth="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
@@ -165,17 +195,39 @@ fi
 http_check "health" "${base_url}/health" "$health_filter"
 http_check "readiness" "${base_url}/ready" "$ready_filter"
 
-# 4. Advisory custom-domain check (never disables TLS verification).
+# 4. Custom-domain verification. Keep the default advisory mode for existing callers;
+# Home opts into strict mode because home.cryptophys.work is its canonical entrypoint.
 if [[ -n "$custom_domain" ]]; then
-  domains="$(cf_get "${account_path}/workers/domains?service=${script_name}" 2>/dev/null || echo '{}')"
+  if ! domains="$(cf_get "${account_path}/workers/domains?hostname=${custom_domain}" 2>/dev/null)"; then
+    if [[ "$require_custom_domain" == true ]]; then
+      fail "Could not verify Cloudflare registration for required custom domain ${custom_domain}"
+    fi
+    domains='{}'
+  fi
   registration="$(printf '%s' "$domains" | jq -c --arg h "$custom_domain" \
-    '[.result[]? | select(.hostname == $h) | {hostname, zone_name, environment}]' 2>/dev/null || echo '[]')"
+    '[.result[]? | select(.hostname == $h) | {hostname, zone_name, service, environment, enabled, previews_enabled}]' 2>/dev/null || echo '[]')"
   echo "Custom domain registration for ${custom_domain}: ${registration}"
-  if ! curl_err="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
-      --output /dev/null "https://${custom_domain}/health" 2>&1)"; then
-    echo "::warning::Custom domain ${custom_domain} failed TLS-verified request: ${curl_err//$'\n'/ }. The Worker itself is verified on workers.dev; fix the domain's certificate/zone separately."
+
+  if [[ "$require_custom_domain" == true ]]; then
+    jq -e --arg s "$script_name" '
+      length == 1
+      and .[0].service == $s
+      and .[0].environment == "production"
+      and .[0].enabled == true
+      and .[0].previews_enabled == false
+    ' <<<"$registration" >/dev/null \
+      || fail "Required custom domain ${custom_domain} must have exactly one registration for ${script_name}, enabled in production with preview routing disabled"
+    domain_url="https://${custom_domain}"
+    access_login_check "custom domain" "${domain_url}/health"
+    http_check "custom-domain health" "${domain_url}/health" "$health_filter"
+    http_check "custom-domain readiness" "${domain_url}/ready" "$ready_filter"
   else
-    echo "Custom domain ${custom_domain} responds over verified TLS."
+    if ! curl_err="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+        --output /dev/null "https://${custom_domain}/health" 2>&1)"; then
+      echo "::warning::Custom domain ${custom_domain} failed TLS-verified request: ${curl_err//$'\\n'/ }. The Worker itself is verified on workers.dev; fix the domain's certificate/zone separately."
+    else
+      echo "Custom domain ${custom_domain} responds over verified TLS."
+    fi
   fi
 fi
 
