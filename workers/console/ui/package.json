@@ -6,7 +6,8 @@
   "description": "Cerebrum Console UI (ADR-0008): React SPA in the Nexus obsidian design, served as Workers Static Assets behind the Console Worker.",
   "scripts": {
     "build": "tsc --noEmit -p . && vite build",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "render-smoke": "node scripts/render-smoke.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",
@@ -22,6 +23,7 @@
     "@types/three": "0.174.0",
     "@vitejs/plugin-react": "4.7.0",
     "autoprefixer": "10.4.20",
+    "playwright": "1.63.0",
     "postcss": "8.5.32",
     "tailwindcss": "3.4.17",
     "typescript": "5.9.3",
