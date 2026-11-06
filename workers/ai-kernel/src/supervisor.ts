@@ -150,6 +150,29 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   }
   await memory.put("proposals", proposals);
 
+  // ADR-0009 phase 3: a CI-green main commit that production does not run yet is proposed for
+  // deployment, once per deploy unit and commit. Executed only in the 'deploy' consensus mode.
+  if (env.DEPLOY) {
+    try {
+      const pending = await env.DEPLOY.pendingDeploys();
+      for (const u of pending.units) {
+        if (!pending.main_sha) break;
+        const seen = await env.DB.prepare(
+          "SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ? LIMIT 1",
+        ).bind(u.target, pending.main_sha).first();
+        if (seen) continue;
+        const r = await syscall(env, AGENT_ID, "consensus.propose", {
+          action: "deploy_commit", target: u.target,
+          params: { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, reason: u.reason.slice(0, 200) },
+        });
+        report.actions.push(r);
+        report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome });
+      }
+    } catch (err) {
+      report.findings.push({ kind: "deploy", action: "none", why: `pending deploys unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
+    }
+  }
+
   await memory.put("last_cycle", report);
   return report;
 }

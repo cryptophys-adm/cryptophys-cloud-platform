@@ -93,6 +93,12 @@ jobs:
           ACCESS_APP_NAME: cryptophys-cloud-platform
           EXPECTED_WORKERS: cryptophys-platform-api
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
+      - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
+        id: capture
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/worker-rollback.sh" capture "$RUNNER_TEMP/rollback.json" cryptophys-platform-api'
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.deploy.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}"
         env:
@@ -125,3 +131,14 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: '"$GITHUB_WORKSPACE/.github/scripts/record-desired-version.sh" cryptophys-platform-api "$COMMIT_SHA"'
+      - name: Automatic rollback to the captured versions when any later step failed
+        if: failure() && steps.capture.outcome == 'success'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ROLLBACK_MESSAGE: "automatic rollback: run ${{ github.run_id }} failed verification"
+        run: |
+          set -euo pipefail
+          # Worker versions only. D1 migrations are forward-only; the registry desired version may now
+          # name the failed commit, so drift reports the mismatch until a good commit is deployed.
+          "$GITHUB_WORKSPACE/.github/scripts/worker-rollback.sh" restore "$RUNNER_TEMP/rollback.json"

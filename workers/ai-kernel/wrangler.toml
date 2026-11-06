@@ -55,6 +55,12 @@ binding = "DRIFT"
 service = "cryptophys-drift-detector"
 entrypoint = "DriftRpc"
 
+# ADR-0009 phase 3: pending deploys and consensus deploy_commit dispatch.
+[[services]]
+binding = "DEPLOY"
+service = "cryptophys-deployment-orchestrator"
+entrypoint = "DeployRpc"
+
 # Read-only access to the XAUUSD advisory decision chain (TP-017).
 [[services]]
 binding = "XAUUSD_AI"
