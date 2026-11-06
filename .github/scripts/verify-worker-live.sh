@@ -164,6 +164,23 @@ http_check() {
   fail "${name} check failed for ${url}"
 }
 
+# A status code alone is not proof of Cloudflare Access: an origin or WAF can also
+# return 401/403. For the canonical portal hostname, require the actual Access login
+# redirect and validate its destination before treating the hostname as protected.
+access_login_check() {
+  local name="$1" url="$2" headers="$workdir/access-challenge.headers" status location
+  if ! status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+      --dump-header "$headers" --output /dev/null --write-out '%{http_code}' "$url")"; then
+    fail "Unauthenticated ${name} probe failed to connect over verified TLS"
+  fi
+  [[ "$status" == "302" ]] \
+    || fail "${name} did not return the Cloudflare Access login redirect (HTTP ${status})"
+  location="$(awk 'tolower($1) == "location:" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\\r$/, ""); print }' "$headers" | tail -n 1)"
+  [[ "$location" =~ ^https://[A-Za-z0-9-]+\\.cloudflareaccess\\.com/cdn-cgi/access/login/ ]] \
+    || fail "${name} did not redirect to a Cloudflare Access login endpoint"
+  echo "Cloudflare Access login challenge verified for ${name}"
+}
+
 if [[ "$require_access" == true ]]; then
   # Without credentials, Cloudflare Access must stop the request before the Worker.
   unauth="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
@@ -184,21 +201,21 @@ if [[ -n "$custom_domain" ]]; then
     fi
     domains='{}'
   fi
-  registration="$(printf '%s' "$domains" | jq -c --arg h "$custom_domain" --arg s "$script_name" \
-    '[.result[]? | select(.hostname == $h and .service == $s and .environment == "production" and .enabled == true and .previews_enabled == false) | {hostname, zone_name, environment, enabled, previews_enabled}]' 2>/dev/null || echo '[]')"
+  registration="$(printf '%s' "$domains" | jq -c --arg h "$custom_domain" \
+    '[.result[]? | select(.hostname == $h) | {hostname, zone_name, service, environment, enabled, previews_enabled}]' 2>/dev/null || echo '[]')"
   echo "Custom domain registration for ${custom_domain}: ${registration}"
 
   if [[ "$require_custom_domain" == true ]]; then
-    jq -e 'length == 1' <<<"$registration" >/dev/null \
-      || fail "Required custom domain ${custom_domain} is not registered as exactly one enabled production Worker domain with preview routing disabled for ${script_name}"
+    jq -e --arg s "$script_name" '
+      length == 1
+      and .[0].service == $s
+      and .[0].environment == "production"
+      and .[0].enabled == true
+      and .[0].previews_enabled == false
+    ' <<<"$registration" >/dev/null \
+      || fail "Required custom domain ${custom_domain} must have exactly one registration for ${script_name}, enabled in production with preview routing disabled"
     domain_url="https://${custom_domain}"
-    if ! unauth_status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
-        --output /dev/null --write-out '%{http_code}' "${domain_url}/health")"; then
-      fail "Required custom domain ${custom_domain} failed TLS-verified request"
-    fi
-    [[ "$unauth_status" =~ ^(302|401|403)$ ]] \
-      || fail "Required custom domain ${custom_domain} is not protected by Cloudflare Access (unauthenticated HTTP ${unauth_status})"
-    echo "Cloudflare Access rejects unauthenticated requests to ${domain_url} (HTTP ${unauth_status})"
+    access_login_check "custom domain" "${domain_url}/health"
     http_check "custom-domain health" "${domain_url}/health" "$health_filter"
     http_check "custom-domain readiness" "${domain_url}/ready" "$ready_filter"
   else
