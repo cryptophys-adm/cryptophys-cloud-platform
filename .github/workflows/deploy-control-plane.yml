@@ -229,10 +229,6 @@ jobs:
               || { echo "::error::cryptophys-${dir} is drifted or unhealthy after deployment"; exit 1; }
           done
 
-          api POST "$(url audit-ledger)/v1/events" "$(jq -cn --arg sha "$COMMIT_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg order "$DEPLOY_ORDER" \
-            '{event_type: "deployment.control_plane_completed", subject: "control-plane", outcome: "success", payload: {commit_sha: $sha, workflow_run: $run, workers: ($order | split(" "))}}')" \
-            | jq '{event_id: .event.event_id, event_hash: .event.event_hash}'
-          api GET "$(url audit-ledger)/v1/verify" | tee /dev/stderr | jq -e '.valid == true and .events_checked > 0' >/dev/null
 
           policy="$(api POST "$(url policy-engine)/v1/evaluate" "$(jq -cn --arg sha "$COMMIT_SHA" \
             '{action: "deploy", resource: "cryptophys-platform-api", context: {commit_sha: $sha, confirm_production: "DEPLOY", ci_green: false, deploy_verification: true}}')")"
@@ -290,6 +286,13 @@ jobs:
             || { echo "::error::Kernel observation lacks a well-formed xauusd_latest"; exit 1; }
           api GET "${kernel}/v1/status" | jq -c '{agent_reports_24h: {since: .agent_reports_24h.since, counts: .agent_reports_24h.counts}, xauusd_latest: (.xauusd_latest | if . == null then null else {decision, confidence, candle_key} end)}'
           echo "AI kernel verified: MCP, agent registry, a supervisor cycle and the report summary."
+          # Record completion only after every live, policy, recovery and kernel verification has passed.
+          # The success event is the final API mutation; no later check can fail and leave a false success record.
+          api GET "$(url audit-ledger)/v1/verify" | tee /dev/stderr | jq -e '.valid == true and .events_checked > 0' >/dev/null
+          api POST "$(url audit-ledger)/v1/events" "$(jq -cn --arg sha "$COMMIT_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg order "$DEPLOY_ORDER" \
+            '{event_type: "deployment.control_plane_completed", subject: "control-plane", outcome: "success", payload: {commit_sha: $sha, workflow_run: $run, workers: ($order | split(" "))}}')" \
+            | jq -e '.event.event_id | type == "string" and length > 0' >/dev/null
+          echo "Audit chain verified and deployment completion event recorded."
           echo "Control plane ${tag} deployed, registered, observed in sync, audited and policy-verified."
           echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
       - name: Automatic rollback to the captured versions after a failure or cancellation
