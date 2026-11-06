@@ -33,7 +33,9 @@ export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
 
 async function isApprover(request: Request, env: Env): Promise<boolean> {
-  return (await authorize(request, env, env.APPROVER_IDENTITIES, "APPROVER_IDENTITIES")).ok;
+  const authorization = await authorize(request, env, env.APPROVER_IDENTITIES, "APPROVER_IDENTITIES");
+  // An Access service token is never a human approver, even if its common_name resembles an email.
+  return authorization.ok && authorization.identity.type === "user";
 }
 
 export default {
@@ -113,7 +115,7 @@ export default {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         try {
-          return json(await setConsensusMode(env, body.value.mode, operator.actor, await isApprover(request, env), body.value.reason));
+          return json(await setConsensusMode(env, body.value.mode, operator.actor, operator.identity.type, await isApprover(request, env), body.value.reason));
         } catch (err) {
           if (err instanceof OwnerDecisionError) return errorResponse(err.status, err.code, err.message);
           throw err;
