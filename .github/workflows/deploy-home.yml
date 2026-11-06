@@ -137,3 +137,11 @@ jobs:
           probe POST / 405 '.error == "method_not_allowed"'
           probe POST /api/platform/v1/overview 405 '.error == "method_not_allowed"'
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+      - name: Record the desired version in the Platform Registry (drift baseline, TP-026)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/record-desired-version.sh" cryptophys-home "$COMMIT_SHA"'
