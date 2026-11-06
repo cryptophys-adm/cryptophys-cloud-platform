@@ -169,7 +169,12 @@ jobs:
           probe GET /console/api/kernel/v1/kernel 200 '.agents | type == "array"'
           # The Nexus hostname routes /console* to this Worker (route precedence over the Nexus Custom
           # Domain), and the retired console.cryptophys.work redirects there.
-          nexus="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output "$out" --write-out '%{http_code}' https://nexus.cryptophys.work/console/health)"
+          # A new zone route takes up to a couple of minutes to reach every edge: retry before failing.
+          for _ in $(seq 1 24); do
+            nexus="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output "$out" --write-out '%{http_code}' https://nexus.cryptophys.work/console/health || true)"
+            [[ "$nexus" == "200" ]] && jq -e '.service == "cryptophys-console"' "$out" >/dev/null 2>&1 && break
+            sleep 5
+          done
           [[ "$nexus" == "200" ]] && jq -e '.service == "cryptophys-console"' "$out" >/dev/null \
             || { echo "::error::nexus.cryptophys.work/console/health: HTTP ${nexus}: $(head -c 300 "$out")"; exit 1; }
           echo "ok GET https://nexus.cryptophys.work/console/health -> 200 (cryptophys-console)"
