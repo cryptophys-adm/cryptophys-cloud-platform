@@ -167,12 +167,17 @@ extra_args=()
 
 # Strict custom-domain mode is opt-in so existing callers retain advisory semantics.
 setup_green custom-domain-required
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true}]}'
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
 fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
 export FAKE_ACCESS=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
 expect pass "required custom domain verifies registration, Access, health and readiness" "custom-domain readiness OK"
+
+setup_green custom-domain-previews-enabled
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":true}]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must disable preview subdomain routing" "preview routing disabled"
 
 setup_green custom-domain-unregistered
 fx "$api/domains?service=svc" '{"success":true,"result":[]}'
@@ -180,14 +185,14 @@ extra_args=(--require-access --custom-domain custom.example.test --require-custo
 expect fail "required custom domain must be an enabled production registration" "not registered as exactly one enabled production Worker domain"
 
 setup_green custom-domain-dns-failure
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true}]}'
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 export FAKE_CUSTOM_DOMAIN_DNS_FAIL=1
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
 expect fail "required custom domain DNS/TLS failure fails deployment verification" "failed TLS-verified request"
 unset FAKE_CUSTOM_DOMAIN_DNS_FAIL
 
 setup_green custom-domain-unprotected
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true}]}'
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
 fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
 export FAKE_CUSTOM_DOMAIN_UNPROTECTED=1
