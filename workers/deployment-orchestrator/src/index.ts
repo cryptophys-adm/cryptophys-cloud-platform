@@ -102,8 +102,30 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
   });
 }
 
+/** Public check metadata is readable without Checks permission for this public repository. */
+async function ghPublic(path: string): Promise<Response> {
+  return fetch(API + path, {
+    headers: {
+      accept: "application/vnd.github+json",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "cryptophys-deployment-orchestrator"
+    }
+  });
+}
+
+/** Use the scoped token when permitted; fall back to anonymous read-only access for public check data. */
+async function ghChecks(token: string, path: string): Promise<Response> {
+  const authenticated = await gh(token, path);
+  if (authenticated.ok || ![401, 403].includes(authenticated.status)) return authenticated;
+  return ghPublic(path);
+}
+
 type CommitStatus = { state?: string; total_count?: number };
-type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type WorkflowRun = { workflow_id: number; check_suite_id?: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type CheckRun = { name: string; status: string; conclusion: string | null; check_suite?: { id?: number } };
+type CheckSuite = { id: number; app?: { slug?: string }; status: string; conclusion: string | null };
 
 const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
 
@@ -156,29 +178,72 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
   return files.some((f) => unit.paths.some((p) => f === p || f.startsWith(p)));
 }
 
-/** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
+/** Required push validations for any consensus-triggered production deployment. */
 const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
 
-/** Consensus deploys require the combined commit-status gate and both push validations on main.
- * Missing, pending, skipped or unreadable evidence fails closed. */
+/** Consensus deploys require commit statuses, complete main push workflows, and all Check Runs/Suites.
+ * This public repository may use anonymous read-only check access after a PAT 401/403; private repositories require Checks: Read. */
 export async function ciGreen(token: string, sha: string): Promise<{ green: boolean; workflows: { name: string; conclusion: string | null }[] }> {
-  const [statusRes, runsRes] = await Promise.all([
-    gh(token, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
+  const prefix = "/repos/" + REPOSITORY + "/commits/" + sha;
+  const [statusRes, runsRes, checksRes, suitesRes] = await Promise.all([
+    gh(token, prefix + "/status"),
     gh(token, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&event=push&per_page=100"),
+    ghChecks(token, prefix + "/check-runs?per_page=100"),
+    ghChecks(token, prefix + "/check-suites?per_page=100"),
   ]);
-  if (!statusRes.ok || !runsRes.ok) return { green: false, workflows: [] };
+  if (!statusRes.ok || !runsRes.ok || !checksRes.ok || !suitesRes.ok) return { green: false, workflows: [] };
   const statusData = await statusRes.json() as CommitStatus;
   const runsData = await runsRes.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
+  const checksData = await checksRes.json() as { total_count?: number; check_runs?: CheckRun[] };
+  const suitesData = await suitesRes.json() as { total_count?: number; check_suites?: CheckSuite[] };
   const allRuns = runsData.workflow_runs ?? [];
-  // Do not accept a truncated Actions response or a push from a branch other than main.
+  const checkRuns = checksData.check_runs ?? [];
+  const checkSuites = suitesData.check_suites ?? [];
+  // Do not accept truncated responses or a push from a branch other than main.
   if (typeof runsData.total_count !== "number" || runsData.total_count > allRuns.length) return { green: false, workflows: [] };
+  if (typeof checksData.total_count !== "number" || checksData.total_count === 0 || checksData.total_count > checkRuns.length) return { green: false, workflows: [] };
+  if (typeof suitesData.total_count !== "number" || suitesData.total_count === 0 || suitesData.total_count > checkSuites.length) return { green: false, workflows: [] };
   const runs = latestRunPerWorkflow(allRuns.filter((r) => r.event === "push" && r.head_branch === "main"));
   const statusGreen = typeof statusData.total_count === "number"
     && (statusData.total_count === 0 || statusData.state === "success");
   const requiredGreen = REQUIRED_PUSH_VALIDATIONS.every((name) =>
     runs.some((r) => r.name === name && r.status === "completed" && r.conclusion === "success"),
   );
-  const green = statusGreen && requiredGreen && runs.every((r) => r.status === "completed" && r.conclusion === "success");
+  const workflowsGreen = runs.every((r) => r.status === "completed" && r.conclusion === "success");
+
+  // GitHub returns Check Suites for every event on a commit, including scheduled
+  // observers, operator-branch dispatches and production workflow_dispatch attempts.
+  // Those are not commit CI. Include all external-app suites, plus only the GitHub
+  // Actions suites linked by check_suite_id to push/main workflow runs above. This keeps
+  // queued external reviews fail-closed without letting a historical/manual deployment
+  // failure poison every later retry of the same commit.
+  const ciSuiteIds = new Set(runs.map((r) => r.check_suite_id).filter((id): id is number => typeof id === "number"));
+  // Every required push workflow must map to a Check Suite actually present in the complete
+  // Check Suites response. A workflow's check_suite_id alone is not proof that its suite was read.
+  const requiredSuitesMapped = REQUIRED_PUSH_VALIDATIONS.every((name) => {
+    const run = runs.find((r) => r.name === name);
+    return typeof run?.check_suite_id === "number"
+      && checkSuites.some((suite) => suite.id === run.check_suite_id && suite.app?.slug === "github-actions");
+  });
+  const relevantSuites = checkSuites.filter((suite) =>
+    suite.app?.slug !== "github-actions" || ciSuiteIds.has(suite.id),
+  );
+  const relevantSuiteIds = new Set(relevantSuites.map((suite) => suite.id));
+  const relevantCheckRuns = checkRuns.filter((run) =>
+    typeof run.check_suite?.id === "number" && relevantSuiteIds.has(run.check_suite.id),
+  );
+  // Require at least one Check Run for each required push suite; otherwise a partial or
+  // inconsistent API response could be masked by check runs belonging to another suite.
+  const requiredCheckRunsPresent = REQUIRED_PUSH_VALIDATIONS.every((name) => {
+    const suiteId = runs.find((run) => run.name === name)?.check_suite_id;
+    return typeof suiteId === "number"
+      && relevantCheckRuns.some((run) => run.check_suite?.id === suiteId);
+  });
+  const checkRunsGreen = requiredCheckRunsPresent && relevantCheckRuns.length > 0
+    && relevantCheckRuns.every((r) => r.status === "completed" && r.conclusion === "success");
+  const checkSuitesGreen = relevantSuites.length > 0
+    && relevantSuites.every((r) => r.status === "completed" && r.conclusion === "success");
+  const green = statusGreen && requiredGreen && workflowsGreen && requiredSuitesMapped && checkRunsGreen && checkSuitesGreen;
   return { green, workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 

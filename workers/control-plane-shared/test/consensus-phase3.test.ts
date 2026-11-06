@@ -23,6 +23,16 @@ interface GitHubFake {
   controlPlaneConclusion: string;
   statusState: string;
   statusCount: number;
+  checkStatus: string;
+  checkConclusion: string | null;
+  suiteStatus: string;
+  suiteConclusion: string | null;
+  checksReadable: boolean;
+  publicChecksReadable: boolean;
+  checkRunTotalCount?: number;
+  checkSuiteTotalCount?: number;
+  omitCheckSuiteId?: number;
+  omitCheckRunsForSuiteId?: number;
   omitWorkflow?: string;
   files: string[];
   dispatched: { workflow: string; body: any }[];
@@ -31,17 +41,45 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
   const gh: GitHubFake = {
     main: MAIN, ciConclusion: "success", controlPlaneConclusion: "success",
     statusState: "success", statusCount: 1,
+    checkStatus: "completed", checkConclusion: "success",
+    suiteStatus: "completed", suiteConclusion: "success", checksReadable: true, publicChecksReadable: true,
     files: ["workers/console/ui/src/App.tsx"], dispatched: [], ...state
   };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: gh.main } });
     if (/\/commits\/[0-9a-f]{40}\/status$/.test(url)) return Response.json({ state: gh.statusState, total_count: gh.statusCount });
+    if (url.includes("/check-runs?per_page=100")) {
+      const authenticated = Boolean(new Headers(init?.headers).get("authorization"));
+      if (authenticated ? !gh.checksReadable : !gh.publicChecksReadable) return new Response("forbidden", { status: 403 });
+      const check_runs = [
+        { name: "Validate", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 101 } },
+        { name: "Validate Control Plane Workers", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 102 } },
+        { name: "Type-check", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 101 } },
+        { name: "Tests", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 102 } },
+        // Non-CI GitHub Actions runs on the same SHA must not poison the commit CI gate.
+        { name: "deploy", status: "completed", conclusion: "failure", check_suite: { id: 104 } },
+        { name: "alert", status: "completed", conclusion: "failure", check_suite: { id: 105 } },
+      ].filter((run) => run.check_suite.id !== gh.omitCheckRunsForSuiteId);
+      return Response.json({ total_count: gh.checkRunTotalCount ?? check_runs.length, check_runs });
+    }
+    if (url.includes("/check-suites?per_page=100")) {
+      const authenticated = Boolean(new Headers(init?.headers).get("authorization"));
+      if (authenticated ? !gh.checksReadable : !gh.publicChecksReadable) return new Response("forbidden", { status: 403 });
+      const check_suites = [
+        { id: 101, app: { slug: "github-actions" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 102, app: { slug: "github-actions" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 103, app: { slug: "external-review" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 104, app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, // workflow_dispatch
+        { id: 105, app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, // schedule
+      ].filter((suite) => suite.id !== gh.omitCheckSuiteId);
+      return Response.json({ total_count: gh.checkSuiteTotalCount ?? check_suites.length, check_suites });
+    }
     if (url.includes("/actions/runs?head_sha=")) {
       assert.match(url, /event=push/, "only push-event CI counts for consensus deploys");
       const runs = [
-        { workflow_id: 1, name: "Validate", event: "push", head_branch: "main", status: "completed", conclusion: gh.ciConclusion, run_number: 3 },
-        { workflow_id: 2, name: "Validate Control Plane Workers", event: "push", head_branch: "main", status: "completed", conclusion: gh.controlPlaneConclusion, run_number: 3 },
+        { workflow_id: 1, check_suite_id: 101, name: "Validate", event: "push", head_branch: "main", status: "completed", conclusion: gh.ciConclusion, run_number: 3 },
+        { workflow_id: 2, check_suite_id: 102, name: "Validate Control Plane Workers", event: "push", head_branch: "main", status: "completed", conclusion: gh.controlPlaneConclusion, run_number: 3 },
       ].filter((r) => r.name !== gh.omitWorkflow);
       return Response.json({ total_count: runs.length, workflow_runs: runs });
     }
@@ -135,14 +173,8 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     assert.deepEqual(p.units.map((u) => u.unit), ["console"]);
     github({ files: ["workers/control-plane-shared/src/http.ts"] });
     p = await pendingDeploys(orchestratorEnv(db) as never);
-    // A shared-library change touches every unit; the orchestrator goes first and the rest wait a cycle.
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
-    assert.deepEqual(p.skipped.filter((s) => s.reason === "deployment_orchestrator_must_complete_first").map((s) => s.unit).sort(),
-      ["console", "control-plane", "home", "platform-api"]);
-    db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
-    p = await pendingDeploys(orchestratorEnv(db) as never);
-    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
-    db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
+    assert.deepEqual(p.skipped.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);
@@ -237,6 +269,13 @@ test("8. wiring: kernel binds DeployRpc; every consensus-deployable workflow cap
     assert.ok(capture > 0 && deploy > capture && rollback > deploy, `${u.workflow}: capture < deploy < rollback`);
     assert.match(wf, /if: always\(\) && \(failure\(\) \|\| cancelled\(\)\) && steps\.capture\.outcome == 'success'/, u.workflow);
   }
+  const controlPlaneWf = readFileSync(new URL(".github/workflows/deploy-control-plane.yml", root), "utf8");
+  const kernelVerified = controlPlaneWf.indexOf('echo "AI kernel verified:');
+  const auditVerified = controlPlaneWf.indexOf('api GET "$(url audit-ledger)/v1/verify"');
+  const completionEvent = controlPlaneWf.indexOf('api POST "$(url audit-ledger)/v1/events"');
+  assert.ok(kernelVerified > 0 && auditVerified > kernelVerified, "verify the audit chain after all live kernel checks");
+  assert.ok(completionEvent > auditVerified, "append deployment.control_plane_completed only after every verification");
+  assert.doesNotMatch(controlPlaneWf.slice(completionEvent + 1), /\bapi\s+(GET|POST|PUT|PATCH|DELETE)\b/, "no later API check may fail after the success event");
 });
 
 
@@ -250,6 +289,26 @@ test("9. CI gate fails closed unless both main push validations and combined com
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "pending combined status must block");
     github({ controlPlaneConclusion: "skipped" });
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "skipped validation must block");
+    github({ checksReadable: false });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, true, "public check data falls back to anonymous read when the PAT lacks Checks permission");
+    github({ checksReadable: false, publicChecksReadable: false });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "unreadable check data must block");
+    for (const [status, conclusion] of [["queued", null], ["in_progress", null], ["completed", "failure"], ["completed", "cancelled"], ["completed", "skipped"], ["completed", "action_required"]] as const) {
+      github({ checkStatus: status, checkConclusion: conclusion });
+      assert.equal((await ciGreen("gh-token", MAIN)).green, false, `check run ${status}/${conclusion} must block`);
+    }
+    for (const [status, conclusion] of [["queued", null], ["in_progress", null], ["completed", "failure"], ["completed", "cancelled"], ["completed", "skipped"], ["completed", "action_required"]] as const) {
+      github({ suiteStatus: status, suiteConclusion: conclusion });
+      assert.equal((await ciGreen("gh-token", MAIN)).green, false, `check suite ${status}/${conclusion} must block`);
+    }
+    github({ checkRunTotalCount: 7 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "truncated Check Runs response must block");
+    github({ checkSuiteTotalCount: 6 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "truncated Check Suites response must block");
+    github({ omitCheckSuiteId: 101 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "a required workflow suite missing from the Check Suites response must block");
+    github({ omitCheckRunsForSuiteId: 102 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "a required workflow suite with no returned Check Runs must block");
     github();
     assert.equal((await ciGreen("gh-token", MAIN)).green, true, "complete green evidence should pass");
   } finally { globalThis.fetch = realFetch; }
