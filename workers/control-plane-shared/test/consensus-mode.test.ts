@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, baseEnv, call, migratedDb, signAccessJwt } from "./harness.ts";
-import { verifyAuditChain } from "../src/audit.ts";
+import { appendAuditEventWithMutation, AuditMutationConflictError, verifyAuditChain } from "../src/audit.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { setConsensusMode } from "../../ai-kernel/src/consensus.ts";
 
@@ -100,6 +100,21 @@ test("mode changes roll back when the audit event cannot be appended", async () 
     mode: "deploy", confirm: "RAISE MODE", reason: "atomicity regression",
   }));
   assert.equal(response.status, 500);
+  assert.equal(mode(db), "shadow");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'consensus.mode_changed'").get() as any).n, 0);
+});
+
+
+test("a stale compare-and-swap cannot change mode or append a misleading audit event", async () => {
+  const { db } = env();
+  await assert.rejects(
+    appendAuditEventWithMutation(db, {
+      event_type: "consensus.mode_changed", actor: APPROVER_EMAIL, subject: "consensus", outcome: "routine",
+      payload: { previous: "routine", mode: "routine" },
+    }, (event) => db.prepare("UPDATE consensus_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'mode' AND value = ?")
+      .bind("routine", APPROVER_EMAIL, event.created_at, "deploy")),
+    AuditMutationConflictError,
+  );
   assert.equal(mode(db), "shadow");
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'consensus.mode_changed'").get() as any).n, 0);
 });
