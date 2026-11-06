@@ -80,7 +80,7 @@ jobs:
             local -a data=()
             [[ $# -ge 3 ]] && data=(--data "$3")
             out="$(mktemp)"
-            status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --request "$1" "${base}$2" \
+            status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 --retry 5 --retry-delay 10 --request "$1" "${base}$2" \
               --header "Authorization: Bearer ${CLOUDFLARE_ACCESS_API_TOKEN}" --header "Content-Type: application/json" \
               "${data[@]}" --output "$out" --write-out '%{http_code}')"
             if [[ ! "$status" =~ ^2 ]] || ! jq -e '.success == true' "$out" >/dev/null; then

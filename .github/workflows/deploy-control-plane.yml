@@ -145,6 +145,8 @@ jobs:
           npx wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml
           npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote --config ../audit-ledger/wrangler.deploy.toml
 
+      - name: Wait for a deploy window outside the drift and kernel cron minutes
+        run: '"$GITHUB_WORKSPACE/.github/scripts/wait-cron-window.sh"'
       - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
         id: capture
         env:

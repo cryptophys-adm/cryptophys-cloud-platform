@@ -24,7 +24,7 @@ client_id="$(printf '%s' "$CF_ACCESS_CLIENT_ID" | tr -d '\r\n' \
 tokens="[]"
 page=1
 while :; do
-  response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+  response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 --retry 5 --retry-delay 10 \
     --header "Authorization: Bearer ${CLOUDFLARE_ACCESS_API_TOKEN}" "${api}?per_page=50&page=${page}")" \
     || { echo "::error::Listing Access service tokens failed (check CLOUDFLARE_ACCESS_API_TOKEN has Access: Service Tokens Read)" >&2; exit 1; }
   jq -e '.success == true' <<<"$response" >/dev/null || { echo "::error::Access service token API returned success=false" >&2; exit 1; }

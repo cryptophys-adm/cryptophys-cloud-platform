@@ -11,7 +11,7 @@
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
-import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEvent, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
 import { observe } from "./syscall.ts";
@@ -78,7 +78,7 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
   const ov = await observe(env, now) as unknown as {
     agents_enabled: boolean; services: ServiceState[]; agent_reports_24h?: { counts?: { critical?: number } };
   };
-  const chain = await verifyAuditChain(env.DB);
+  const chain = await verifyAuditChainIncremental(env.DB);
   const reg = await env.DB.prepare("SELECT service_id, status, desired_version FROM service_registry").all<{ service_id: string; status: string; desired_version: string | null }>();
   const ag = await env.DB.prepare("SELECT agent_id, status, host_worker FROM agents").all<{ agent_id: string; status: string; host_worker: string }>();
   const plans = await env.DB.prepare("SELECT service_id FROM recovery_plans WHERE status = 'executing'").all<{ service_id: string }>();
