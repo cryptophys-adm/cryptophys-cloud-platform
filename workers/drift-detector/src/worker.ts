@@ -5,6 +5,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { observeForConsensus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
+import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
+import type { Evidence, Proposal, Vote } from "../../control-plane-shared/src/consensus-rules.ts";
 
 export default worker;
 
@@ -18,5 +20,16 @@ export class HealthRpc extends WorkerEntrypoint<Env> {
 export class DriftRpc extends WorkerEntrypoint<Env> {
   async observeForConsensus(proposalId: string, decisionId: string) {
     return observeForConsensus(this.env, proposalId, decisionId);
+  }
+}
+
+/**
+ * Wave C (C1): this Worker's own consensus vote, from its own reads of its domain. The AI Kernel
+ * calls it for every proposal; it votes only as "drift-detector".
+ */
+export class VoteRpc extends WorkerEntrypoint<Env> {
+  async vote(voter: string, proposal: Proposal, snapshot: Evidence): Promise<Vote> {
+    if (voter !== "drift-detector") throw new Error("wrong_voter");
+    return castDomainVote(this.env.DB as never, voter, proposal, snapshot);
   }
 }

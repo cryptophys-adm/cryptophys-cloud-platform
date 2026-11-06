@@ -61,6 +61,42 @@ binding = "DEPLOY"
 service = "cryptophys-deployment-orchestrator"
 entrypoint = "DeployRpc"
 
+# Wave C (C1): each control-plane Worker casts its own consensus vote (VoteRpc).
+[[services]]
+binding = "VOTE_PLATFORM_API"
+service = "cryptophys-platform-api"
+entrypoint = "VoteRpc"
+
+[[services]]
+binding = "VOTE_DEPLOYMENT_ORCHESTRATOR"
+service = "cryptophys-deployment-orchestrator"
+entrypoint = "VoteRpc"
+
+[[services]]
+binding = "VOTE_PLATFORM_REGISTRY"
+service = "cryptophys-platform-registry"
+entrypoint = "VoteRpc"
+
+[[services]]
+binding = "VOTE_POLICY_ENGINE"
+service = "cryptophys-policy-engine"
+entrypoint = "VoteRpc"
+
+[[services]]
+binding = "VOTE_DRIFT_DETECTOR"
+service = "cryptophys-drift-detector"
+entrypoint = "VoteRpc"
+
+[[services]]
+binding = "VOTE_AUDIT_LEDGER"
+service = "cryptophys-audit-ledger"
+entrypoint = "VoteRpc"
+
+[[services]]
+binding = "VOTE_RECOVERY_MANAGER"
+service = "cryptophys-recovery-manager"
+entrypoint = "VoteRpc"
+
 # Read-only access to the XAUUSD advisory decision chain (TP-017).
 [[services]]
 binding = "XAUUSD_AI"

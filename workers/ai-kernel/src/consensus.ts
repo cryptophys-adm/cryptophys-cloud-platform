@@ -14,65 +14,21 @@ import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
+import {
+  CONSENSUS_ACTIONS, KERNEL_AGENTS, TARGET, VOTERS, castVote, classify,
+  type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type ServiceState, type Vote, type Voter,
+} from "../../control-plane-shared/src/consensus-rules.ts";
+export { CONSENSUS_ACTIONS, VOTERS, castVote, classify, type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type Vote, type Voter };
 import { observe } from "./syscall.ts";
 import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 
-export type ConsensusClass = "routine" | "critical" | "prohibited";
-export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
-
-/** The action catalog. Anything not listed is refused; ADR-0009 §1 classes. */
-export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: "service" | "agent" | "platform"; description: string }> = {
-  observe_drift: { class: "routine", target: "platform", description: "Run a drift observation now" },
-  redeploy_desired_version: { class: "routine", target: "service", description: "Redeploy the registry desired version of a Worker" },
-  rollback_worker_version: { class: "routine", target: "service", description: "Roll a Worker back to a version recorded as healthy" },
-  deploy_commit: { class: "routine", target: "service", description: "Deploy a CI-green commit from main" },
-  set_desired_version: { class: "routine", target: "service", description: "Record a desired version in the Platform Registry" },
-  registry_disable_service: { class: "routine", target: "service", description: "Mark a service disabled in the registry" },
-  registry_enable_service: { class: "routine", target: "service", description: "Mark a disabled service registered again" },
-  suspend_agent: { class: "routine", target: "agent", description: "Suspend a misbehaving agent" },
-  resume_agent: { class: "routine", target: "agent", description: "Resume a suspended agent" },
-  restore_d1_bookmark: { class: "critical", target: "platform", description: "Restore D1 to a Time Travel bookmark" },
-  rotate_secret: { class: "critical", target: "service", description: "Rotate a Worker secret" },
-  retire_worker: { class: "critical", target: "service", description: "Retire and delete a Worker" },
-  change_access: { class: "critical", target: "platform", description: "Change Cloudflare Access" },
-  agents_enable: { class: "critical", target: "platform", description: "Turn agents back on after a kill-switch stop" },
-  register_principal: { class: "critical", target: "agent", description: "Register an external agent principal" },
-};
-
-/** Control-plane voters (ADR-0009 §2). XAUUSD agents never vote on platform actions. */
-export const VOTERS = [
-  "platform-api", "deployment-orchestrator", "platform-registry", "policy-engine", "drift-detector",
-  "audit-ledger", "recovery-manager", "supervisor", "auditor",
-] as const;
-export type Voter = (typeof VOTERS)[number];
-
-const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor"]);
-const HEX_VERSION = /^[0-9a-f]{7,40}$/;
-const COMMIT = /^[0-9a-f]{40}$/;
-const TARGET = /^[a-z0-9][a-z0-9-]{1,62}$/;
-
-export function classify(action: string): ConsensusClass | null {
-  if (PROHIBITED_CAPABILITY.test(action)) return "prohibited";
-  return Object.hasOwn(CONSENSUS_ACTIONS, action) ? CONSENSUS_ACTIONS[action].class : null;
-}
 
 export async function consensusMode(env: SyscallEnv): Promise<ConsensusMode> {
   const row = await env.DB.prepare("SELECT value FROM consensus_controls WHERE control = 'mode'").first<{ value: ConsensusMode }>();
   return row?.value ?? "shadow";
 }
 
-interface ServiceState { service_id: string; drifted: boolean; persistent: boolean; desired_version: string | null; observed_version: string | null }
-export interface Evidence {
-  agents_enabled: boolean;
-  audit_valid: boolean;
-  services: Record<string, ServiceState>;
-  registry: Record<string, { status: string; desired_version: string | null }>;
-  agents: Record<string, { status: string; host_worker: string }>;
-  critical_reports_24h: number;
-  executing_plan_targets: string[];
-  recent_same: number;
-}
 
 export async function gatherEvidence(env: SyscallEnv, action: string, target: string, now = Date.now()): Promise<Evidence> {
   const ov = await observe(env, now) as unknown as {
@@ -97,76 +53,6 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
   };
 }
 
-export interface Proposal { action: string; target: string; params: JsonObject; class: ConsensusClass }
-export interface Vote { voter: Voter; vote: "approve" | "reject" | "abstain"; reason: string }
-
-/** Safety gate every voter applies before its own domain rule. */
-function baseline(e: Evidence): string | null {
-  if (!e.agents_enabled) return "kill switch is engaged";
-  if (!e.audit_valid) return "audit chain is not valid";
-  if (e.critical_reports_24h > 0) return "a critical report is open in the last 24 h";
-  return null;
-}
-
-const DEPLOYISH = new Set(["deploy_commit", "rollback_worker_version", "redeploy_desired_version"]);
-
-/** One voter's deterministic decision, from its own domain. Exported for tests. */
-export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
-  const v = (vote: Vote["vote"], reason: string): Vote => ({ voter, vote, reason: reason.slice(0, 300) });
-  if (p.class === "prohibited") return v("reject", "prohibited action");
-  const base = baseline(e);
-  if (base && p.action !== "agents_enable") return v("reject", base);
-  const svc = e.services[p.target];
-  const reg = e.registry[p.target];
-  const version = String(p.params.version ?? "");
-  switch (voter) {
-    case "platform-registry":
-      if (CONSENSUS_ACTIONS[p.action].target === "service") {
-        if (!reg) return v("reject", `${p.target} is not in the registry`);
-        if (p.action === "registry_enable_service") return reg.status === "disabled" ? v("approve", "service is disabled; enabling is consistent") : v("reject", "service is not disabled");
-        if (reg.status === "disabled" && p.action !== "registry_disable_service") return v("reject", "service is disabled in the registry");
-        if (p.action === "set_desired_version" && !HEX_VERSION.test(version)) return v("reject", "version is not a 7-40 hex tag");
-        return v("approve", "target is registered and active");
-      }
-      return v("approve", "no registry objection");
-    case "drift-detector":
-      if (p.action === "redeploy_desired_version" || p.action === "rollback_worker_version") {
-        if (!svc) return v("reject", "no drift observation for the target");
-        return svc.drifted ? v("approve", `target drifted${svc.persistent ? " persistently" : ""}`) : v("reject", "target is in sync; nothing to remediate");
-      }
-      if (p.action === "deploy_commit") {
-        const persistent = Object.values(e.services).filter((s) => s.persistent && s.service_id !== p.target);
-        return persistent.length ? v("reject", `other services drift persistently: ${persistent.map((s) => s.service_id).join(", ")}`) : v("approve", "platform is stable");
-      }
-      return v("approve", "no drift objection");
-    case "policy-engine":
-      if (e.recent_same > 0) return v("reject", "the same action on the same target was proposed in the last 6 h");
-      return v("approve", "class and rate limits allow it");
-    case "audit-ledger":
-      return v("approve", "audit chain verified");
-    case "recovery-manager":
-      if (e.executing_plan_targets.includes(p.target)) return v("reject", "a recovery plan is executing on the target");
-      return v("approve", "no executing recovery plan on the target");
-    case "deployment-orchestrator":
-      if (p.action === "deploy_commit") return COMMIT.test(String(p.params.commit_sha ?? "")) ? v("approve", "commit is a full SHA") : v("reject", "commit_sha must be a full 40-hex SHA");
-      if (p.action === "redeploy_desired_version") return reg?.desired_version ? v("approve", `desired version ${reg.desired_version} is recorded`) : v("reject", "no desired version recorded");
-      if (p.action === "rollback_worker_version") return HEX_VERSION.test(version) ? v("approve", "rollback version is a recorded tag") : v("reject", "rollback version must be a 7-40 hex tag");
-      return v("approve", "no deployment objection");
-    case "supervisor":
-      if (p.action === "suspend_agent" || p.action === "resume_agent") {
-        const a = e.agents[p.target];
-        if (!a) return v("reject", "agent is not registered");
-        if (KERNEL_AGENTS.has(p.target)) return v("reject", "kernel-hosted agents are not suspended by consensus");
-        return v("approve", `agent is ${a.status}`);
-      }
-      if (DEPLOYISH.has(p.action) && svc && !svc.drifted && p.action !== "deploy_commit") return v("reject", "target is healthy and in sync");
-      return v("approve", "consistent with supervisor observations");
-    case "auditor":
-      return v("approve", "no critical evidence open");
-    case "platform-api":
-      return v("approve", "platform overview nominal");
-  }
-}
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
 export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent"]);
@@ -230,7 +116,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
 
   const evidence = await gatherEvidence(env, action, target, now);
   const eligible = VOTERS.filter((id) => id !== proposer && evidence.agents[id]?.status === "enabled");
-  const votes = eligible.map((voter) => castVote(voter, p, evidence));
+  const votes = await collectVotes(env, eligible, p, evidence);
   const approvals = votes.filter((x) => x.vote === "approve").length;
   const rejections = votes.filter((x) => x.vote === "reject").length;
   const passed = cls !== "prohibited" && approvals * 2 > eligible.length;
@@ -264,6 +150,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
     agents_enabled: evidence.agents_enabled, audit_valid: evidence.audit_valid, critical_reports_24h: evidence.critical_reports_24h,
     target_service: evidence.services[target] as unknown as JsonObject ?? null, target_registry: evidence.registry[target] as unknown as JsonObject ?? null,
     policy_reason: policy?.reason ?? "policy_unavailable",
+    votes_via: { rpc: votes.filter((v) => v.via === "rpc").length, kernel: votes.filter((v) => v.via === "kernel").length, unreachable: votes.filter((v) => v.via === "unreachable").length },
   };
   await env.DB.prepare(
     `INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible,
@@ -500,4 +387,40 @@ export async function agreementReport(env: SyscallEnv, days = 7, now = Date.now(
     by_action: byAction as unknown as JsonObject,
     items,
   };
+}
+
+/**
+ * Wave C (C1): each control-plane Worker votes in its own code, over RPC, from its own reads of
+ * its domain (VoteRpc, control-plane-shared/src/consensus-vote.ts). The kernel-hosted voters
+ * (supervisor, auditor) vote here. A Worker without a binding falls back to the kernel's rule on
+ * the snapshot; a Worker that does not answer within 8 s, or answers out of shape, abstains,
+ * which counts against the proposal.
+ */
+const VOTE_BINDINGS: Record<string, keyof SyscallEnv> = {
+  "platform-api": "VOTE_PLATFORM_API",
+  "deployment-orchestrator": "VOTE_DEPLOYMENT_ORCHESTRATOR",
+  "platform-registry": "VOTE_PLATFORM_REGISTRY",
+  "policy-engine": "VOTE_POLICY_ENGINE",
+  "drift-detector": "VOTE_DRIFT_DETECTOR",
+  "audit-ledger": "VOTE_AUDIT_LEDGER",
+  "recovery-manager": "VOTE_RECOVERY_MANAGER",
+};
+export const VOTE_TIMEOUT_MS = 8_000;
+
+export async function collectVotes(env: SyscallEnv, eligible: Voter[], p: Proposal, evidence: Evidence): Promise<(Vote & { via: "rpc" | "kernel" | "unreachable" })[]> {
+  return Promise.all(eligible.map(async (voter) => {
+    const name = VOTE_BINDINGS[voter];
+    const binding = name ? (env[name] as { vote(v: string, p: JsonObject, e: JsonObject): Promise<JsonObject> } | undefined) : undefined;
+    if (!binding) return { ...castVote(voter, p, evidence), via: "kernel" as const };
+    try {
+      const out = await Promise.race([
+        binding.vote(voter, p as unknown as JsonObject, evidence as unknown as JsonObject),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), VOTE_TIMEOUT_MS)),
+      ]) as { voter?: unknown; vote?: unknown; reason?: unknown };
+      if (out?.voter !== voter || !["approve", "reject", "abstain"].includes(String(out.vote)) || typeof out.reason !== "string") throw new Error("malformed vote");
+      return { voter, vote: out.vote as Vote["vote"], reason: out.reason.slice(0, 300), via: "rpc" as const };
+    } catch (err) {
+      return { voter, vote: "abstain" as const, reason: `voter unreachable: ${String((err as Error)?.message ?? err).slice(0, 120)}`, via: "unreachable" as const };
+    }
+  }));
 }

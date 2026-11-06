@@ -24,6 +24,9 @@ export interface RecoveryRpcBinding { propose(agentId: string, decisionId: strin
 export interface RegistryRpcBinding { applyConsensus(proposalId: string, decisionId: string, action: string, target: string, params: Record<string, unknown>): Promise<JsonObject> }
 export interface DriftRpcBinding { observeForConsensus(proposalId: string, decisionId: string): Promise<JsonObject> }
 /** ADR-0009 phase 3: the Deployment Orchestrator reports pending deploys and dispatches passed deploy_commit actions. */
+/** Wave C (C1): a control-plane Worker's own vote entrypoint (VoteRpc). */
+export interface VoteRpcBinding { vote(voter: string, proposal: JsonObject, snapshot: JsonObject): Promise<JsonObject> }
+
 export interface DeployRpcBinding {
   pendingDeploys(): Promise<{ main_sha: string | null; ci_green: boolean; units: { unit: string; workflow: string; target: string; reason: string }[]; skipped: { unit: string; reason: string }[] }>;
   deployForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
@@ -39,6 +42,13 @@ export interface SyscallEnv extends BaseEnv {
   REGISTRY?: RegistryRpcBinding;
   DRIFT?: DriftRpcBinding;
   DEPLOY?: DeployRpcBinding;
+  VOTE_PLATFORM_API?: VoteRpcBinding;
+  VOTE_DEPLOYMENT_ORCHESTRATOR?: VoteRpcBinding;
+  VOTE_PLATFORM_REGISTRY?: VoteRpcBinding;
+  VOTE_POLICY_ENGINE?: VoteRpcBinding;
+  VOTE_DRIFT_DETECTOR?: VoteRpcBinding;
+  VOTE_AUDIT_LEDGER?: VoteRpcBinding;
+  VOTE_RECOVERY_MANAGER?: VoteRpcBinding;
 }
 
 export type SyscallResult =
