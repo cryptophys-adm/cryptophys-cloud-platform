@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Gavel, LineChart, Minus, ShieldAlert, Vote, X } from "lucide-react";
+import { ArrowUpCircle, Check, Gavel, LineChart, Minus, OctagonX, ShieldAlert, Vote, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -111,6 +111,32 @@ function Agreement() {
   );
 }
 
+const MODES = ["shadow", "routine", "deploy", "critical"] as const;
+const MODE_EFFECT: Record<string, string> = {
+  routine: "Agents will execute passed reversible actions themselves: suspend/resume agents, registry changes, drift observation.",
+  deploy: "Agents will also deploy CI-green commits from main and roll back on their own (1 per target per hour, 6 per day, automatic rollback).",
+  critical: "Critical actions will reach your Owner Approval Queue and run after your click.",
+};
+
+/** Owner decision 2026-11-06: a person sets the mode. Raising needs an approver; anyone may brake back to shadow. */
+function ModeControl({ mode, reload }: { mode: string; reload: () => void }) {
+  const { who, act } = useSession();
+  const idx = MODES.indexOf(mode as (typeof MODES)[number]);
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {who.approver && MODES.filter((_, i) => i > idx).map((m) => (
+        <button key={m} type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.consensus_mode_raise", body: { mode: m, reason: "owner raised the mode in the Console" },
+          title: `Raise the consensus mode to ${m}`, lines: [MODE_EFFECT[m], "Recorded in the audit chain under your identity. Any operator can return to shadow at any time."],
+          done: `Mode is now ${m}.`, after: reload })}><ArrowUpCircle className="h-3.5 w-3.5" />Mode: {m}…</button>
+      ))}
+      {idx > 0 && (
+        <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.consensus_mode_shadow", body: { mode: "shadow", reason: "brake: back to shadow from the Console" },
+          title: "Back to shadow", lines: ["Agents stop executing at once; proposals are only recorded again."], done: "Mode is now shadow.", after: reload })}><OctagonX className="h-3.5 w-3.5" />Back to shadow…</button>
+      )}
+    </div>
+  );
+}
+
 export default function Consensus() {
   useSession();
   const { data, loading, error, refresh } = usePoll(() => call("kernel.consensus", undefined, undefined, { limit: "50" }), 60_000);
@@ -125,6 +151,7 @@ export default function Consensus() {
         <div className="mt-3 flex flex-wrap gap-2">
           {["shadow_passed", "shadow_blocked", "rejected", "pending_owner", "executed", "failed", "expired"].map((k) => <Badge key={k} tone={statusTone(k)}>{k.replace("_", " ")} · {stats[k] ?? 0}</Badge>)}
         </div>
+        {data && <ModeControl mode={mode} reload={() => void refresh()} />}
       </Panel>
       <OwnerQueue rows={rows} mode={mode} reload={() => void refresh()} />
       <Agreement />
