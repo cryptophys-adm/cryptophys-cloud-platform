@@ -71,4 +71,5 @@ jobs:
           bash .github/scripts/worker-rollback.test.sh
           bash .github/scripts/wait-cron-window.test.sh
           bash .github/scripts/owner-attention.test.sh
+          bash .github/scripts/ensure-zone-route.test.sh
           bash .github/scripts/find-agent-service-tokens.test.sh
