@@ -158,11 +158,7 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
   return files.some((f) => unit.paths.some((p) => f === p || f.startsWith(p)));
 }
 
-/** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
-const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
-
-/** Consensus deploys require the combined commit-status gate and both push validations on main.
- * Missing, pending, skipped or unreadable evidence fails closed. */
+/** Required push validations for any consensus-triggered production deployment. */
 const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
 
 /** Consensus deploys require commit statuses, complete main push workflows, and all Check Runs/Suites.
