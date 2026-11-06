@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0021_supervisor_tier_1.sql");
+  assert.equal(REQUIRED_MIGRATION, "0022_register_console_and_home.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);

@@ -23,6 +23,8 @@ export interface Env extends BaseEnv {
   /** AI Kernel AgentRpc (ADR-0007 §1.1), pinned to host_worker = cryptophys-drift-detector. */
   AGENTS?: AgentRpcBinding;
   SVC_AI_KERNEL: HealthRpcBinding;
+  SVC_CONSOLE: HealthRpcBinding;
+  SVC_HOME: HealthRpcBinding;
   /** xauusd Workers, deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005 decision 7). */
   EXT_XAUUSD_AI: FetchBinding;
   EXT_XAUUSD_NEWS: FetchBinding;
@@ -52,6 +54,8 @@ export function targets(env: Env): Record<string, HealthRpcBinding | undefined> 
     "cryptophys-audit-ledger": env.SVC_AUDIT_LEDGER,
     "cryptophys-recovery-manager": env.SVC_RECOVERY_MANAGER,
     "cryptophys-ai-kernel": env.SVC_AI_KERNEL,
+    "cryptophys-console": env.SVC_CONSOLE,
+    "cryptophys-home": env.SVC_HOME,
   };
 }
 
