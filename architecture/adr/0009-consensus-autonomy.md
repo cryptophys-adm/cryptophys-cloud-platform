@@ -371,3 +371,19 @@ Each promotion is a separate reviewed change, audited by pi and agy.
 - **A3, cron-window guard.** Every production deploy workflow runs `.github/scripts/wait-cron-window.sh` right before it deploys. The deploy starts only at a minute where no drift cron (:00/:15/:30/:45) or kernel cron (:07/:22/:37/:52) falls in the next 4 minutes or the previous minute. The guard covers every dispatch path: ops requests, consensus, autonomous recovery and people.
 - **A4, deployment ledger.** The Deployment Orchestrator now has a cron at :11 and :41. It records each open `deployment_requests` row as `succeeded` or `failed` from its GitHub Actions run, fails requests that are stale after 3 hours, and audits `deployment.reconciled`.
 - **Tests:** `test/wave-a-reliability.test.ts` (6) and `wait-cron-window.test.sh`. 235 of 235 tests pass.
+
+## Amendment 2026-11-06: Wave B (rollback, owner notifications, shadow agreement)
+
+- **B1, rollback to the previous recorded version.**
+  - The new `.github/workflows/rollback-worker.yml` deploys an *existing* Worker version, found by its version tag. It runs under the cron guard, captures the current version, verifies the rolled-back version live through Access, records it as desired, and restores the captured version on failure. It requires `main` and the confirmation `ROLLBACK`.
+  - The Deployment Orchestrator dispatches it for a recovery step (`rollbackForRecovery`) or a consensus action (`rollbackForConsensus`). Recovery steps get the same plan-and-decision checks as a redeploy. Consensus actions are re-verified as usual, and the proposed version must be the previous recorded one.
+  - The target is always the version the registry recorded before the current one, taken from the audit trail.
+  - `rollback_worker_version` now executes in mode `deploy`, and as a step of an approved recovery plan. In both cases the step is skipped when the service is already in sync.
+- **B2, owner notifications.** `.github/workflows/owner-attention.yml` runs at :26 and :56. When recovery plans wait in draft or critical proposals wait in `pending_owner`, it opens or updates the issue "Owner approval needed", mentioning `@cryptophys-adm`, with links into the Console. It closes the issue when nothing waits. No new secret is needed.
+- **B3, shadow agreement report.** `GET /v1/consensus/report?days=7` on the kernel, also shown in the Console's Consensus screen, scores every proposal against what people did afterwards:
+  - `deploy_commit`: the registry recorded the commit within 24 hours;
+  - redeploy or rollback: the service was back in sync within 2 hours;
+  - other actions: a non-agent audit event on the target within 24 hours.
+
+  Each proposal is classified as agree, false positive or false negative. This is the evidence for promotion out of shadow, reviewed no earlier than 2026-11-13.
+- **Tests:** `test/wave-b-agreement.test.ts` (7) and `owner-attention.test.sh`. 248 of 248 tests pass.

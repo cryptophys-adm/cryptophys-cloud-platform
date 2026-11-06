@@ -99,7 +99,10 @@ test("1. modes: shadow executes nothing, routine runs phase 2 only, deploy adds 
   assert.equal(executableIn("routine").has("deploy_commit"), false);
   assert.deepEqual([...executableIn("routine")], [...PHASE2_EXECUTABLE]);
   assert.equal(executableIn("deploy").has("deploy_commit"), true);
-  for (const a of ["redeploy_desired_version", "rollback_worker_version", "restore_d1_bookmark", "rotate_secret"]) {
+  // Wave B: a rollback to the previous recorded version joins the deploy mode (Rollback Worker workflow).
+  assert.equal(executableIn("deploy").has("rollback_worker_version"), true);
+  assert.equal(executableIn("routine").has("rollback_worker_version"), false);
+  for (const a of ["redeploy_desired_version", "restore_d1_bookmark", "rotate_secret"]) {
     assert.equal(executableIn("critical").has(a), false, a);
   }
 });

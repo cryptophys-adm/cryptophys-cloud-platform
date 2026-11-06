@@ -27,6 +27,7 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.agent_actions", "kernel", "GET", "/v1/agents/{id}/actions", false, null),
   r("kernel.consensus", "kernel", "GET", "/v1/consensus", false, null),
   r("kernel.consensus_proposal", "kernel", "GET", "/v1/consensus/{id}", false, null),
+  r("kernel.consensus_report", "kernel", "GET", "/v1/consensus/report", false, null),
   r("kernel.consensus_approve", "kernel", "POST", "/v1/consensus/{id}/approve", true, "APPROVE {id13}"),
   r("kernel.consensus_reject", "kernel", "POST", "/v1/consensus/{id}/reject", true, "REJECT {id13}"),
   r("kernel.agents_disabled", "kernel", "POST", "/v1/kernel/agents-enabled", false, "AGENTS OFF"),

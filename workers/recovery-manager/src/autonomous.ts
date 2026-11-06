@@ -12,8 +12,9 @@
  *   4. the plan finishes as completed or failed, with an audit event and an agent report.
  * Progress is written to last_execution_json.pipeline after every stage, for the Console.
  *
- * Steps that need credentials no Worker holds (restoring D1, rotating secrets, rolling back to
- * an unnamed version) stop the pipeline as "blocked"; the owner carries them out by runbook.
+ * Steps that need credentials no Worker holds (restoring D1, rotating secrets) stop the pipeline
+ * as "blocked"; the owner carries them out by runbook. A rollback returns the Worker to the
+ * version the registry recorded before the current one (Wave B, Rollback Worker workflow).
  */
 import type { WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -26,6 +27,7 @@ export const AI_EXECUTOR = "ai:recovery-manager";
 /** The Deployment Orchestrator's recovery surface (DeployRpc). */
 export interface RecoveryDeployBinding {
   deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>>;
+  rollbackForRecovery?(planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>>;
   runStatus(workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }>;
 }
 
@@ -120,8 +122,35 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       }
       return { status: "failed", detail: `${workflow} did not finish within ${DEPLOY_POLLS * 30 / 60} minutes` };
     }
+    case "rollback_worker_version": {
+      const pre = await step.do(`${id} re-check drift`, async () => {
+        const obs = await latestObservation(env, plan.service_id);
+        return obs ? { drifted: obs.drifted === 1, at: obs.observed_at } : null;
+      });
+      if (pre && !pre.drifted) return { status: "skipped", detail: `Healthy and in sync at ${pre.at}; no rollback needed.` };
+      if (!env.DEPLOY?.rollbackForRecovery) return { status: "blocked", detail: "the Deployment Orchestrator binding has no rollback" };
+      const r = await step.do(`${id} dispatch rollback`, { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } }, async () => {
+        try {
+          const out = await env.DEPLOY!.rollbackForRecovery!(plan.plan_id, decisionId, plan.service_id);
+          return { ok: true as const, workflow: String(out.workflow ?? ""), commit_sha: String(out.commit_sha ?? ""), tag: String(out.version_tag ?? ""), error: "" };
+        } catch (err) {
+          return { ok: false as const, workflow: "", commit_sha: "", tag: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
+        }
+      });
+      if (!r.ok) return { status: "failed", detail: `rollback not dispatched: ${r.error}` };
+      for (let i = 1; i <= DEPLOY_POLLS; i++) {
+        await sleep(step, `${id} wait rollback ${i}`, `${env.RECOVERY_DEPLOY_POLL_SECONDS ?? "30"} seconds`);
+        const run = await step.do(`${id} poll rollback ${i}`, () => env.DEPLOY!.runStatus(r.workflow, r.commit_sha));
+        if (run.found && run.status === "completed") {
+          return run.conclusion === "success"
+            ? { status: "succeeded", detail: `rolled back to ${r.tag}`, link: run.url }
+            : { status: "failed", detail: `rollback to ${r.tag} finished ${run.conclusion} (restored)`, link: run.url };
+        }
+      }
+      return { status: "failed", detail: "the rollback did not finish within 20 minutes" };
+    }
     default:
-      // rollback_worker_version, restore_d1_bookmark, rotate_secret
+      // restore_d1_bookmark, rotate_secret
       return { status: "blocked", detail: `${action} needs a credential no Worker holds; the owner carries it out by runbook` };
   }
 }

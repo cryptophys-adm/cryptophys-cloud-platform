@@ -171,7 +171,7 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
 export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent"]);
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
-export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit"]);
+export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
 
 /** What the current mode lets the kernel execute. Shadow executes nothing. */
 export function executableIn(mode: ConsensusMode): Set<string> {
@@ -197,6 +197,9 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
     case "registry_enable_service":
       if (!env.REGISTRY) throw new Error("registry_binding_missing");
       return await env.REGISTRY.applyConsensus(proposalId, decisionId, p.action, p.target, p.params);
+    case "rollback_worker_version":
+      if (!env.DEPLOY?.rollbackForConsensus) throw new Error("deploy_binding_missing");
+      return await env.DEPLOY.rollbackForConsensus(proposalId, decisionId, p.target, p.params);
     case "deploy_commit":
       if (!env.DEPLOY) throw new Error("deploy_binding_missing");
       return await env.DEPLOY.deployForConsensus(proposalId, decisionId, p.target, p.params);
@@ -422,4 +425,79 @@ export async function expireOwnerProposals(env: SyscallEnv, now = Date.now()): P
   const res = await env.DB.prepare("UPDATE consensus_proposals SET status = 'expired', decided_at = ? WHERE status = 'pending_owner' AND created_at < ?")
     .bind(nowIso(), new Date(now - OWNER_DECISION_WINDOW_MS).toISOString()).run();
   return res.meta.changes ?? 0;
+}
+
+/**
+ * Wave B: the shadow agreement report, the evidence for promoting the consensus mode (ADR-0009
+ * phase 1 criterion: every shadow_passed proposal matches what a person would have done).
+ *
+ * For each proposal older than its scoring delay, did people do the same thing on their own?
+ *  - deploy_commit X@S: the registry recorded S as X's desired version within 24 h (a person,
+ *    or a deploy workflow a person dispatched, deployed it).
+ *  - redeploy_desired_version / rollback_worker_version X: X was observed in sync within 2 h.
+ *  - other actions: a non-agent audit event on X within 24 h.
+ * agree = (passed and people acted) or (not passed and people did not); a passed proposal people
+ * did not act on is a false positive; a refused one they acted on, a false negative.
+ */
+const SCORE_DELAY_MS: Record<string, number> = { deploy_commit: 24 * 3_600_000, redeploy_desired_version: 2 * 3_600_000, rollback_worker_version: 2 * 3_600_000 };
+const DEFAULT_SCORE_DELAY_MS = 24 * 3_600_000;
+
+export async function agreementReport(env: SyscallEnv, days = 7, now = Date.now()): Promise<JsonObject> {
+  const window = Math.min(Math.max(Math.trunc(days) || 7, 1), 30);
+  const since = new Date(now - window * 86_400_000).toISOString();
+  const rows = await env.DB.prepare(
+    "SELECT proposal_id, action, target, class, status, passed, params_json, created_at FROM consensus_proposals WHERE created_at >= ? AND class != 'prohibited' ORDER BY created_at DESC LIMIT 500",
+  ).bind(since).all<{ proposal_id: string; action: string; target: string; class: string; status: string; passed: number; params_json: string; created_at: string }>();
+  const counts = { agree: 0, false_positive: 0, false_negative: 0, pending: 0 };
+  const byAction: Record<string, { agree: number; false_positive: number; false_negative: number; pending: number }> = {};
+  const items: JsonObject[] = [];
+  for (const p of rows.results) {
+    const created = Date.parse(p.created_at);
+    const delay = SCORE_DELAY_MS[p.action] ?? DEFAULT_SCORE_DELAY_MS;
+    const passed = p.passed === 1 && p.status !== "rejected" && p.status !== "shadow_blocked";
+    let verdict: keyof typeof counts;
+    let evidence = "";
+    if (now - created < delay) {
+      verdict = "pending";
+      evidence = `scored after ${Math.round(delay / 3_600_000)} h`;
+    } else {
+      const end = new Date(created + delay).toISOString();
+      let acted = false;
+      if (p.action === "deploy_commit") {
+        const sha = String((JSON.parse(p.params_json) as JsonObject).commit_sha ?? "").slice(0, 12);
+        const ev = await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'registry.desired_version_set' AND subject = ? AND created_at BETWEEN ? AND ? AND instr(payload_json, ?) > 0",
+        ).bind(p.target, p.created_at, end, sha || "-").first<{ n: number }>();
+        acted = (ev?.n ?? 0) > 0;
+        evidence = acted ? `${p.target} reached ${sha} within 24 h` : `${p.target} did not reach ${sha} within 24 h`;
+      } else if (p.action === "redeploy_desired_version" || p.action === "rollback_worker_version") {
+        const ok = await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM drift_observations WHERE service_id = ? AND drifted = 0 AND observed_at BETWEEN ? AND ?",
+        ).bind(p.target, p.created_at, end).first<{ n: number }>();
+        acted = (ok?.n ?? 0) > 0;
+        evidence = acted ? `${p.target} back in sync within 2 h` : `${p.target} still drifted after 2 h`;
+      } else {
+        const ev = await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM audit_events WHERE (subject = ? OR subject = ?) AND actor NOT LIKE 'agent:%' AND actor NOT LIKE 'consensus:%' AND actor NOT LIKE 'workflow:%' AND created_at BETWEEN ? AND ?",
+        ).bind(p.target, `agent:${p.target}`, p.created_at, end).first<{ n: number }>();
+        acted = (ev?.n ?? 0) > 0;
+        evidence = acted ? "a person acted on the target within 24 h" : "no person acted on the target within 24 h";
+      }
+      verdict = passed === acted ? "agree" : passed ? "false_positive" : "false_negative";
+    }
+    counts[verdict]++;
+    (byAction[p.action] ??= { agree: 0, false_positive: 0, false_negative: 0, pending: 0 })[verdict]++;
+    if (items.length < 50) items.push({ proposal_id: p.proposal_id, action: p.action, target: p.target, status: p.status, verdict, evidence, created_at: p.created_at });
+  }
+  const scored = counts.agree + counts.false_positive + counts.false_negative;
+  return {
+    window_days: window,
+    since,
+    total: rows.results.length,
+    scored,
+    ...counts,
+    agreement_rate: scored ? Math.round((counts.agree / scored) * 1000) / 1000 : null,
+    by_action: byAction as unknown as JsonObject,
+    items,
+  };
 }
