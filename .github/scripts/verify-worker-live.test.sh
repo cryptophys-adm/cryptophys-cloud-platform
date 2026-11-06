@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     *) url="$1"; shift ;;
   esac
 done
-if [[ "${FAKE_CUSTOM_DOMAIN_DNS_FAIL:-0}" == 1 && "$url" == *custom.example.test* ]]; then
+if [[ "${FAKE_CUSTOM_DOMAIN_DNS_FAIL:-0}" == 1 && "$url" == https://custom.example.test/* ]]; then
   echo "curl: (6) Could not resolve host: custom.example.test" >&2
   exit 6
 fi
