@@ -88,3 +88,17 @@ test("raising and braking require exact server-side confirmation phrases", async
     /invalid_transition/,
   );
 });
+
+
+test("mode changes roll back when the audit event cannot be appended", async () => {
+  const { db, env: e } = env();
+  db.raw.exec(`CREATE TRIGGER reject_consensus_mode_audit BEFORE INSERT ON audit_events
+    WHEN NEW.event_type = 'consensus.mode_changed'
+    BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;`);
+  const response = await call(kernel, e, post(APPROVER_JWT, {
+    mode: "deploy", confirm: "RAISE MODE", reason: "atomicity regression",
+  }));
+  assert.equal(response.status, 500);
+  assert.equal(mode(db), "shadow");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'consensus.mode_changed'").get() as any).n, 0);
+});
