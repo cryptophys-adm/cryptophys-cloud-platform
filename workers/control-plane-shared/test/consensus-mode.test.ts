@@ -52,8 +52,8 @@ test("a service-token common_name that looks like an email is never a human appr
   const { db, env: e } = env();
   const serviceIdentity = "owner@cryptophys.work";
   const serviceJwt = await signAccessJwt({ common_name: serviceIdentity });
-  e.env.OPERATOR_IDENTITIES = `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL},${serviceIdentity}`;
-  e.env.APPROVER_IDENTITIES = serviceIdentity;
+  e.OPERATOR_IDENTITIES = `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL},${serviceIdentity}`;
+  e.APPROVER_IDENTITIES = serviceIdentity;
 
   const response = await call(kernel, e, post(serviceJwt, { mode: "deploy" }));
   assert.deepEqual([response.status, response.body.error], [403, "approver_required"]);
