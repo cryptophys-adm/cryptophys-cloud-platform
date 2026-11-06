@@ -71,3 +71,21 @@
 - `deploy-console.yml` attaches the route right after the Worker deploy, with `CLOUDFLARE_ACCESS_API_TOKEN`, through the zone routes API (`.github/scripts/ensure-zone-route.sh`). The script is idempotent and has a hermetic test.
 - The smoke test then verifies `nexus.cryptophys.work/console/health` through Access, and the redirect from `console.cryptophys.work`, which is now enabled again.
 - If that token cannot read the zone or edit its routes, the step fails with the missing permission named, and the automatic rollback restores the previous Console, whose redirect is off.
+
+**Live (2026-11-06, 12:24 UTC).**
+
+| Run | Result |
+|---|---|
+| Deploy Console 42216213383 (`7428c7e`) | **Rolled back automatically.** The route was created with `CLOUDFLARE_ACCESS_API_TOKEN`, but the probe ran before the new route had reached the edge and hit Nexus (404). |
+| Deploy Console 42216870947 (`a68894f`) | **Success.** The probe now waits up to 2 minutes for the route to propagate. |
+
+Run 42216870947 verified:
+- `https://nexus.cryptophys.work/console/health` returns 200 from `cryptophys-console`, through Access;
+- `/console/api/*` answers;
+- `https://console.cryptophys.work/` returns 301 to `https://nexus.cryptophys.work/console/`.
+
+Nexus is now the single origin.
+
+**Remaining:**
+- The owner adds the Google and Microsoft identity providers (`docs/OWNER-OIDC-SETUP.md`), then Provision Access runs again.
+- After a week with no issues, remove the `console.` and `home.` custom domains and retire `cryptophys-home`.
