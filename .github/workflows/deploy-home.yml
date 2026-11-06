@@ -143,6 +143,10 @@ jobs:
           # Nothing else is forwarded, and the portal is read-only.
           probe GET /api/kernel/v1/agents 404 '.error == "not_allowed"'
           probe POST / 405 '.error == "method_not_allowed"'
+          # ADR-0010: Cerebrum is retired; its hostname redirects to Nexus.
+          legacy="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output /dev/null --write-out '%{http_code} %{redirect_url}' https://home.cryptophys.work/)"
+          [[ "$legacy" == "301 https://nexus.cryptophys.work/" ]] || { echo "::error::home.cryptophys.work should redirect to Nexus, got: ${legacy}"; exit 1; }
+          echo "ok GET https://home.cryptophys.work/ -> ${legacy}"
           probe POST /api/platform/v1/overview 405 '.error == "method_not_allowed"'
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
       - name: Record the desired version in the Platform Registry (drift baseline, TP-026)

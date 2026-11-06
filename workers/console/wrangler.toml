@@ -2,7 +2,13 @@ name = "cryptophys-console"
 main = "src/worker.ts"
 compatibility_date = "2026-11-01"
 workers_dev = true
-routes = [{ pattern = "console.cryptophys.work", custom_domain = true }]
+# ADR-0010 (single subdomain): the Console is part of Nexus at nexus.cryptophys.work/console/. A
+# Workers route on the Nexus hostname takes precedence over the Nexus Worker's Custom Domain for
+# /console*. console.cryptophys.work stays attached only to redirect there, until it is removed.
+routes = [
+  { pattern = "nexus.cryptophys.work/console*", zone_name = "cryptophys.work" },
+  { pattern = "console.cryptophys.work", custom_domain = true },
+]
 
 [observability]
 enabled = true
@@ -14,6 +20,8 @@ binding = "CF_VERSION_METADATA"
 SERVICE_NAME = "cryptophys-console"
 SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
+NEXUS_ORIGIN = "https://nexus.cryptophys.work"
+LEGACY_HOSTS = "console.cryptophys.work"
 
 # No AI, D1, Durable Objects or secrets. ACCESS_TEAM_DOMAIN, ACCESS_AUD, OPERATOR_IDENTITIES and
 # APPROVER_IDENTITIES are set at deploy time. The Console has no authority of its own (ADR-0008 §3):

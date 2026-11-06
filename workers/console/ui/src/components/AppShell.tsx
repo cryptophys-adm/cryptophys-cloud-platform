@@ -92,7 +92,7 @@ export default function AppShell({ current, children }: { current: string; child
     <div className="min-h-screen text-slate-100">
       <header className="border-b border-white/10 bg-obsidian-panel/90 backdrop-blur">
         <div className="mx-auto flex max-w-[1680px] items-center gap-3 px-3 py-3 sm:px-6 sm:py-4">
-          <a href="https://home.cryptophys.work" className="flex items-center gap-3" aria-label="Cerebrum home">
+          <a href="https://nexus.cryptophys.work/" className="flex items-center gap-3" aria-label="Nexus home">
             <motion.div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-400/10 sm:h-11 sm:w-11"
               animate={{ boxShadow: ["0 0 0 rgba(34,211,238,0)", "0 0 22px rgba(34,211,238,0.35)", "0 0 0 rgba(34,211,238,0)"] }}
               transition={{ duration: 4, repeat: Infinity }}>
@@ -130,7 +130,7 @@ export default function AppShell({ current, children }: { current: string; child
         {open && (
           <div className="mx-auto flex max-w-[1680px] flex-col gap-1 px-3 pb-3 md:hidden">
             {navLinks(true)}
-            <a href="https://home.cryptophys.work" className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><Home className="h-4 w-4 text-slate-500" />Cerebrum Home</a>
+            <a href="https://nexus.cryptophys.work/" className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><Home className="h-4 w-4 text-slate-500" />Nexus</a>
           </div>
         )}
       </nav>
@@ -160,7 +160,7 @@ export default function AppShell({ current, children }: { current: string; child
       <footer className="sticky bottom-0 z-20 border-t border-white/10 bg-obsidian-foot/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1680px] items-center gap-4 overflow-x-auto px-3 py-3 text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500 sm:px-6">
           {["AI Kernel", "Policy Engine", "Audit Ledger", "Drift Detector", "Recovery", "Registry", "Workers AI", "D1", "Vectorize"].map((s) => <span key={s} className="whitespace-nowrap">{s}</span>)}
-          <a href="https://nexus.cryptophys.work" target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 whitespace-nowrap text-cyan-300/80 hover:text-cyan-200">Nexus <ExternalLink className="h-3 w-3" /></a>
+          <a href="https://nexus.cryptophys.work/" className="ml-auto inline-flex items-center gap-1 whitespace-nowrap text-cyan-300/80 hover:text-cyan-200">Nexus <ExternalLink className="h-3 w-3" /></a>
         </div>
       </footer>
     </div>

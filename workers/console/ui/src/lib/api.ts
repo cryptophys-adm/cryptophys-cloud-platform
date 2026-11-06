@@ -6,6 +6,9 @@ export type Json = any;
 export const ROUTES: Record<string, UiRoute> = Object.fromEntries(UI_ROUTES.map((r) => [r.id, r]));
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 
+/** ADR-0010: on the Nexus host the Console is mounted at /console/; elsewhere (workers.dev) at /. */
+export const MOUNT = typeof location !== "undefined" && location.pathname.startsWith("/console") ? "/console" : "";
+
 export class ApiError extends Error {
   constructor(message: string, public status: number, public data: Json) { super(message); }
 }
@@ -26,7 +29,7 @@ async function api(method: string, path: string, body?: unknown): Promise<Json> 
 }
 
 export function whoami(): Promise<{ actor: string; type: string; operator: boolean; approver: boolean }> {
-  return api("GET", "/api/whoami");
+  return api("GET", `${MOUNT}/api/whoami`);
 }
 
 export function call(routeId: string, params?: string | string[], body?: unknown, query?: Record<string, string | undefined>): Promise<Json> {
@@ -46,7 +49,7 @@ export function call(routeId: string, params?: string | string[], body?: unknown
     const qs = sp.toString();
     if (qs) path += `?${qs}`;
   }
-  return api(route.method, `/api/${route.service}${path}`, body);
+  return api(route.method, `${MOUNT}/api/${route.service}${path}`, body);
 }
 
 /** The typed confirmation phrase of a route, from its UI_ROUTES template. */

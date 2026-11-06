@@ -32,7 +32,14 @@ export interface Env {
   ORCHESTRATOR?: ServiceBinding;
   PLATFORM?: ServiceBinding;
   ASSETS?: AssetsBinding;
+  /** ADR-0010: the one public origin. The Console lives at <NEXUS_ORIGIN>/console/. */
+  NEXUS_ORIGIN?: string;
+  /** ADR-0010: retired hostnames that redirect to the Nexus mount (comma-separated). */
+  LEGACY_HOSTS?: string;
 }
+
+/** ADR-0010: the Console is mounted under this path on the Nexus host (Workers route nexus.cryptophys.work/console*). */
+export const MOUNT = "/console";
 
 export type ConsoleService = "kernel" | "recovery" | "registry" | "policy" | "drift" | "audit" | "orchestrator" | "platform";
 
@@ -99,9 +106,11 @@ function json(data: unknown, status = 200): Response {
  * runs only after requireOperator). The upstream body and content type are kept; every other
  * header is replaced by the security headers and the strict CSP.
  */
-async function uiAsset(request: Request, env: Env): Promise<Response> {
+async function uiAsset(request: Request, env: Env, innerPath: string): Promise<Response> {
   if (!env.ASSETS) return json({ error: "ui_unavailable" }, 503);
-  const upstream = await env.ASSETS.fetch(new Request(request.url, { method: request.method }));
+  const assetUrl = new URL(request.url);
+  assetUrl.pathname = innerPath;
+  const upstream = await env.ASSETS.fetch(new Request(assetUrl.toString(), { method: request.method }));
   const headers = new Headers({ "content-security-policy": CSP });
   const type = upstream.headers.get("content-type");
   if (type) headers.set("content-type", type);
@@ -139,7 +148,7 @@ function matchRule(service: string, method: string, segments: string[]): AllowRu
   return null;
 }
 
-async function forward(request: Request, env: Env, url: URL, jwt: string, rule: AllowRule): Promise<Response> {
+async function forward(request: Request, env: Env, url: URL, innerPath: string, jwt: string, rule: AllowRule): Promise<Response> {
   const method = request.method;
   const isGet = method === "GET";
 
@@ -160,7 +169,7 @@ async function forward(request: Request, env: Env, url: URL, jwt: string, rule: 
 
   const headers: Record<string, string> = { "cf-access-jwt-assertion": jwt };
   if (body) headers["content-type"] = "application/json";
-  const target = `https://console.internal${url.pathname.replace(/^\/api\/[^/]+/, "")}${isGet ? url.search : ""}`;
+  const target = `https://console.internal${innerPath.replace(/^\/api\/[^/]+/, "")}${isGet ? url.search : ""}`;
 
   let status: number;
   let response: Response;
@@ -178,10 +187,32 @@ async function forward(request: Request, env: Env, url: URL, jwt: string, rule: 
   return response;
 }
 
+/**
+ * ADR-0010 (single subdomain): requests arrive either on the Nexus host under /console/ (a Workers
+ * route on nexus.cryptophys.work/console*), on workers.dev (with or without the prefix), or on a
+ * retired hostname, which is redirected to the Nexus mount. Returns the path inside the Console,
+ * or a response to send as is.
+ */
+function mount(url: URL, env: Env, method: string): { inner: string } | { response: Response } {
+  const raw = url.pathname;
+  const legacy = (env.LEGACY_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  const isHealth = /^\/(health|healthz|ready|readyz)$/.test(raw);
+  if (legacy.includes(url.hostname.toLowerCase()) && !isHealth && env.NEXUS_ORIGIN) {
+    // The old hash routes (#/recovery...) survive: browsers re-attach the fragment after a redirect.
+    const target = `${env.NEXUS_ORIGIN.replace(/\/$/, "")}${MOUNT}${raw === "/" ? "/" : raw}${url.search}`;
+    return { response: new Response(null, { status: method === "GET" || method === "HEAD" ? 301 : 308, headers: { location: target } }) };
+  }
+  if (raw === MOUNT) return { response: new Response(null, { status: 301, headers: { location: `${MOUNT}/${url.search}` } }) };
+  if (raw.startsWith(`${MOUNT}/`)) return { inner: raw.slice(MOUNT.length) };
+  return { inner: raw };
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const path = url.pathname;
   const method = request.method;
+  const mounted = mount(url, env, method);
+  if ("response" in mounted) return mounted.response;
+  const path = mounted.inner;
 
   if (path === "/health" || path === "/healthz" || path === "/ready" || path === "/readyz") {
     const blocked = await accessGate(request, env);
@@ -195,7 +226,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
   if (!path.startsWith("/api/")) {
     if (method !== "GET" && method !== "HEAD") return json({ error: "method_not_allowed" }, 405);
-    return uiAsset(request, env);
+    return uiAsset(request, env, path);
   }
 
   // Path safety applies to every /api path before any routing.
@@ -224,7 +255,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  return forward(request, env, url, request.headers.get("cf-access-jwt-assertion") as string, rule);
+  return forward(request, env, url, path, request.headers.get("cf-access-jwt-assertion") as string, rule);
 }
 
 export default {

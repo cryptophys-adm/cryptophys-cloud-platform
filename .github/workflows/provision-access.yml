@@ -28,6 +28,10 @@ env:
     cryptophys-platform-api cryptophys-deployment-orchestrator cryptophys-platform-registry
     cryptophys-policy-engine cryptophys-drift-detector cryptophys-audit-ledger cryptophys-recovery-manager
     cryptophys-ai-kernel cryptophys-console cryptophys-home
+  # ADR-0010 (single subdomain): Nexus, with the Console mounted at /console, is the one public
+  # origin. Its hostname joins this same Access application, so one sign-in (and one AUD) covers the
+  # XAUUSD room and the Console. Service bindings (drift checks) do not pass through Access.
+  PUBLIC_HOSTNAMES: nexus.cryptophys.work
 
 jobs:
   provision:
@@ -96,27 +100,40 @@ jobs:
           # a registered principal to its agent at tier <= 1 on /mcp.
           agent_tokens="$("$GITHUB_WORKSPACE/.github/scripts/find-agent-service-tokens.sh")"
           scripts="$(call GET /workers/scripts)"
+          # ADR-0010: sign-in through the owners' OIDC providers (Google, Microsoft Entra ID), with the
+          # one-time PIN as fallback. The providers are added by the owner in Zero Trust (their client
+          # secrets never pass through this repository); this step only selects the ones that exist.
+          idps="$(call GET /access/identity_providers | jq -c '[.result[] | select(.type == "google" or .type == "azureAD" or .type == "oidc" or .type == "onetimepin") | {id, type, name}]')"
+          jq -e 'any(.[]; .type == "google")' <<< "$idps" >/dev/null \
+            || echo "::warning::No Google identity provider in Zero Trust yet; see docs/OWNER-OIDC-SETUP.md (one-time PIN still works)."
+          jq -e 'any(.[]; .type == "azureAD" or .type == "oidc")' <<< "$idps" >/dev/null \
+            || echo "::warning::No Microsoft identity provider (Entra ID or Microsoft OIDC) in Zero Trust yet; see docs/OWNER-OIDC-SETUP.md (one-time PIN still works)."
           destinations="[]"
           for name in $PLATFORM_WORKERS; do
             tag="$(printf '%s' "$scripts" | jq -er --arg n "$name" '[.result[] | select(.id == $n)] | if length == 1 then .[0].tag else error("missing") end')" \
               || { echo "::error::Worker ${name} not found"; exit 1; }
             destinations="$(jq -c --arg t "$tag" '. + [{type: "worker", worker_id: $t}]' <<< "$destinations")"
           done
+          for host in $PUBLIC_HOSTNAMES; do
+            [[ "$host" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || { echo "::error::invalid hostname ${host}"; exit 1; }
+            destinations="$(jq -c --arg h "$host" '. + [{type: "public", uri: $h}]' <<< "$destinations")"
+          done
 
-          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --argjson dest "$destinations" --argjson agents "$agent_tokens" \
+          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --argjson dest "$destinations" --argjson agents "$agent_tokens" --argjson idps "$idps" \
             --argjson emails "$(jq -R . <<< "$emails" | jq -s .)" '{
               name: $name,
               type: "self_hosted",
               destinations: $dest,
               session_duration: "8h",
               app_launcher_visible: false,
+              auto_redirect_to_identity: false,
               policies: [
                 {name: "ci-service-token", decision: "non_identity", precedence: 1, include: [{service_token: {token_id: $token}}]},
                 {name: "platform-operators", decision: "allow", precedence: 2, include: [$emails[] | {email: {email: .}}]}
               ] + (if ($agents | length) > 0 then
                 [{name: "external-agents", decision: "non_identity", precedence: 3, include: [$agents[] | {service_token: {token_id: .}}]}]
               else [] end)
-            }')"
+            } + (if ($idps | length) > 0 then {allowed_idps: [$idps[].id]} else {} end)')"
 
           existing="$(call GET "/access/apps?per_page=1000" | jq -c --arg n "$ACCESS_APP_NAME" '[.result[] | select(.name == $n)]')"
           case "$(jq length <<< "$existing")" in
@@ -124,12 +141,13 @@ jobs:
             1) result="$(call PUT "/access/apps/$(jq -r '.[0].id' <<< "$existing")" "$body")"; action=updated ;;
             *) echo "::error::More than one Access application named ${ACCESS_APP_NAME}; resolve manually"; exit 1 ;;
           esac
-          jq -e --argjson n "$(wc -w <<< "$PLATFORM_WORKERS")" '.result.aud and (.result.destinations | length == $n)' <<< "$result" >/dev/null \
+          jq -e --argjson n "$(( $(wc -w <<< "$PLATFORM_WORKERS") + $(wc -w <<< "$PUBLIC_HOSTNAMES") ))" '.result.aud and (.result.destinations | length == $n)' <<< "$result" >/dev/null \
             || { echo "::error::Access application response is missing its AUD or destinations"; exit 1; }
           echo "Access application ${ACCESS_APP_NAME} ${action}: $(jq -r '.result.destinations | length' <<< "$result") Workers, $(wc -l <<< "$emails") operator email(s), CI service token policy, $(jq length <<< "$agent_tokens") external agent token(s)."
           {
             echo "### Cloudflare Access"
-            echo "Application \`${ACCESS_APP_NAME}\` ${action}; protects: ${PLATFORM_WORKERS}"
+            echo "Application \`${ACCESS_APP_NAME}\` ${action}; protects: ${PLATFORM_WORKERS} and ${PUBLIC_HOSTNAMES}"
+            echo "Identity providers: $(jq -r '[.[] | "\(.name) (\(.type))"] | join(", ")' <<< "$idps")"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify Access is enforced at the edge
@@ -175,4 +193,16 @@ jobs:
               echo "::error::${name}: service token was not admitted to the Worker (HTTP ${authed})"; exit 1
             fi
             echo "${name}: unauthenticated HTTP ${unauth}, service token HTTP ${authed}"
+          done
+          # ADR-0010: every public hostname now asks for sign-in at the edge; the CI token gets through.
+          for host in $PUBLIC_HOSTNAMES; do
+            for _ in $(seq 1 12); do
+              unauth="$(curl --silent --proto '=https' --max-time 20 --output /dev/null --write-out '%{http_code}' "https://${host}/" || true)"
+              [[ "$unauth" =~ ^(302|401|403)$ ]] && break
+              sleep 5
+            done
+            [[ "$unauth" =~ ^(302|401|403)$ ]] || { echo "::error::${host} answered HTTP ${unauth} without credentials"; exit 1; }
+            authed="$(curl --silent --proto '=https' --max-time 20 --header "@$headers" --output /dev/null --write-out '%{http_code}' "https://${host}/" || true)"
+            [[ "$authed" == "200" ]] || { echo "::error::${host}: service token was not admitted (HTTP ${authed})"; exit 1; }
+            echo "${host}: unauthenticated HTTP ${unauth}, service token HTTP ${authed}"
           done

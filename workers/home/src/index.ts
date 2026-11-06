@@ -5,6 +5,8 @@ import { INDEX_HTML, APP_CSS, APP_JS } from "./ui.ts";
 export interface ServiceBinding { fetch(request: Request): Promise<Response> }
 
 export interface Env {
+  NEXUS_ORIGIN?: string;
+  LEGACY_HOSTS?: string;
   SERVICE_NAME: string;
   SERVICE_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;
@@ -78,6 +80,13 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
+
+  // ADR-0010 (single subdomain): Cerebrum is retired. Its hostname redirects to Nexus; health and
+  // readiness keep answering for the deploy verification and the Drift Detector until removal.
+  const legacy = (env.LEGACY_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (env.NEXUS_ORIGIN && legacy.includes(url.hostname.toLowerCase()) && !/^\/(health|healthz|ready|readyz)$/.test(path)) {
+    return new Response(null, { status: method === "GET" || method === "HEAD" ? 301 : 308, headers: { location: `${env.NEXUS_ORIGIN.replace(/\/$/, "")}/` } });
+  }
 
   if (path === "/health" || path === "/healthz" || path === "/ready" || path === "/readyz") {
     const blocked = await accessGate(request, env);
