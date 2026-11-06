@@ -31,6 +31,8 @@ interface GitHubFake {
   publicChecksReadable: boolean;
   checkRunTotalCount?: number;
   checkSuiteTotalCount?: number;
+  omitCheckSuiteId?: number;
+  omitCheckRunsForSuiteId?: number;
   omitWorkflow?: string;
   files: string[];
   dispatched: { workflow: string; body: any }[];
@@ -58,7 +60,7 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
         // Non-CI GitHub Actions runs on the same SHA must not poison the commit CI gate.
         { name: "deploy", status: "completed", conclusion: "failure", check_suite: { id: 104 } },
         { name: "alert", status: "completed", conclusion: "failure", check_suite: { id: 105 } },
-      ];
+      ].filter((run) => run.check_suite.id !== gh.omitCheckRunsForSuiteId);
       return Response.json({ total_count: gh.checkRunTotalCount ?? check_runs.length, check_runs });
     }
     if (url.includes("/check-suites?per_page=100")) {
@@ -70,7 +72,7 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
         { id: 103, app: { slug: "external-review" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
         { id: 104, app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, // workflow_dispatch
         { id: 105, app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, // schedule
-      ];
+      ].filter((suite) => suite.id !== gh.omitCheckSuiteId);
       return Response.json({ total_count: gh.checkSuiteTotalCount ?? check_suites.length, check_suites });
     }
     if (url.includes("/actions/runs?head_sha=")) {
@@ -303,6 +305,10 @@ test("9. CI gate fails closed unless both main push validations and combined com
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "truncated Check Runs response must block");
     github({ checkSuiteTotalCount: 6 });
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "truncated Check Suites response must block");
+    github({ omitCheckSuiteId: 101 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "a required workflow suite missing from the Check Suites response must block");
+    github({ omitCheckRunsForSuiteId: 102 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "a required workflow suite with no returned Check Runs must block");
     github();
     assert.equal((await ciGreen("gh-token", MAIN)).green, true, "complete green evidence should pass");
   } finally { globalThis.fetch = realFetch; }
