@@ -296,3 +296,28 @@ The phase 4 code ships ahead of its promotion, for audit by pi and agy. **`conse
   - expiry by the scheduled cycle.
 
   221 of 221 tests pass.
+
+### Phase 4 code deployment, 2026-11-06
+
+**DEPLOYED AND VERIFIED** (orchestrator), at `6450a7e` (#162). The mode is unchanged.
+
+| Run | Result |
+|---|---|
+| Deploy Control Plane, run 42189109049 | Success. Migration 0024 applied. Dispatched at 08:38 UTC. |
+| Deploy Deployment Orchestrator, run 42190053863 | Success (`retireForConsensus`). Dispatched at 08:46 UTC. |
+| Deploy Console, run 42190181441 | Success (Owner Approval Queue). Dispatched at 08:47 UTC. |
+
+**D1 check at 08:49 UTC:**
+- the mode is `shadow`;
+- the last migration is `0024_consensus_owner_approval.sql`;
+- there are 0 owner decisions;
+- there are 4 proposals, none pending or executed, and 0 consensus deployment requests;
+- the kill switch is on;
+- 0 services are drifted, and there are 0 critical reports.
+
+All four phases are now coded and deployed behind the mode gate. The rollout continues by promotion only:
+- `routine`: earliest review 2026-11-13, per the phase 1 criteria;
+- then `deploy`;
+- then `critical`.
+
+Each promotion is a separate reviewed change, audited by pi and agy.
