@@ -1,0 +1,16 @@
+{
+  "name": "cryptophys-home",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cryptophys operator Console (ADR-0008)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.45.0"
+  }
+}

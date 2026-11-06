@@ -1,0 +1,24 @@
+name = "cryptophys-home"
+main = "src/worker.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+routes = [{ pattern = "home.cryptophys.work", custom_domain = true }]
+
+[observability]
+enabled = true
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+[vars]
+# ACCESS_TEAM_DOMAIN, ACCESS_AUD, OPERATOR_IDENTITIES and APPROVER_IDENTITIES are set at deploy time.
+SERVICE_NAME = "cryptophys-home"
+SERVICE_ENVIRONMENT = "production"
+API_CONTRACT_VERSION = "v1"
+
+# No AI, D1, Durable Objects or secrets. ACCESS_TEAM_DOMAIN, ACCESS_AUD, OPERATOR_IDENTITIES and
+# APPROVER_IDENTITIES are set at deploy time. Home has no authority of its own (ADR-0008).
+
+[[services]]
+binding = "PLATFORM"
+service = "cryptophys-platform-api"
