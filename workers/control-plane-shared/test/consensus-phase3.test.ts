@@ -254,7 +254,7 @@ test("8. wiring: kernel binds DeployRpc; every consensus-deployable workflow cap
   const completionEvent = controlPlaneWf.indexOf('api POST "$(url audit-ledger)/v1/events"');
   assert.ok(kernelVerified > 0 && auditVerified > kernelVerified, "verify the audit chain after all live kernel checks");
   assert.ok(completionEvent > auditVerified, "append deployment.control_plane_completed only after every verification");
-  assert.doesNotMatch(controlPlaneWf.slice(completionEvent + 1), /\\bapi\\s+(GET|POST|PUT|PATCH|DELETE)\\b/, "no later API check may fail after the success event");
+  assert.doesNotMatch(controlPlaneWf.slice(completionEvent + 1), /\bapi\s+(GET|POST|PUT|PATCH|DELETE)\b/, "no later API check may fail after the success event");
 });
 
 
