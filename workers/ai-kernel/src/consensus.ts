@@ -433,7 +433,7 @@ export async function collectVotes(env: SyscallEnv, eligible: Voter[], p: Propos
  */
 export const MODE_ORDER: ConsensusMode[] = ["shadow", "routine", "deploy", "critical"];
 
-export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor: string, isApprover: boolean, reasonRaw: unknown): Promise<JsonObject> {
+export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor: string, actorType: "user" | "service_token", isApprover: boolean, reasonRaw: unknown): Promise<JsonObject> {
   const mode = String(modeRaw ?? "") as ConsensusMode;
   if (!MODE_ORDER.includes(mode)) throw new OwnerDecisionError(400, "invalid_mode", `mode must be one of ${MODE_ORDER.join(", ")}`);
   const current = await consensusMode(env);
@@ -441,7 +441,7 @@ export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor:
   const raising = MODE_ORDER.indexOf(mode) > MODE_ORDER.indexOf(current);
   if (raising) {
     if (!isApprover) throw new OwnerDecisionError(403, "approver_required", "raising the consensus mode needs an approver");
-    if (!/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(actor)) throw new OwnerDecisionError(403, "person_required", "raising the consensus mode needs a person's Access identity");
+    if (actorType !== "user" || !/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(actor)) throw new OwnerDecisionError(403, "person_required", "raising the consensus mode needs a person's Access identity");
   }
   if (mode !== current) {
     await env.DB.prepare("UPDATE consensus_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'mode'").bind(mode, actor, nowIso()).run();
