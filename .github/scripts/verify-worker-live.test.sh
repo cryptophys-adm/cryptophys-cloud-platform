@@ -103,7 +103,7 @@ access_id="client-id.access"
 access_secret="cfast_access-secret-must-never-be-printed"
 
 run_subject() {
-  PATH="$tmp/bin:$PATH" EXPECTED_TOKEN="$token" ACCESS_ID="$access_id" ACCESS_SECRET="$access_secret" \
+  PATH="$tmp/bin:$PATH" EXPECTED_TOKEN="$token" ACCESS_ID="$access_id" ACCESS_SECRET="$access_secret" ACCESS_TEAM_DOMAIN="cryptophys.cloudflareaccess.com" \
     CLOUDFLARE_ACCOUNT_ID="$account" CLOUDFLARE_API_TOKEN="$token" \
     CF_API_BASE="https://api.cloudflare.test/client/v4" \
     VERIFY_ATTEMPTS=2 VERIFY_DELAY_SECONDS=0 \
@@ -179,7 +179,7 @@ key="$(printf '%s' "https://custom.example.test/health" | sed -E 's#^https://##;
 echo "curl: (60) SSL: no alternative certificate subject name matches target hostname" >"$FIXTURES/$key.err"
 fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
 extra_args=(--custom-domain custom.example.test)
-expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed to connect over verified TLS"
+expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed TLS-verified request"
 extra_args=()
 
 # Strict custom-domain mode is opt-in so existing callers retain advisory semantics.
@@ -205,7 +205,7 @@ setup_green custom-domain-dns-failure
 fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 export FAKE_CUSTOM_DOMAIN_DNS_FAIL=1
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
-expect fail "required custom domain DNS/TLS failure fails deployment verification" "failed TLS-verified request"
+expect fail "required custom domain DNS/TLS failure fails deployment verification" "failed to connect over verified TLS"
 unset FAKE_CUSTOM_DOMAIN_DNS_FAIL
 
 setup_green custom-domain-unprotected
@@ -231,7 +231,16 @@ fx "https://custom.example.test/health" '{}' 302
 fx_response_headers "https://custom.example.test/health" "Location: https://attacker.example.test/cdn-cgi/access/login/fake"
 export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
-expect fail "custom-domain challenge must redirect to Cloudflare Access" "did not redirect to a Cloudflare Access login endpoint"
+expect fail "custom-domain challenge must redirect to Cloudflare Access" "configured Cloudflare Access team login endpoint"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-wrong-access-team
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{}' 302
+fx_response_headers "https://custom.example.test/health" "Location: https://other.cloudflareaccess.com/cdn-cgi/access/login/wrong-team"
+export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "custom-domain challenge must use the resolved Access team" "configured Cloudflare Access team login endpoint"
 unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
 
 setup_green custom-domain-duplicate-registration
