@@ -185,12 +185,12 @@ if [[ -n "$custom_domain" ]]; then
     domains='{}'
   fi
   registration="$(printf '%s' "$domains" | jq -c --arg h "$custom_domain" --arg s "$script_name" \
-    '[.result[]? | select(.hostname == $h and .service == $s and .environment == "production" and .enabled == true) | {hostname, zone_name, environment, enabled}]' 2>/dev/null || echo '[]')"
+    '[.result[]? | select(.hostname == $h and .service == $s and .environment == "production" and .enabled == true and .previews_enabled == false) | {hostname, zone_name, environment, enabled, previews_enabled}]' 2>/dev/null || echo '[]')"
   echo "Custom domain registration for ${custom_domain}: ${registration}"
 
   if [[ "$require_custom_domain" == true ]]; then
     jq -e 'length == 1' <<<"$registration" >/dev/null \
-      || fail "Required custom domain ${custom_domain} is not registered as exactly one enabled production Worker domain for ${script_name}"
+      || fail "Required custom domain ${custom_domain} is not registered as exactly one enabled production Worker domain with preview routing disabled for ${script_name}"
     domain_url="https://${custom_domain}"
     if ! unauth_status="$(curl --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
         --output /dev/null --write-out '%{http_code}' "${domain_url}/health")"; then
