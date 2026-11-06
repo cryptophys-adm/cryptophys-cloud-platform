@@ -115,7 +115,7 @@ export default {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         try {
-          return json(await setConsensusMode(env, body.value.mode, operator.actor, operator.identity.type, await isApprover(request, env), body.value.reason));
+          return json(await setConsensusMode(env, body.value.mode, operator.actor, operator.identity.type, await isApprover(request, env), body.value.confirm, body.value.reason));
         } catch (err) {
           if (err instanceof OwnerDecisionError) return errorResponse(err.status, err.code, err.message);
           throw err;
