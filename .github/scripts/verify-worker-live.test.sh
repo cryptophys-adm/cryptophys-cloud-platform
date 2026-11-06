@@ -19,11 +19,12 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
 # Minimal curl stand-in: honours --output/--write-out and the URL argument.
-out=/dev/stdout; fmt=""; url=""; auth=""; headers=""
+out=/dev/stdout; fmt=""; url=""; auth=""; headers=""; dump_headers=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output) out="$2"; shift 2 ;;
     --write-out) fmt="$2"; shift 2 ;;
+    --dump-header|-D) dump_headers="$2"; shift 2 ;;
     --header)
       if [[ "$2" == @* ]]; then headers+="$(cat "${2#@}")"$'\n'; else auth="$2"; headers+="$2"$'\n'; fi
       shift 2 ;;
@@ -47,7 +48,12 @@ case "$url" in
       if [[ "$url" == *custom.example.test* && "${FAKE_CUSTOM_DOMAIN_UNPROTECTED:-0}" == 1 ]]; then
         : # Deliberately simulate a custom hostname that does not enforce Access.
       else
-        : >"$out"; [[ -n "$fmt" ]] && printf 302; exit 0
+        : >"$out"
+        if [[ -n "$dump_headers" ]]; then
+          printf 'HTTP/2 302\\r\\nLocation: https://cryptophys.cloudflareaccess.com/cdn-cgi/access/login/test-aud\\r\\n\\r\\n' >"$dump_headers"
+        fi
+        [[ -n "$fmt" ]] && printf 302
+        exit 0
       fi
     fi ;;
 esac
@@ -55,8 +61,14 @@ key="$(printf '%s' "$url" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
 fixture="$FIXTURES/$key"
 if [[ -f "$fixture.err" ]]; then cat "$fixture.err" >&2; exit 60; fi
 if [[ ! -f "$fixture" ]]; then echo '{"success":false,"errors":[{"code":404,"message":"no fixture"}]}' >"$out"; [[ -n "$fmt" ]] && printf 404; exit 0; fi
+response_status="$(cat "$fixture.status" 2>/dev/null || echo 200)"
+if [[ -n "$dump_headers" ]]; then
+  printf 'HTTP/2 %s\\r\\n' "$response_status" >"$dump_headers"
+  [[ ! -f "$fixture.headers" ]] || cat "$fixture.headers" >>"$dump_headers"
+  printf '\\r\\n' >>"$dump_headers"
+fi
 cat "$fixture" >"$out"
-[[ -n "$fmt" ]] && printf '%s' "$(cat "$fixture.status" 2>/dev/null || echo 200)"
+[[ -n "$fmt" ]] && printf '%s' "$response_status"
 # A one-shot ".then" fixture replaces this one after the first read (eventual consistency).
 if [[ -f "$fixture.then" ]]; then mv "$fixture.then" "$fixture"; fi
 exit 0
@@ -67,6 +79,11 @@ fx() { # fx URL BODY [STATUS]
   local key; key="$(printf '%s' "$1" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
   printf '%s' "$2" >"$FIXTURES/$key"
   [[ -z "${3:-}" ]] || printf '%s' "$3" >"$FIXTURES/$key.status"
+}
+
+fx_response_headers() { # fx_response_headers URL HEADER_LINE
+  local key; key="$(printf '%s' "$1" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
+  printf '%s\\r\\n' "$2" >"$FIXTURES/$key.headers"
 }
 
 api="https://api.cloudflare.test/client/v4/accounts/$account/workers"
@@ -197,8 +214,32 @@ fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
 fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
 export FAKE_CUSTOM_DOMAIN_UNPROTECTED=1
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
-expect fail "required custom domain must reject unauthenticated requests" "not protected by Cloudflare Access"
+expect fail "required custom domain must reject unauthenticated requests" "Cloudflare Access login redirect"
 unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-origin-403
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{"status":"forbidden"}' 403
+export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "origin-generated HTTP 403 is not accepted as an Access challenge" "Cloudflare Access login redirect"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-untrusted-redirect
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{}' 302
+fx_response_headers "https://custom.example.test/health" "Location: https://attacker.example.test/cdn-cgi/access/login/fake"
+export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "custom-domain challenge must redirect to Cloudflare Access" "did not redirect to a Cloudflare Access login endpoint"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-duplicate-registration
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false},{"hostname":"custom.example.test","zone_name":"example.test","service":"other-svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "duplicate hostname registrations fail closed" "exactly one registration"
+extra_args=()
+
 unset FAKE_ACCESS CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
 
 setup_green invalid-required-domain
