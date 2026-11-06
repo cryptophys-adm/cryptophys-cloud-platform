@@ -263,13 +263,16 @@ test("10. pendingDeploys dispatches the Deployment Orchestrator before the Contr
   } finally { globalThis.fetch = realFetch; }
 });
 
-test("11. the supervisor makes at most one deploy proposal per cycle; the next unit follows next cycle", async () => {
+test("11. deploy proposals: never on an operator wake; at most one per scheduled cycle; the next unit follows next cycle", async () => {
   const { env, db, memory } = kernelEnv();
   behind(db);
   db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
   try {
     github({ files: ["workers/control-plane-shared/src/http.ts"] });
-    const first = await runCycle(env as never, memory, "operator");
+    const wake = await runCycle(env as never, memory, "operator");
+    assert.equal(proposals(db).length, 0, "an operator wake never proposes deploys");
+    assert.ok(wake.findings.some((f) => f.kind === "deploy" && f.why === "deploy proposals run in scheduled cycles only"));
+    const first = await runCycle(env as never, memory, "scheduled");
     let ps = proposals(db).filter((p) => p.action === "deploy_commit");
     assert.equal(ps.length, 1);
     assert.equal(first.findings.filter((f) => f.kind === "deploy" && String(f.why ?? "").startsWith("deferred")).length, 3);
