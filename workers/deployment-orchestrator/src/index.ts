@@ -103,7 +103,7 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
 }
 
 type CommitStatus = { state?: string; total_count?: number };
-type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
 
 const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
 
@@ -134,15 +134,17 @@ export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
  */
 const SHARED_SRC = "workers/control-plane-shared/src/";
 export const DEPLOY_UNITS = [
+  // Deploy the orchestrator first: the following Control Plane deployment binds the kernel to DeployRpc.
+  { unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml", services: ["cryptophys-deployment-orchestrator"], paths: ["workers/deployment-orchestrator/", SHARED_SRC] },
   {
     unit: "control-plane", workflow: "deploy-control-plane.yml",
     services: ["cryptophys-policy-engine", "cryptophys-audit-ledger", "cryptophys-platform-registry", "cryptophys-recovery-manager", "cryptophys-drift-detector", "cryptophys-ai-kernel"],
     paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", "workers/control-plane-migrations/", SHARED_SRC],
   },
-  { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/src/", "workers/console/ui/src/", "workers/console/ui/package-lock.json", "workers/console/ui/index.html", "workers/console/wrangler.toml", SHARED_SRC] },
-  { unit: "home", workflow: "deploy-home.yml", services: ["cryptophys-home"], paths: ["workers/home/src/", "workers/home/wrangler.toml", SHARED_SRC] },
-  { unit: "platform-api", workflow: "deploy-platform-api.yml", services: ["cryptophys-platform-api"], paths: ["workers/platform-api/src/", "workers/platform-api/wrangler.toml", "workers/platform-api/package-lock.json", SHARED_SRC] },
-  { unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml", services: ["cryptophys-deployment-orchestrator"], paths: ["workers/deployment-orchestrator/src/", "workers/deployment-orchestrator/wrangler.toml", "workers/deployment-orchestrator/package-lock.json", SHARED_SRC] },
+  // Directory prefixes include manifests, lockfiles, bundler config and static assets, not just source files.
+  { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/", SHARED_SRC] },
+  { unit: "home", workflow: "deploy-home.yml", services: ["cryptophys-home"], paths: ["workers/home/", SHARED_SRC] },
+  { unit: "platform-api", workflow: "deploy-platform-api.yml", services: ["cryptophys-platform-api"], paths: ["workers/platform-api/", SHARED_SRC] },
 ] as const;
 export type DeployUnit = (typeof DEPLOY_UNITS)[number];
 
@@ -155,13 +157,28 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
 }
 
 /** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
+const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
+
+/** Consensus deploys require the combined commit-status gate and both push validations on main.
+ * Missing, pending, skipped or unreadable evidence fails closed. */
 export async function ciGreen(token: string, sha: string): Promise<{ green: boolean; workflows: { name: string; conclusion: string | null }[] }> {
-  const res = await gh(token, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&event=push&per_page=100");
-  if (!res.ok) return { green: false, workflows: [] };
-  const data = await res.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
-  const runs = latestRunPerWorkflow(data.workflow_runs ?? []);
-  const green = runs.length > 0 && (data.total_count ?? 0) <= (data.workflow_runs ?? []).length
-    && runs.every((r) => r.status === "completed" && r.conclusion === "success");
+  const [statusRes, runsRes] = await Promise.all([
+    gh(token, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
+    gh(token, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&event=push&per_page=100"),
+  ]);
+  if (!statusRes.ok || !runsRes.ok) return { green: false, workflows: [] };
+  const statusData = await statusRes.json() as CommitStatus;
+  const runsData = await runsRes.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
+  const allRuns = runsData.workflow_runs ?? [];
+  // Do not accept a truncated Actions response or a push from a branch other than main.
+  if (typeof runsData.total_count !== "number" || runsData.total_count > allRuns.length) return { green: false, workflows: [] };
+  const runs = latestRunPerWorkflow(allRuns.filter((r) => r.event === "push" && r.head_branch === "main"));
+  const statusGreen = typeof statusData.total_count === "number"
+    && (statusData.total_count === 0 || statusData.state === "success");
+  const requiredGreen = REQUIRED_PUSH_VALIDATIONS.every((name) =>
+    runs.some((r) => r.name === name && r.status === "completed" && r.conclusion === "success"),
+  );
+  const green = statusGreen && requiredGreen && runs.every((r) => r.status === "completed" && r.conclusion === "success");
   return { green, workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 
@@ -193,6 +210,7 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
   out.ci_green = (await ciGreen(env.GH_ACTIONS_TOKEN, sha)).green;
   if (!out.ci_green) { out.skipped.push({ unit: "*", reason: "ci_not_green" }); return out; }
   const tag = sha.slice(0, 12);
+  const pendingUnits: PendingDeploys["units"] = [];
   for (const unit of DEPLOY_UNITS) {
     const rows = await env.DB.prepare(
       `SELECT service_id, status, desired_version FROM service_registry WHERE service_id IN (${unit.services.map(() => "?").join(", ")})`,
@@ -212,7 +230,18 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
       if ((cmp.files ?? []).length >= 300 || unitChanged(unit, (cmp.files ?? []).map((f) => f.filename))) { changed = true; break; }
     }
     if (failed) { out.skipped.push({ unit: unit.unit, reason: "compare_failed_or_diverged" }); continue; }
-    if (changed) out.units.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
+    if (changed) pendingUnits.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
+  }
+  // DeployRpc must exist before the AI Kernel is redeployed with its new service binding.
+  // Do not propose the Control Plane (or another unit) in the same cycle as the orchestrator.
+  const orchestrator = pendingUnits.find((u) => u.unit === "deployment-orchestrator");
+  if (orchestrator) {
+    out.units.push(orchestrator);
+    for (const u of pendingUnits) {
+      if (u.unit !== "deployment-orchestrator") out.skipped.push({ unit: u.unit, reason: "deployment_orchestrator_must_complete_first" });
+    }
+  } else {
+    out.units.push(...pendingUnits);
   }
   return out;
 }
