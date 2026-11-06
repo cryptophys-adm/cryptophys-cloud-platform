@@ -175,7 +175,9 @@ test("6. single call path: fetch( appears only in lib/api.ts; every call() route
   }
   const api = read("src/lib/api.ts");
   assert.equal((api.match(/\bfetch\(/g) ?? []).length, 1);
-  assert.match(api, /"\/api\/whoami"/);
+  // ADR-0010: every API path is prefixed with the mount (/console on the Nexus host, empty elsewhere).
+  assert.match(api, /`\$\{MOUNT\}\/api\/whoami`/);
+  assert.match(api, /export const MOUNT = typeof location !== "undefined" && location\.pathname\.startsWith\("\/console"\) \? "\/console" : ""/);
   assert.match(api, /x-cryptophys-console/);
 });
 

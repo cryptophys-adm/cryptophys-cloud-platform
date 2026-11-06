@@ -154,6 +154,18 @@ jobs:
           probe POST /api/audit/v1/events 404 '.error == "not_allowed"' --header "Origin: ${base}" --header "x-cryptophys-console: 1"
           # CSRF: a state-changing call without the console header is refused before any forward.
           probe POST /api/drift/v1/observe 403 '.error == "csrf"' --header "Origin: ${base}"
+          # ADR-0010: the same Console answers under the /console mount.
+          probe GET /console/api/whoami 200 '.operator == true'
+          probe GET /console/api/kernel/v1/kernel 200 '.agents | type == "array"'
+          # The Nexus hostname routes /console* to this Worker (route precedence over the Nexus Custom
+          # Domain), and the retired console.cryptophys.work redirects there.
+          nexus="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output "$out" --write-out '%{http_code}' https://nexus.cryptophys.work/console/health)"
+          [[ "$nexus" == "200" ]] && jq -e '.service == "cryptophys-console"' "$out" >/dev/null \
+            || { echo "::error::nexus.cryptophys.work/console/health: HTTP ${nexus}: $(head -c 300 "$out")"; exit 1; }
+          echo "ok GET https://nexus.cryptophys.work/console/health -> 200 (cryptophys-console)"
+          legacy="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output /dev/null --write-out '%{http_code} %{redirect_url}' https://console.cryptophys.work/)"
+          [[ "$legacy" == "301 https://nexus.cryptophys.work/console/" ]] || { echo "::error::console.cryptophys.work should redirect to Nexus, got: ${legacy}"; exit 1; }
+          echo "ok GET https://console.cryptophys.work/ -> ${legacy}"
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
       - name: Record the desired version in the Platform Registry (drift baseline, TP-026)
         env:
