@@ -15,6 +15,9 @@ import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-pl
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 
+/** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
+export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
+
 export const AGENT_ID = "supervisor";
 const SERVICE = "cryptophys-ai-kernel";
 const PROPOSAL_COOLDOWN_MS = 24 * 3_600_000;
@@ -155,7 +158,14 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   if (env.DEPLOY) {
     try {
       const pending = await env.DEPLOY.pendingDeploys();
+      // At most one deploy proposal per cycle: each proposal gathers evidence, verifies the audit
+      // chain and runs nine votes, and deploys go one at a time anyway. The rest follow next cycle.
+      let proposed = 0;
       for (const u of pending.units) {
+        if (proposed >= MAX_DEPLOY_PROPOSALS_PER_CYCLE) {
+          report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: "deferred to the next cycle (one deploy proposal per cycle)" });
+          continue;
+        }
         if (!pending.main_sha) break;
         const seen = await env.DB.prepare(
           "SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ? LIMIT 1",
@@ -165,6 +175,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           action: "deploy_commit", target: u.target,
           params: { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, reason: u.reason.slice(0, 200) },
         });
+        proposed += 1;
         report.actions.push(r);
         report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome });
       }
