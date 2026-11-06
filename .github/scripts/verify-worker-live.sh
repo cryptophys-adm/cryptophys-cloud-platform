@@ -176,8 +176,11 @@ access_login_check() {
   [[ "$status" == "302" ]] \
     || fail "${name} did not return the Cloudflare Access login redirect (HTTP ${status})"
   location="$(awk 'tolower($1) == "location:" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' "$headers" | tail -n 1)"
-  [[ "$location" =~ ^https://[A-Za-z0-9-]+\.cloudflareaccess\.com/cdn-cgi/access/login/ ]] \
-    || fail "${name} did not redirect to a Cloudflare Access login endpoint"
+  [[ "${ACCESS_TEAM_DOMAIN:-}" =~ ^[a-z0-9-]+\.cloudflareaccess\.com$ ]] \
+    || fail "ACCESS_TEAM_DOMAIN must be resolved before strict custom-domain verification"
+  expected_prefix="https://${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/login/"
+  [[ "$location" == "$expected_prefix"* ]] \
+    || fail "${name} did not redirect to the configured Cloudflare Access team login endpoint"
   echo "Cloudflare Access login challenge verified for ${name}"
 }
 
