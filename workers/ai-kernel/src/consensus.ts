@@ -170,6 +170,15 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
 export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent"]);
+/** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
+export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit"]);
+
+/** What the current mode lets the kernel execute. Shadow executes nothing. */
+export function executableIn(mode: ConsensusMode): Set<string> {
+  if (mode === "routine") return PHASE2_EXECUTABLE;
+  if (mode === "deploy" || mode === "critical") return PHASE3_EXECUTABLE;
+  return new Set();
+}
 
 /** Run one passed routine action through its owning path. Targets re-verify the proposal. */
 async function executeAction(env: SyscallEnv, proposalId: string, decisionId: string, p: Proposal): Promise<JsonObject> {
@@ -188,6 +197,9 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
     case "registry_enable_service":
       if (!env.REGISTRY) throw new Error("registry_binding_missing");
       return await env.REGISTRY.applyConsensus(proposalId, decisionId, p.action, p.target, p.params);
+    case "deploy_commit":
+      if (!env.DEPLOY) throw new Error("deploy_binding_missing");
+      return await env.DEPLOY.deployForConsensus(proposalId, decisionId, p.target, p.params);
     case "observe_drift":
       if (!env.DRIFT) throw new Error("drift_binding_missing");
       return await env.DRIFT.observeForConsensus(proposalId, decisionId);
@@ -230,7 +242,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   }
   const mode = await consensusMode(env);
   const allowed = passed && policy?.decision === "allow";
-  const executable = allowed && mode !== "shadow" && cls === "routine" && PHASE2_EXECUTABLE.has(action);
+  const executable = allowed && cls === "routine" && executableIn(mode).has(action);
   let status = !allowed ? (cls === "prohibited" || !passed ? "rejected" : "shadow_blocked")
     : mode === "shadow" ? "shadow_passed"
     : cls === "critical" ? "pending_owner"

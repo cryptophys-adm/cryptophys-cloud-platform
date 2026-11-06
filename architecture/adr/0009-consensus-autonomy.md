@@ -175,3 +175,49 @@ The execution code ships ahead of the promotion so that pi and agy can audit it 
 - the 07:02 drift run shows 0 drifted.
 
 The promotion to `routine` still waits for the 7-day shadow review (earliest 2026-11-13).
+
+## Amendment 2026-11-06: phase 3 code (consensus deploys and automatic rollback; production stays in shadow)
+
+The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`consensus_controls.mode` stays `shadow`.**
+
+- **Modes.**
+  - `shadow` executes nothing.
+  - `routine` executes the phase 2 set.
+  - `deploy` (and later `critical`) adds `deploy_commit`.
+
+  `redeploy_desired_version` and `rollback_worker_version` stay unexecuted. A redeploy of an older commit cannot pass the deploy workflows' "SHA must be current main" gate, and the rollback of a bad deploy is done by the workflow itself (below).
+- **Deploy units** (`DEPLOY_UNITS` in the Deployment Orchestrator). Each unit is one production workflow with a fixed set of Workers and source paths:
+  - control plane: six Workers, plus the migrations and the shared library;
+  - Console;
+  - Home;
+  - Platform API;
+  - Deployment Orchestrator.
+
+  Every unit also counts `workers/control-plane-shared/src/`. XAUUSD Workers are never deployed by platform consensus.
+- **Proposals.** Each supervisor cycle asks the orchestrator's new `DeployRpc.pendingDeploys()` which units have files changed on a CI-green `main` since the registry desired version. "CI-green" means every push-event validation workflow on the commit succeeded. The supervisor then proposes `deploy_commit` once per unit and commit, `{commit_sha, unit, workflow}`. The check reads GitHub (ref, runs, compare) with the orchestrator's existing token; when a lookup fails, the unit is skipped. No new secret.
+- **Execution** (`DeployRpc.deployForConsensus`). The orchestrator:
+  1. re-verifies the proposal, as in phase 2 (`verifyConsensusExecution`);
+  2. requires the commit to be current `main` with green CI;
+  3. claims a per-workflow-and-commit Durable Object lock;
+  4. records a `deployment_requests` row (`requested_by = consensus:<id>`, `approval_id` = the proposal);
+  5. dispatches the unit's workflow on `main` with `DEPLOY`;
+  6. appends `deployment.dispatched` to the audit chain.
+
+  The workflow keeps every gate it already has: the production Environment, the SHA check, tests, Access, and live verification. The Policy Engine limits still apply: one action per target per hour and 6 deploys per day.
+- **Automatic rollback (§3.3).** `deploy-control-plane`, `deploy-console`, `deploy-home`, `deploy-platform-api` and `deploy-deployment-orchestrator` now record each Worker's active deployment before deploying (`.github/scripts/worker-rollback.sh capture`). If any later step fails, the workflow creates a new deployment that serves the captured versions again (`restore`). The rollback:
+  - restores only the Workers that the deploy changed;
+  - fails the step loudly when Cloudflare refuses it (for example across a Durable Object migration).
+
+  D1 migrations are not rolled back: they are forward-only, the pre-migration Time Travel bookmark is printed, and a data restore stays critical. After a rollback, the registry may still name the failed commit, so drift reports the mismatch until a good commit is deployed. This applies to every deploy, not only consensus ones.
+- **Deploy order for this change:** the Deployment Orchestrator first (it adds `DeployRpc`), then the control plane (the kernel binds `DEPLOY`).
+- **Tests:**
+  - `test/consensus-phase3.test.ts`, 8 criteria:
+    - the mode gates;
+    - the deploy-unit mapping and path rules;
+    - pending detection on green and red CI;
+    - the supervisor proposes once per commit and shadow dispatches nothing;
+    - routine mode does not deploy;
+    - deploy mode dispatches once, with audit, and refuses a replay;
+    - a stale `main` or red CI fails without dispatching;
+    - the workflow wiring.
+  - `.github/scripts/worker-rollback.test.sh` (hermetic).

@@ -5,6 +5,7 @@ import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import { accessConfigured, actorOf, authenticate, identityAllowed } from "../../control-plane-shared/src/access.ts";
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
+import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -124,6 +125,137 @@ export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
     }
   }
   return [...latest.values()];
+}
+
+/**
+ * ADR-0009 phase 3: deploy units. Each production workflow deploys a fixed set of Workers from
+ * the exact main commit; a unit is pending when files under its paths changed since the
+ * version recorded in the registry. Console, Home and Platform API import the shared library.
+ */
+const SHARED_SRC = "workers/control-plane-shared/src/";
+export const DEPLOY_UNITS = [
+  {
+    unit: "control-plane", workflow: "deploy-control-plane.yml",
+    services: ["cryptophys-policy-engine", "cryptophys-audit-ledger", "cryptophys-platform-registry", "cryptophys-recovery-manager", "cryptophys-drift-detector", "cryptophys-ai-kernel"],
+    paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", "workers/control-plane-migrations/", SHARED_SRC],
+  },
+  { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/src/", "workers/console/ui/src/", "workers/console/ui/package-lock.json", "workers/console/ui/index.html", "workers/console/wrangler.toml", SHARED_SRC] },
+  { unit: "home", workflow: "deploy-home.yml", services: ["cryptophys-home"], paths: ["workers/home/src/", "workers/home/wrangler.toml", SHARED_SRC] },
+  { unit: "platform-api", workflow: "deploy-platform-api.yml", services: ["cryptophys-platform-api"], paths: ["workers/platform-api/src/", "workers/platform-api/wrangler.toml", "workers/platform-api/package-lock.json", SHARED_SRC] },
+  { unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml", services: ["cryptophys-deployment-orchestrator"], paths: ["workers/deployment-orchestrator/src/", "workers/deployment-orchestrator/wrangler.toml", "workers/deployment-orchestrator/package-lock.json", SHARED_SRC] },
+] as const;
+export type DeployUnit = (typeof DEPLOY_UNITS)[number];
+
+export function unitForService(serviceId: string): DeployUnit | null {
+  return DEPLOY_UNITS.find((u) => (u.services as readonly string[]).includes(serviceId)) ?? null;
+}
+
+export function unitChanged(unit: DeployUnit, files: string[]): boolean {
+  return files.some((f) => unit.paths.some((p) => f === p || f.startsWith(p)));
+}
+
+/** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
+export async function ciGreen(token: string, sha: string): Promise<{ green: boolean; workflows: { name: string; conclusion: string | null }[] }> {
+  const res = await gh(token, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&event=push&per_page=100");
+  if (!res.ok) return { green: false, workflows: [] };
+  const data = await res.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
+  const runs = latestRunPerWorkflow(data.workflow_runs ?? []);
+  const green = runs.length > 0 && (data.total_count ?? 0) <= (data.workflow_runs ?? []).length
+    && runs.every((r) => r.status === "completed" && r.conclusion === "success");
+  return { green, workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) };
+}
+
+async function mainSha(token: string): Promise<string | null> {
+  const res = await gh(token, "/repos/" + REPOSITORY + "/git/ref/heads/main");
+  if (!res.ok) return null;
+  const sha = (await res.json() as { object?: { sha?: string } }).object?.sha ?? "";
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
+export interface PendingDeploys {
+  main_sha: string | null;
+  ci_green: boolean;
+  units: { unit: string; workflow: string; target: string; reason: string }[];
+  skipped: { unit: string; reason: string }[];
+}
+
+/**
+ * Which deploy units have changes on a CI-green main that production does not run yet.
+ * Read-only: GitHub ref, runs and compare APIs plus the registry. The supervisor proposes
+ * deploy_commit for each pending unit; nothing is dispatched here.
+ */
+export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
+  const out: PendingDeploys = { main_sha: null, ci_green: false, units: [], skipped: [] };
+  if (!env.GH_ACTIONS_TOKEN) { out.skipped.push({ unit: "*", reason: "github_token_missing" }); return out; }
+  const sha = await mainSha(env.GH_ACTIONS_TOKEN);
+  out.main_sha = sha;
+  if (!sha) { out.skipped.push({ unit: "*", reason: "main_lookup_failed" }); return out; }
+  out.ci_green = (await ciGreen(env.GH_ACTIONS_TOKEN, sha)).green;
+  if (!out.ci_green) { out.skipped.push({ unit: "*", reason: "ci_not_green" }); return out; }
+  const tag = sha.slice(0, 12);
+  for (const unit of DEPLOY_UNITS) {
+    const rows = await env.DB.prepare(
+      `SELECT service_id, status, desired_version FROM service_registry WHERE service_id IN (${unit.services.map(() => "?").join(", ")})`,
+    ).bind(...unit.services).all<{ service_id: string; status: string; desired_version: string | null }>();
+    if (rows.results.length !== unit.services.length || rows.results.some((r) => r.status === "disabled")) { out.skipped.push({ unit: unit.unit, reason: "not_registered_or_disabled" }); continue; }
+    const behind = [...new Set(rows.results.map((r) => r.desired_version).filter((v) => v !== tag))];
+    if (behind.length === 0) continue;
+    if (behind.some((v) => !v || !/^[0-9a-f]{7,40}$/.test(v))) { out.skipped.push({ unit: unit.unit, reason: "desired_version_unknown" }); continue; }
+    let changed = false;
+    let failed = false;
+    for (const base of behind) {
+      const res = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/compare/" + base + "..." + sha + "?per_page=300");
+      if (!res.ok) { failed = true; break; }
+      const cmp = await res.json() as { status?: string; files?: { filename: string }[] };
+      if (cmp.status !== "ahead") { failed = cmp.status !== "identical"; if (failed) break; continue; }
+      // GitHub lists at most 300 files; a larger diff is treated as touching every unit.
+      if ((cmp.files ?? []).length >= 300 || unitChanged(unit, (cmp.files ?? []).map((f) => f.filename))) { changed = true; break; }
+    }
+    if (failed) { out.skipped.push({ unit: unit.unit, reason: "compare_failed_or_diverged" }); continue; }
+    if (changed) out.units.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
+  }
+  return out;
+}
+
+/**
+ * Execute a consensus-approved deploy_commit (ADR-0009 phase 3). Re-verifies the proposal and
+ * its fresh Policy Engine allow, then requires the commit to be current main with green CI,
+ * claims a per-workflow-and-commit lock, records the request and dispatches the unit's
+ * workflow. The workflow keeps all its own gates and rolls back automatically on failure.
+ */
+export async function deployForConsensus(env: Env, proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, "deploy_commit", target);
+  const unit = unitForService(target);
+  if (!unit) throw new Error("no_deploy_unit_for_target");
+  const sha = typeof params.commit_sha === "string" ? params.commit_sha : "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("invalid_commit_sha");
+  if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const actor = `consensus:${proposalId}`;
+  const current = await mainSha(env.GH_ACTIONS_TOKEN);
+  if (current !== sha) throw new Error("commit_not_current_main");
+  const ci = await ciGreen(env.GH_ACTIONS_TOKEN, sha);
+  if (!ci.green) throw new Error("ci_not_green");
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`consensus:${unit.workflow}:${sha}`))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { dispatched: false, reason: "already_dispatched", workflow: unit.workflow, commit_sha: sha };
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
+  ).bind(requestId, target, sha, actor, proposalId, `consensus:${unit.workflow}:${sha}`,
+    JSON.stringify({ workflow: unit.workflow, unit: unit.unit, ref: "main", workflows: ci.workflows, proposal_id: proposalId, policy_decision_id: decisionId }), at, at).run();
+  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + unit.workflow + "/dispatches",
+    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) });
+  const status = dispatch.status === 204 ? "running" : "failed";
+  await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
+  await appendAuditEvent(env.DB, {
+    event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: target, outcome: status,
+    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, proposal_id: proposalId },
+  });
+  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
 }
 
 export default {

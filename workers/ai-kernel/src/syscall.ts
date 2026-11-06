@@ -23,6 +23,11 @@ export interface RecoveryRpcBinding { propose(agentId: string, decisionId: strin
 /** ADR-0009 phase 2 targets: each re-verifies the consensus proposal and its policy decision. */
 export interface RegistryRpcBinding { applyConsensus(proposalId: string, decisionId: string, action: string, target: string, params: Record<string, unknown>): Promise<JsonObject> }
 export interface DriftRpcBinding { observeForConsensus(proposalId: string, decisionId: string): Promise<JsonObject> }
+/** ADR-0009 phase 3: the Deployment Orchestrator reports pending deploys and dispatches passed deploy_commit actions. */
+export interface DeployRpcBinding {
+  pendingDeploys(): Promise<{ main_sha: string | null; ci_green: boolean; units: { unit: string; workflow: string; target: string; reason: string }[]; skipped: { unit: string; reason: string }[] }>;
+  deployForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
+}
 
 export interface SyscallEnv extends BaseEnv {
   XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> };
@@ -31,6 +36,7 @@ export interface SyscallEnv extends BaseEnv {
   MEMORY?: VectorizeBinding;
   REGISTRY?: RegistryRpcBinding;
   DRIFT?: DriftRpcBinding;
+  DEPLOY?: DeployRpcBinding;
 }
 
 export type SyscallResult =
