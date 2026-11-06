@@ -358,3 +358,16 @@ Each promotion is a separate reviewed change, audited by pi and agy.
   1. the Deployment Orchestrator (`deployForRecovery`, `runStatus`);
   2. the control plane (the Recovery Manager binds `DEPLOY`, and its readiness requires that binding);
   3. the Console.
+
+## Amendment 2026-11-06: Wave A reliability (owner-approved plan "A, B, C")
+
+- **A1, incremental audit verification.** Migration 0025 adds `audit_checkpoints`.
+  - A full verification (Audit Ledger `/v1/verify`, the auditor, deploy verification) re-anchors the checkpoint.
+  - Consensus evidence uses `verifyAuditChainIncremental`. It re-hashes the checkpointed event, verifies only newer events, and advances the checkpoint.
+  - It falls back to a full pass when there is no checkpoint.
+  - Tampering with the checkpointed event or any newer event is still detected, and a failed check never advances the checkpoint.
+  - This removes the main cost of the roughly 25-second proposals.
+- **A2, retries for the Access API.** The Access API calls in `resolve-access.sh`, `find-service-token.sh` and `provision-access.yml` retry transient errors: 5 retries, 10 seconds apart. On 2026-11-06 a single 503 had stopped three deploys.
+- **A3, cron-window guard.** Every production deploy workflow runs `.github/scripts/wait-cron-window.sh` right before it deploys. The deploy starts only at a minute where no drift cron (:00/:15/:30/:45) or kernel cron (:07/:22/:37/:52) falls in the next 4 minutes or the previous minute. The guard covers every dispatch path: ops requests, consensus, autonomous recovery and people.
+- **A4, deployment ledger.** The Deployment Orchestrator now has a cron at :11 and :41. It records each open `deployment_requests` row as `succeeded` or `failed` from its GitHub Actions run, fails requests that are stale after 3 hours, and audits `deployment.reconciled`.
+- **Tests:** `test/wave-a-reliability.test.ts` (6) and `wait-cron-window.test.sh`. 235 of 235 tests pass.

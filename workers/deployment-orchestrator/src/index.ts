@@ -1,4 +1,4 @@
-import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
+import type { AiBinding, D1Database, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
@@ -393,6 +393,47 @@ export async function retireForConsensus(env: Env, proposalId: string, decisionI
   return { dispatched: true, request_id: requestId, workflow: "retire-worker.yml", worker: target };
 }
 
+/**
+ * Wave A: close the deployment ledger. Dispatches are recorded as 'running' and nothing used to
+ * record the outcome. Every scheduled run looks up the GitHub Actions run of each open request
+ * and records succeeded or failed; a request with no finished run after 3 hours is failed as stale.
+ */
+export async function reconcileDeployments(env: Env, now = Date.now()): Promise<{ checked: number; closed: number }> {
+  if (!env.GH_ACTIONS_TOKEN || !env.DB) return { checked: 0, closed: 0 };
+  const rows = await env.DB.prepare(
+    "SELECT request_id, service_id, requested_version, details_json, created_at FROM deployment_requests WHERE status IN ('running', 'approved') AND created_at <= ? ORDER BY created_at LIMIT 20",
+  ).bind(new Date(now - 2 * 60_000).toISOString()).all<{ request_id: string; service_id: string; requested_version: string; details_json: string; created_at: string }>();
+  let closed = 0;
+  for (const r of rows.results) {
+    let details: Record<string, unknown> = {};
+    try { details = JSON.parse(r.details_json || "{}"); } catch { details = {}; }
+    const workflow = String(details.workflow ?? "");
+    if (!/^[a-z0-9-]+\.yml$/.test(workflow)) continue;
+    const res = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + workflow + "/runs?event=workflow_dispatch&per_page=20&created=%3E%3D" + encodeURIComponent(r.created_at.slice(0, 19) + "Z"));
+    if (!res.ok) continue;
+    const runs = ((await res.json()) as { workflow_runs?: { id: number; head_sha: string; status: string; conclusion: string | null; html_url: string; created_at: string }[] }).workflow_runs ?? [];
+    const sha = /^[0-9a-f]{40}$/.test(r.requested_version) ? r.requested_version : null;
+    const run = runs.filter((x) => !sha || x.head_sha === sha).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
+    let status: "succeeded" | "failed" | null = null;
+    let note: Record<string, unknown> = {};
+    if (run?.status === "completed") {
+      status = run.conclusion === "success" ? "succeeded" : "failed";
+      note = { run_id: run.id, run_url: run.html_url, conclusion: run.conclusion };
+    } else if (!run && now - Date.parse(r.created_at) > 3 * 3_600_000) {
+      status = "failed";
+      note = { reason: "stale: no workflow run finished within 3 hours" };
+    }
+    if (!status) continue;
+    const upd = await env.DB.prepare("UPDATE deployment_requests SET status = ?, details_json = ?, updated_at = ? WHERE request_id = ? AND status IN ('running', 'approved')")
+      .bind(status, JSON.stringify({ ...details, outcome: note }), new Date(now).toISOString(), r.request_id).run();
+    if ((upd.meta.changes ?? 0) === 1) {
+      closed++;
+      await auditQuietly(env, { event_type: "deployment.reconciled", actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status, payload: { request_id: r.request_id, workflow, ...note } });
+    }
+  }
+  return { checked: rows.results.length, closed };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -592,7 +633,13 @@ export default {
       production_deployment_triggered: true,
       ...(advisory ? { advisory } : {})
     }, 202);
-  }
+  },
+
+  async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    ctx.waitUntil(reconcileDeployments(env).then(() => undefined, (err) => {
+      console.error(JSON.stringify({ service: SERVICE, event: "reconcile_failed", message: String((err as Error)?.message ?? err) }));
+    }));
+  },
 };
 
 export class DeploymentLock {

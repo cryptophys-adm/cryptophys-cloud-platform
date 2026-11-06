@@ -93,6 +93,8 @@ jobs:
           ACCESS_APP_NAME: cryptophys-cloud-platform
           EXPECTED_WORKERS: cryptophys-platform-api
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
+      - name: Wait for a deploy window outside the drift and kernel cron minutes
+        run: '"$GITHUB_WORKSPACE/.github/scripts/wait-cron-window.sh"'
       - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
         id: capture
         env:

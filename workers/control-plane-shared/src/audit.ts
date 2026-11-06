@@ -110,11 +110,15 @@ export interface ChainVerification {
   reason: string | null;
 }
 
+interface ChainStart { rowid: number; hash: string; checked: number }
+interface Checkpoint { last_rowid: number; event_id: string; event_hash: string; events_checked: number }
+
 /** Re-computes every hash in insertion order and checks each link to its predecessor. */
-export async function verifyAuditChain(db: D1Database, pageSize = 500): Promise<ChainVerification> {
-  let expectedPrevious = GENESIS_HASH;
-  let checked = 0;
-  let lastRowId = 0;
+export async function verifyAuditChain(db: D1Database, pageSize = 500, start?: ChainStart): Promise<ChainVerification & { last_rowid?: number; last_event_id?: string | null }> {
+  let expectedPrevious = start?.hash ?? GENESIS_HASH;
+  let checked = start?.checked ?? 0;
+  let lastRowId = start?.rowid ?? 0;
+  let lastEventId: string | null = null;
   for (;;) {
     const page = await db.prepare(
       `SELECT rowid AS rid, event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at
@@ -128,9 +132,54 @@ export async function verifyAuditChain(db: D1Database, pageSize = 500): Promise<
       if (recomputed !== row.event_hash) return fail("event_hash does not match event contents");
       expectedPrevious = row.event_hash;
       lastRowId = row.rid;
+      lastEventId = row.event_id;
       checked++;
     }
     if (page.results.length < pageSize) break;
   }
-  return { valid: true, events_checked: checked, head_hash: expectedPrevious, first_invalid_event_id: null, reason: null };
+  const result = { valid: true, events_checked: checked, head_hash: expectedPrevious, first_invalid_event_id: null, reason: null, last_rowid: lastRowId, last_event_id: lastEventId };
+  // A full pass that succeeded re-anchors the checkpoint (best effort: the table exists from 0025).
+  if (!start && lastEventId) await saveCheckpoint(db, { last_rowid: lastRowId, event_id: lastEventId, event_hash: expectedPrevious, events_checked: checked }, "full");
+  return result;
+}
+
+async function saveCheckpoint(db: D1Database, c: Checkpoint, mode: "full" | "incremental"): Promise<void> {
+  try {
+    await db.prepare(
+      `INSERT INTO audit_checkpoints (id, last_rowid, event_id, event_hash, events_checked, verified_at, mode) VALUES (1, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_rowid = excluded.last_rowid, event_id = excluded.event_id, event_hash = excluded.event_hash,
+         events_checked = excluded.events_checked, verified_at = excluded.verified_at, mode = excluded.mode
+       WHERE excluded.last_rowid >= audit_checkpoints.last_rowid`,
+    ).bind(c.last_rowid, c.event_id, c.event_hash, c.events_checked, new Date().toISOString(), mode).run();
+  } catch {
+    // Before migration 0025 the table does not exist; verification results are unaffected.
+  }
+}
+
+/**
+ * Fast chain check for hot paths (consensus evidence). Starts from the last verified
+ * checkpoint, confirms that checkpointed event is still byte-identical (its stored hash and
+ * its recomputed hash), then verifies only newer events and advances the checkpoint. Falls
+ * back to a full verification when there is no checkpoint. Full verifications still run in
+ * the Audit Ledger, the auditor agent and every deploy verification.
+ */
+export async function verifyAuditChainIncremental(db: D1Database): Promise<ChainVerification> {
+  let cp: Checkpoint | null = null;
+  try {
+    cp = await db.prepare("SELECT last_rowid, event_id, event_hash, events_checked FROM audit_checkpoints WHERE id = 1").first<Checkpoint>();
+  } catch {
+    cp = null;
+  }
+  if (!cp) return verifyAuditChain(db);
+  const anchor = await db.prepare(
+    `SELECT event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at FROM audit_events WHERE rowid = ?`,
+  ).bind(cp.last_rowid).first<AuditEvent>();
+  if (!anchor || anchor.event_id !== cp.event_id || anchor.event_hash !== cp.event_hash || (await computeEventHash(anchor)) !== cp.event_hash) {
+    return { valid: false, events_checked: 0, head_hash: cp.event_hash, first_invalid_event_id: cp.event_id, reason: "checkpointed event changed since it was verified" };
+  }
+  const result = await verifyAuditChain(db, 500, { rowid: cp.last_rowid, hash: cp.event_hash, checked: cp.events_checked });
+  if (result.valid && result.last_event_id) {
+    await saveCheckpoint(db, { last_rowid: result.last_rowid!, event_id: result.last_event_id, event_hash: result.head_hash, events_checked: result.events_checked }, "incremental");
+  }
+  return { valid: result.valid, events_checked: result.events_checked, head_hash: result.head_hash, first_invalid_event_id: result.first_invalid_event_id, reason: result.reason };
 }

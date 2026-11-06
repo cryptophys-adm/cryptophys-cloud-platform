@@ -113,6 +113,8 @@ jobs:
           else
             echo "ORCHESTRATOR_SHARED_SECRET is not present on the Worker."
           fi
+      - name: Wait for a deploy window outside the drift and kernel cron minutes
+        run: '"$GITHUB_WORKSPACE/.github/scripts/wait-cron-window.sh"'
       - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
         id: capture
         env:

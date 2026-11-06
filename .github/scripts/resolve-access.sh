@@ -15,7 +15,9 @@ set -euo pipefail
 api_base="${CF_API_BASE:-https://api.cloudflare.com/client/v4}/accounts/${CLOUDFLARE_ACCOUNT_ID}"
 
 cf_get() {
-  curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 \
+  # Transient Cloudflare API errors (5xx, 429, timeouts) are retried: on 2026-11-06 a 503 from the
+  # Access API stopped three deploys before they started.
+  curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 20 --retry 5 --retry-delay 10 \
     --header "Authorization: Bearer ${CLOUDFLARE_ACCESS_API_TOKEN}" "${api_base}$1"
 }
 
