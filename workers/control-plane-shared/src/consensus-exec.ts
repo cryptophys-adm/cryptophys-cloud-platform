@@ -33,6 +33,12 @@ export async function verifyConsensusExecution(
     || !Number.isFinite(age) || age < 0 || age > CONSENSUS_EXECUTION_WINDOW_MS) {
     throw new Error("consensus_decision_invalid");
   }
+  const cls = await db.prepare("SELECT class FROM consensus_proposals WHERE proposal_id = ?").bind(proposalId).first<{ class: string }>();
+  if (cls?.class === "critical") {
+    // Phase 4: a critical action also needs exactly one owner approval click (migration 0024).
+    const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?").bind(proposalId).first<{ decision: string }>();
+    if (owner?.decision !== "approve") throw new Error("consensus_owner_approval_required");
+  }
   const ks = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
   if (ks?.value !== "1") throw new Error("consensus_kill_switch");
 }

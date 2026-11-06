@@ -60,6 +60,11 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     checks.push(check("class_known", cls === "routine" || cls === "critical", "class must be routine or critical"));
     checks.push(check("not_prohibited", cls !== "prohibited" && !/trad(e|ing)|order|wallet|withdraw|transfer|swap/i.test(resource), "prohibited actions never execute"));
     checks.push(check("consensus_passed", context.passed === true, "a simple majority of eligible voters must approve"));
+    if (cls === "critical" && context.stage === "execute") {
+      const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?")
+        .bind(String(context.proposal_id ?? "")).first<{ decision: string }>();
+      checks.push(check("owner_approved", owner?.decision === "approve", "a critical action needs one owner approval click (ADR-0009 phase 4)"));
+    }
     const ks = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
     checks.push(check("agents_enabled", ks?.value === "1", "the global agent kill switch must be on"));
     const now = Date.now();

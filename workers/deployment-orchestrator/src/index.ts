@@ -287,6 +287,44 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
 }
 
+/**
+ * ADR-0009 phase 4: execute an owner-approved retire_worker. Re-verifies the proposal (which,
+ * for a critical action, includes the owner's approval click), requires the Worker to be
+ * disabled in the registry, and dispatches the Retire Worker workflow. That workflow keeps its
+ * own gates: an owner-curated RETIRABLE list, source gone from main, the production
+ * Environment, and the DELETE confirmation. D1 data is never touched.
+ */
+export async function retireForConsensus(env: Env, proposalId: string, decisionId: string, target: string): Promise<Record<string, unknown>> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, "retire_worker", target);
+  if (!/^cryptophys-[a-z0-9][a-z0-9-]{1,60}$/.test(target)) throw new Error("invalid_worker");
+  if (unitForService(target)) throw new Error("worker_is_an_active_deploy_unit");
+  const reg = await env.DB.prepare("SELECT status FROM service_registry WHERE service_id = ?").bind(target).first<{ status: string }>();
+  if (reg?.status !== "disabled") throw new Error("worker_not_disabled_in_registry");
+  if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`consensus:retire:${target}`))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: "0".repeat(40) }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { dispatched: false, reason: "already_dispatched", worker: target };
+  const actor = `consensus:${proposalId}`;
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+     VALUES (?, ?, 'retire', ?, 'approved', ?, ?, ?, ?, ?)`,
+  ).bind(requestId, target, actor, proposalId, `consensus:retire:${target}`,
+    JSON.stringify({ workflow: "retire-worker.yml", proposal_id: proposalId, policy_decision_id: decisionId }), at, at).run();
+  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/retire-worker.yml/dispatches",
+    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { worker: target, confirm_production: "DELETE" } }) });
+  const status = dispatch.status === 204 ? "running" : "failed";
+  await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
+  await appendAuditEvent(env.DB, {
+    event_type: dispatch.status === 204 ? "deployment.retire_dispatched" : "deployment.dispatch_failed", actor, subject: target, outcome: status,
+    payload: { request_id: requestId, workflow: "retire-worker.yml", github_status: dispatch.status, proposal_id: proposalId },
+  });
+  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  return { dispatched: true, request_id: requestId, workflow: "retire-worker.yml", worker: target };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);

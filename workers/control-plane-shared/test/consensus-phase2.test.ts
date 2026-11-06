@@ -97,7 +97,7 @@ test("4. routine mode: registry actions run in the Platform Registry, which re-v
   assert.match(actor, /^consensus:cns_/);
 });
 
-test("5. routine mode: deploys and redeploys are not executed in phase 2; critical actions wait for the owner", async () => {
+test("5. routine mode: deploys and redeploys are not executed in phase 2; critical actions do not reach the owner outside mode critical", async () => {
   const { env, db } = kernelEnv();
   setMode(db, "routine");
   db.raw.prepare("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id = 'cryptophys-platform-api'").run();
@@ -108,7 +108,9 @@ test("5. routine mode: deploys and redeploys are not executed in phase 2; critic
   assert.equal(JSON.parse(redeploy.outcome_json).executed, false);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM deployment_requests").get() as any).n, 0);
   await syscall(env as never, "supervisor", "consensus.propose", { action: "rotate_secret", target: "cryptophys-platform-api" });
-  assert.ok(["pending_owner", "rejected", "shadow_blocked"].includes(last(db).status), last(db).status);
+  // Phase 4: critical actions reach the owner only in mode "critical"; in routine mode they are recorded only.
+  assert.ok(["shadow_passed", "rejected", "shadow_blocked"].includes(last(db).status), last(db).status);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE status = 'pending_owner'").get() as any).n, 0);
   assert.ok(proposals(db).every((p) => p.status !== "executing"));
 });
 
