@@ -50,23 +50,34 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
     if (url.includes("/check-runs?per_page=100")) {
       const authenticated = Boolean(new Headers(init?.headers).get("authorization"));
       if (authenticated ? !gh.checksReadable : !gh.publicChecksReadable) return new Response("forbidden", { status: 403 });
-      const check_runs = ["Validate", "Validate Control Plane Workers", "Type-check", "Tests"].map((name) => ({ name, status: gh.checkStatus, conclusion: gh.checkConclusion }));
+      const check_runs = [
+        { name: "Validate", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 101 } },
+        { name: "Validate Control Plane Workers", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 102 } },
+        { name: "Type-check", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 101 } },
+        { name: "Tests", status: gh.checkStatus, conclusion: gh.checkConclusion, check_suite: { id: 102 } },
+        // Non-CI GitHub Actions runs on the same SHA must not poison the commit CI gate.
+        { name: "deploy", status: "completed", conclusion: "failure", check_suite: { id: 104 } },
+        { name: "alert", status: "completed", conclusion: "failure", check_suite: { id: 105 } },
+      ];
       return Response.json({ total_count: gh.checkRunTotalCount ?? check_runs.length, check_runs });
     }
     if (url.includes("/check-suites?per_page=100")) {
       const authenticated = Boolean(new Headers(init?.headers).get("authorization"));
       if (authenticated ? !gh.checksReadable : !gh.publicChecksReadable) return new Response("forbidden", { status: 403 });
       const check_suites = [
-        { app: { slug: "github-actions" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
-        { app: { slug: "external-review" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 101, app: { slug: "github-actions" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 102, app: { slug: "github-actions" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 103, app: { slug: "external-review" }, status: gh.suiteStatus, conclusion: gh.suiteConclusion },
+        { id: 104, app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, // workflow_dispatch
+        { id: 105, app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, // schedule
       ];
       return Response.json({ total_count: gh.checkSuiteTotalCount ?? check_suites.length, check_suites });
     }
     if (url.includes("/actions/runs?head_sha=")) {
       assert.match(url, /event=push/, "only push-event CI counts for consensus deploys");
       const runs = [
-        { workflow_id: 1, name: "Validate", event: "push", head_branch: "main", status: "completed", conclusion: gh.ciConclusion, run_number: 3 },
-        { workflow_id: 2, name: "Validate Control Plane Workers", event: "push", head_branch: "main", status: "completed", conclusion: gh.controlPlaneConclusion, run_number: 3 },
+        { workflow_id: 1, check_suite_id: 101, name: "Validate", event: "push", head_branch: "main", status: "completed", conclusion: gh.ciConclusion, run_number: 3 },
+        { workflow_id: 2, check_suite_id: 102, name: "Validate Control Plane Workers", event: "push", head_branch: "main", status: "completed", conclusion: gh.controlPlaneConclusion, run_number: 3 },
       ].filter((r) => r.name !== gh.omitWorkflow);
       return Response.json({ total_count: runs.length, workflow_runs: runs });
     }
@@ -285,9 +296,9 @@ test("9. CI gate fails closed unless both main push validations and combined com
       github({ suiteStatus: status, suiteConclusion: conclusion });
       assert.equal((await ciGreen("gh-token", MAIN)).green, false, `check suite ${status}/${conclusion} must block`);
     }
-    github({ checkRunTotalCount: 5 });
+    github({ checkRunTotalCount: 7 });
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "truncated Check Runs response must block");
-    github({ checkSuiteTotalCount: 3 });
+    github({ checkSuiteTotalCount: 6 });
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "truncated Check Suites response must block");
     github();
     assert.equal((await ciGreen("gh-token", MAIN)).green, true, "complete green evidence should pass");

@@ -123,9 +123,9 @@ async function ghChecks(token: string, path: string): Promise<Response> {
 }
 
 type CommitStatus = { state?: string; total_count?: number };
-type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
-type CheckRun = { name: string; status: string; conclusion: string | null };
-type CheckSuite = { status: string; conclusion: string | null };
+type WorkflowRun = { workflow_id: number; check_suite_id?: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type CheckRun = { name: string; status: string; conclusion: string | null; check_suite?: { id?: number } };
+type CheckSuite = { id: number; app?: { slug?: string }; status: string; conclusion: string | null };
 
 const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
 
@@ -210,9 +210,30 @@ export async function ciGreen(token: string, sha: string): Promise<{ green: bool
     runs.some((r) => r.name === name && r.status === "completed" && r.conclusion === "success"),
   );
   const workflowsGreen = runs.every((r) => r.status === "completed" && r.conclusion === "success");
-  const checkRunsGreen = checkRuns.every((r) => r.status === "completed" && r.conclusion === "success");
-  const checkSuitesGreen = checkSuites.every((r) => r.status === "completed" && r.conclusion === "success");
-  const green = statusGreen && requiredGreen && workflowsGreen && checkRunsGreen && checkSuitesGreen;
+
+  // GitHub returns Check Suites for every event on a commit, including scheduled
+  // observers, operator-branch dispatches and production workflow_dispatch attempts.
+  // Those are not commit CI. Include all external-app suites, plus only the GitHub
+  // Actions suites linked by check_suite_id to push/main workflow runs above. This keeps
+  // queued external reviews fail-closed without letting a historical/manual deployment
+  // failure poison every later retry of the same commit.
+  const ciSuiteIds = new Set(runs.map((r) => r.check_suite_id).filter((id): id is number => typeof id === "number"));
+  const requiredSuitesMapped = REQUIRED_PUSH_VALIDATIONS.every((name) => {
+    const run = runs.find((r) => r.name === name);
+    return typeof run?.check_suite_id === "number" && ciSuiteIds.has(run.check_suite_id);
+  });
+  const relevantSuites = checkSuites.filter((suite) =>
+    suite.app?.slug !== "github-actions" || ciSuiteIds.has(suite.id),
+  );
+  const relevantSuiteIds = new Set(relevantSuites.map((suite) => suite.id));
+  const relevantCheckRuns = checkRuns.filter((run) =>
+    typeof run.check_suite?.id === "number" && relevantSuiteIds.has(run.check_suite.id),
+  );
+  const checkRunsGreen = relevantCheckRuns.length > 0
+    && relevantCheckRuns.every((r) => r.status === "completed" && r.conclusion === "success");
+  const checkSuitesGreen = relevantSuites.length > 0
+    && relevantSuites.every((r) => r.status === "completed" && r.conclusion === "success");
+  const green = statusGreen && requiredGreen && workflowsGreen && requiredSuitesMapped && checkRunsGreen && checkSuitesGreen;
   return { green, workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 

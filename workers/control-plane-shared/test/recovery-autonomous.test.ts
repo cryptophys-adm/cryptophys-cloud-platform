@@ -37,10 +37,16 @@ function github(db: Db, opts: { main?: string; conclusion?: string; onPoll?: () 
     if (url.includes("access/certs")) return (await import("./harness.ts")).accessCertsResponse();
     if (url.endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: opts.main ?? MAIN } });
     if (/\/commits\/[0-9a-f]{40}\/status$/.test(url)) return Response.json({ state: "success", total_count: 0 });
-    if (url.includes("/check-runs?per_page=100")) return Response.json({ total_count: 1, check_runs: [{ name: "Validate", status: "completed", conclusion: "success" }] });
-    if (url.includes("/check-suites?per_page=100")) return Response.json({ total_count: 1, check_suites: [{ status: "completed", conclusion: "success" }] });
+    if (url.includes("/check-runs?per_page=100")) return Response.json({ total_count: 2, check_runs: [
+      { name: "Validate", status: "completed", conclusion: "success", check_suite: { id: 101 } },
+      { name: "Validate Control Plane Workers", status: "completed", conclusion: "success", check_suite: { id: 102 } },
+    ] });
+    if (url.includes("/check-suites?per_page=100")) return Response.json({ total_count: 2, check_suites: [
+      { id: 101, app: { slug: "github-actions" }, status: "completed", conclusion: "success" },
+      { id: 102, app: { slug: "github-actions" }, status: "completed", conclusion: "success" },
+    ] });
     if (url.includes("/actions/runs?head_sha=")) {
-      const runs = ["Validate", "Validate Control Plane Workers"].map((name, i) => ({ workflow_id: i + 1, name, event: "push", head_branch: "main", status: "completed", conclusion: "success", run_number: 1 }));
+      const runs = ["Validate", "Validate Control Plane Workers"].map((name, i) => ({ workflow_id: i + 1, check_suite_id: i + 101, name, event: "push", head_branch: "main", status: "completed", conclusion: "success", run_number: 1 }));
       return Response.json({ total_count: runs.length, workflow_runs: runs });
     }
     const d = /\/actions\/workflows\/([a-z-]+\.yml)\/dispatches$/.exec(url);
