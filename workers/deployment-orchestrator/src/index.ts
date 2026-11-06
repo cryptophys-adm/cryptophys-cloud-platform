@@ -104,6 +104,8 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
 
 type CommitStatus = { state?: string; total_count?: number };
 type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
+type CheckRun = { name: string; status: string; conclusion: string | null };
+type CheckSuite = { status: string; conclusion: string | null };
 
 const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
 
@@ -156,29 +158,41 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
   return files.some((f) => unit.paths.some((p) => f === p || f.startsWith(p)));
 }
 
-/** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
+/** Required push validations for any consensus-triggered production deployment. */
 const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
 
-/** Consensus deploys require the combined commit-status gate and both push validations on main.
- * Missing, pending, skipped or unreadable evidence fails closed. */
+/** Consensus deploys require commit statuses, complete main push workflows, and all Check Runs/Suites.
+ * Checks: Read is intentionally required. If the token cannot read external suites, deployment fails closed. */
 export async function ciGreen(token: string, sha: string): Promise<{ green: boolean; workflows: { name: string; conclusion: string | null }[] }> {
-  const [statusRes, runsRes] = await Promise.all([
-    gh(token, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
+  const prefix = "/repos/" + REPOSITORY + "/commits/" + sha;
+  const [statusRes, runsRes, checksRes, suitesRes] = await Promise.all([
+    gh(token, prefix + "/status"),
     gh(token, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&event=push&per_page=100"),
+    gh(token, prefix + "/check-runs?per_page=100"),
+    gh(token, prefix + "/check-suites?per_page=100"),
   ]);
-  if (!statusRes.ok || !runsRes.ok) return { green: false, workflows: [] };
+  if (!statusRes.ok || !runsRes.ok || !checksRes.ok || !suitesRes.ok) return { green: false, workflows: [] };
   const statusData = await statusRes.json() as CommitStatus;
   const runsData = await runsRes.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
+  const checksData = await checksRes.json() as { total_count?: number; check_runs?: CheckRun[] };
+  const suitesData = await suitesRes.json() as { total_count?: number; check_suites?: CheckSuite[] };
   const allRuns = runsData.workflow_runs ?? [];
-  // Do not accept a truncated Actions response or a push from a branch other than main.
+  const checkRuns = checksData.check_runs ?? [];
+  const checkSuites = suitesData.check_suites ?? [];
+  // Do not accept truncated responses or a push from a branch other than main.
   if (typeof runsData.total_count !== "number" || runsData.total_count > allRuns.length) return { green: false, workflows: [] };
+  if (typeof checksData.total_count !== "number" || checksData.total_count === 0 || checksData.total_count > checkRuns.length) return { green: false, workflows: [] };
+  if (typeof suitesData.total_count !== "number" || suitesData.total_count === 0 || suitesData.total_count > checkSuites.length) return { green: false, workflows: [] };
   const runs = latestRunPerWorkflow(allRuns.filter((r) => r.event === "push" && r.head_branch === "main"));
   const statusGreen = typeof statusData.total_count === "number"
     && (statusData.total_count === 0 || statusData.state === "success");
   const requiredGreen = REQUIRED_PUSH_VALIDATIONS.every((name) =>
     runs.some((r) => r.name === name && r.status === "completed" && r.conclusion === "success"),
   );
-  const green = statusGreen && requiredGreen && runs.every((r) => r.status === "completed" && r.conclusion === "success");
+  const workflowsGreen = runs.every((r) => r.status === "completed" && r.conclusion === "success");
+  const checkRunsGreen = checkRuns.every((r) => r.status === "completed" && r.conclusion === "success");
+  const checkSuitesGreen = checkSuites.every((r) => r.status === "completed" && r.conclusion === "success");
+  const green = statusGreen && requiredGreen && workflowsGreen && checkRunsGreen && checkSuitesGreen;
   return { green, workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) };
 }
 
