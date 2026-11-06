@@ -177,14 +177,14 @@ expect fail "non-JSON readiness fails" "readiness check failed"
 setup_green custom-domain-tls
 key="$(printf '%s' "https://custom.example.test/health" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
 echo "curl: (60) SSL: no alternative certificate subject name matches target hostname" >"$FIXTURES/$key.err"
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
 extra_args=(--custom-domain custom.example.test)
 expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed TLS-verified request"
 extra_args=()
 
 # Strict custom-domain mode is opt-in so existing callers retain advisory semantics.
 setup_green custom-domain-required
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
 fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
 export FAKE_ACCESS=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
@@ -192,24 +192,24 @@ extra_args=(--require-access --custom-domain custom.example.test --require-custo
 expect pass "required custom domain verifies registration, Access, health and readiness" "custom-domain readiness OK"
 
 setup_green custom-domain-previews-enabled
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":true}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":true}]}'
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
 expect fail "required custom domain must disable preview subdomain routing" "preview routing disabled"
 
 setup_green custom-domain-unregistered
-fx "$api/domains?service=svc" '{"success":true,"result":[]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[]}'
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
 expect fail "required custom domain must be an enabled production registration" "exactly one registration"
 
 setup_green custom-domain-dns-failure
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 export FAKE_CUSTOM_DOMAIN_DNS_FAIL=1
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
 expect fail "required custom domain DNS/TLS failure fails deployment verification" "failed to connect over verified TLS"
 unset FAKE_CUSTOM_DOMAIN_DNS_FAIL
 
 setup_green custom-domain-unprotected
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
 fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
 export FAKE_CUSTOM_DOMAIN_UNPROTECTED=1
@@ -218,7 +218,7 @@ expect fail "required custom domain must reject unauthenticated requests" "Cloud
 unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
 
 setup_green custom-domain-origin-403
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{"status":"forbidden"}' 403
 export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
@@ -226,7 +226,7 @@ expect fail "origin-generated HTTP 403 is not accepted as an Access challenge" "
 unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
 
 setup_green custom-domain-untrusted-redirect
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{}' 302
 fx_response_headers "https://custom.example.test/health" "Location: https://attacker.example.test/cdn-cgi/access/login/fake"
 export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
@@ -235,7 +235,7 @@ expect fail "custom-domain challenge must redirect to Cloudflare Access" "config
 unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
 
 setup_green custom-domain-wrong-access-team
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 fx "https://custom.example.test/health" '{}' 302
 fx_response_headers "https://custom.example.test/health" "Location: https://other.cloudflareaccess.com/cdn-cgi/access/login/wrong-team"
 export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
@@ -244,7 +244,7 @@ expect fail "custom-domain challenge must use the resolved Access team" "configu
 unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
 
 setup_green custom-domain-duplicate-registration
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false},{"hostname":"custom.example.test","zone_name":"example.test","service":"other-svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false},{"hostname":"custom.example.test","zone_name":"example.test","service":"other-svc","environment":"production","enabled":true,"previews_enabled":false}]}'
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
 expect fail "duplicate hostname registrations fail closed" "exactly one registration"
 extra_args=()
