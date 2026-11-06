@@ -15,15 +15,20 @@ export const INDEX_HTML = `<!doctype html>
 <span id="actor"></span>
 <span id="approver" hidden>approver</span>
 </header>
-<nav aria-label="Home">
-<button type="button" data-view="home">Home</button>
+<nav aria-label="Primary navigation">
+<a href="/" id="nav-home" aria-current="page">Home</a>
 <a href="https://console.cryptophys.work">Console</a>
+<div class="nav-group">
 <a href="https://nexus.cryptophys.work" target="_blank" rel="noopener noreferrer">Nexus ↗</a>
-<span aria-disabled="true">More modules (phase 2)</span>
+<small class="muted">XAUUSD room (separate site until phase 2)</small>
+</div>
+<span class="disabled" aria-disabled="true">More modules (phase 2)</span>
 </nav>
-<main id="main"></main>
+<main id="main">
 <button type="button" id="refresh">Refresh</button>
-<div id="banner" hidden></div>
+<div id="banner" class="banner" role="alert" hidden></div>
+<div id="content"><p class="muted">Loading platform status…</p></div>
+</main>
 <script src="/assets/app.js"></script>
 </body>
 </html>

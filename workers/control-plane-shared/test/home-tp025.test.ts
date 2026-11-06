@@ -2,13 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
 import homeWorker from "../../home/src/index.ts";
+import { summarize } from "../../home/src/ui/summary.ts";
+import { APP_JS } from "../../home/src/ui/app-js.ts";
 
 const ORIGIN = "https://home.example.workers.dev";
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 function platformRecorder() {
   const calls: Request[] = [];
-  return { calls, binding: { async fetch(r: Request) { calls.push(r); return new Response(JSON.stringify({ agents_enabled: true, services: [{ service_id: "a", drifted: true, persistent: true }], agent_reports_24h: { counts: { critical: 1, warning: 2, info: 3 }, latest_attention: [{}] }, open_agent_plans: [{ x: 1 }], xauusd_latest: { decision: "BUY", confidence: 0.5, candle_key: "k", decided_at: "d" } }), { status: 200, headers: { "content-type": "text/plain", "set-cookie": "sid=1" } }); } } };
+  return { calls, binding: { async fetch(r: Request) { calls.push(r); return new Response(JSON.stringify({ agents_enabled: true, services: [{ service_id: "a", drifted: true, persistent: true }], agent_reports_24h: { counts: { critical: 1, warning: 2, info: 3 }, latest_critical: [{}] }, open_agent_plans: [{ x: 1 }], xauusd_latest: { decision: "BUY", confidence: 0.5, candle_key: "k", decided_at: "d" } }), { status: 200, headers: { "content-type": "text/plain", "set-cookie": "sid=1" } }); } } };
 }
 
 function homeEnv(extra: Record<string, unknown> = {}) {
@@ -154,13 +156,88 @@ test("TP-025 health and ready", async () => {
   assert.equal(r2.status, 503);
 });
 
-test("TP-025 wrapped overview formatter", async () => {
+test("TP-025 wrapped overview formatter is behavioural", () => {
+  const result = summarize({
+    overview: {
+      agents_enabled: true,
+      services: [{ service_id: "cryptophys-policy-engine", drifted: true, persistent: false }],
+      agent_reports_24h: { counts: { critical: 0, warning: 1, info: 12 }, latest_critical: [{ report_id: "r1" }] },
+      open_agent_plans: [{ plan_id: "p1" }],
+      xauusd_latest: { decision: "BUY", confidence: 0.75, candle_key: "candle-1", decided_at: "2026-11-06T00:00:00.000Z" },
+    },
+  });
+  assert.equal(result.agents, "running");
+  assert.equal(result.drift, 1);
+  assert.deepEqual(result.driftIds, ["cryptophys-policy-engine"]);
+  assert.equal(result.critical, 0);
+  assert.equal(result.warning, 1);
+  assert.equal(result.info, 12);
+  assert.equal(result.latestCritical, 1);
+  assert.equal(result.plans, 1);
+  assert.deepEqual(result.xauusd, {
+    decision: "BUY",
+    confidence: 0.75,
+    candle_key: "candle-1",
+    decided_at: "2026-11-06T00:00:00.000Z",
+  });
+  assert.ok(APP_JS.includes(summarize.toString()));
+});
+
+test("TP-025 summary distinguishes unknown, stopped, none and unavailable", () => {
+  assert.deepEqual(summarize({}), {
+    agents: "unknown",
+    drift: "unknown",
+    driftIds: "unknown",
+    critical: "unknown",
+    warning: "unknown",
+    info: "unknown",
+    latestCritical: "unknown",
+    plans: "unknown",
+    xauusd: { decision: "unknown", confidence: "unknown", candle_key: "unknown", decided_at: "unknown" },
+  });
+  const stopped = summarize({ overview: { agents_enabled: false } });
+  assert.equal(stopped.agents, "stopped (kill switch)");
+  assert.equal(stopped.drift, "unknown");
+  assert.deepEqual(summarize({ overview: { xauusd_latest: null } }).xauusd, {
+    decision: "none", confidence: "none", candle_key: "none", decided_at: "none",
+  });
+  assert.deepEqual(summarize({ overview: { xauusd_latest: { error: "x" } } }).xauusd, {
+    decision: "unavailable", confidence: "unavailable", candle_key: "unavailable", decided_at: "unavailable",
+  });
+  assert.deepEqual(summarize({ xauusd_latest: { error: "x" } }).xauusd, {
+    decision: "unavailable", confidence: "unavailable", candle_key: "unavailable", decided_at: "unavailable",
+  });
+});
+
+test("TP-025 layout, navigation and cards", async () => {
   const { env } = homeEnv();
+  const html = await run(env, creq("GET", "/"));
   const js = await run(env, creq("GET", "/assets/app.js"));
-  assert.ok(js.text.includes("(body&&body.overview)||{}"));
-  assert.ok(js.text.includes("latest_critical"));
+  const css = await run(env, creq("GET", "/assets/app.css"));
+  assert.equal((html.text.match(/id="refresh"/g) ?? []).length, 1);
+  assert.ok(html.text.indexOf('<main id="main">') < html.text.indexOf('<button type="button" id="refresh">'));
+  assert.ok(html.text.includes('<a href="/" id="nav-home" aria-current="page">Home</a>'));
+  assert.ok(html.text.includes("XAUUSD room (separate site until phase 2)"));
+  assert.ok(html.text.includes('target="_blank" rel="noopener noreferrer"'));
+  assert.ok(css.text.includes("grid-template-columns:220px 1fr"));
+  assert.ok(css.text.includes("flex-direction:column"));
+  assert.ok(css.text.includes("@media (max-width:720px){body{display:block}nav{flex-direction:row;flex-wrap:wrap"));
+  assert.ok(css.text.includes("--bg:#0f1419"));
+  assert.ok(css.text.includes("--card:#171d24"));
+  assert.ok(css.text.includes("--border:#2a323c"));
+  for (const expected of ["Platform status", "XAUUSD (display only)", "Operator console: agents, recovery, registry, policy, audit, deploy.", "XAUUSD room. Opens in a new tab."]) {
+    assert.ok(js.text.includes(expected), expected);
+  }
 });
 
 test("TP-025 no regressions", async () => {
-  assert.ok(true);
+  const { env } = homeEnv();
+  const home = await run(env, creq("GET", "/"));
+  assert.equal(home.status, 200);
+  assert.equal(home.headers.get("content-security-policy"), CSP);
+  const who = await run(env, creq("GET", "/api/whoami"));
+  assert.equal(who.body.operator, true);
+  const denied = await run(env, creq("GET", "/api/kernel/v1/agents"));
+  assert.equal(denied.status, 404);
+  assert.deepEqual(denied.body, { error: "not_allowed" });
 });

@@ -1,6 +1,9 @@
+import { summarize } from "./summary.ts";
+
 export const APP_JS = String.raw`"use strict";
+${summarize.toString()}
 function $(id){return document.getElementById(id);}
-function clear(n){while(n.firstChild)n.removeChild(n.firstChild);}
+function clear(node){while(node.firstChild)node.removeChild(node.firstChild);}
 function el(tag,props,children){
   var node=document.createElement(tag);
   var p=props||{};
@@ -9,78 +12,104 @@ function el(tag,props,children){
     if(v===undefined||v===null||v===false)return;
     if(k==="text")node.textContent=String(v);
     else if(k==="class")node.className=String(v);
-    else if(k==="for")node.htmlFor=String(v);
     else if(k==="click"||k==="change"||k==="input"||k==="keydown")node.addEventListener(k,v);
     else if(["value","checked","disabled","hidden","href","download","target","rel","type","id","name","rows","min","max","maxLength","title","colSpan","autocomplete"].indexOf(k)>=0)node[k]=v;
     else if(k==="role"||k.indexOf("aria-")===0)node.setAttribute(k,String(v));
   });
-  (children||[]).forEach(function(c){
-    if(c===undefined||c===null||c===false)return;
-    node.appendChild(typeof c==="string"?document.createTextNode(c):c);
+  (children||[]).forEach(function(child){
+    if(child===undefined||child===null||child===false)return;
+    node.appendChild(typeof child==="string"?document.createTextNode(child):child);
   });
   return node;
 }
-function fmt(v){if(v===undefined||v===null)return "unknown";return typeof v==="string"?v:JSON.stringify(v);}
 function api(path){
-  return fetch(path,{credentials:"same-origin"}).then(function(r){
-    if(!r.ok){return r.json().catch(function(){return {};}).then(function(b){throw new Error("GET "+path+": "+r.status+" "+(b.error||"error"));});}
-    return r.json();
+  return fetch(path,{credentials:"same-origin"}).then(function(response){
+    if(!response.ok){
+      return response.json().catch(function(){return {};}).then(function(body){
+        throw new Error("GET "+path+": "+response.status+" "+(body.error||"error"));
+      });
+    }
+    return response.json();
   });
 }
-function banner(msg){var b=$("banner");b.hidden=false;b.textContent=msg;}
-function val(v){return (v===undefined||v===null)?"unknown":v;}
+function banner(message){
+  var node=$("banner");
+  node.hidden=false;
+  node.textContent=message;
+}
+function row(label,value){
+  return el("div",{class:"data-row"},[
+    el("dt",{text:label}),
+    el("dd",{text:String(value)})
+  ]);
+}
+function tile(title,href,description,newTab){
+  var linkProps={href:href,text:title};
+  if(newTab){linkProps.target="_blank";linkProps.rel="noopener noreferrer";}
+  return el("section",{class:"card tile"},[
+    el("h3",{},[el("a",linkProps)]),
+    el("p",{class:"muted",text:description})
+  ]);
+}
+function render(body){
+  var result=summarize(body);
+  var content=$("content");
+  clear(content);
+
+  var status=el("section",{class:"card"},[
+    el("h2",{text:"Platform status"}),
+    el("dl",{},[
+      row("Agents",result.agents),
+      row("Drift",result.drift),
+      row("Agent reports 24 h · critical",result.critical),
+      row("Agent reports 24 h · warning",result.warning),
+      row("Agent reports 24 h · info",result.info),
+      row("Latest critical reports",result.latestCritical),
+      row("Open recovery proposals",result.plans)
+    ])
+  ]);
+  if(Array.isArray(result.driftIds)&&result.driftIds.length){
+    var list=el("ul",{class:"drift-list"});
+    result.driftIds.forEach(function(id){list.appendChild(el("li",{text:id}));});
+    status.appendChild(list);
+  }
+  status.appendChild(el("p",{},[
+    el("a",{href:"https://console.cryptophys.work/#/recovery",text:"Review in Console"})
+  ]));
+  content.appendChild(status);
+
+  content.appendChild(el("section",{class:"card"},[
+    el("h2",{text:"XAUUSD (display only)"}),
+    el("dl",{},[
+      row("Decision",result.xauusd.decision),
+      row("Confidence",result.xauusd.confidence),
+      row("Candle key",result.xauusd.candle_key),
+      row("Decided at",result.xauusd.decided_at)
+    ])
+  ]));
+
+  content.appendChild(el("div",{class:"tile-grid"},[
+    tile("Console","https://console.cryptophys.work","Operator console: agents, recovery, registry, policy, audit, deploy.",false),
+    tile("Nexus","https://nexus.cryptophys.work","XAUUSD room. Opens in a new tab.",true)
+  ]));
+}
 async function load(){
+  var refresh=$("refresh");
+  if(refresh)refresh.disabled=true;
   try{
     var who=await api("/api/whoami");
-    $("actor").textContent=who.actor;
-    if(who.approver)$("approver").hidden=false;
+    $("actor").textContent=String(who.actor||"unknown");
+    $("approver").hidden=!who.approver;
     var body=await api("/api/platform/v1/overview");
-    var o=(body&&body.overview)||{};
-    var main=$("main");
-    clear(main);
-    // nav active
-    var homeNav=$("nav-home");
-    if(homeNav)homeNav.setAttribute("aria-current","page");
-
-    var agentsText="Agents: "+(typeof o.agents_enabled==="boolean"?(o.agents_enabled?"running":"stopped (kill switch)"):"unknown");
-    main.appendChild(el("p",{text:agentsText}));
-
-    var drifted=Array.isArray(o.services)?o.services.filter(function(s){return s&&s.drifted;}):[];
-    var driftLine=el("p",{text:"Drift: "+(Array.isArray(o.services)?drifted.length:"unknown")});
-    main.appendChild(driftLine);
-    if(drifted.length>0){
-      var ul=el("ul",{});
-      drifted.forEach(function(s){ul.appendChild(el("li",{text:s.service_id+(s.persistent?" (persistent)":"")}));});
-      main.appendChild(ul);
-    }
-
-    var ar=o.agent_reports_24h||{};
-    var counts=(ar&&ar.counts)||{};
-    var latestCritical=Array.isArray(ar.latest_critical)?ar.latest_critical:[];
-    var reports=el("p",{text:"Agent reports 24h: critical "+val(counts.critical)+" warning "+val(counts.warning)+" info "+val(counts.info)+" latest_critical "+latestCritical.length});
-    main.appendChild(reports);
-
-    var plans=o.open_agent_plans||[];
-    var planCount=Array.isArray(plans)?plans.length:"unknown";
-    var planP=el("p",{});
-    planP.appendChild(document.createTextNode("Open recovery proposals: "+planCount+" "));
-    planP.appendChild(el("a",{href:"https://console.cryptophys.work/#/recovery",text:"Review in Console"}));
-    main.appendChild(planP);
-
-    var xl=o.xauusd_latest;
-    var box=el("div",{});
-    box.appendChild(el("p",{text:"XAUUSD decision: "+(xl&&xl.error?"unavailable":(xl?xl.decision:"none"))}));
-    box.appendChild(el("p",{text:"XAUUSD confidence: "+(xl&&xl.error?"unavailable":(xl?xl.confidence:"none"))}));
-    box.appendChild(el("p",{text:"XAUUSD candle_key: "+(xl&&xl.error?"unavailable":(xl?xl.candle_key:"none"))}));
-    box.appendChild(el("p",{text:"XAUUSD decided_at: "+(xl&&xl.error?"unavailable":(xl?xl.decided_at:"none"))}));
-    main.appendChild(box);
-
-    main.appendChild(el("a",{href:"https://console.cryptophys.work",text:"Console tile: operator console"}));
-    main.appendChild(el("a",{href:"https://nexus.cryptophys.work",target:"_blank",rel:"noopener noreferrer",text:"Nexus tile: XAUUSD room"}));
-    main.appendChild(el("button",{type:"button",id:"refresh",text:"Refresh",click:load}));
-  }catch(e){banner(String(e&&e.message?e.message:e));}
+    render(body);
+    $("banner").hidden=true;
+  }catch(error){
+    banner(String(error&&error.message?error.message:error));
+  }finally{
+    if(refresh)refresh.disabled=false;
+  }
 }
-var refreshBtn=document.getElementById("refresh");
-if(refreshBtn)refreshBtn.addEventListener("click",load);
+var refresh=$("refresh");
+if(refresh)refresh.addEventListener("click",load);
 load();
 `;
