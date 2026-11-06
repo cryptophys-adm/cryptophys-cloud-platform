@@ -8,6 +8,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 
 export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
 
@@ -142,6 +143,31 @@ async function setDesiredVersion(request: Request, env: Env, id: string, actor: 
   });
   const saved = await getService(env, id);
   return json({ service: saved ? present(saved) : null });
+}
+
+/**
+ * ADR-0009 phase 2: apply a passed consensus action. The Registry re-verifies the proposal and
+ * its Policy Engine decision itself (verifyConsensusExecution) before it writes anything.
+ */
+export async function applyConsensus(env: Env, proposalId: string, decisionId: string, action: string, target: string, params: Record<string, unknown>): Promise<JsonObject> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, action, target);
+  const existing = await getService(env, target);
+  if (!existing) throw new Error("service_not_registered");
+  const actor = `consensus:${proposalId}`;
+  if (action === "set_desired_version") {
+    const version = String(params.version ?? "");
+    if (!VERSION_TAG.test(version)) throw new Error("invalid_version");
+    await env.DB.prepare("UPDATE service_registry SET desired_version = ?, updated_at = ? WHERE service_id = ?").bind(version, nowIso(), target).run();
+    await appendAuditEvent(env.DB, { event_type: "registry.desired_version_set", actor, subject: target, outcome: "success", payload: { previous: existing.desired_version, desired_version: version } });
+  } else if (action === "registry_disable_service" || action === "registry_enable_service") {
+    const status = action === "registry_disable_service" ? "disabled" : "registered";
+    await env.DB.prepare("UPDATE service_registry SET status = ?, updated_at = ? WHERE service_id = ?").bind(status, nowIso(), target).run();
+    await appendAuditEvent(env.DB, { event_type: "registry.service_status_set", actor, subject: target, outcome: status, payload: { previous: existing.status } });
+  } else {
+    throw new Error("action_not_handled_by_registry");
+  }
+  const saved = await getService(env, target);
+  return { service: saved ? present(saved) : null };
 }
 
 export default {

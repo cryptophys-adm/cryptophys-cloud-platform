@@ -135,3 +135,24 @@ The owner can stop or reverse the rollout at any phase.
 - 0 of 15 services drifted.
 
 No proposals yet is expected: the supervisor proposes only on persistent drift. The 7-day shadow window for promotion to phase 2 starts **2026-11-06**, and the earliest review is **2026-11-13**. The recurring platform check (every 6 h) reports the shadow statistics.
+
+## Amendment 2026-11-06: phase 2 execution paths (code only; production stays in shadow)
+
+The execution code ships ahead of the promotion so that pi and agy can audit it during the shadow window. **`consensus_controls.mode` stays `shadow` in production.** Every path below is a no-op until a separate reviewed change sets the mode to `routine`, which needs the phase 1 criteria (earliest review 2026-11-13).
+
+- **Executable in phase 2** (`PHASE2_EXECUTABLE` in `workers/ai-kernel/src/consensus.ts`): `observe_drift`, `set_desired_version`, `registry_disable_service`, `registry_enable_service`, `suspend_agent`, `resume_agent`. All are reversible by the opposite action.
+- **Not executed in phase 2.** `redeploy_desired_version`, `rollback_worker_version` and `deploy_commit` pass or fail the vote as before but stay unexecuted, with the outcome "no executor in this phase". They move to phase 3 with a per-Worker deploy path and automatic rollback. Critical actions go to `pending_owner` (phase 4 adds the approval click).
+- **Flow.** If the mode is not `shadow`, the class is routine, the vote passed and the Policy Engine allowed `consensus.execute`, the kernel stores the proposal as `executing`, runs it, then sets `executed` or `failed` with the outcome, and appends `consensus.executed` to the audit chain.
+- **Owning paths:**
+  - suspend and resume go through the kernel's own `setAgentStatus`; kernel-hosted agents are refused;
+  - registry actions go to the Platform Registry over a new RPC entrypoint, `RegistryRpc.applyConsensus`;
+  - drift observation goes to the Drift Detector over a new RPC entrypoint, `DriftRpc.observeForConsensus`.
+- **Defence in depth.** Each executing path calls `verifyConsensusExecution` (`control-plane-shared/src/consensus-exec.ts`) in its own code. It refuses unless:
+  - the mode is not `shadow`;
+  - the proposal is `executing`, passed, and names exactly this action and target;
+  - its Policy Engine decision is an `allow` for `consensus.execute` on `<action>:<target>`, is the proposal's own decision, and is at most 10 minutes old;
+  - the kill switch is on.
+
+  An executed proposal cannot be replayed. Every change is attributed to the actor `consensus:<proposal id>`.
+- **Deploy order.** The Drift Detector now deploys before the AI Kernel, so that `DriftRpc` exists when the kernel binds to it.
+- **Tests:** `test/consensus-phase2.test.ts` (7 criteria): shadow never executes; suspend/resume and registry actions execute in routine mode; deploys and critical actions do not; executor failures are recorded as `failed`; the target Workers refuse malformed ids, swapped actions or targets, foreign, stale or replayed decisions, the kill switch and shadow mode.
