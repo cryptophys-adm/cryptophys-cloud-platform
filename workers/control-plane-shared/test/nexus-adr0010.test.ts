@@ -99,7 +99,10 @@ test("5. home.cryptophys.work (Cerebrum, retired) redirects to Nexus; health sta
 
 test("6. wiring: Workers route on the Nexus host, the UI is mount-relative, Access covers nexus.cryptophys.work with Google and Microsoft", () => {
   const toml = readFileSync(new URL("workers/console/wrangler.toml", ROOT), "utf8");
+  // Staged until the deploy token can create zone routes; the line is present (commented or not).
   assert.match(toml, /\{ pattern = "nexus\.cryptophys\.work\/console\*", zone_name = "cryptophys\.work" \}/);
+  const enabled = /^\s*\{ pattern = "nexus\.cryptophys\.work\/console\*"/m.test(toml);
+  assert.equal(/^LEGACY_HOSTS = "console\.cryptophys\.work"/m.test(toml), enabled, "the redirect is on exactly when the route is on");
   assert.match(toml, /NEXUS_ORIGIN = "https:\/\/nexus\.cryptophys\.work"/);
   assert.match(readFileSync(new URL("workers/console/ui/vite.config.ts", ROOT), "utf8"), /base: "\.\/"/);
   const shell = readFileSync(new URL("workers/console/ui/src/components/AppShell.tsx", ROOT), "utf8");

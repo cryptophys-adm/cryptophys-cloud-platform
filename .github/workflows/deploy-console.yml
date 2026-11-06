@@ -158,7 +158,13 @@ jobs:
           probe GET /console/api/whoami 200 '.operator == true'
           probe GET /console/api/kernel/v1/kernel 200 '.agents | type == "array"'
           # The Nexus hostname routes /console* to this Worker (route precedence over the Nexus Custom
-          # Domain), and the retired console.cryptophys.work redirects there.
+          # Domain), and the retired console.cryptophys.work redirects there. Checked once the route
+          # is enabled in wrangler.toml (ADR-0010 staging: it needs the Workers Routes permission).
+          if ! grep -Eq '^[[:space:]]*\{ pattern = "nexus\.cryptophys\.work/console\*"' "$GITHUB_WORKSPACE/workers/console/wrangler.toml"; then
+            echo "::notice::Nexus route not enabled yet (ADR-0010 staging); console.cryptophys.work keeps serving the Console."
+            printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            exit 0
+          fi
           nexus="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output "$out" --write-out '%{http_code}' https://nexus.cryptophys.work/console/health)"
           [[ "$nexus" == "200" ]] && jq -e '.service == "cryptophys-console"' "$out" >/dev/null \
             || { echo "::error::nexus.cryptophys.work/console/health: HTTP ${nexus}: $(head -c 300 "$out")"; exit 1; }

@@ -56,3 +56,13 @@
 - One sign-in, one session (8 hours) and one origin. The Console's CSRF origin is the Nexus origin.
 - The Console's deploy depends on the Nexus hostname being a proxied Cloudflare hostname, which it is through its Custom Domain. If the Nexus Worker's Custom Domain were removed, the route would need a proxied DNS record.
 - The deploy token needs **Workers Routes: Edit** on the `cryptophys.work` zone for the new route. If it is missing, the Console deploy fails before its verification and rolls back automatically (ADR-0009 §3.3).
+
+## Rollout record, 2026-11-06
+
+| Step | Result |
+|---|---|
+| Provision Access, run 42205641441 | **Success.** `nexus.cryptophys.work` is in the platform Access application; anonymous requests are refused and the CI token is admitted. Nexus now requires sign-in. |
+| Deploy Console, run 42205741321 | **Failed at the route, then rolled back automatically.** The deploy token lacks **Workers Routes: Edit** on the `cryptophys.work` zone ("No access to the specified resource"). The rollback restored the previous Console version, and `console.cryptophys.work` kept working. |
+| Deploy Home, run 42206302631 | **Success.** `home.cryptophys.work` redirects to Nexus. |
+
+**Staged until the owner acts.** The Nexus route and the Console redirect are disabled in `workers/console/wrangler.toml`; the Console keeps serving `console.cryptophys.work` with the mount-aware code, and the deploy smoke test checks the Nexus route only once it is enabled. **Owner action:** in Cloudflare → My Profile → API Tokens, edit the token stored as the `CLOUDFLARE_API_TOKEN` GitHub secret and add **Zone → Workers Routes → Edit** for `cryptophys.work`. This adds a permission to the existing token; no new secret is needed. The orchestrator then re-enables the route and the redirect and deploys the Console.
