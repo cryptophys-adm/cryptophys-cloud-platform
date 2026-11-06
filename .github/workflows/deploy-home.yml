@@ -110,6 +110,7 @@ jobs:
             --commit "$COMMIT_SHA" \
             --require-access \
             --custom-domain home.cryptophys.work \
+            --require-custom-domain \
             --health-filter ".status == \"ok\" and .service == \"cryptophys-home\" and .environment == \"production\" and .contract_version == \"v1\" and .version.tag == \"${tag}\"" \
             --ready-filter '.status == "ready" and .service == "cryptophys-home" and .production_ready == true and ([.checks[]] | all)'
       - name: Smoke-test forwarding, the allow-list and CSRF through Access
