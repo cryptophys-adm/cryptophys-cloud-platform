@@ -1,5 +1,12 @@
 # Pi worker guide (code tasks from TP-012)
 
+> **Role change (owner, 2026-11-06, ADR-0009 §4).** From now on **Claude (the orchestrator session) writes and deploys the code**. **pi and agy are validators and auditors**:
+> - they re-run the tests, review the diffs of Claude's merged PRs, and check production against each task's `APPROVAL.md`;
+> - they report findings as a PR comment or an issue.
+>
+> They do not merge, deploy or push to `main` or `claude/*`. The code-worker instructions below remain for reference only.
+
+
 Antigravity has run out of quota. From TP-012 onwards, the **code worker** is the **pi agent** on the VPS, running Reflection's `beam` model. Its role and rules are the same as Antigravity's:
 
 - The orchestrator and validator is the Claude cloud session. It reviews PRs, merges them and runs every deployment.
