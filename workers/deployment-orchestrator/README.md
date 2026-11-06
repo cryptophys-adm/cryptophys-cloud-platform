@@ -19,3 +19,5 @@ This Worker coordinates production deployment of `.github/workflows/deploy-platf
 2. Merge this reviewed change only after CI and required reviewer approval succeed.
 3. Verify the live Worker health/readiness and inspect GitHub Actions deployment status after activation.
 4. The orchestrator does not bypass GitHub Environment protections. An accepted dispatch is not proof that deployment completed.
+
+- Both required main push workflow runs must map to returned Check Suites through `check_suite_id`; missing mappings fail closed.
