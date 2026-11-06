@@ -1,0 +1,139 @@
+name: Deploy Cerebrum Home
+
+# Deploys cryptophys-home (ADR-0008, TP-025): the Cerebrum portal at home.cryptophys.work.
+# Read-only: no D1, AI or secret. It forwards the operator's own Access JWT to exactly one route
+# (platform-api GET /v1/overview), so it is deployed only after Provision Access has put it in the
+# same Access application.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: "Type DEPLOY to confirm production deployment"
+        required: true
+        type: string
+      commit_sha:
+        description: "Exact full commit SHA to deploy (must be the dispatch ref on main)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-home-production
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exact production confirmation
+        shell: bash
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Production deployment must be dispatched against main."; exit 1; }
+          [[ "$CONFIRM_PRODUCTION" == "DEPLOY" ]] || { echo "::error::Production deployment requires the exact input DEPLOY."; exit 1; }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::A full lowercase 40-character commit SHA is required."; exit 1; }
+          [[ "$COMMIT_SHA" == "$GITHUB_SHA" ]] || { echo "::error::Requested commit SHA does not match the workflow dispatch ref."; exit 1; }
+
+  deploy:
+    needs: validate-confirmation
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+        working-directory: workers/control-plane-shared
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Install the locked control-plane toolchain
+        run: npm ci
+      - name: Type-check and test (includes the TP-025 home tests and dry-run)
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm test
+      - name: Build the Access identity allow-lists
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_ALLOWED_EMAILS: ${{ vars.ACCESS_ALLOWED_EMAILS }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/access-identities.sh" "$GITHUB_ENV"'
+      - name: Resolve Cloudflare Access configuration (fails closed if the portal is not protected)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          ACCESS_APP_NAME: cryptophys-cloud-platform
+          EXPECTED_WORKERS: cryptophys-home
+        run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config ../home/wrangler.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" \
+            --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" \
+            --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}" --var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}"
+      - name: Verify live health, readiness and active version
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          tag="${COMMIT_SHA:0:12}"
+          "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
+            --script cryptophys-home \
+            --commit "$COMMIT_SHA" \
+            --require-access \
+            --custom-domain home.cryptophys.work \
+            --health-filter ".status == \"ok\" and .service == \"cryptophys-home\" and .environment == \"production\" and .contract_version == \"v1\" and .version.tag == \"${tag}\"" \
+            --ready-filter '.status == "ready" and .service == "cryptophys-home" and .production_ready == true and ([.checks[]] | all)'
+      - name: Smoke-test forwarding, the allow-list and CSRF through Access
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          access_headers="$(mktemp)"; out="$(mktemp)"; trap 'rm -f "$access_headers" "$out"' EXIT
+          "$GITHUB_WORKSPACE/.github/scripts/access-headers.sh" "$access_headers"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          base="https://cryptophys-home.${subdomain}.workers.dev"
+          probe() { # METHOD PATH EXPECTED_STATUS JQ_FILTER [extra curl args…]
+            local method="$1" path="$2" want="$3" filter="$4"; shift 4
+            local status
+            status="$(curl --silent --show-error --proto '=https' --max-time 30 --request "$method" "${base}${path}" \
+              --header "@${access_headers}" "$@" --output "$out" --write-out '%{http_code}')"
+            [[ "$status" == "$want" ]] || { echo "::error::${method} ${path}: HTTP ${status}, expected ${want}: $(head -c 300 "$out")"; exit 1; }
+            jq -e "$filter" "$out" >/dev/null || { echo "::error::${method} ${path}: unexpected body: $(head -c 300 "$out")"; exit 1; }
+            echo "ok ${method} ${path} -> ${status}"
+          }
+          # The CI service token is an operator but never an approver.
+          probe GET /api/whoami 200 '.operator == true and .approver == false and .type == "service_token"'
+          # The single forward reaches platform-api with the caller's own JWT.
+          probe GET /api/platform/v1/overview 200 '.overview | type == "object"'
+          # Nothing else is forwarded, and the portal is read-only.
+          probe GET /api/kernel/v1/agents 404 '.error == "not_allowed"'
+          probe POST / 405 '.error == "method_not_allowed"'
+          probe POST /api/platform/v1/overview 405 '.error == "method_not_allowed"'
+          printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"

@@ -69,8 +69,9 @@ function render(body){
     ])
   ]);
   if(Array.isArray(result.driftIds)&&result.driftIds.length){
-    var list=el("ul",{class:"drift-list"});
+    var list=el("ul",{class:"drift-list","aria-label":"Drifted services"});
     result.driftIds.forEach(function(id){list.appendChild(el("li",{text:id}));});
+    status.appendChild(el("h3",{text:"Drifted services"}));
     status.appendChild(list);
   }
   status.appendChild(el("p",{},[
