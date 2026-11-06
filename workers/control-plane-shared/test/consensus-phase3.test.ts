@@ -132,7 +132,8 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     assert.deepEqual(p.units.map((u) => u.unit), ["console"]);
     github({ files: ["workers/control-plane-shared/src/http.ts"] });
     p = await pendingDeploys(orchestratorEnv(db) as never);
-    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "deployment-orchestrator", "home", "platform-api"]);
+    assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
+    assert.deepEqual(p.skipped.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);
