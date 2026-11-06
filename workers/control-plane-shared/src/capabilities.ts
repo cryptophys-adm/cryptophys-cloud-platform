@@ -22,6 +22,7 @@ export const CAPABILITIES: Record<string, Capability> = {
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
   "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
   "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize", max_per_hour: 12 },
+  "consensus.propose": { tier: 1, reversible: true, description: "Propose a platform action to the control-plane consensus (ADR-0009); voting and the Policy Engine decide", max_per_hour: 4 },
   "deploy.release": { tier: 3, reversible: false, description: "Deploy a new Worker version (GitHub Actions with human gates only)" },
   "secrets.rotate": { tier: 3, reversible: false, description: "Rotate or replace a secret (human only)" },
   "data.delete": { tier: 3, reversible: false, description: "Delete or rewrite stored data (human only)" },

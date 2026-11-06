@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
-  Sparkles, Terminal, Wrench, X, ExternalLink, Home,
+  Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel,
 } from "lucide-react";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -15,6 +15,7 @@ export const NAV = [
   { label: "Command", href: "#/", key: "", icon: Terminal },
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
+  { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },
   { label: "Recovery", href: "#/recovery", key: "recovery", icon: Wrench },
   { label: "Infrastructure", href: "#/infrastructure", key: "infrastructure", icon: Server },
   { label: "Policy", href: "#/policy", key: "policy", icon: Scale },

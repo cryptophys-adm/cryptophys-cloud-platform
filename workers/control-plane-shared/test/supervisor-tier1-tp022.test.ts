@@ -25,10 +25,10 @@ test("TP-022 migration", async () => {
   const sup = db.raw.prepare("SELECT tier_max, capabilities_json, status FROM agents WHERE agent_id='supervisor'").get() as any;
   assert.equal(sup.tier_max, 1);
   assert.equal(sup.status, "enabled");
-  assert.deepEqual(JSON.parse(sup.capabilities_json), ["platform.observe", "recovery.propose", "memory.recall", "memory.remember"]);
+  assert.deepEqual(JSON.parse(sup.capabilities_json), ["platform.observe", "recovery.propose", "memory.recall", "memory.remember", "consensus.propose"]);
   const anyTier2OrHigher = db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE tier_max >= 2").get() as any;
   assert.equal(anyTier2OrHigher.n, 0, "TP-022 must leave no agent at tier 2 or above");
-  assert.equal(REQUIRED_MIGRATION, "0022_register_console_and_home.sql");
+  assert.equal(REQUIRED_MIGRATION, "0023_consensus_shadow.sql");
   assert.equal(await schemaReady({ DB: db } as any), true);
 });
 

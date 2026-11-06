@@ -3,7 +3,10 @@ import HealthRing from "../components/HealthRing";
 import { Badge, Dot, Empty, Kpi, Panel, Skeleton } from "../components/ui";
 import { healthScore, useOverview } from "../lib/overview";
 import { useSession } from "../lib/session";
-import { ago } from "../lib/format";
+import { ago, listOf } from "../lib/format";
+import { call } from "../lib/api";
+import { usePoll } from "../lib/usePoll";
+import { statusTone } from "./Consensus";
 
 export default function Command() {
   const { ov, loading, refresh } = useOverview();
@@ -15,6 +18,8 @@ export default function Command() {
   const score = healthScore(ov);
   const gate = !ov ? "—" : (counts.critical ?? 0) > 0 || drifted.some((d) => d.persistent) ? "BLOCKED" : "GO";
   const x = ov?.xauusd_latest;
+  const cns = usePoll(() => call("kernel.consensus", undefined, undefined, { limit: "6" }), 60_000);
+  const cnsRows = listOf(cns.data, "proposals");
 
   return (
     <div className="flex flex-col gap-3">
@@ -67,6 +72,22 @@ export default function Command() {
           </div>
         </Panel>
       </div>
+
+      <Panel title="Consensus · AI mesh decisions" icon={<Gavel className="h-3.5 w-3.5 text-violet-300" />}
+        right={<div className="flex items-center gap-2"><Badge tone={cns.data?.mode === "shadow" ? "amber" : "purple"}>mode · {cns.data?.mode ?? "—"}</Badge><a href="#/consensus" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">All →</a></div>}>
+        {cns.loading && !cns.data ? <Skeleton rows={2} /> : cnsRows.length === 0 ? <Empty>No proposals yet. Agents propose when they see persistent drift.</Empty> : (
+          <div className="space-y-1.5">
+            {cnsRows.map((p: any) => (
+              <a key={p.proposal_id} href="#/consensus" className="glass-inner flex flex-wrap items-center gap-2 px-3 py-2 text-[12px] hover:border-white/15">
+                <Dot tone={statusTone(p.status) === "slate" ? "slate" : (statusTone(p.status) as any)} pulse={p.status === "pending_owner"} />
+                <span className="mono text-cyan-200">{p.action}</span><span className="mono text-[11px] text-slate-400">→ {p.target}</span>
+                <span className="mono text-[11px] text-slate-500">{p.approvals}/{p.eligible}</span>
+                <span className="ml-auto"><Badge tone={statusTone(p.status)}>{String(p.status).replace("_", " ")}</Badge></span>
+              </a>
+            ))}
+          </div>
+        )}
+      </Panel>
 
       <Panel title="Service Mesh" icon={<Server className="h-3.5 w-3.5 text-cyan-300" />} right={<a href="#/infrastructure" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Infrastructure →</a>}>
         {loading && !ov ? <Skeleton rows={4} /> : (
