@@ -50,3 +50,12 @@ service = "cryptophys-deployment-orchestrator"
 [[services]]
 binding = "PLATFORM"
 service = "cryptophys-platform-api"
+
+# Console UI (React SPA in the Nexus obsidian design), built from ui/ into ui/dist by the deploy
+# and validation workflows. run_worker_first: every request, assets included, passes the Access,
+# operator, CSP and allow-list checks in src/index.ts before anything is served.
+[assets]
+directory = "./ui/dist"
+binding = "ASSETS"
+run_worker_first = true
+not_found_handling = "single-page-application"

@@ -15,6 +15,18 @@ function recorder(reply: () => Response = () => new Response(JSON.stringify({ ok
   return { calls, binding: { async fetch(r: Request) { calls.push(r); return reply(); } } };
 }
 
+/** Fake Workers Static Assets: the SPA shell for any non-file path, a bundle for /assets/*.js. */
+export function fakeAssets() {
+  const calls: Request[] = [];
+  return { calls, binding: { async fetch(r: Request) {
+    calls.push(r);
+    const p = new URL(r.url).pathname;
+    if (p.endsWith(".js")) return new Response("console.log(1)", { headers: { "content-type": "text/javascript", "set-cookie": "a=1" } });
+    if (p.endsWith(".css")) return new Response("body{}", { headers: { "content-type": "text/css" } });
+    return new Response('<!doctype html><script type="module" src="/assets/index-x.js"></script>', { headers: { "content-type": "text/html", etag: "x" } });
+  } } };
+}
+
 function consoleEnv(extra: Record<string, unknown> = {}) {
   const recorders = {} as Record<ConsoleService, Recorder>;
   const bindings: Record<string, unknown> = {};
@@ -31,6 +43,7 @@ function consoleEnv(extra: Record<string, unknown> = {}) {
     ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
+    ASSETS: fakeAssets().binding,
     ...bindings,
     ...extra,
   };
@@ -76,10 +89,14 @@ test("1. access: no JWT and outsiders are denied without a forward; operators ge
   assert.equal(home.headers.get("x-frame-options"), "DENY");
   assert.equal(home.headers.get("cache-control"), "no-store");
   assert.doesNotMatch(home.text, /<script>|style=|innerHTML/);
-  const js = await run(env, creq("GET", "/assets/app.js"));
+  const js = await run(env, creq("GET", "/assets/index-x.js"));
   assert.equal(js.status, 200);
-  assert.doesNotMatch(js.text, /innerHTML/);
-  assert.equal((await run(env, creq("GET", "/assets/app.css"))).status, 200);
+  assert.equal(js.headers.get("set-cookie"), null);
+  assert.equal(js.headers.get("content-security-policy"), CSP);
+  // Assets are behind the operator check too: an outsider never reaches the ASSETS binding.
+  const assets = fakeAssets();
+  assert.equal((await run({ ...env, ASSETS: assets.binding }, creq("GET", "/assets/index-x.js", { jwt: OUTSIDER_JWT }))).status, 403);
+  assert.equal(assets.calls.length, 0);
 });
 
 test("2. whoami: operator is not an approver, a dual identity is, and the actor is lower-case", async () => {
@@ -216,7 +233,7 @@ test("9. health and ready: health matches the deploy filter fields; ready is 200
   assert.equal(ready.status, 200);
   assert.equal(ready.body.status, "ready");
   assert.equal(ready.body.production_ready, true);
-  assert.deepEqual(Object.keys(ready.body.checks), ["production_environment", "access_configured", "operator_identities_configured", "approver_identities_configured", "service_bindings"]);
+  assert.deepEqual(Object.keys(ready.body.checks), ["production_environment", "access_configured", "operator_identities_configured", "approver_identities_configured", "service_bindings", "ui_assets"]);
   assert.ok(Object.values(ready.body.checks).every((v) => v === true));
   const noApprovers = await run({ ...env, APPROVER_IDENTITIES: undefined }, creq("GET", "/ready"));
   assert.deepEqual([noApprovers.status, noApprovers.body.checks.approver_identities_configured], [503, false]);
