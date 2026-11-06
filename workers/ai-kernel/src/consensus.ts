@@ -11,7 +11,7 @@
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
-import { appendAuditEvent, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEvent, appendAuditEventWithMutation, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
 import {
@@ -452,8 +452,11 @@ export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor:
     if (requiredConfirmation && confirmationRaw !== requiredConfirmation) {
       throw new OwnerDecisionError(400, "confirmation_required", `mode change requires the exact confirmation ${requiredConfirmation}`);
     }
-    await env.DB.prepare("UPDATE consensus_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'mode'").bind(mode, actor, nowIso()).run();
-    await appendAuditEvent(env.DB, { event_type: "consensus.mode_changed", actor, subject: "consensus", outcome: mode, payload: { previous: current, mode, reason } });
+    await appendAuditEventWithMutation(
+      env.DB,
+      { event_type: "consensus.mode_changed", actor, subject: "consensus", outcome: mode, payload: { previous: current, mode, reason } },
+      (event) => env.DB.prepare("UPDATE consensus_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'mode'").bind(mode, actor, event.created_at),
+    );
   }
   return { previous: current, mode, changed: mode !== current };
 }
