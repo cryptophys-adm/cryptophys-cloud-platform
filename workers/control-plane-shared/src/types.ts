@@ -62,6 +62,8 @@ export interface WorkflowStepLike {
   do<T>(name: string, callback: (ctx: WorkflowStepContextLike) => Promise<T>): Promise<T>;
   do<T>(name: string, config: WorkflowStepConfigLike, callback: (ctx: WorkflowStepContextLike) => Promise<T>): Promise<T>;
   waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: WorkflowDuration }): Promise<{ payload: T; timestamp: Date; type: string }>;
+  /** Durable sleep (Cloudflare Workflows). Optional so older fakes still type-check. */
+  sleep?(name: string, duration: WorkflowDuration): Promise<void>;
 }
 export interface WorkflowInstanceLike {
   id: string;
