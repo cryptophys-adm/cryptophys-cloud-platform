@@ -218,9 +218,12 @@ export async function ciGreen(token: string, sha: string): Promise<{ green: bool
   // queued external reviews fail-closed without letting a historical/manual deployment
   // failure poison every later retry of the same commit.
   const ciSuiteIds = new Set(runs.map((r) => r.check_suite_id).filter((id): id is number => typeof id === "number"));
+  // Every required push workflow must map to a Check Suite actually present in the complete
+  // Check Suites response. A workflow's check_suite_id alone is not proof that its suite was read.
   const requiredSuitesMapped = REQUIRED_PUSH_VALIDATIONS.every((name) => {
     const run = runs.find((r) => r.name === name);
-    return typeof run?.check_suite_id === "number" && ciSuiteIds.has(run.check_suite_id);
+    return typeof run?.check_suite_id === "number"
+      && checkSuites.some((suite) => suite.id === run.check_suite_id && suite.app?.slug === "github-actions");
   });
   const relevantSuites = checkSuites.filter((suite) =>
     suite.app?.slug !== "github-actions" || ciSuiteIds.has(suite.id),
@@ -229,7 +232,14 @@ export async function ciGreen(token: string, sha: string): Promise<{ green: bool
   const relevantCheckRuns = checkRuns.filter((run) =>
     typeof run.check_suite?.id === "number" && relevantSuiteIds.has(run.check_suite.id),
   );
-  const checkRunsGreen = relevantCheckRuns.length > 0
+  // Require at least one Check Run for each required push suite; otherwise a partial or
+  // inconsistent API response could be masked by check runs belonging to another suite.
+  const requiredCheckRunsPresent = REQUIRED_PUSH_VALIDATIONS.every((name) => {
+    const suiteId = runs.find((run) => run.name === name)?.check_suite_id;
+    return typeof suiteId === "number"
+      && relevantCheckRuns.some((run) => run.check_suite?.id === suiteId);
+  });
+  const checkRunsGreen = requiredCheckRunsPresent && relevantCheckRuns.length > 0
     && relevantCheckRuns.every((r) => r.status === "completed" && r.conclusion === "success");
   const checkSuitesGreen = relevantSuites.length > 0
     && relevantSuites.every((r) => r.status === "completed" && r.conclusion === "success");
