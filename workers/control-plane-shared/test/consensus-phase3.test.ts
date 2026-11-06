@@ -262,3 +262,20 @@ test("10. pendingDeploys dispatches the Deployment Orchestrator before the Contr
     assert.ok(pending.skipped.some((u) => u.unit === "control-plane" && u.reason === "deployment_orchestrator_must_complete_first"));
   } finally { globalThis.fetch = realFetch; }
 });
+
+test("11. the supervisor makes at most one deploy proposal per cycle; the next unit follows next cycle", async () => {
+  const { env, db, memory } = kernelEnv();
+  behind(db);
+  db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
+  try {
+    github({ files: ["workers/control-plane-shared/src/http.ts"] });
+    const first = await runCycle(env as never, memory, "operator");
+    let ps = proposals(db).filter((p) => p.action === "deploy_commit");
+    assert.equal(ps.length, 1);
+    assert.equal(first.findings.filter((f) => f.kind === "deploy" && String(f.why ?? "").startsWith("deferred")).length, 3);
+    await runCycle(env as never, memory, "scheduled");
+    ps = proposals(db).filter((p) => p.action === "deploy_commit");
+    assert.equal(ps.length, 2);
+    assert.equal(new Set(ps.map((p) => p.target)).size, 2, "a different unit each cycle");
+  } finally { globalThis.fetch = realFetch; }
+});

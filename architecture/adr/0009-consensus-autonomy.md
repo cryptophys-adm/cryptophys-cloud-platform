@@ -231,3 +231,23 @@ The phase 3 code ships ahead of its promotion, for audit by pi and agy. **`conse
   - **Order.** When the Deployment Orchestrator is pending, it is the only unit proposed in that cycle; the others follow once its version is recorded.
   - **Rollback** also runs when a deploy run is cancelled.
   - The orchestrator re-reviewed the changes and updated the phase 3 test to the orchestrator-first rule. 211/211 tests pass.
+
+### Phase 3 code deployment, 2026-11-06
+
+**DEPLOYED AND VERIFIED** (orchestrator). The mode is unchanged.
+
+| Run | Result |
+|---|---|
+| Deploy Deployment Orchestrator, runs 42179772191 (`86509fd`) and 42181714607 (`fc443cd`) | Success. The new capture step read the live Cloudflare deployments; no rollback was needed. |
+| Deploy Control Plane, run 42182183884 (`fc443cd`) | **Failed verification, then rolled back automatically.** The supervisor cycle that the deploy verification triggers made three shadow `deploy_commit` proposals in one cycle (Console, Home, Platform API; each `shadow_passed`, 8 of 8 votes). That cycle exceeded the 30-second probe timeout. The new rollback step restored all six Workers to their captured versions within 6 seconds. This was the first production use of §3.3. |
+| Deploy Control Plane, run 42183060692 (`fc443cd`) | Success. The three proposals already existed, so the cycle did not repeat them. |
+
+**D1 check at 07:48 UTC:**
+- the mode is `shadow`;
+- there are 3 proposals, all `shadow_passed`;
+- 0 are executing, executed or failed, and there are 0 consensus deployment requests;
+- the kill switch is on;
+- 0 services are drifted;
+- there are 0 critical reports.
+
+**Follow-up.** The supervisor now makes at most one `deploy_commit` proposal per cycle (`MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1`); the other units follow in the next cycles.
