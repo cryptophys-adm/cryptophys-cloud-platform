@@ -32,15 +32,23 @@ while [[ $# -gt 0 ]]; do
     *) url="$1"; shift ;;
   esac
 done
+if [[ "${FAKE_CUSTOM_DOMAIN_DNS_FAIL:-0}" == 1 && "$url" == *custom.example.test* ]]; then
+  echo "curl: (6) Could not resolve host: custom.example.test" >&2
+  exit 6
+fi
 case "$url" in
   https://api.cloudflare.test/*)
     [[ "$auth" == "Authorization: Bearer $EXPECTED_TOKEN" ]] || { echo '{"success":false}' >"$out"; printf 403; exit 0; } ;;
   https://*)
     [[ -z "$auth" ]] || { echo "credential leaked to $url" >&2; exit 99; }
     [[ "$headers" != *"$EXPECTED_TOKEN"* ]] || { echo "API token leaked to $url" >&2; exit 99; }
-    if [[ "${FAKE_ACCESS:-0}" == 1 && "$url" == *workers.dev* ]] && \
+    if [[ "${FAKE_ACCESS:-0}" == 1 && ( "$url" == *workers.dev* || "$url" == *custom.example.test* ) ]] && \
        [[ "$headers" != *"CF-Access-Client-Id: $ACCESS_ID"* || "$headers" != *"CF-Access-Client-Secret: $ACCESS_SECRET"* ]]; then
-      : >"$out"; [[ -n "$fmt" ]] && printf 302; exit 0
+      if [[ "$url" == *custom.example.test* && "${FAKE_CUSTOM_DOMAIN_UNPROTECTED:-0}" == 1 ]]; then
+        : # Deliberately simulate a custom hostname that does not enforce Access.
+      else
+        : >"$out"; [[ -n "$fmt" ]] && printf 302; exit 0
+      fi
     fi ;;
 esac
 key="$(printf '%s' "$url" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
@@ -155,6 +163,49 @@ echo "curl: (60) SSL: no alternative certificate subject name matches target hos
 fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
 extra_args=(--custom-domain custom.example.test)
 expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed TLS-verified request"
+extra_args=()
+
+# Strict custom-domain mode is opt-in so existing callers retain advisory semantics.
+setup_green custom-domain-required
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
+fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
+export FAKE_ACCESS=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect pass "required custom domain verifies registration, Access, health and readiness" "custom-domain readiness OK"
+
+setup_green custom-domain-previews-enabled
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":true}]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must disable preview subdomain routing" "preview routing disabled"
+
+setup_green custom-domain-unregistered
+fx "$api/domains?service=svc" '{"success":true,"result":[]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must be an enabled production registration" "not registered as exactly one enabled production Worker domain"
+
+setup_green custom-domain-dns-failure
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+export FAKE_CUSTOM_DOMAIN_DNS_FAIL=1
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain DNS/TLS failure fails deployment verification" "failed TLS-verified request"
+unset FAKE_CUSTOM_DOMAIN_DNS_FAIL
+
+setup_green custom-domain-unprotected
+fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
+fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
+export FAKE_CUSTOM_DOMAIN_UNPROTECTED=1
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must reject unauthenticated requests" "not protected by Cloudflare Access"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+unset FAKE_ACCESS CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+
+setup_green invalid-required-domain
+extra_args=(--require-custom-domain)
+expect fail "required custom domain flag needs a hostname" "--custom-domain HOSTNAME"
+extra_args=(--custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain flag needs Access verification" "--require-access"
 extra_args=()
 
 setup_green access-ok
