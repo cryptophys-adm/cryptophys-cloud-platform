@@ -55,6 +55,14 @@ jobs:
             echo "::notice::The head commit adds no ops/requests/*.json file; nothing to dispatch."
             exit 0
           fi
+          # Resetting the operator branch onto main re-pushes main's head commit. If a request
+          # was squash-merged into main, that commit "adds" an already-handled request: never
+          # replay it. A new request is always a commit that main does not contain yet.
+          compare="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq .status)"
+          if [[ "$compare" == "identical" || "$compare" == "behind" ]]; then
+            echo "::notice::The head commit is already on main (a branch reset); request not replayed."
+            exit 0
+          fi
           [[ ${#files[@]} -eq 1 ]] || { echo "::error::A request commit must add exactly one ops/requests/*.json file (found ${#files[@]})"; exit 1; }
           request="${files[0]}"
           echo "Request: ${request}"
