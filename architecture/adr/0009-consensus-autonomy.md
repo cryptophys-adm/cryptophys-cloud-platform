@@ -117,3 +117,21 @@ The owner can stop or reverse the rollout at any phase.
   - at least 7 days in shadow;
   - every `shadow_passed` proposal matching what a person would have done, checked against the drift outcome and the recovery plans;
   - a reviewed change that sets `mode` to `routine` and adds the execution paths.
+
+### Phase 1 deployment, 2026-11-06
+
+**DEPLOYED AND VERIFIED** (orchestrator). Both runs used commit `e354d4e` (#150).
+
+| Run | Result |
+|---|---|
+| Deploy Control Plane, run 42147738404 | Success. Migration 0023 applied. The deploy verification confirmed `GET /v1/consensus` returns `mode = "shadow"` and no proposal is `executing` or `executed`. Dispatched at 02:02 UTC, after the :00 cron. |
+| Deploy Console, run 42148478950 | Success. The Consensus screen and Command panel are live through Access. |
+
+**D1 check at 02:09 UTC:**
+- `consensus_controls.mode = shadow`;
+- the last migration is `0023_consensus_shadow.sql`;
+- the supervisor holds `consensus.propose`;
+- there are 0 proposals and 0 executed;
+- 0 of 15 services drifted.
+
+No proposals yet is expected: the supervisor proposes only on persistent drift. The 7-day shadow window for promotion to phase 2 starts **2026-11-06**, and the earliest review is **2026-11-13**. The recurring platform check (every 6 h) reports the shadow statistics.
