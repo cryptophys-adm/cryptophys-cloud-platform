@@ -7,7 +7,7 @@ import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, fakeWork
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
-import { DEPLOY_UNITS, DeploymentLock, deployForConsensus, pendingDeploys, unitChanged, unitForService } from "../../deployment-orchestrator/src/index.ts";
+import { ciGreen, DEPLOY_UNITS, DeploymentLock, deployForConsensus, pendingDeploys, unitChanged, unitForService } from "../../deployment-orchestrator/src/index.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { PHASE2_EXECUTABLE, executableIn } from "../../ai-kernel/src/consensus.ts";
@@ -17,16 +17,32 @@ const MAIN = "1".repeat(40);
 const OLD = "0".repeat(12);
 const realFetch = globalThis.fetch;
 
-interface GitHubFake { main: string; ciConclusion: string; files: string[]; dispatched: { workflow: string; body: any }[] }
+interface GitHubFake {
+  main: string;
+  ciConclusion: string;
+  controlPlaneConclusion: string;
+  statusState: string;
+  statusCount: number;
+  omitWorkflow?: string;
+  files: string[];
+  dispatched: { workflow: string; body: any }[];
+}
 function github(state: Partial<GitHubFake> = {}): GitHubFake {
-  const gh: GitHubFake = { main: MAIN, ciConclusion: "success", files: ["workers/console/ui/src/App.tsx"], dispatched: [], ...state };
+  const gh: GitHubFake = {
+    main: MAIN, ciConclusion: "success", controlPlaneConclusion: "success",
+    statusState: "success", statusCount: 1,
+    files: ["workers/console/ui/src/App.tsx"], dispatched: [], ...state
+  };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: gh.main } });
+    if (/\/commits\/[0-9a-f]{40}\/status$/.test(url)) return Response.json({ state: gh.statusState, total_count: gh.statusCount });
     if (url.includes("/actions/runs?head_sha=")) {
       assert.match(url, /event=push/, "only push-event CI counts for consensus deploys");
-      const runs = [{ workflow_id: 1, name: "Validate", event: "push", status: "completed", conclusion: gh.ciConclusion, run_number: 3 },
-        { workflow_id: 2, name: "Validate Control Plane", event: "push", status: "completed", conclusion: "success", run_number: 3 }];
+      const runs = [
+        { workflow_id: 1, name: "Validate", event: "push", head_branch: "main", status: "completed", conclusion: gh.ciConclusion, run_number: 3 },
+        { workflow_id: 2, name: "Validate Control Plane Workers", event: "push", head_branch: "main", status: "completed", conclusion: gh.controlPlaneConclusion, run_number: 3 },
+      ].filter((r) => r.name !== gh.omitWorkflow);
       return Response.json({ total_count: runs.length, workflow_runs: runs });
     }
     if (url.includes("/compare/")) return Response.json({ status: "ahead", files: gh.files.map((filename) => ({ filename })) });
@@ -36,7 +52,6 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
   }) as typeof fetch;
   return gh;
 }
-
 function lockNamespace() {
   const stores = new Map<string, Map<string, unknown>>();
   return {
@@ -95,11 +110,16 @@ test("2. deploy units: every registered platform Worker maps to exactly one work
   assert.equal(unitForService("cryptophys-ai-kernel")?.workflow, "deploy-control-plane.yml");
   assert.equal(unitForService("cryptophys-console")?.workflow, "deploy-console.yml");
   assert.equal(unitForService("xauusd-ai-trading-assistant"), null, "XAUUSD Workers are never deployed by platform consensus");
+  assert.equal(DEPLOY_UNITS[0].unit, "deployment-orchestrator", "DeployRpc must be deployed before the Control Plane binding changes");
   const cp = unitForService("cryptophys-policy-engine")!;
   assert.equal(unitChanged(cp, ["docs/SSOT.md", ".github/workflows/deploy-console.yml"]), false);
   assert.equal(unitChanged(cp, ["workers/control-plane-migrations/0024_x.sql"]), true);
   assert.equal(unitChanged(unitForService("cryptophys-home")!, ["workers/control-plane-shared/src/http.ts"]), true);
   assert.equal(unitChanged(unitForService("cryptophys-home")!, ["workers/control-plane-shared/test/x.test.ts"]), false);
+  assert.equal(unitChanged(unitForService("cryptophys-console")!, ["workers/console/ui/vite.config.ts"]), true);
+  assert.equal(unitChanged(unitForService("cryptophys-console")!, ["workers/console/ui/package.json"]), true);
+  assert.equal(unitChanged(unitForService("cryptophys-platform-api")!, ["workers/platform-api/package.json"]), true);
+  assert.equal(unitChanged(unitForService("cryptophys-deployment-orchestrator")!, ["workers/deployment-orchestrator/tsconfig.json"]), true);
 });
 
 test("3. pendingDeploys: only units with changed files on a CI-green main; red CI yields none", async () => {
@@ -205,6 +225,33 @@ test("8. wiring: kernel binds DeployRpc; every consensus-deployable workflow cap
     const deploy = wf.indexOf("npx wrangler deploy");
     const rollback = wf.indexOf("worker-rollback.sh\" restore");
     assert.ok(capture > 0 && deploy > capture && rollback > deploy, `${u.workflow}: capture < deploy < rollback`);
-    assert.match(wf, /if: failure\(\) && steps\.capture\.outcome == 'success'/, u.workflow);
+    assert.match(wf, /if: always\(\) && \(failure\(\) \|\| cancelled\(\)\) && steps\.capture\.outcome == 'success'/, u.workflow);
   }
+});
+
+
+test("9. CI gate fails closed unless both main push validations and combined commit status are green", async () => {
+  try {
+    github({ omitWorkflow: "Validate" });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "missing Validate must block");
+    github({ omitWorkflow: "Validate Control Plane Workers" });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "missing Control Plane validation must block");
+    github({ statusState: "pending", statusCount: 1 });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "pending combined status must block");
+    github({ controlPlaneConclusion: "skipped" });
+    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "skipped validation must block");
+    github();
+    assert.equal((await ciGreen("gh-token", MAIN)).green, true, "complete green evidence should pass");
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test("10. pendingDeploys dispatches the Deployment Orchestrator before the Control Plane", async () => {
+  const db = migratedDb();
+  behind(db);
+  try {
+    github({ files: ["workers/deployment-orchestrator/src/index.ts", "workers/ai-kernel/src/consensus.ts"] });
+    const pending = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual(pending.units.map((u) => u.unit), ["deployment-orchestrator"]);
+    assert.ok(pending.skipped.some((u) => u.unit === "control-plane" && u.reason === "deployment_orchestrator_must_complete_first"));
+  } finally { globalThis.fetch = realFetch; }
 });
