@@ -164,7 +164,7 @@ test("registry exposes the seeded inventory and enforces ownership metadata", as
   const db = migratedDb();
   const env = baseEnv("cryptophys-platform-registry", db);
   const list = await call(registry, env, req("GET", "/v1/services"));
-  assert.equal(list.body.services.length, 13);
+  assert.equal(list.body.services.length, 15);
   assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-audit-ledger").metadata.owner, "cryptophys-adm");
 
   const base = { display_name: "News Ingest", environment: "production", status: "registered", actor: "operator@cryptophys" };
@@ -309,6 +309,8 @@ test("drift detector compares registry desired versions with live versions over 
     SVC_RECOVERY_MANAGER: healthy("aaaaaaaaaaaa"),
     SVC_SIGNAL_ENGINE: { health: async () => { signalEngineProbes++; return { status: "ok", version: { id: "v", tag: "aaaaaaaaaaaa" } }; } },
     SVC_AI_KERNEL: healthy("aaaaaaaaaaaa"),
+    SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
+    SVC_HOME: healthy("aaaaaaaaaaaa"),
     // External xauusd Workers: plain fetch service bindings, probed over HTTP.
     EXT_XAUUSD_AI: http((path) => path === "/health" ? Response.json({ status: "ok", service: "xauusd-ai-trading-assistant" }) : new Response("no", { status: 404 })),
     EXT_XAUUSD_NEWS: http(() => new Response("boom", { status: 500 })),
@@ -333,6 +335,8 @@ test("drift detector compares registry desired versions with live versions over 
   assert.deepEqual([by["cryptophys-signal-engine"].drifted, by["cryptophys-signal-engine"].status], [false, "disabled"]);
   assert.equal(signalEngineProbes, 0, "disabled Signal Engine is never probed");
   assert.deepEqual([by["cryptophys-ai-kernel"].drifted, by["cryptophys-ai-kernel"].status], [false, "healthy"]);
+  assert.deepEqual([by["cryptophys-console"].drifted, by["cryptophys-console"].status], [false, "healthy"]);
+  assert.deepEqual([by["cryptophys-home"].drifted, by["cryptophys-home"].status], [false, "healthy"]);
   // External services: health-managed only (their version is not observable from outside).
   assert.deepEqual([by["xauusd-ai-trading-assistant"].drifted, by["xauusd-ai-trading-assistant"].managed, by["xauusd-ai-trading-assistant"].status], [false, false, "healthy"]);
   assert.deepEqual([by["xauusd-fundamental-news-ingestion"].status, by["xauusd-fundamental-news-ingestion"].probe.error], ["unavailable", "http_500"]);
@@ -344,7 +348,7 @@ test("drift detector compares registry desired versions with live versions over 
   const row = db.raw.prepare("SELECT observed_version, status FROM service_registry WHERE service_id = 'cryptophys-deployment-orchestrator'").get() as any;
   assert.deepEqual([row.observed_version, row.status], ["bbbbbbbbbbbb", "degraded"]);
   const latest = await call(drift, env, req("GET", "/v1/drift"));
-  assert.equal(latest.body.services.length, 13);
+  assert.equal(latest.body.services.length, 15);
   const history = await call(drift, env, req("GET", "/v1/drift/cryptophys-platform-api"));
   assert.equal(history.body.observations.length, 1);
 

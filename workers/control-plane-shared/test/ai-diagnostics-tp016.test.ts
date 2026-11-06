@@ -13,7 +13,7 @@ function makeEngine(db: any, ai: any, tasks: readonly string[], timeoutMs = 8000
 
 test("TP-016 migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0021_supervisor_tier_1.sql");
+  assert.equal(REQUIRED_MIGRATION, "0022_register_console_and_home.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   const row = db.raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_failures'").get();
   assert.ok(row);
