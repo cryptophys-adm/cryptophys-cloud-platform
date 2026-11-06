@@ -47,6 +47,12 @@ jobs:
           npm run build
           test -f dist/index.html
           if grep -Eq '<script>|<script [^>]*>[^<]' dist/index.html; then echo "::error::inline script in dist/index.html (breaks CSP script-src 'self')"; exit 1; fi
+      - name: Render every Console screen in Chromium at 390 px and 1440 px under /console/ (Wave C)
+        working-directory: workers/console/ui
+        run: |
+          set -euo pipefail
+          npx playwright install --with-deps chromium
+          npm run render-smoke
       - name: Type-check six Control Plane Workers and shared library
         run: npm run typecheck
       - name: Endpoint and library tests against the real D1 migrations

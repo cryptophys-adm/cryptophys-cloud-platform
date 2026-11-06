@@ -1,0 +1,99 @@
+name: D1 Backup
+
+# Wave C: a daily export of the control-plane D1 database to a private R2 bucket. D1 Time Travel
+# covers the last 30 days in place; this copy survives the database itself and is kept 90 days.
+# Restoring data stays an owner decision (ADR-0009 critical class). Uses the existing tokens:
+# CLOUDFLARE_ACCESS_API_TOKEN (D1 Edit) to export, CLOUDFLARE_API_TOKEN for R2 (either token may
+# hold R2 permissions; both are tried). If R2 is not enabled on the account yet, the run ends with
+# a warning naming the owner action instead of failing every night.
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: d1-backup
+  cancel-in-progress: false
+
+env:
+  D1_DATABASE_NAME: cryptophys-control-plane
+  BUCKET: cryptophys-d1-backups
+
+jobs:
+  backup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    defaults:
+      run:
+        shell: bash
+        working-directory: workers/control-plane-shared
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Install the locked toolchain
+        run: npm ci
+      - name: Check that R2 is enabled and the bucket exists
+        id: r2
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCESS_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_TOKEN ACCESS_TOKEN; do
+            token="${!name}"
+            out="$(curl --silent --proto '=https' --max-time 20 --retry 3 --header "Authorization: Bearer ${token}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets?name_contains=${BUCKET}" || true)"
+            if jq -e '.success == true' <<<"$out" >/dev/null 2>&1; then
+              if ! jq -e --arg b "$BUCKET" 'any(.result.buckets[]?; .name == $b)' <<<"$out" >/dev/null; then
+                curl --fail --silent --show-error --proto '=https' --max-time 20 --request POST --header "Authorization: Bearer ${token}" \
+                  --header "Content-Type: application/json" --data "{\"name\":\"${BUCKET}\"}" \
+                  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets" | jq -e '.success == true' >/dev/null
+                echo "Created private bucket ${BUCKET}"
+              fi
+              echo "token=${name}" >> "$GITHUB_OUTPUT"; echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            if jq -e '[.errors[]?.code] | index(10042)' <<<"$out" >/dev/null 2>&1; then
+              echo "::warning::R2 is not enabled on the Cloudflare account. Owner action: Cloudflare dashboard → R2 → enable (included in Workers Paid). The nightly D1 backup starts the next night."
+              echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "::warning::Neither token can use R2 (Workers R2 Storage: Edit). Owner action: add that permission to CLOUDFLARE_API_TOKEN."
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+      - name: Export D1 and upload it to R2
+        if: steps.r2.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ACCESS_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_TOKEN_NAME: ${{ steps.r2.outputs.token }}
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
+          file="$RUNNER_TEMP/control-plane-${stamp}.sql"
+          CLOUDFLARE_API_TOKEN="$ACCESS_TOKEN" npx wrangler d1 export "$D1_DATABASE_NAME" --remote --output "$file"
+          gzip -9 "$file"
+          size="$(stat -c %s "${file}.gz")"; sum="$(sha256sum "${file}.gz" | cut -d' ' -f1)"
+          (( size > 1000 )) || { echo "::error::export is suspiciously small (${size} bytes)"; exit 1; }
+          token="${!R2_TOKEN_NAME}"
+          CLOUDFLARE_API_TOKEN="$token" npx wrangler r2 object put "${BUCKET}/control-plane/${stamp}.sql.gz" --file "${file}.gz" --remote \
+            --content-type application/gzip
+          # Keep 90 days (idempotent; the rule is only added if it is missing).
+          CLOUDFLARE_API_TOKEN="$token" npx wrangler r2 bucket lifecycle list "$BUCKET" 2>/dev/null | grep -q expire-90d \
+            || CLOUDFLARE_API_TOKEN="$token" npx wrangler r2 bucket lifecycle add "$BUCKET" expire-90d control-plane/ --expire-days 90 --force \
+            || echo "::warning::Could not set the 90-day lifecycle rule; set it in the dashboard."
+          echo "### D1 backup" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`r2://${BUCKET}/control-plane/${stamp}.sql.gz\` — ${size} bytes, sha256 \`${sum}\`" >> "$GITHUB_STEP_SUMMARY"
+          rm -f "${file}.gz"

@@ -387,3 +387,11 @@ Each promotion is a separate reviewed change, audited by pi and agy.
 
   Each proposal is classified as agree, false positive or false negative. This is the evidence for promotion out of shadow, reviewed no earlier than 2026-11-13.
 - **Tests:** `test/wave-b-agreement.test.ts` (7) and `owner-attention.test.sh`. 248 of 248 tests pass.
+
+## Amendment 2026-11-06: Wave C (supervisor rule, D1 backup, UI render in CI)
+
+- **C2, suspending noisy agents.** In each scheduled cycle, the supervisor proposes `suspend_agent` for an agent outside the kernel that had 5 or more denied or failed syscalls in the last hour. This implements §3.2: repeated failures suspend the agent. There is at most one such proposal per cycle, and at most one per agent in 6 hours. The voters' rules still apply, and in `shadow` it is only recorded.
+- **C3, nightly D1 backup.** `.github/workflows/d1-backup.yml` runs at 02:41 UTC. It exports `cryptophys-control-plane` with the existing D1 token, gzips it, records the size and sha256, and uploads it to the private R2 bucket `cryptophys-d1-backups`. Objects expire after 90 days. Backups are never stored as public workflow artifacts. **R2 is not yet enabled on the account.** Until the owner enables it in the dashboard (it is included in Workers Paid), each run ends with a warning that names the action.
+- **C4, UI render in CI.** Validate Control Plane Workers renders every Console screen (12 routes) under the `/console/` mount, at 390 px and 1440 px, in Chromium (Playwright 1.63.0, a pinned dev dependency). It fails on page errors, failed requests, inline scripts, horizontal scroll or blank pages.
+- **C1** (moving the votes into each Worker over RPC) follows as a separate change.
+- **Tests:** `test/wave-c.test.ts`. 250 of 250 tests pass.

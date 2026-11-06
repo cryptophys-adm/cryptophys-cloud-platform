@@ -18,6 +18,8 @@ import { expireOwnerProposals } from "./consensus.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
+/** Wave C: denied or failed syscalls in one hour before the supervisor proposes suspending an agent. */
+export const SUSPEND_AFTER_FAILURES_PER_HOUR = 5;
 
 export const AGENT_ID = "supervisor";
 const SERVICE = "cryptophys-ai-kernel";
@@ -161,6 +163,27 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   if (trigger === "scheduled") {
     const expired = await expireOwnerProposals(env, now);
     if (expired > 0) report.findings.push({ kind: "consensus", action: "expire", why: `${expired} owner decision(s) lapsed after 24 h` });
+    // Wave C: an agent outside the kernel that keeps failing or being denied is proposed for
+    // suspension (ADR-0009 §3.2 "repeated failures suspend the agent"), one per cycle, at most
+    // once per agent every 6 h. It executes only in a non-shadow mode, through consensus.
+    const noisy = await env.DB.prepare(
+      `SELECT a.agent_id, COUNT(*) AS n FROM agent_actions a JOIN agents g ON g.agent_id = a.agent_id
+       WHERE a.outcome IN ('denied', 'failed') AND a.created_at >= ? AND g.status = 'enabled'
+         AND a.agent_id NOT IN ('supervisor', 'signal-analyst', 'auditor')
+       GROUP BY a.agent_id HAVING COUNT(*) >= ? ORDER BY n DESC LIMIT 1`,
+    ).bind(new Date(now - 3_600_000).toISOString(), SUSPEND_AFTER_FAILURES_PER_HOUR).first<{ agent_id: string; n: number }>();
+    if (noisy) {
+      const recent = await env.DB.prepare("SELECT 1 AS x FROM consensus_proposals WHERE action = 'suspend_agent' AND target = ? AND created_at >= ? LIMIT 1")
+        .bind(noisy.agent_id, new Date(now - 6 * 3_600_000).toISOString()).first();
+      if (!recent) {
+        const r = await syscall(env, AGENT_ID, "consensus.propose", {
+          action: "suspend_agent", target: noisy.agent_id,
+          params: { reason: `${noisy.n} denied or failed syscalls in the last hour` },
+        });
+        report.actions.push(r);
+        report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
+      }
+    }
   }
   if (env.DEPLOY && trigger === "operator") {
     report.findings.push({ kind: "deploy", action: "none", why: "deploy proposals run in scheduled cycles only" });
