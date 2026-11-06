@@ -59,6 +59,11 @@ test("C3/C4. wiring: nightly D1 backup to a private R2 bucket, UI render smoke i
   assert.doesNotMatch(backup, /upload-artifact/, "backups never become public artifacts");
   const validate = readFileSync(new URL(".github/workflows/validate-control-plane.yml", ROOT), "utf8");
   assert.match(validate, /npx playwright install --with-deps chromium\n\s+npm run render-smoke/);
+  const pullRequestTrigger = validate.match(/\n  pull_request:\n([\s\S]*?)\n  push:/)?.[1] ?? "";
+  const pushTrigger = validate.match(/\n  push:\n([\s\S]*?)\n  workflow_dispatch:/)?.[1] ?? "";
+  assert.match(pullRequestTrigger, /paths:/, "PR validation keeps its scoped path filter");
+  assert.match(pushTrigger, /branches:\s*\[main\]/, "main push validation is enabled");
+  assert.doesNotMatch(pushTrigger, /paths:/, "every main SHA must receive the Control Plane validation required by ciGreen");
   const smoke = readFileSync(new URL("workers/console/ui/scripts/render-smoke.mjs", ROOT), "utf8");
   assert.match(smoke, /horizontal scroll/);
   assert.match(smoke, /pageerror/);
