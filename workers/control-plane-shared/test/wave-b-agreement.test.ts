@@ -92,7 +92,7 @@ async function history(db: Db, svc: string, versions: string[]) {
     await appendAuditEvent(db as never, { event_type: "registry.desired_version_set", actor: "ci.access", subject: svc, outcome: "success", payload: { previous: prev, desired_version: v } });
     prev = v;
   }
-  db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = ?").run(versions.at(-1), svc);
+  db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = ?").run(versions[versions.length - 1], svc);
 }
 
 test("B1. the rollback target is the version recorded before the current one", async () => {
