@@ -1,4 +1,4 @@
-import type { D1Database } from "./types.ts";
+import type { D1Database, D1PreparedStatement } from "./types.ts";
 import { newId, nowIso, redact } from "./http.ts";
 
 /**
@@ -71,7 +71,9 @@ export async function chainHead(db: D1Database): Promise<string> {
   return row?.event_hash ?? GENESIS_HASH;
 }
 
-export async function appendAuditEvent(db: D1Database, input: AuditInput): Promise<AuditEvent> {
+type AuditMutation = (event: AuditEvent) => D1PreparedStatement;
+
+async function appendAuditEventInternal(db: D1Database, input: AuditInput, mutation?: AuditMutation): Promise<AuditEvent> {
   let payload = canonicalJson(redact(input.payload ?? {}));
   if (payload.length > MAX_PAYLOAD_CHARS) payload = canonicalJson({ truncated: true, original_chars: payload.length });
   for (let attempt = 1; attempt <= MAX_APPEND_ATTEMPTS; attempt++) {
@@ -87,19 +89,34 @@ export async function appendAuditEvent(db: D1Database, input: AuditInput): Promi
     };
     const event: AuditEvent = { ...base, event_hash: await computeEventHash(base) };
     try {
-      await db.prepare(
+      const insert = db.prepare(
         `INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(event.event_id, event.event_type, event.actor, event.subject, event.outcome, event.payload_json,
-        event.previous_hash, event.event_hash, event.created_at).run();
+        event.previous_hash, event.event_hash, event.created_at);
+      // D1 batch is transactional: a companion state mutation and its audit event either both commit or neither does.
+      await db.batch(mutation ? [mutation(event), insert] : [insert]);
       return event;
     } catch (err) {
       if (!isUniqueViolation(err) || attempt === MAX_APPEND_ATTEMPTS) throw err;
-      // Another writer extended the head first; back off with jitter and re-read it.
+      // Another writer extended the head first; the batch rolls back and we retry against the new head.
       await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 5 * attempt)));
     }
   }
   throw new Error("audit append failed");
+}
+
+export async function appendAuditEvent(db: D1Database, input: AuditInput): Promise<AuditEvent> {
+  return appendAuditEventInternal(db, input);
+}
+
+/** Atomically commit a state mutation with its corresponding hash-chained audit event. */
+export async function appendAuditEventWithMutation(
+  db: D1Database,
+  input: AuditInput,
+  mutation: AuditMutation,
+): Promise<AuditEvent> {
+  return appendAuditEventInternal(db, input, mutation);
 }
 
 export interface ChainVerification {
