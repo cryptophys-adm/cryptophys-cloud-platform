@@ -59,6 +59,14 @@ jobs:
           node-version: 22
       - name: Install the locked control-plane toolchain
         run: npm ci
+      - name: Build the Console UI (React SPA served as Workers Static Assets)
+        working-directory: workers/console/ui
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -f dist/index.html
+          if grep -Eq '<script>|<script [^>]*>[^<]' dist/index.html; then echo "::error::inline script in dist/index.html (breaks CSP script-src 'self')"; exit 1; fi
       - name: Type-check and test (the Console tests run against the real recovery-manager)
         run: |
           set -euo pipefail

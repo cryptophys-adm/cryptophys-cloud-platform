@@ -8,9 +8,11 @@
  */
 import { accessConfigured, accessGate, actorOf, identityAllowed, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { MAX_BODY_BYTES, healthBody } from "../../control-plane-shared/src/http.ts";
-import { APP_CSS, APP_JS, INDEX_HTML } from "./ui.ts";
 
 export interface ServiceBinding { fetch(request: Request): Promise<Response> }
+
+/** Workers Static Assets: the built Console SPA (workers/console/ui/dist), served only after the operator check. */
+export interface AssetsBinding { fetch(request: Request): Promise<Response> }
 
 export interface Env {
   SERVICE_NAME: string;
@@ -29,6 +31,7 @@ export interface Env {
   AUDIT?: ServiceBinding;
   ORCHESTRATOR?: ServiceBinding;
   PLATFORM?: ServiceBinding;
+  ASSETS?: AssetsBinding;
 }
 
 export type ConsoleService = "kernel" | "recovery" | "registry" | "policy" | "drift" | "audit" | "orchestrator" | "platform";
@@ -91,8 +94,18 @@ function json(data: unknown, status = 200): Response {
   return withSecurity(new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": JSON_TYPE } }));
 }
 
-function asset(body: string, type: string, extra: Record<string, string> = {}): Response {
-  return withSecurity(new Response(body, { headers: { "content-type": type, ...extra } }));
+/**
+ * The SPA shell and its hashed bundles, from Workers Static Assets (run_worker_first, so this
+ * runs only after requireOperator). The upstream body and content type are kept; every other
+ * header is replaced by the security headers and the strict CSP.
+ */
+async function uiAsset(request: Request, env: Env): Promise<Response> {
+  if (!env.ASSETS) return json({ error: "ui_unavailable" }, 503);
+  const upstream = await env.ASSETS.fetch(new Request(request.url, { method: request.method }));
+  const headers = new Headers({ "content-security-policy": CSP });
+  const type = upstream.headers.get("content-type");
+  if (type) headers.set("content-type", type);
+  return withSecurity(new Response(upstream.body, { status: upstream.status, headers }));
 }
 
 /** Liveness payload, served over HTTP (/health) and over RPC (HealthRpc.health()). */
@@ -109,6 +122,7 @@ function readiness(env: Env): Response {
     operator_identities_configured: listConfigured(env.OPERATOR_IDENTITIES),
     approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES),
     service_bindings: bindingNames.every((name) => Boolean(env[name])),
+    ui_assets: Boolean(env.ASSETS),
   };
   const ready = Object.values(checks).every(Boolean);
   return json({ status: ready ? "ready" : "not_ready", service: env.SERVICE_NAME, production_ready: ready, checks }, ready ? 200 : 503);
@@ -179,13 +193,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const operator = await requireOperator(request, env);
   if (!operator.ok) return operator.response;
 
-  if (method === "GET") {
-    if (path === "/") return asset(INDEX_HTML, "text/html; charset=utf-8", { "content-security-policy": CSP });
-    if (path === "/assets/app.js") return asset(APP_JS, "text/javascript; charset=utf-8");
-    if (path === "/assets/app.css") return asset(APP_CSS, "text/css; charset=utf-8");
+  if (!path.startsWith("/api/")) {
+    if (method !== "GET" && method !== "HEAD") return json({ error: "method_not_allowed" }, 405);
+    return uiAsset(request, env);
   }
-
-  if (!path.startsWith("/api/")) return json({ error: "not_found" }, 404);
 
   // Path safety applies to every /api path before any routing.
   if (path.includes("%")) return json({ error: "invalid_path" }, 400);

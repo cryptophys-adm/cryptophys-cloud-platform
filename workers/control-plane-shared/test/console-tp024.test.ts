@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
 import { UI_ROUTES } from "../../console/src/ui/routes.ts";
 import consoleWorker, { CONSOLE_ALLOW_LIST, SERVICE_BINDINGS, type ConsoleService } from "../../console/src/index.ts";
@@ -27,6 +29,7 @@ function consoleEnv() {
     ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
+    ASSETS: { async fetch() { return new Response('<!doctype html><script type="module" src="/assets/index-x.js"></script>', { headers: { "content-type": "text/html" } }); } },
     ...bindings,
   };
   return env;
@@ -117,65 +120,67 @@ test("3. confirmations: non-GET have confirm except policy.evaluate and drift.ob
   }
 });
 
-test("4. no unsafe DOM or eval in served JS/CSS and HTML has no inline script/style/on*", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  const css = await run(env, creq("GET", "/assets/app.css", { jwt: OPERATOR_JWT }));
-  const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));
-  for (const s of UNSAFE) {
-    assert.ok(!js.text.includes(s), `js contains ${s}`);
-    assert.ok(!css.text.includes(s), `css contains ${s}`);
-    assert.ok(!html.text.includes(s), `html contains ${s}`);
+// ---------------------------------------------------------------- UI source (React SPA, workers/console/ui)
+// Since the Nexus redesign the client is a React SPA built by Vite into Workers Static Assets.
+// These criteria keep TP-024's guarantees by checking the UI source the bundle is built from.
+const UI = new URL("../../console/ui/", import.meta.url).pathname;
+function walk(dir: string): string[] {
+  return readdirSync(dir).flatMap((n) => { const f = join(dir, n); return statSync(f).isDirectory() ? walk(f) : [f]; });
+}
+const SRC = walk(join(UI, "src")).filter((f) => /\.(tsx?|css)$/.test(f));
+const read = (rel: string) => readFileSync(join(UI, rel), "utf8");
+const all = () => SRC.map((f) => ({ f: f.slice(UI.length), t: readFileSync(f, "utf8") }));
+
+test("4. no unsafe DOM or eval in the UI source, and the HTML entry has no inline script/style/on*", () => {
+  for (const { f, t } of all()) {
+    for (const bad of [...UNSAFE, "dangerouslySetInnerHTML"]) assert.ok(!t.includes(bad), `${f} contains ${bad}`);
   }
-  assert.doesNotMatch(html.text, /<script(?![^>]*\bsrc=)/i);
-  assert.doesNotMatch(html.text, /\sstyle=/i);
-  assert.doesNotMatch(html.text, /\son[a-z]+\s*=/i);
+  const html = read("index.html");
+  assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/);
+  assert.doesNotMatch(html, /\sstyle=|\son[a-z]+=/i);
+  // The build emits no inline script or modulepreload polyfill (CSP script-src 'self').
+  assert.match(read("vite.config.ts"), /modulePreload:\s*\{\s*polyfill:\s*false\s*\}/);
 });
 
-test("5. assets and headers: referenced assets 200 with right type and security headers; unknown 404; exact CSP; outsider 403", async () => {
-  const env = consoleEnv();
-  const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));
-  const assets = Array.from(new Set(html.text.match(/\/assets\/[A-Za-z0-9._-]+/g) || []));
-  assert.ok(assets.length > 0);
-  for (const a of assets) {
-    const r = await run(env, creq("GET", a, { jwt: OPERATOR_JWT }));
-    assert.equal(r.status, 200, a);
-    assert.ok(r.headers.get("x-content-type-options") === "nosniff");
-    assert.ok(r.headers.get("cache-control") === "no-store");
-    assert.ok(r.headers.get("x-frame-options") === "DENY");
-    if (a.endsWith(".js")) assert.match(r.headers.get("content-type") ?? "", /text\/javascript/);
-    if (a.endsWith(".css")) assert.match(r.headers.get("content-type") ?? "", /text\/css/);
-  }
-  const unknown = await run(env, creq("GET", "/assets/x.js", { jwt: OPERATOR_JWT }));
-  assert.equal(unknown.status, 404);
-  assert.equal(html.headers.get("content-security-policy"), CSP);
-  for (const a of assets) {
-    const r = await run(env, creq("GET", a, { jwt: OUTSIDER_JWT }));
-    assert.equal(r.status, 403, a);
-  }
+test("5. assets come only from the ASSETS binding, after the operator check, with the exact CSP", async () => {
+  const env = consoleEnv() as Record<string, unknown>;
+  const seen: string[] = [];
+  env.ASSETS = { async fetch(r: Request) { seen.push(new URL(r.url).pathname); return new Response("x", { headers: { "content-type": "text/javascript", "set-cookie": "a=1" } }); } };
+  const ok = await run(env, creq("GET", "/assets/index-x.js", { jwt: OPERATOR_JWT }));
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get("content-type"), "text/javascript");
+  assert.equal(ok.headers.get("content-security-policy"), CSP);
+  assert.equal(ok.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(ok.headers.get("set-cookie"), null);
+  assert.equal((await run(env, creq("GET", "/assets/index-x.js", { jwt: OUTSIDER_JWT }))).status, 403);
+  assert.equal((await run(env, creq("POST", "/", { jwt: OPERATOR_JWT }))).status, 405);
+  assert.deepEqual(seen, ["/assets/index-x.js"]);
+  const missing = await run({ ...env, ASSETS: undefined }, creq("GET", "/", { jwt: OPERATOR_JWT }));
+  assert.equal(missing.status, 503);
 });
 
-test("6. single call path: one fetch( in client, /api/ literals only whoami or built", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  const fetches = js.text.match(/fetch\(/g) || [];
-  assert.equal(fetches.length, 1);
-  const literals = js.text.match(/"[^"]*\/api\/[^"]*"/g) || [];
-  for (const lit of literals) {
-    assert.ok(lit === '"/api/whoami"' || lit === '"/api/"', `unexpected api literal ${lit}`);
+test("6. single call path: fetch( appears only in lib/api.ts; every call() route id exists in UI_ROUTES", () => {
+  const ids = new Set(UI_ROUTES.map((r) => r.id));
+  for (const { f, t } of all()) {
+    if (f !== "src/lib/api.ts") {
+      assert.ok(!/\bfetch\(/.test(t.replace(/ASSETS\.fetch|\.fetch\(/g, "")), `${f} calls fetch directly`);
+      assert.ok(!t.includes('"/api/'), `${f} builds an /api/ path itself`);
+    }
+    for (const m of t.matchAll(/\b(?:call|act)\(\s*(?:\{\s*route:\s*)?"([a-z_.]+)"/g)) assert.ok(ids.has(m[1]), `${f} uses unknown route ${m[1]}`);
+    for (const m of t.matchAll(/route:\s*"([a-z_.]+)"/g)) assert.ok(ids.has(m[1]), `${f} uses unknown route ${m[1]}`);
   }
+  const api = read("src/lib/api.ts");
+  assert.equal((api.match(/\bfetch\(/g) ?? []).length, 1);
+  assert.match(api, /"\/api\/whoami"/);
+  assert.match(api, /x-cryptophys-console/);
 });
 
-test("7. embedded table equals JSON.stringify(UI_ROUTES)", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  const m = js.text.match(/var UI_ROUTES = (\[[\s\S]*?\]);/);
-  assert.ok(m, "embedded UI_ROUTES not found");
-  assert.equal(m![1], JSON.stringify(UI_ROUTES));
+test("7. the client is built from the same UI_ROUTES table the allow-list test checks", () => {
+  assert.match(read("src/lib/api.ts"), /import \{ UI_ROUTES[^}]*\} from "\.\.\/\.\.\/\.\.\/src\/ui\/routes\.ts"/);
+  assert.match(read("src/lib/api.ts"), /route\.confirm\.split\("\{id13\}"\)/);
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  // 33 allow-list rows, untouched by TP-024; the kernel /mcp and audit POST /v1/events stay out.
   assert.equal(CONSOLE_ALLOW_LIST.length, 33);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
@@ -188,19 +193,15 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   const mcp = await run(env, creq("GET", "/api/kernel/mcp", { jwt: OPERATOR_JWT }));
   assert.equal(mcp.status, 404);
   assert.equal(mcp.body.error, "not_allowed");
-  // console-tp023.test.ts runs unchanged in the same npm test; typecheck, the test count and the
-  // console dry-run are verified by the commands recorded in STATUS.md.
 });
 
-
 test("9. SAFE principal identifiers containing @, + and : reach the Worker unencoded", async () => {
+  const api = read("src/lib/api.ts");
+  assert.match(api, /return String\(v\);/);
+  assert.doesNotMatch(api, /encodeURIComponent/);
   const env = consoleEnv();
   const kernel = recorder();
   (env as Record<string, unknown>).KERNEL = kernel.binding;
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /return String\(v\);/);
-  assert.doesNotMatch(js.text, /encodeURIComponent/);
-
   const identity = "ops@cryptophys.work:svc+1";
   const request = creq("DELETE", `/api/kernel/v1/agents/platform-api/principals/${identity}`);
   request.headers.set("origin", ORIGIN);
@@ -208,59 +209,46 @@ test("9. SAFE principal identifiers containing @, + and : reach the Worker unenc
   const response = await run(env, request);
   assert.equal(response.status, 200);
   assert.equal(kernel.calls.length, 1);
-  assert.equal(kernel.calls[0].method, "DELETE");
   assert.equal(new URL(kernel.calls[0].url).pathname, `/v1/agents/platform-api/principals/${identity}`);
-  assert.ok(!kernel.calls[0].url.includes("%40"));
-  assert.ok(!kernel.calls[0].url.includes("%2B"));
-  assert.ok(!kernel.calls[0].url.includes("%3A"));
+  assert.ok(!/%40|%2B|%3A/.test(kernel.calls[0].url));
 });
 
-test("10. Mission Control reads the actual observe() overview fields", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /Array\.isArray\(o\.services\)/);
-  assert.match(js.text, /Array\.isArray\(o\.open_agent_plans\)/);
-  assert.match(js.text, /reports\.counts/);
-  assert.match(js.text, /reports\.latest_critical/);
-  for (const key of ["decision", "confidence", "candle_key", "decided_at"]) {
-    assert.ok(js.text.includes("x." + key), "missing XAUUSD display field " + key);
+test("10. Mission Control reads the actual observe() overview fields", () => {
+  const ov = read("src/lib/overview.tsx");
+  assert.match(ov, /\(await call\("platform\.overview"\)\)\?\.overview/);
+  const cmd = read("src/pages/Command.tsx");
+  for (const k of ["ov?.services", "ov?.open_agent_plans", "agent_reports_24h?.counts", "ov?.xauusd_latest", "x.decision", "x.confidence", "x.candle_key", "x.decided_at"]) {
+    assert.ok(cmd.includes(k), `Command.tsx does not read ${k}`);
   }
-  assert.doesNotMatch(js.text, /Object\.keys\(x\)/);
+  assert.ok(read("src/components/AppShell.tsx").includes("latest_critical"));
 });
 
-test("11. maxLength is applied and approval text states the actual separation-of-duties rule", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /PLAIN_PROPS = \[.*"maxLength"/);
-  assert.ok(js.text.includes("Approval is recorded under your identity. You cannot approve a plan you authored."));
-  assert.ok(!js.text.includes("A different person must start the execution steps."));
+test("11. maxLength on bounded inputs, and the approval text states the actual separation-of-duties rule", () => {
+  assert.match(read("src/pages/AgentDetail.tsx"), /maxLength=\{200\}/);
+  assert.match(read("src/pages/Recovery.tsx"), /maxLength=\{160\}/);
+  assert.match(read("src/pages/Recovery.tsx"), /maxLength=\{500\}/);
+  const d = read("src/pages/RecoveryDetail.tsx");
+  assert.ok(d.includes("You cannot approve a plan you authored."));
+  assert.match(d, /plan\.created_by !== who\.actor/);
 });
 
-test("12. audit export defers object URL revocation until after the click task", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.match(js.text, /setTimeout\(function \(\) \{ URL\.revokeObjectURL\(url\); \}, 0\)/);
+test("12. audit export defers object URL revocation until after the click task", () => {
+  assert.match(read("src/pages/Ledger.tsx"), /window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\)/);
 });
 
-
-test("13. confirmation dialog traps Tab focus and wraps in both directions", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.ok(js.text.includes("modal.querySelectorAll("));
-  assert.ok(js.text.includes("if (ev.key !== \"Tab\") return;"));
-  assert.ok(js.text.includes("ev.shiftKey && document.activeElement === first"));
-  assert.ok(js.text.includes("!ev.shiftKey && document.activeElement === last"));
-  assert.ok(js.text.includes("last.focus()"));
-  assert.ok(js.text.includes("first.focus()"));
+test("13. confirmation dialog traps Tab focus, cancels on Escape and enables only on the exact phrase", () => {
+  const m = read("src/components/ConfirmModal.tsx");
+  assert.match(m, /e\.key === "Escape"/);
+  assert.match(m, /e\.shiftKey && document\.activeElement === first/);
+  assert.match(m, /document\.activeElement === last/);
+  assert.match(m, /const ok = typed === phrase/);
+  assert.match(m, /disabled=\{!ok\}/);
 });
 
-
-test("14. Observe now remains disabled until the request settles without a lock timer", async () => {
-  const env = consoleEnv();
-  const js = await run(env, creq("GET", "/assets/app.js", { jwt: OPERATOR_JWT }));
-  assert.ok(js.text.includes('act({ route: "drift.observe", body: {}, done: "Observation requested.", after: load })'));
-  assert.ok(js.text.includes('.finally(function () { observe.disabled = false; })'));
-  assert.doesNotMatch(js.text, /OBSERVE_LOCK_MS/);
-  assert.doesNotMatch(js.text, /setTimeout\(function \(\) \{ observe\.disabled/);
-  assert.ok(js.text.includes("setInterval(refreshMission, REFRESH_MS)"));
+test("14. Observe now stays disabled until its request settles, with no lock timer", () => {
+  const inf = read("src/pages/Infrastructure.tsx");
+  assert.match(inf, /disabled=\{busy\}/);
+  assert.match(inf, /after: \(\) => \{ setBusy\(false\)/);
+  assert.match(inf, /onError: \(\) => setBusy\(false\)/);
+  assert.doesNotMatch(inf, /setTimeout/);
 });

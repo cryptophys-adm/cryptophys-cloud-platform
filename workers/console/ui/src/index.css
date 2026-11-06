@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Core palette from the original Nexus globals.css (GitHub Dark x Grafana on obsidian). */
+:root {
+  --bg: #05070c; --bg-elevated: #0d1117; --surface: #161b22; --surface-hi: #21262d;
+  --border: #30363d; --border-hi: #484f58;
+  --text-primary: #e6edf3; --text-secondary: #8b949e; --text-dim: #484f58;
+  --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #58a6ff; --purple: #bc8cff; --cyan: #39d0d8;
+}
+html { color-scheme: dark; font-size: 14px; }
+body {
+  background: var(--bg); color: var(--text-primary); min-height: 100dvh;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+}
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hi); }
+.mono { font-family: ui-monospace, "JetBrains Mono", "SF Mono", "Fira Code", monospace; font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid rgba(34, 211, 238, 0.7); outline-offset: 2px; border-radius: 6px; }
+
+@layer components {
+  .glass { @apply rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm; }
+  .glass-inner { @apply rounded-xl border border-white/5 bg-black/20; }
+  .eyebrow { @apply text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500; }
+  .chip { @apply inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em]; }
+  .btn { @apply inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-[12px] font-semibold text-slate-200 transition hover:border-cyan-400/40 hover:bg-cyan-400/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40; }
+  .btn-danger { @apply border-rose-400/30 bg-rose-400/10 text-rose-200 hover:border-rose-400/60 hover:bg-rose-400/20; }
+  .btn-approve { @apply border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:border-emerald-400/60 hover:bg-emerald-400/20; }
+  .field { @apply w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-[13px] text-slate-100 placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none; }
+  .label { @apply mb-1 block text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500; }
+  .table-wrap { @apply overflow-x-auto; }
+  .tbl { @apply w-full text-left text-[12px]; }
+  .tbl th { @apply border-b border-white/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500; }
+  .tbl td { @apply border-b border-white/5 px-3 py-2 text-slate-300; }
+  .tbl tr:hover td { @apply bg-white/[0.02]; }
+}
