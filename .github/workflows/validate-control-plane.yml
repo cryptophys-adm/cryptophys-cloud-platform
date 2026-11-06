@@ -9,15 +9,11 @@ on:
       - ".github/workflows/deploy-control-plane.yml"
       - ".github/workflows/deploy-console.yml"
       - ".github/workflows/deploy-home.yml"
+  # The deployment orchestrator's CI gate requires this validation on every main SHA.
+  # Do not add a push path filter: documentation-only commits must still produce the
+  # required Check Suite, otherwise the exact-SHA gate can never become green.
   push:
     branches: [main]
-    paths:
-      - "workers/**"
-      - "docs/CONTROL-PLANE-WORKERS.md"
-      - ".github/workflows/validate-control-plane.yml"
-      - ".github/workflows/deploy-control-plane.yml"
-      - ".github/workflows/deploy-console.yml"
-      - ".github/workflows/deploy-home.yml"
   workflow_dispatch:
 
 permissions:
