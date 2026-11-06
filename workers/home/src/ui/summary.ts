@@ -66,7 +66,7 @@ export function summarize(body: any): HomeSummary {
       : "unknown",
     drift: services ? drifted!.length : "unknown",
     driftIds: services
-      ? drifted!.map((service: any) => typeof service.service_id === "string" && service.service_id.length > 0 ? service.service_id : "unknown")
+      ? drifted!.map((service: any) => (typeof service.service_id === "string" && service.service_id.length > 0 ? service.service_id : "unknown") + (service.persistent === true ? " (persistent)" : ""))
       : "unknown",
     critical: countValue(counts.critical),
     warning: countValue(counts.warning),

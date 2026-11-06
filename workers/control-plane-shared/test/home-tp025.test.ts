@@ -173,6 +173,7 @@ test("TP-025 wrapped overview formatter is behavioural", () => {
   assert.equal(result.agents, "running");
   assert.equal(result.drift, 1);
   assert.deepEqual(result.driftIds, ["cryptophys-policy-engine"]);
+  assert.deepEqual(summarize({ overview: { services: [{ service_id: "persistent-worker", drifted: true, persistent: true }] } }).driftIds, ["persistent-worker (persistent)"]);
   assert.equal(result.critical, 0);
   assert.equal(result.warning, 1);
   assert.equal(result.info, 12);
