@@ -2,7 +2,7 @@
 // Runtime entry point: the Access-gated HTTP handler, the DeploymentLock Durable Object,
 // and the RPC health entrypoint used by the Drift Detector.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { DeploymentLock, deployForConsensus, pendingDeploys, retireForConsensus, type Env } from "./index.ts";
+import worker, { DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, retireForConsensus, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 
 export default worker;
@@ -24,5 +24,12 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   }
   async retireForConsensus(proposalId: string, decisionId: string, target: string) {
     return retireForConsensus(this.env, proposalId, decisionId, target);
+  }
+  /** Autonomous recovery: the Recovery Manager's lifecycle Workflow runs an approved plan's redeploy step. */
+  async deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string) {
+    return deployForRecovery(this.env, planId, decisionId, serviceId, version);
+  }
+  async runStatus(workflow: string, commitSha: string) {
+    return runStatus(this.env, workflow, commitSha);
   }
 }

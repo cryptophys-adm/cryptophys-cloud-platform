@@ -288,6 +288,74 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
 }
 
 /**
+ * Autonomous recovery (owner decision 2026-11-06): the Recovery Manager's lifecycle Workflow
+ * asks for the redeploy step of an approved, executing plan. The orchestrator verifies, in its
+ * own code, that the plan is executing, that its recorded Policy Engine decision allowed
+ * recovery.execute for exactly this plan within the last 2 hours, and that the plan's version
+ * is the current main commit with green CI. It then dispatches the service's deploy workflow,
+ * which keeps every gate and rolls back automatically on failure.
+ */
+export const RECOVERY_DECISION_WINDOW_MS = 2 * 3_600_000;
+
+export async function deployForRecovery(env: Env, planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>> {
+  if (!/^plan_[0-9a-f-]{36}$/.test(planId) || !/^dec_[0-9a-f-]{36}$/.test(decisionId)) throw new Error("invalid_ids");
+  if (!/^[0-9a-f]{7,40}$/.test(version)) throw new Error("invalid_version");
+  const plan = await env.DB.prepare("SELECT service_id, status, plan_version, last_execution_json FROM recovery_plans WHERE plan_id = ?")
+    .bind(planId).first<{ service_id: string; status: string; plan_version: string; last_execution_json: string | null }>();
+  const exec = plan?.last_execution_json ? JSON.parse(plan.last_execution_json) : {};
+  if (!plan || plan.status !== "executing" || plan.service_id !== serviceId || plan.plan_version !== version || exec.policy_decision_id !== decisionId) {
+    throw new Error("plan_not_executing");
+  }
+  const d = await env.DB.prepare("SELECT action, resource, decision, created_at FROM policy_decisions WHERE decision_id = ?")
+    .bind(decisionId).first<{ action: string; resource: string; decision: string; created_at: string }>();
+  const age = d ? Date.now() - Date.parse(d.created_at) : Number.NaN;
+  if (!d || d.action !== "recovery.execute" || d.resource !== planId || d.decision !== "allow" || !(age >= 0 && age <= RECOVERY_DECISION_WINDOW_MS)) {
+    throw new Error("recovery_decision_invalid");
+  }
+  const unit = unitForService(serviceId);
+  if (!unit) throw new Error("no_deploy_unit_for_service");
+  if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const sha = await mainSha(env.GH_ACTIONS_TOKEN);
+  if (!sha) throw new Error("main_lookup_failed");
+  // The deploy workflows deploy only the exact current main commit.
+  if (!sha.startsWith(version)) throw new Error(`version_not_current_main: plan ${version}, main ${sha.slice(0, 12)}; a new plan is needed`);
+  const ci = await ciGreen(env.GH_ACTIONS_TOKEN, sha);
+  if (!ci.green) throw new Error("ci_not_green");
+  const actor = `recovery:${planId}`;
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`recovery:${unit.workflow}:${sha}`))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { dispatched: false, reason: "already_dispatched", workflow: unit.workflow, commit_sha: sha };
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
+  ).bind(requestId, serviceId, sha, actor, planId, `recovery:${planId}`,
+    JSON.stringify({ workflow: unit.workflow, unit: unit.unit, ref: "main", workflows: ci.workflows, plan_id: planId, policy_decision_id: decisionId }), at, at).run();
+  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + unit.workflow + "/dispatches",
+    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) });
+  const status = dispatch.status === 204 ? "running" : "failed";
+  await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
+  await appendAuditEvent(env.DB, {
+    event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: serviceId, outcome: status,
+    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, plan_id: planId },
+  });
+  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
+}
+
+/** Read-only: the newest dispatched run of one deploy workflow on one commit (for pipeline progress). */
+export async function runStatus(env: Env, workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }> {
+  if (!DEPLOY_UNITS.some((u) => u.workflow === workflow) || !/^[0-9a-f]{40}$/.test(commitSha) || !env.GH_ACTIONS_TOKEN) return { found: false };
+  const res = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + workflow + "/runs?event=workflow_dispatch&head_sha=" + commitSha + "&per_page=5");
+  if (!res.ok) return { found: false };
+  const runs = ((await res.json()) as { workflow_runs?: { id: number; status: string; conclusion: string | null; html_url: string; run_number: number }[] }).workflow_runs ?? [];
+  const run = runs.sort((a, b) => b.run_number - a.run_number)[0];
+  return run ? { found: true, status: run.status, conclusion: run.conclusion, run_id: run.id, url: run.html_url } : { found: false };
+}
+
+/**
  * ADR-0009 phase 4: execute an owner-approved retire_worker. Re-verifies the proposal (which,
  * for a critical action, includes the owner's approval click), requires the Worker to be
  * disabled in the registry, and dispatches the Retire Worker workflow. That workflow keeps its

@@ -233,7 +233,8 @@ test("policy engine allows only fully compliant deployments and records every de
 test("recovery plans need a different approver and a policy allow before execution", async () => {
   const db = migratedDb();
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
-  const env = { ...baseEnv("cryptophys-recovery-manager", db), RECOVERY_LIFECYCLE: fakeWorkflow().binding, APPROVER_IDENTITIES: `${OPERATOR_EMAIL},${APPROVER_EMAIL}`, POLICY: {
+  const env = { ...baseEnv("cryptophys-recovery-manager", db), RECOVERY_LIFECYCLE: fakeWorkflow().binding, APPROVER_IDENTITIES: `${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
+    DEPLOY: { deployForRecovery: async () => ({}), runStatus: async () => ({ found: false }) }, POLICY: {
     // RPC binding (PolicyRpc.evaluate): same validation and persistence as production.
     evaluate: async (input: Record<string, unknown>) => {
       const parsed = parsePolicyRequest(input);
@@ -242,6 +243,8 @@ test("recovery plans need a different approver and a policy allow before executi
     },
   } };
   assert.equal((await call(recovery, env, req("GET", "/ready"))).body.status, "ready");
+  const noDeploy = await call(recovery, { ...env, DEPLOY: undefined }, req("GET", "/ready"));
+  assert.deepEqual([noDeploy.status, noDeploy.body.checks.deploy_binding], [503, false], "autonomous recovery needs the orchestrator binding");
   const noApprovers = await call(recovery, { ...env, APPROVER_IDENTITIES: undefined }, req("GET", "/ready"));
   assert.deepEqual([noApprovers.status, noApprovers.body.checks.approver_identities_configured], [503, false]);
 

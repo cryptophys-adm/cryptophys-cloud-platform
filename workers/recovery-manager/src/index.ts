@@ -9,6 +9,7 @@ import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authorize, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
+import type { RecoveryDeployBinding } from "./autonomous.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
 export interface PolicyRpcBinding {
@@ -24,6 +25,8 @@ export interface Env extends BaseEnv, LifecycleEnv {
   APPROVER_IDENTITIES?: string;
   /** RPC service binding to cryptophys-policy-engine (entrypoint PolicyRpc); execution requires its allow decision. */
   POLICY: PolicyRpcBinding;
+  /** Deployment Orchestrator DeployRpc: redeploy steps of approved plans (autonomous recovery). */
+  DEPLOY?: RecoveryDeployBinding;
 }
 
 const SERVICE = "cryptophys-recovery-manager";
@@ -237,10 +240,11 @@ export default {
         return readinessResponse(env, {
           approver_identities_configured: listConfigured(env.APPROVER_IDENTITIES), policy_binding: Boolean(env.POLICY),
           lifecycle_workflow: Boolean(env.RECOVERY_LIFECYCLE),
+          deploy_binding: Boolean(env.DEPLOY),
         });
       }
       if (path === "/") {
-        return serviceMetadata(env, "Reviewed recovery plans with separated approval and policy-gated, operator-recorded execution", [
+        return serviceMetadata(env, "Reviewed recovery plans: separated human approval, then policy-gated autonomous execution with pipeline progress", [
           "POST /v1/plans", "GET /v1/plans", "GET /v1/plans/{plan_id}", "POST /v1/plans/{plan_id}/approve (APPROVER_IDENTITIES)",
           "POST /v1/plans/{plan_id}/executions", "POST /v1/plans/{plan_id}/disable",
         ]);

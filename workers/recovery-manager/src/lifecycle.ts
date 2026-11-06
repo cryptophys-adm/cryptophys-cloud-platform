@@ -9,16 +9,18 @@
  * trusts an event payload.
  *
  *   draft     --(approve_by passes)--> disabled / approval_expired
- *   approved  --(execute_by passes)--> disabled / approval_lapsed
+ *   approved  --(immediately)--------> executing, run autonomously step by step (autonomous.ts)
+ *             --(execute_by passed)--> disabled / approval_lapsed
  *   executing --(finish_by passes)---> stays executing; recovery.execution_overdue is audited
  *
- * An executing plan is never changed automatically: someone may be mid-recovery, so the
- * Workflow raises it instead of guessing an outcome.
+ * A plan that a person started by hand (legacy) is never finished automatically: someone may be
+ * mid-recovery, so the Workflow raises it instead of guessing an outcome.
  */
 import type { BaseEnv, WorkflowBindingLike, WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
+import { executeAutonomously, type AutonomousEnv } from "./autonomous.ts";
 
 export interface LifecycleParams { plan_id: string }
 
@@ -110,6 +112,25 @@ export async function runLifecycle(env: LifecycleEnv, planId: string, instanceId
   for (const stage of STAGES) {
     if (!current) return { plan_id: planId, final_status: "missing", closed };
     if (current.status !== stage.status) continue;
+    if (stage.status === "approved") {
+      // Owner decision 2026-11-06: an approved plan runs autonomously, unless its window already closed.
+      const checked = await step.do("check approved window", async () => {
+        const s = await snapshot(env, planId);
+        if (s && s.status === "approved" && windowClosed(s.deadline)) {
+          const changed = await closeWindow(env, planId, "approved", instanceId);
+          return { snapshot: await snapshot(env, planId), closed: changed };
+        }
+        return { snapshot: s, closed: false };
+      });
+      if (checked.closed) closed.push("approved");
+      if (checked.snapshot?.status === "approved") {
+        await executeAutonomously(env as AutonomousEnv, planId, instanceId, step);
+        current = await step.do("read plan after autonomous execution", () => snapshot(env, planId));
+      } else {
+        current = checked.snapshot;
+      }
+      continue;
+    }
     if (!current.deadline) return { plan_id: planId, final_status: current.status, closed };
     try {
       await step.waitForEvent(`await ${stage.event}`, { type: stage.event, timeout: current.remaining_ms });

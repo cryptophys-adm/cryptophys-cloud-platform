@@ -321,3 +321,40 @@ All four phases are now coded and deployed behind the mode gate. The rollout con
 - then `critical`.
 
 Each promotion is a separate reviewed change, audited by pi and agy.
+
+## Amendment 2026-11-06: autonomous recovery execution after the approval click
+
+**Owner decision (2026-11-06):** "kenapa setelah approve, owner masih harus start and execution sampai finish? harusnya bisa autonomous setelah approved, cukup tunjukan progress pipeline dan semua running background by AI." (Why must the owner still start and finish execution after approving? After approval it should be autonomous; just show the pipeline progress, with everything running in the background by AI.)
+
+- **One click.** The owner's approval is the only human step in a recovery plan. The plan's lifecycle Workflow (ADR-0006) no longer waits for a person to start or finish. When the plan becomes `approved`, the Workflow runs it (`workers/recovery-manager/src/autonomous.ts`):
+  1. **Policy Engine** `recovery.execute`, with the subject `ai:recovery-manager`. The separation-of-duties and approval checks are unchanged. A deny or an outage fails the plan, and nothing runs.
+  2. **Each step** runs through its owning path, and re-checks the live state first:
+     - `redeploy_commit`: if the latest drift observation shows the service in sync, the step is **skipped**. A stale plan therefore never deploys an old commit. Otherwise the Deployment Orchestrator's `DeployRpc.deployForRecovery` dispatches the service's deploy workflow. The orchestrator first verifies three things: the plan is executing; the plan's own `recovery.execute` allow is at most 2 hours old; and the plan version is the current `main` with green CI. The Workflow then polls `runStatus` every 30 seconds, for up to 20 minutes. A failed deploy run has already rolled itself back (§3.3).
+     - `disable_service` updates the registry, attributed to `recovery:<plan>`.
+     - `manual` steps are notes for people and are covered by verification.
+     - `rollback_worker_version`, `restore_d1_bookmark` and `rotate_secret` are **blocked**: they need credentials no Worker holds, so the owner carries them out by runbook.
+  3. **Verification:** a fresh drift observation must show the service in sync and healthy. The Workflow waits up to 30 minutes for one.
+  4. **Finish:** the plan is `completed` or `failed`. The finish is audited as `recovery.execution_finished` by `ai:recovery-manager`, and an agent report is published.
+
+  A failed or blocked stage cancels the stages after it.
+- **Pipeline.** Progress is stored in `last_execution_json.pipeline`. The Console's recovery page shows the stages, their status, durations, details and the deploy-run link. It polls every 4 seconds while the plan runs. The Start and Finish buttons are gone. Plans that a person started by hand before this change keep a Finish button, so they can be closed.
+- **Unchanged:**
+  - approval stays human, and an approver can never approve their own plan;
+  - the lifecycle windows (72 h approval, 24 h execution) and the overdue alarm still apply;
+  - the manual `executions` API remains for legacy plans;
+  - this is independent of the consensus mode, because a person approved the plan.
+- **Tests:** `test/recovery-autonomous.test.ts`, 8 criteria:
+  - the full run, with the audit trail and the deploy dispatch;
+  - a stale plan is skipped;
+  - an old commit fails safely, and later stages are cancelled;
+  - a failed deploy run fails the plan;
+  - blocked steps, and `disable_service`;
+  - a policy outage, and the orchestrator refusing a forged decision;
+  - the legacy manual path;
+  - the Console pipeline.
+
+  229 of 229 tests pass.
+- **Deploy order:**
+  1. the Deployment Orchestrator (`deployForRecovery`, `runStatus`);
+  2. the control plane (the Recovery Manager binds `DEPLOY`, and its readiness requires that binding);
+  3. the Console.

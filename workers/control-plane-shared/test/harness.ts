@@ -192,6 +192,8 @@ export interface FakeStep {
   timedOut: string[];
   do<T>(name: string, a: unknown, b?: unknown): Promise<T>;
   waitForEvent<T>(name: string, o: { type: string; timeout?: unknown }): Promise<{ payload: T; timestamp: Date; type: string }>;
+  sleep(name: string, d: unknown): Promise<void>;
+  slept: string[];
 }
 
 export function fakeWorkflow(opts: { failCreate?: boolean; existing?: string[] } = {}): FakeWorkflow {
@@ -222,7 +224,8 @@ export function fakeWorkflow(opts: { failCreate?: boolean; existing?: string[] }
     },
     step(instanceId) {
       const s: FakeStep = {
-        names: [], attempts: {}, timedOut: [],
+        names: [], attempts: {}, timedOut: [], slept: [],
+        async sleep(name: string) { s.names.push(name); s.slept.push(name); },
         async do<T>(name: string, a: unknown, b?: unknown): Promise<T> {
           const config = (typeof a === "function" ? {} : a) as { retries?: { limit: number } };
           const fn = (typeof a === "function" ? a : b) as (ctx: { attempt: number }) => Promise<T>;
