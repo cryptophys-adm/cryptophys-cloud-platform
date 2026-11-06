@@ -1,4 +1,8 @@
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
 import homeWorker from "../../home/src/index.ts";
@@ -240,4 +244,24 @@ test("TP-025 no regressions", async () => {
   const denied = await run(env, creq("GET", "/api/kernel/v1/agents"));
   assert.equal(denied.status, 404);
   assert.deepEqual(denied.body, { error: "not_allowed" });
+});
+
+test("TP-025 Home Worker Wrangler dry-run bundle", () => {
+  const outDir = mkdtempSync(join(tmpdir(), "dry-home-tp025-"));
+  try {
+    const result = spawnSync("npx", [
+      "wrangler", "deploy", "--dry-run",
+      "--config", "../home/wrangler.toml",
+      "--outdir", outDir,
+    ], { encoding: "utf8" });
+    const output = (result.stdout ?? "") + (result.stderr ?? "");
+    assert.equal(result.status, 0, output);
+    assert.equal(result.error, undefined, String(result.error ?? ""));
+    const uploadLine = output.split(/\\r?\\n/).find((line) => line.includes("Total Upload:"));
+    assert.ok(uploadLine, output);
+    assert.ok(output.includes("--dry-run: exiting now."), output);
+    console.log(uploadLine);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
 });
