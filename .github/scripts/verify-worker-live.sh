@@ -198,7 +198,7 @@ http_check "readiness" "${base_url}/ready" "$ready_filter"
 # 4. Custom-domain verification. Keep the default advisory mode for existing callers;
 # Home opts into strict mode because home.cryptophys.work is its canonical entrypoint.
 if [[ -n "$custom_domain" ]]; then
-  if ! domains="$(cf_get "${account_path}/workers/domains?service=${script_name}" 2>/dev/null)"; then
+  if ! domains="$(cf_get "${account_path}/workers/domains?hostname=${custom_domain}" 2>/dev/null)"; then
     if [[ "$require_custom_domain" == true ]]; then
       fail "Could not verify Cloudflare registration for required custom domain ${custom_domain}"
     fi
