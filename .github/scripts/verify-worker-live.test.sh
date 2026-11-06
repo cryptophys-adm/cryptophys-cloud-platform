@@ -50,7 +50,7 @@ case "$url" in
       else
         : >"$out"
         if [[ -n "$dump_headers" ]]; then
-          printf 'HTTP/2 302\\r\\nLocation: https://cryptophys.cloudflareaccess.com/cdn-cgi/access/login/test-aud\\r\\n\\r\\n' >"$dump_headers"
+          printf 'HTTP/2 302\r\nLocation: https://cryptophys.cloudflareaccess.com/cdn-cgi/access/login/test-aud\r\n\r\n' >"$dump_headers"
         fi
         [[ -n "$fmt" ]] && printf 302
         exit 0
@@ -63,9 +63,9 @@ if [[ -f "$fixture.err" ]]; then cat "$fixture.err" >&2; exit 60; fi
 if [[ ! -f "$fixture" ]]; then echo '{"success":false,"errors":[{"code":404,"message":"no fixture"}]}' >"$out"; [[ -n "$fmt" ]] && printf 404; exit 0; fi
 response_status="$(cat "$fixture.status" 2>/dev/null || echo 200)"
 if [[ -n "$dump_headers" ]]; then
-  printf 'HTTP/2 %s\\r\\n' "$response_status" >"$dump_headers"
+  printf 'HTTP/2 %s\r\n' "$response_status" >"$dump_headers"
   [[ ! -f "$fixture.headers" ]] || cat "$fixture.headers" >>"$dump_headers"
-  printf '\\r\\n' >>"$dump_headers"
+  printf '\r\n' >>"$dump_headers"
 fi
 cat "$fixture" >"$out"
 [[ -n "$fmt" ]] && printf '%s' "$response_status"
@@ -83,7 +83,7 @@ fx() { # fx URL BODY [STATUS]
 
 fx_response_headers() { # fx_response_headers URL HEADER_LINE
   local key; key="$(printf '%s' "$1" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
-  printf '%s\\r\\n' "$2" >"$FIXTURES/$key.headers"
+  printf '%s\r\n' "$2" >"$FIXTURES/$key.headers"
 }
 
 api="https://api.cloudflare.test/client/v4/accounts/$account/workers"
@@ -179,7 +179,7 @@ key="$(printf '%s' "https://custom.example.test/health" | sed -E 's#^https://##;
 echo "curl: (60) SSL: no alternative certificate subject name matches target hostname" >"$FIXTURES/$key.err"
 fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
 extra_args=(--custom-domain custom.example.test)
-expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed TLS-verified request"
+expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed to connect over verified TLS"
 extra_args=()
 
 # Strict custom-domain mode is opt-in so existing callers retain advisory semantics.
@@ -199,7 +199,7 @@ expect fail "required custom domain must disable preview subdomain routing" "pre
 setup_green custom-domain-unregistered
 fx "$api/domains?service=svc" '{"success":true,"result":[]}'
 extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
-expect fail "required custom domain must be an enabled production registration" "not registered as exactly one enabled production Worker domain"
+expect fail "required custom domain must be an enabled production registration" "exactly one registration"
 
 setup_green custom-domain-dns-failure
 fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
