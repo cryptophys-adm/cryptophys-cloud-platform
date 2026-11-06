@@ -83,6 +83,7 @@ test("raising and braking require exact server-side confirmation phrases", async
   const brake = await call(kernel, e, post(CI_JWT, { mode: "shadow", confirm: "SHADOW" }));
   assert.equal(brake.status, 200, JSON.stringify(brake.body));
   assert.equal(mode(db), "shadow");
+  await setConsensusMode(e as never, "deploy", APPROVER_EMAIL, "user", true, "RAISE MODE", null);
   await assert.rejects(
     setConsensusMode(e as never, "routine", APPROVER_EMAIL, "user", true, "RAISE MODE", null),
     /invalid_transition/,
