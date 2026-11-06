@@ -395,3 +395,23 @@ Each promotion is a separate reviewed change, audited by pi and agy.
 - **C4, UI render in CI.** Validate Control Plane Workers renders every Console screen (12 routes) under the `/console/` mount, at 390 px and 1440 px, in Chromium (Playwright 1.63.0, a pinned dev dependency). It fails on page errors, failed requests, inline scripts, horizontal scroll or blank pages.
 - **C1** (moving the votes into each Worker over RPC) follows as a separate change.
 - **Tests:** `test/wave-c.test.ts`. 250 of 250 tests pass.
+## Amendment 2026-11-06: Wave C, C1 (votes cast by each Worker over RPC)
+
+This closes the phase 1 limitation, under which the voters ran inside the AI Kernel on a single snapshot.
+
+- **The rules are shared.** The voting rules moved to `control-plane-shared/src/consensus-rules.ts`: pure functions with no I/O.
+- **Each Worker votes.** The seven control-plane Workers each expose `VoteRpc.vote(voter, proposal, snapshot)`: Platform API, Deployment Orchestrator, Platform Registry, Policy Engine, Drift Detector, Audit Ledger and Recovery Manager. A Worker votes only as itself. Before applying its rule, it re-reads the facts it owns (`consensus-vote.ts`):
+  - the Platform Registry reads the registry row;
+  - the Drift Detector reads the last two observations;
+  - the Policy Engine reads recent proposals for the same action and target;
+  - the Audit Ledger runs an incremental chain verification;
+  - the Recovery Manager reads the plans that are executing;
+  - every Worker reads the kill switch.
+
+  The kernel's snapshot is only a starting point.
+- **The kernel tallies.** It calls the seven bindings in parallel. The kernel-hosted voters, supervisor and auditor, vote in the kernel.
+  - A Worker that does not answer within 8 seconds, or answers out of shape, **abstains**, which counts against the proposal.
+  - A Worker without a binding falls back to the kernel's rule.
+  - Each proposal's evidence records `votes_via` (rpc, kernel, unreachable).
+- **Deploy order:** Platform API and Deployment Orchestrator first, then the control plane. The control plane deploys the AI Kernel last, so every `VoteRpc` exists before the kernel binds to it.
+- **Tests:** `test/wave-c1-votes.test.ts` (4).

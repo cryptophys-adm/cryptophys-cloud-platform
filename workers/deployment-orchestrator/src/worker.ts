@@ -4,6 +4,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
+import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
+import type { Evidence, Proposal, Vote } from "../../control-plane-shared/src/consensus-rules.ts";
 
 export default worker;
 export { DeploymentLock };
@@ -38,5 +40,16 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   }
   async rollbackForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>) {
     return rollbackForConsensus(this.env, proposalId, decisionId, target, params);
+  }
+}
+
+/**
+ * Wave C (C1): this Worker's own consensus vote, from its own reads of its domain. The AI Kernel
+ * calls it for every proposal; it votes only as "deployment-orchestrator".
+ */
+export class VoteRpc extends WorkerEntrypoint<Env> {
+  async vote(voter: string, proposal: Proposal, snapshot: Evidence): Promise<Vote> {
+    if (voter !== "deployment-orchestrator") throw new Error("wrong_voter");
+    return castDomainVote(this.env.DB as never, voter, proposal, snapshot);
   }
 }
