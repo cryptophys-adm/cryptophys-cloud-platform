@@ -19,11 +19,12 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
 # Minimal curl stand-in: honours --output/--write-out and the URL argument.
-out=/dev/stdout; fmt=""; url=""; auth=""; headers=""
+out=/dev/stdout; fmt=""; url=""; auth=""; headers=""; dump_headers=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output) out="$2"; shift 2 ;;
     --write-out) fmt="$2"; shift 2 ;;
+    --dump-header|-D) dump_headers="$2"; shift 2 ;;
     --header)
       if [[ "$2" == @* ]]; then headers+="$(cat "${2#@}")"$'\n'; else auth="$2"; headers+="$2"$'\n'; fi
       shift 2 ;;
@@ -32,23 +33,42 @@ while [[ $# -gt 0 ]]; do
     *) url="$1"; shift ;;
   esac
 done
+if [[ "${FAKE_CUSTOM_DOMAIN_DNS_FAIL:-0}" == 1 && "$url" == https://custom.example.test/* ]]; then
+  echo "curl: (6) Could not resolve host: custom.example.test" >&2
+  exit 6
+fi
 case "$url" in
   https://api.cloudflare.test/*)
     [[ "$auth" == "Authorization: Bearer $EXPECTED_TOKEN" ]] || { echo '{"success":false}' >"$out"; printf 403; exit 0; } ;;
   https://*)
     [[ -z "$auth" ]] || { echo "credential leaked to $url" >&2; exit 99; }
     [[ "$headers" != *"$EXPECTED_TOKEN"* ]] || { echo "API token leaked to $url" >&2; exit 99; }
-    if [[ "${FAKE_ACCESS:-0}" == 1 && "$url" == *workers.dev* ]] && \
+    if [[ "${FAKE_ACCESS:-0}" == 1 && ( "$url" == *workers.dev* || "$url" == *custom.example.test* ) ]] && \
        [[ "$headers" != *"CF-Access-Client-Id: $ACCESS_ID"* || "$headers" != *"CF-Access-Client-Secret: $ACCESS_SECRET"* ]]; then
-      : >"$out"; [[ -n "$fmt" ]] && printf 302; exit 0
+      if [[ "$url" == *custom.example.test* && "${FAKE_CUSTOM_DOMAIN_UNPROTECTED:-0}" == 1 ]]; then
+        : # Deliberately simulate a custom hostname that does not enforce Access.
+      else
+        : >"$out"
+        if [[ -n "$dump_headers" ]]; then
+          printf 'HTTP/2 302\r\nLocation: https://cryptophys.cloudflareaccess.com/cdn-cgi/access/login/test-aud\r\n\r\n' >"$dump_headers"
+        fi
+        [[ -n "$fmt" ]] && printf 302
+        exit 0
+      fi
     fi ;;
 esac
 key="$(printf '%s' "$url" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
 fixture="$FIXTURES/$key"
 if [[ -f "$fixture.err" ]]; then cat "$fixture.err" >&2; exit 60; fi
 if [[ ! -f "$fixture" ]]; then echo '{"success":false,"errors":[{"code":404,"message":"no fixture"}]}' >"$out"; [[ -n "$fmt" ]] && printf 404; exit 0; fi
+response_status="$(cat "$fixture.status" 2>/dev/null || echo 200)"
+if [[ -n "$dump_headers" ]]; then
+  printf 'HTTP/2 %s\r\n' "$response_status" >"$dump_headers"
+  [[ ! -f "$fixture.headers" ]] || cat "$fixture.headers" >>"$dump_headers"
+  printf '\r\n' >>"$dump_headers"
+fi
 cat "$fixture" >"$out"
-[[ -n "$fmt" ]] && printf '%s' "$(cat "$fixture.status" 2>/dev/null || echo 200)"
+[[ -n "$fmt" ]] && printf '%s' "$response_status"
 # A one-shot ".then" fixture replaces this one after the first read (eventual consistency).
 if [[ -f "$fixture.then" ]]; then mv "$fixture.then" "$fixture"; fi
 exit 0
@@ -59,6 +79,11 @@ fx() { # fx URL BODY [STATUS]
   local key; key="$(printf '%s' "$1" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
   printf '%s' "$2" >"$FIXTURES/$key"
   [[ -z "${3:-}" ]] || printf '%s' "$3" >"$FIXTURES/$key.status"
+}
+
+fx_response_headers() { # fx_response_headers URL HEADER_LINE
+  local key; key="$(printf '%s' "$1" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
+  printf '%s\r\n' "$2" >"$FIXTURES/$key.headers"
 }
 
 api="https://api.cloudflare.test/client/v4/accounts/$account/workers"
@@ -78,7 +103,7 @@ access_id="client-id.access"
 access_secret="cfast_access-secret-must-never-be-printed"
 
 run_subject() {
-  PATH="$tmp/bin:$PATH" EXPECTED_TOKEN="$token" ACCESS_ID="$access_id" ACCESS_SECRET="$access_secret" \
+  PATH="$tmp/bin:$PATH" EXPECTED_TOKEN="$token" ACCESS_ID="$access_id" ACCESS_SECRET="$access_secret" ACCESS_TEAM_DOMAIN="cryptophys.cloudflareaccess.com" \
     CLOUDFLARE_ACCOUNT_ID="$account" CLOUDFLARE_API_TOKEN="$token" \
     CF_API_BASE="https://api.cloudflare.test/client/v4" \
     VERIFY_ATTEMPTS=2 VERIFY_DELAY_SECONDS=0 \
@@ -152,9 +177,85 @@ expect fail "non-JSON readiness fails" "readiness check failed"
 setup_green custom-domain-tls
 key="$(printf '%s' "https://custom.example.test/health" | sed -E 's#^https://##; s#[^A-Za-z0-9]+#_#g')"
 echo "curl: (60) SSL: no alternative certificate subject name matches target hostname" >"$FIXTURES/$key.err"
-fx "$api/domains?service=svc" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","environment":"production"}]}'
 extra_args=(--custom-domain custom.example.test)
 expect pass "custom-domain TLS failure is a warning, not a pass-through" "::warning::Custom domain custom.example.test failed TLS-verified request"
+extra_args=()
+
+# Strict custom-domain mode is opt-in so existing callers retain advisory semantics.
+setup_green custom-domain-required
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
+fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
+export FAKE_ACCESS=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect pass "required custom domain verifies registration, Access, health and readiness" "custom-domain readiness OK"
+
+setup_green custom-domain-previews-enabled
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":true}]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must disable preview subdomain routing" "preview routing disabled"
+
+setup_green custom-domain-unregistered
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must be an enabled production registration" "exactly one registration"
+
+setup_green custom-domain-dns-failure
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+export FAKE_CUSTOM_DOMAIN_DNS_FAIL=1
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain DNS/TLS failure fails deployment verification" "failed to connect over verified TLS"
+unset FAKE_CUSTOM_DOMAIN_DNS_FAIL
+
+setup_green custom-domain-unprotected
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{"status":"ok","service":"svc"}'
+fx "https://custom.example.test/ready" '{"status":"ready","service":"svc"}'
+export FAKE_CUSTOM_DOMAIN_UNPROTECTED=1
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain must reject unauthenticated requests" "Cloudflare Access login redirect"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-origin-403
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{"status":"forbidden"}' 403
+export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "origin-generated HTTP 403 is not accepted as an Access challenge" "Cloudflare Access login redirect"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-untrusted-redirect
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{}' 302
+fx_response_headers "https://custom.example.test/health" "Location: https://attacker.example.test/cdn-cgi/access/login/fake"
+export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "custom-domain challenge must redirect to Cloudflare Access" "configured Cloudflare Access team login endpoint"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-wrong-access-team
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+fx "https://custom.example.test/health" '{}' 302
+fx_response_headers "https://custom.example.test/health" "Location: https://other.cloudflareaccess.com/cdn-cgi/access/login/wrong-team"
+export FAKE_ACCESS=1 FAKE_CUSTOM_DOMAIN_UNPROTECTED=1 CF_ACCESS_CLIENT_ID="$access_id" CF_ACCESS_CLIENT_SECRET="$access_secret"
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "custom-domain challenge must use the resolved Access team" "configured Cloudflare Access team login endpoint"
+unset FAKE_CUSTOM_DOMAIN_UNPROTECTED
+
+setup_green custom-domain-duplicate-registration
+fx "$api/domains?hostname=custom.example.test" '{"success":true,"result":[{"hostname":"custom.example.test","zone_name":"example.test","service":"svc","environment":"production","enabled":true,"previews_enabled":false},{"hostname":"custom.example.test","zone_name":"example.test","service":"other-svc","environment":"production","enabled":true,"previews_enabled":false}]}'
+extra_args=(--require-access --custom-domain custom.example.test --require-custom-domain)
+expect fail "duplicate hostname registrations fail closed" "exactly one registration"
+extra_args=()
+
+unset FAKE_ACCESS CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+
+setup_green invalid-required-domain
+extra_args=(--require-custom-domain)
+expect fail "required custom domain flag needs a hostname" "--custom-domain HOSTNAME"
+extra_args=(--custom-domain custom.example.test --require-custom-domain)
+expect fail "required custom domain flag needs Access verification" "--require-access"
 extra_args=()
 
 setup_green access-ok
