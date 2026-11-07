@@ -143,6 +143,24 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
+    // A new D1 migration (2026-11-07): only the Control Plane deploy applies it, and every Worker's
+    // readiness needs it, so the Control Plane goes first and alone; the orchestrator follows.
+    github({ files: ["workers/control-plane-migrations/0099_x.sql", "workers/control-plane-shared/src/access.ts"] });
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual(p.units.map((u) => u.unit), ["control-plane"]);
+    assert.deepEqual(p.skipped.filter((s) => s.reason === "control_plane_migration_first").map((s) => s.unit).sort(),
+      ["console", "deployment-orchestrator", "home", "platform-api"]);
+    db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id IN ('cryptophys-policy-engine','cryptophys-audit-ledger','cryptophys-platform-registry','cryptophys-recovery-manager','cryptophys-drift-detector','cryptophys-ai-kernel')").run(MAIN.slice(0, 12));
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"], "after the Control Plane, the usual order resumes");
+    db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
+    const cpStatus = (db.raw.prepare("SELECT status FROM service_registry WHERE service_id = 'cryptophys-policy-engine'").get() as any).status;
+    db.raw.prepare("UPDATE service_registry SET status = 'disabled' WHERE service_id = 'cryptophys-policy-engine'").run();
+    github({ files: ["workers/control-plane-migrations/0099_x.sql", "workers/deployment-orchestrator/src/index.ts"] });
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.equal(p.units.length, 0, "never deploy the Orchestrator when the migration-bearing Control Plane is unavailable");
+    assert.ok(p.skipped.some((s) => s.unit === "*" && s.reason === "new_migration_control_plane_unavailable"));
+    db.raw.prepare("UPDATE service_registry SET status = ? WHERE service_id = 'cryptophys-policy-engine'").run(cpStatus);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);
@@ -170,6 +188,13 @@ test("4. supervisor proposes deploy_commit once per unit and commit; shadow reco
     assert.equal(ps.length, 1, "the same commit is not proposed twice");
     assert.deepEqual(gh.dispatched, []);
     assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM deployment_requests").get() as any).n, 0);
+    // A Policy veto (shadow_blocked, e.g. the hourly rate limit) is retried after an hour, not before.
+    db.raw.prepare("UPDATE consensus_proposals SET status = 'shadow_blocked', created_at = ? WHERE action = 'deploy_commit'").run(new Date(Date.now() - 30 * 60_000).toISOString());
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(proposals(db).filter((p) => p.action === "deploy_commit").length, 1, "not within the hour");
+    db.raw.prepare("UPDATE consensus_proposals SET created_at = ? WHERE action = 'deploy_commit'").run(new Date(Date.now() - 61 * 60_000).toISOString());
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(proposals(db).filter((p) => p.action === "deploy_commit").length, 2, "a vetoed commit is proposed again after an hour");
   } finally { globalThis.fetch = realFetch; }
 });
 

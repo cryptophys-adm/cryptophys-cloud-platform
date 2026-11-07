@@ -108,6 +108,18 @@ jobs:
             || echo "::warning::No Google identity provider in Zero Trust yet; see docs/OWNER-OIDC-SETUP.md (one-time PIN still works)."
           jq -e 'any(.[]; .type == "azureAD" or .type == "oidc")' <<< "$idps" >/dev/null \
             || echo "::warning::No Microsoft identity provider (Entra ID or Microsoft OIDC) in Zero Trust yet; see docs/OWNER-OIDC-SETUP.md (one-time PIN still works)."
+          # Users page (2026-11-07): people added in the Cerebrum Console sign in through the Access
+          # group cryptophys-nexus-accounts. It is created here once, seeded with the configured
+          # emails; afterwards the Platform Registry owns its members (never overwritten here).
+          group_name="cryptophys-nexus-accounts"
+          groups="$(call GET "/access/groups?per_page=1000" | jq -c --arg n "$group_name" '[.result[] | select(.name == $n)]')"
+          case "$(jq length <<< "$groups")" in
+            0) group="$(call POST /access/groups "$(jq -n --arg n "$group_name" --argjson emails "$(jq -R . <<< "$emails" | jq -s .)"                  '{name: $n, include: [$emails[] | {email: {email: .}}], exclude: [], require: []}')" | jq -r '.result.id')"
+               echo "Created Access group ${group_name}" ;;
+            1) group="$(jq -r '.[0].id' <<< "$groups")" ;;
+            *) echo "::error::More than one Access group named ${group_name}; resolve manually"; exit 1 ;;
+          esac
+          [[ "$group" =~ ^[0-9a-f-]{20,}$ ]] || { echo "::error::Access group ${group_name} has no valid id"; exit 1; }
           destinations="[]"
           for name in $PLATFORM_WORKERS; do
             tag="$(printf '%s' "$scripts" | jq -er --arg n "$name" '[.result[] | select(.id == $n)] | if length == 1 then .[0].tag else error("missing") end')" \
@@ -119,7 +131,7 @@ jobs:
             destinations="$(jq -c --arg h "$host" '. + [{type: "public", uri: $h}]' <<< "$destinations")"
           done
 
-          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --argjson dest "$destinations" --argjson agents "$agent_tokens" --argjson idps "$idps" \
+          body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --arg group "$group" --argjson dest "$destinations" --argjson agents "$agent_tokens" --argjson idps "$idps" \
             --argjson emails "$(jq -R . <<< "$emails" | jq -s .)" '{
               name: $name,
               type: "self_hosted",
@@ -129,7 +141,7 @@ jobs:
               auto_redirect_to_identity: false,
               policies: [
                 {name: "ci-service-token", decision: "non_identity", precedence: 1, include: [{service_token: {token_id: $token}}]},
-                {name: "platform-operators", decision: "allow", precedence: 2, include: [$emails[] | {email: {email: .}}]}
+                {name: "platform-operators", decision: "allow", precedence: 2, include: ([$emails[] | {email: {email: .}}] + [{group: {id: $group}}])}
               ] + (if ($agents | length) > 0 then
                 [{name: "external-agents", decision: "non_identity", precedence: 3, include: [$agents[] | {service_token: {token_id: .}}]}]
               else [] end)

@@ -6,7 +6,7 @@
  * through a Service Binding carrying that same JWT and nothing else. The target Worker
  * verifies it and enforces the operator rule, approver rule and separation of duties.
  */
-import { accessConfigured, accessGate, actorOf, identityAllowed, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, accessGate, actorOf, authenticate, identityAllowed, listConfigured, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
 import { MAX_BODY_BYTES, healthBody } from "../../control-plane-shared/src/http.ts";
 
 export interface ServiceBinding { fetch(request: Request): Promise<Response> }
@@ -69,7 +69,8 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("kernel", "DELETE", ["/v1/agents/{id}/principals/{id}"]),
   ...rows("recovery", "GET", ["/v1/plans", "/v1/plans/{id}"]),
   ...rows("recovery", "POST", ["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/executions", "/v1/plans/{id}/disable"]),
-  ...rows("registry", "GET", ["/v1/services", "/v1/services/{id}"]),
+  ...rows("registry", "GET", ["/v1/services", "/v1/services/{id}", "/v1/accounts"]),
+  ...rows("registry", "POST", ["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable"]),
   ...rows("registry", "PUT", ["/v1/services/{id}", "/v1/services/{id}/desired-version"]),
   ...rows("policy", "GET", ["/v1/decisions", "/v1/decisions/{id}"]),
   ...rows("policy", "POST", ["/v1/evaluate"]),
@@ -148,6 +149,42 @@ function matchRule(service: string, method: string, segments: string[]): AllowRu
   return null;
 }
 
+/**
+ * Who may open the Cerebrum Console (owner decision 2026-11-07): configured operators and owners,
+ * and accounts of kind 'admin' (viewer, operator or approver) from the Users page. Accounts of kind
+ * 'user' sign in to Nexus but not the Console. The Console holds no role data of its own: it asks
+ * the Platform Registry (/v1/accounts/me) with the caller's own Access JWT. A failed lookup refuses.
+ */
+export interface ConsoleRole { role: "approver" | "operator" | "viewer"; owner: boolean; source: "config" | "account" }
+type Gate = { ok: true; identity: AccessIdentity; role: ConsoleRole } | { ok: false; response: Response };
+
+async function consoleGate(request: Request, env: Env): Promise<Gate> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return auth;
+  if (!listConfigured(env.OPERATOR_IDENTITIES)) return { ok: false, response: json({ error: "operator_identities_not_configured" }, 503) };
+  const owner = auth.identity.type === "user" && identityAllowed(auth.identity, env.APPROVER_IDENTITIES);
+  if (identityAllowed(auth.identity, env.OPERATOR_IDENTITIES)) {
+    return { ok: true, identity: auth.identity, role: { role: owner ? "approver" : "operator", owner, source: "config" } };
+  }
+  if (owner) return { ok: true, identity: auth.identity, role: { role: "approver", owner: true, source: "config" } };
+  if (auth.identity.type === "user" && env.REGISTRY) {
+    try {
+      const r = await env.REGISTRY.fetch(new Request("https://cryptophys-platform-registry.internal/v1/accounts/me", {
+        headers: { "cf-access-jwt-assertion": request.headers.get("cf-access-jwt-assertion") as string },
+      }));
+      if (r.ok) {
+        const me = await r.json() as { role?: string };
+        if (me.role === "viewer" || me.role === "operator" || me.role === "approver") {
+          return { ok: true, identity: auth.identity, role: { role: me.role, owner: false, source: "account" } };
+        }
+      }
+    } catch {
+      // fall through: refuse
+    }
+  }
+  return { ok: false, response: json({ error: "forbidden", detail: "the Cerebrum Console is for admin accounts" }, 403) };
+}
+
 async function forward(request: Request, env: Env, url: URL, innerPath: string, jwt: string, rule: AllowRule): Promise<Response> {
   const method = request.method;
   const isGet = method === "GET";
@@ -221,7 +258,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return path.startsWith("/health") ? json(consoleHealth(env)) : readiness(env);
   }
 
-  const operator = await requireOperator(request, env);
+  const operator = await consoleGate(request, env);
   if (!operator.ok) return operator.response;
 
   if (!path.startsWith("/api/")) {
@@ -239,14 +276,20 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return json({
       actor: actorOf(operator.identity),
       type: operator.identity.type,
-      operator: true,
-      approver: identityAllowed(operator.identity, env.APPROVER_IDENTITIES),
+      role: operator.role.role,
+      operator: operator.role.role !== "viewer",
+      approver: operator.role.role === "approver" && operator.identity.type === "user",
+      owner: operator.role.owner,
+      viewer: operator.role.role === "viewer",
     });
   }
 
   const [service, ...rest] = segments;
   const rule = rest.length > 0 ? matchRule(service, method, rest) : null;
   if (!rule) return json({ error: "not_allowed" }, 404);
+
+  // A viewer reads only; the downstream Worker refuses too, this just fails early and clearly.
+  if (operator.role.role === "viewer" && method !== "GET" && method !== "HEAD") return json({ error: "viewer_read_only" }, 403);
 
   if (method !== "GET" && method !== "HEAD") {
     const origin = request.headers.get("origin");

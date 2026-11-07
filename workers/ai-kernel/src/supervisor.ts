@@ -199,9 +199,13 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           continue;
         }
         if (!pending.main_sha) break;
+        // Once per unit and commit, except that a proposal the Policy Engine vetoed (shadow_blocked,
+        // e.g. a rate limit) is retried after an hour; otherwise a commit blocked once by the hourly
+        // limit would never deploy (2026-11-07: #187 stayed undeployed after a target_rate_limit veto).
         const seen = await env.DB.prepare(
-          "SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ? LIMIT 1",
-        ).bind(u.target, pending.main_sha).first();
+          `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ?
+             AND (status <> 'shadow_blocked' OR created_at >= ?) LIMIT 1`,
+        ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString()).first();
         if (seen) continue;
         const r = await syscall(env, AGENT_ID, "consensus.propose", {
           action: "deploy_commit", target: u.target,

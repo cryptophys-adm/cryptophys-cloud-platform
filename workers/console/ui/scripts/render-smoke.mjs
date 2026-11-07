@@ -9,9 +9,16 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["", "agents", "agents/supervisor", "cognition", "consensus", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users"];
 const MOCK = {
-  "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true },
+  "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
+  "/api/registry/v1/accounts": {
+    owners: ["owner@example.com"], configured_operators: [], login_sync: "not_configured",
+    accounts: [
+      { email: "analyst.with.a.rather.long.address@example-company.co.id", kind: "admin", privilege: "viewer", status: "active", note: "read only", created_by: "owner@example.com", created_at: "2026-11-07T09:00:00Z", updated_by: "owner@example.com", updated_at: "2026-11-07T09:00:00Z" },
+      { email: "trader@example.com", kind: "user", privilege: null, status: "disabled", note: null, created_by: "owner@example.com", created_at: "2026-11-07T09:00:00Z", updated_by: "owner@example.com", updated_at: "2026-11-07T09:05:00Z" },
+    ],
+  },
   "/api/kernel/v1/consensus": { mode: "shadow", stats_24h: {}, proposals: [] },
   "/api/kernel/v1/consensus/report": { window_days: 7, total: 0, scored: 0, agree: 0, false_positive: 0, false_negative: 0, pending: 0, agreement_rate: null, by_action: {}, items: [] },
 };

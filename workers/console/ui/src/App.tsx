@@ -11,6 +11,7 @@ import Policy from "./pages/Policy";
 import Ledger from "./pages/Ledger";
 import Pipelines from "./pages/Pipelines";
 import Markets from "./pages/Markets";
+import Users from "./pages/Users";
 import Consensus from "./pages/Consensus";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
@@ -39,6 +40,7 @@ export default function App() {
     case "ledger": page = <Ledger />; break;
     case "pipelines": page = <Pipelines />; break;
     case "markets": page = <Markets />; break;
+    case "users": page = <Users />; break;
     default: page = <Command />; current = "";
   }
   return <AppShell current={current}>{page}</AppShell>;

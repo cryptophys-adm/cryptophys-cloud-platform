@@ -6,7 +6,7 @@ import {
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, authorize, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessGate, listConfigured, requireApprover, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 import type { RecoveryDeployBinding } from "./autonomous.ts";
@@ -272,9 +272,9 @@ export default {
     if (!path.startsWith("/v1/")) return errorResponse(404, "not_found");
     const match = /^\/v1\/plans\/(plan_[0-9a-f-]{36})(?:\/(approve|executions|disable))?$/.exec(path);
     try {
-      // Approval is authorized by APPROVER_IDENTITIES, not by the operator list.
+      // Approval needs an approver (owner or approver account, always a person), not just an operator.
       if (match?.[2] === "approve") {
-        const approver = await authorize(request, env, env.APPROVER_IDENTITIES, "APPROVER_IDENTITIES");
+        const approver = await requireApprover(request, env);
         if (!approver.ok) return approver.response;
         if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
         const plan = await getPlan(env, match[1]);

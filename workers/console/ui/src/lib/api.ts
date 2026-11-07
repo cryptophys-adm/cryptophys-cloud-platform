@@ -28,7 +28,7 @@ async function api(method: string, path: string, body?: unknown): Promise<Json> 
   return data;
 }
 
-export function whoami(): Promise<{ actor: string; type: string; operator: boolean; approver: boolean }> {
+export function whoami(): Promise<{ actor: string; type: string; operator: boolean; approver: boolean; role?: string; owner?: boolean; viewer?: boolean }> {
   return api("GET", `${MOUNT}/api/whoami`);
 }
 
