@@ -16,7 +16,7 @@ function kernelEnv(db: any, extra: any = {}) {
   const mem = { get: async (k: string) => memStore.get(k), put: async (k: string, v: any) => { memStore.set(k, v); }, delete: async (k: string) => { memStore.delete(k); } };
   return { env, db, mem };
 }
-import { observeSignals } from "../../ai-kernel/src/syscall.ts";
+import { observeSignals, withoutLevels } from "../../ai-kernel/src/syscall.ts";
 import { runSignalCycle } from "../../ai-kernel/src/signal-analyst.ts";
 import { SignalAnalystCycleQueue } from "../../ai-kernel/src/signal-analyst.ts";
 
@@ -241,4 +241,11 @@ test("TP-017 schedule", async () => {
   const src = fs.readFileSync(new URL("../../ai-kernel/src/index.ts", import.meta.url), "utf8");
   assert.match(src, /minute === 22/);
   assert.match(src, /if \(minute === 22 && env\.SIGNAL_ANALYST\)/);
+});
+
+
+test("withoutLevels redacts common thousands and decimal separators", () => {
+  for (const value of ["4,078.50", "4 078.50", "4_078.50", "4'078.50", "4.078,50", "4\u202F078,50", "$4,078.50"]) {
+    assert.equal(withoutLevels(value), "[level]", value);
+  }
 });
