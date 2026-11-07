@@ -1,3 +1,4 @@
+import { explainCode, serviceName } from "../../control-plane-shared/src/plain.ts";
 import type { AiBinding, D1Database, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
@@ -598,7 +599,7 @@ export default {
       await auditQuietly(env, { event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "commit_not_current_main", payload: { commit_sha: sha, main_sha: refData.object?.sha ?? null } });
       await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
         kind: "platform_digest", severity: "warning",
-        subject: `Deployment of ${TARGET_SERVICE} rejected: commit_not_current_main`,
+        subject: `Deployment of ${serviceName(TARGET_SERVICE)} refused: ${explainCode("commit_not_current_main")}`,
         body: { commit_sha: sha, main_sha: refData.object?.sha ?? null, requested_by: requestedBy },
       });
       return json({ error: "commit_not_current_main", expected_sha: refData.object?.sha ?? null }, 409);
@@ -644,7 +645,7 @@ export default {
       });
       await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
         kind: "platform_digest", severity: "warning",
-        subject: `Deployment of ${TARGET_SERVICE} rejected: ci_not_green`,
+        subject: `Deployment of ${serviceName(TARGET_SERVICE)} refused: ${explainCode("ci_not_green")}`,
         body: { ...ciPayload, requested_by: requestedBy },
       });
       return json({

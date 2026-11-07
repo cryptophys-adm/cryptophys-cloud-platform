@@ -96,7 +96,7 @@ test("TP-016 timeout and throw", async () => {
   const ai1 = fakeAi({ response: "{}" });
   ai1.delayMs = 100;
   const task: AiTask<any> = { name: "simple", instructions: "x", maxInputChars: 1000, maxOutputTokens: 100, validate: () => null };
-  const e1 = new AiEngine({ service: "cryptophys-policy-engine", ai: ai1, db: db1, allowedModels: ["@cf/meta/llama-3.1-8b-instruct-fast"], allowedTasks: [task.name], timeoutMs: 10 });
+  const e1 = new AiEngine({ service: "cryptophys-policy-engine", ai: ai1, db: db1, model: "@cf/meta/llama-3.1-8b-instruct-fast", allowedModels: ["@cf/meta/llama-3.1-8b-instruct-fast"], allowedTasks: [task.name], timeoutMs: 10 });
   const r1: any = await e1.run(task, { a: 1 }, "c");
   assert.equal(r1.status, "unavailable");
   assert.equal(r1.reason, "timeout");

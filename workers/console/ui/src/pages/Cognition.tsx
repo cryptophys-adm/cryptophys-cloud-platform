@@ -4,6 +4,7 @@ import { Badge, Empty, Field, JsonView, Panel, Skeleton, severityTone } from "..
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { ago, listOf } from "../lib/format";
+import { explainCode } from "../lib/plain";
 
 const KINDS = ["", "signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest"];
 
@@ -32,7 +33,7 @@ export default function Cognition() {
                 <span className="min-w-0 flex-1 truncate text-[12px] text-slate-200">{r.subject}</span>
                 <span className="mono text-[10px] text-cyan-300">{r.agent_id}</span>
                 <span className="text-[10px] text-slate-500">{r.kind}</span>
-                <span className="text-[10px] text-slate-600">{r.ai_status} · {ago(r.created_at)}</span>
+                <span className="text-[10px] text-slate-600" title={explainCode(String(r.ai_status ?? ""))}>{r.ai_status === "ok" ? "AI-written" : "template"} · {ago(r.created_at)}</span>
               </button>
               {open === r.report_id && <div className="mt-2"><JsonView value={r.body ?? r} /></div>}
             </div>

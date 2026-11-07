@@ -1,3 +1,4 @@
+import { describeResource, explainReason } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
@@ -145,8 +146,10 @@ export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecisi
   if (result.decision === "deny" && req.action !== "agent.syscall" && req.context.deploy_verification !== true) {
     await publishAgentReport(env.AGENTS, "policy-engine", {
       kind: "platform_digest", severity: "warning",
-      subject: `Policy denied ${req.action} on ${req.resource.slice(0, 100)}`,
+      // Plain English for operators (2026-11-07); the codes stay in the body for the record.
+      subject: `Blocked: ${describeResource(req.resource).slice(0, 90)}. ${explainReason(result.reason)}`.slice(0, 200),
       body: {
+        explanation: `The Policy Engine stopped a request to ${describeResource(req.resource)}. ${explainReason(result.reason)}`.slice(0, 500),
         decision_id: decisionId, action: req.action, resource: req.resource, reason: result.reason, subject: req.subject,
         failed_checks: result.checks.filter((c) => !c.passed).map((c) => c.id),
       },
