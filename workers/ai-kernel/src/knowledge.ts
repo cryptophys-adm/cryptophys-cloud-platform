@@ -61,9 +61,13 @@ function forbiddenKeys(value: unknown, path = "item"): string[] {
   });
 }
 
-/** Evidence is structured data, but free-form strings must not smuggle trading language into the kernel. */
+/** Evidence is structured data: free-form strings cannot smuggle trading language or price-like values into the kernel. */
 function evidenceHasTradingText(value: unknown): boolean {
-  if (typeof value === "string") return TRADING_VALUE_TALK.test(value) || ORDER.test(value);
+  if (typeof value === "string") {
+    // ISO date windows are legitimate evidence strings; other 3+ digit runs in free-form evidence are not.
+    const withoutDates = value.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ][0-9:.]+Z?)?\b/g, "");
+    return TRADING_VALUE_TALK.test(value) || ORDER.test(value) || PRICE.test(withoutDates);
+  }
   if (Array.isArray(value)) return value.some(evidenceHasTradingText);
   if (isObject(value)) return Object.values(value).some(evidenceHasTradingText);
   return false;
