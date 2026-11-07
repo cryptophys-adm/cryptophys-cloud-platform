@@ -61,3 +61,8 @@ test("P3. AI: Gemma 4 by default, thinking off, the plain-English style in every
   assert.ok(String(sent.messages[0].content).includes(PLAIN_ENGLISH_STYLE));
   assert.match(PLAIN_ENGLISH_STYLE, /plain English/);
 });
+
+test("P4. the Policy Engine title says Blocked once", () => {
+  const src = readFileSync(new URL("workers/policy-engine/src/index.ts", ROOT), "utf8");
+  assert.match(src, /explainReason\(result\.reason\)\.replace\(\/\^Blocked: \/, ""\)/);
+});
