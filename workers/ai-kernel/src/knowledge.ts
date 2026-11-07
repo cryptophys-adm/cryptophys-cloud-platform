@@ -30,7 +30,8 @@ const MAX_ITEM_BYTES = 8 * 1024;
 const ITEM_ID = /^k-[a-z0-9-]{1,40}$/;
 const CARD_ID = /^d:[0-9A-Za-z]+:\d+:\d+$/;
 const PROPOSAL_ID = /^knw_[0-9a-f-]{36}$/;
-const AGENT_ID = /^[a-z0-9][a-z0-9-]{1,39}$/;
+/** XAUUSD room agent ids (manifest ids such as r37_funnel) and platform agent ids. */
+const AGENT_ID = /^[a-z0-9][a-z0-9_-]{1,39}$/;
 /** Price-like numbers: 3 to 5 digits, or a thousands separator (no level ever leaves Aether). */
 const PRICE = /\b(?:\d{1,2},\d{3}|\d{3,5})(?:\.\d+)?\b/;
 const ORDER = /\b(?:buy|sell)\s+(?:limit|stop)\b|\b(?:place|open|enter)\s+(?:an?\s+|the\s+)?(?:order|position)\b|\blots?\b|\blot size\b|\bposition siz(?:e|ing)\b|\b(?:stop[- ]loss|take[- ]profit|entry|target)\s+(?:at|of|to|near)\b/i;

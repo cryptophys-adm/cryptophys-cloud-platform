@@ -54,6 +54,8 @@ test("0029 grants knowledge.propose and knowledge.status to the Aether curator a
 
 test("validator: measured or role claims in plain words, numbers from the evidence, 10+ cited cards, no level, size or order", () => {
   assert.deepEqual(validateKnowledgeItem(item()), []);
+  assert.deepEqual(validateKnowledgeItem(item({ kind: "role_reminder", claim_type: "role_reminder", audience: { agents: ["r37_funnel", "moderator"], charts: [] }, text: "In the last 7 days the r37 funnel agent spoke of calibration in 11 of its 14 room turns; its role is to read its own indicator only.", evidence: { agent: "r37_funnel", window_days: 7, violations: 11, turns: 14 } })), [], "room agent ids may hold an underscore; the text uses words, and a number in a name comes from the evidence");
+  assert.ok(validateKnowledgeItem(item({ audience: { agents: ["Bad Agent"], charts: [] } })).includes("audience_invalid"));
   const errs = (over: Record<string, unknown>) => validateKnowledgeItem(item(over));
   assert.ok(errs({ text: "Price rejected 4051 twice, so the lean was wrong in 11 of 14 bars." }).includes("text_price_like_number"));
   assert.ok(errs({ text: "Place a buy limit when the lean was wrong in 11 of 14 bars." }).includes("text_order_wording"));
