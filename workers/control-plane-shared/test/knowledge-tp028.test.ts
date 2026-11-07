@@ -170,6 +170,8 @@ test("pending proposals expire after 14 days, and each agent proposes at most 20
 
 test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declared metric contracts", () => {
   const roleDrift = item({
+    kind: "role_reminder",
+    claim_type: "role_reminder",
     text: "The agent repeatedly broke its role in the rooms it spoke in.",
     evidence: { agent: "prophet", check: "order_wording", window_days: 30, rooms_with_break: 6, rooms: 40, rate_pct: 15 },
   });
@@ -180,6 +182,14 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
     evidence: { agent: "prophet", check: "role_drift", window_days: 30, rooms: 40, observed_value: 4050 },
   });
   assert.ok(validateKnowledgeItem(opaque).includes("evidence_unscoped_numeric_field"));
+
+  const nestedOpaque = item({
+    evidence: {
+      candles: 8, bars: 14, wrong: 11, baseline_wrong_rate: 0.48, p_value: 0.03,
+      window: ["2026-10-08", "2026-11-07"], metadata: { wrong: 4050 },
+    },
+  });
+  assert.ok(validateKnowledgeItem(nestedOpaque).includes("evidence_unscoped_numeric_field"), "a safe metric name cannot be nested to smuggle a price");
 
   const paramCandidate = item({
     kind: "param_candidate",
