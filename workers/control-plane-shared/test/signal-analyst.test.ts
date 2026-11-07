@@ -70,9 +70,28 @@ test("TP-017 normalize", async () => {
   assert.equal(n.candle_key, "OANDA:XAUUSD:60:1793876400000");
   assert.equal(n.decision, "BUY");
   assert.equal(n.confidence, 0.5);
-  assert.equal(n.entry_price, 100);
-  assert.equal("position_size_pct" in n, false);
+  for (const k of ["entry_price", "stop_loss", "take_profit", "position_size_pct"]) assert.equal(k in n, false, `${k} never enters the kernel`);
+  assert.equal(n.risk_reward, 2, "the ratio is not a level and is kept");
   assert.equal(n.reasoning.length, 300);
+});
+
+test("no price level reaches a kernel report, the cycle memory or the observation (owner rule, 2026-11-07)", async () => {
+  const levels = { decision: "SELL", confidence: 0.6, entry_price: 4051.2, stop_loss: 4060, take_profit: 4030, risk_reward: 2.4,
+    reasoning: "Rejected 4,078.50 twice; sell below 4051 with the stop above $4060 and the target near 4030." };
+  const { env, db, mem } = kernelEnv(migratedDb(), { XAUUSD_AI: fakeXauusd([item(levels)]) });
+  const obs: any = await observeSignals(env as any, NOW);
+  assert.equal(obs.latest.reasoning, "Rejected [level] twice; sell below [level] with the stop above [level] and the target near [level].");
+  const cycle = await runSignalCycle(env as any, mem, "operator", NOW);
+  const body = JSON.parse(((db as any).raw.prepare("SELECT body_json FROM agent_reports WHERE agent_id='signal-analyst'").get() as any).body_json);
+  assert.deepEqual([body.decision, body.confidence, body.risk_reward], ["SELL", 0.6, 2.4]);
+  const PRICE = /\b(?:\d{1,2},\d{3}|\d{3,5})(?:\.\d+)?\b/;
+  for (const [what, value] of [["report body", body], ["cycle report", cycle], ["observation", obs]] as const) {
+    const text = JSON.stringify(value);
+    for (const k of ["entry_price", "stop_loss", "take_profit"]) assert.equal(text.includes(k), false, `${what} carries ${k}`);
+    // Ids, keys and timestamps hold digit runs that are not prices.
+    const cleaned = text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|OANDA:XAUUSD:60:\d+|"candle_open_ms":\d+|\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?/g, "");
+    assert.equal(PRICE.test(cleaned), false, `${what} carries a price-like number`);
+  }
 });
 
 test("TP-017 errors", async () => {
