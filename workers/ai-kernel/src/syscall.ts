@@ -240,9 +240,9 @@ export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input:
   };
 }
 
-/** Price-like numbers (3 to 5 digits, or a thousands separator, optional decimals) become "[level]". */
+/** Price-like numbers (3+ digits, including grouped thousands and optional decimals) become "[level]". */
 export function withoutLevels(text: string): string {
-  return text.replace(/\$?\b(?:\d{1,2},\d{3}|\d{3,5})(?:\.\d+)?\b/g, "[level]");
+  return text.replace(/\$?\b(?:\d{3,}(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)\b/g, "[level]");
 }
 
 /** Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only). */
