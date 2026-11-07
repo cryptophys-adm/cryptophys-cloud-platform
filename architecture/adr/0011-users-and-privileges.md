@@ -43,9 +43,12 @@
 
 ## Owner steps (one time)
 
-1. **Create a token** in Cloudflare (My Profile → API Tokens → Create Token → Custom):
-   - permission: **Account → Access: Organizations, Identity Providers, and Groups → Edit**;
-   - resources: account cryptophys.
-2. **Store it as a Worker secret:** Workers & Pages → `cryptophys-platform-registry` → Settings → Variables and Secrets → **Add → Secret**, name `ACCESS_GROUPS_TOKEN`. It never passes through chat or GitHub.
-3. **Provision Access runs once** (the orchestrator does this through ops-dispatch). It creates the group and includes it in the allow policy.
-4. In the Console, select **Users → Sync sign-in** once.
+1. **Create a GitHub Actions provisioning token** in Cloudflare (My Profile → API Tokens → Create Token → Custom), scoped to account `cryptophys`, with:
+   - **Workers Scripts → Read** (list the platform Worker destinations);
+   - **Access: Service Tokens → Read** (resolve the CI and external-agent service-token IDs);
+   - **Access: Organizations, Identity Providers, and Groups → Edit** (read identity providers/groups and create the Nexus account group);
+   - **Access: Apps and Policies → Edit** (create or update the platform Access application and its policies).
+   Store it as the GitHub Environment secret `CLOUDFLARE_ACCESS_API_TOKEN` in `production`. The `provision-access.yml` workflow uses this token for those read/write operations. Never put it in the repository or chat.
+2. **Create a separate runtime sync token** in Cloudflare, scoped to account `cryptophys`, with only **Access: Organizations, Identity Providers, and Groups → Edit**. Store it as the Worker secret `ACCESS_GROUPS_TOKEN` on `cryptophys-platform-registry`. The Registry uses it to maintain group membership; keep this token separate from the broader provisioning token.
+3. **Provision Access runs once** from `main` with the exact confirmation `PROVISION`. The workflow also uses the existing production secrets/variable for the account, service-token credentials, operator email allow-list, and private Worker bootstrap/edge verification.
+4. After the Access group and policy are verified and the Console Users page is deployed, select **Users → Sync sign-in** once.
