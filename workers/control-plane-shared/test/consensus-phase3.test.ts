@@ -310,3 +310,41 @@ test("11. deploy proposals: never on an operator wake; at most one per scheduled
     assert.equal(new Set(ps.map((p) => p.target)).size, 2, "a different unit each cycle");
   } finally { globalThis.fetch = realFetch; }
 });
+
+// Owner 2026-11-07: repeated "Blocked" reports drowned useful ones. The supervisor no longer
+// proposes what the Policy Engine is certain to veto (daily limit, same target within the hour).
+test("15. supervisor waits instead of proposing when the daily or hourly deploy limit is reached", async () => {
+  const insert = (db: Db, target: string, status: string, minutesAgo: number, i: number) => {
+    const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+      VALUES (?, 'supervisor', 'deploy_commit', ?, 'routine', '{}', '{}', 'deploy', 8, 8, 0, 1, NULL, 'allow', ?, NULL, ?, ?)`).run(`cns_${String(i).padStart(36, "0")}`, target, status, at, at);
+  };
+  {
+    const { env, db, memory } = kernelEnv();
+    setMode(db, "deploy");
+    behind(db);
+    for (let i = 0; i < 6; i++) insert(db, `svc-${i}`, "executed", 120 + i, i);
+    try {
+      github();
+      const before = proposals(db).length;
+      const cycle = await runCycle(env as never, memory, "scheduled");
+      assert.equal(proposals(db).length, before, "no proposal while the daily limit is reached");
+      assert.ok(cycle.findings.some((f: any) => /daily limit of 6 deploys reached/.test(String(f.why))));
+    } finally { globalThis.fetch = realFetch; }
+  }
+  {
+    const { env, db, memory } = kernelEnv();
+    setMode(db, "deploy");
+    behind(db);
+    insert(db, "cryptophys-console", "executed", 20, 99);
+    try {
+      github();
+      const before = proposals(db).length;
+      const cycle = await runCycle(env as never, memory, "scheduled");
+      assert.equal(proposals(db).length, before, "the console was changed 20 minutes ago: it waits");
+      assert.ok(cycle.findings.some((f: any) => f.service_id === "cryptophys-console" && /changed in the last hour/.test(String(f.why))));
+    } finally { globalThis.fetch = realFetch; }
+  }
+  const api = readFileSync(new URL("../../platform-api/src/index.ts", import.meta.url), "utf8");
+  assert.match(api, /normal by design: do not mention them unless they are unhealthy/);
+});

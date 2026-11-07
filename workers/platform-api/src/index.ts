@@ -59,7 +59,10 @@ export const overviewTask: AiTask<Summary> = {
     'agent proposals, whether agents are enabled, the 24 h agent report summary, and the latest XAUUSD advisory decision ' +
     '(state it exactly as given; never add advice). Return {"summary": at most 600 characters, ' +
     '"attention": up to 5 strings of at most 200 characters naming what needs a human}. Use only the data given. ' +
-    "Never give trading advice and never claim an action was taken.",
+    "Never give trading advice and never claim an action was taken. " +
+    "Services without an expected (desired) version, disabled services, and services outside the platform's own deploys " +
+    "(for example Aether, the Signal Engine and the XAUUSD services) are normal by design: do not mention them unless they are unhealthy. " +
+    "Mention repeated deploy refusals caused by the daily or hourly deploy limits only once, as a single short note.",
   maxInputChars: 8000,
   maxOutputTokens: 400,
   validate(output) {
