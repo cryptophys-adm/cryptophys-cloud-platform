@@ -18,12 +18,12 @@ const cards = (n = 12) => Array.from({ length: n }, (_, i) => `d:60:${1793000000
 
 function item(over: Record<string, unknown> = {}) {
   return {
-    schema: KNOWLEDGE_ITEM_VERSION, item_id: "k-prophet-trap", version: 1, kind: "caution", claim_type: "measured_outcome",
+    schema: KNOWLEDGE_ITEM_VERSION, item_id: "k-prophet-trap", version: 1, kind: "caution", claim_type: "measured_outcome", label: "learned",
     audience: { agents: ["prophet", "moderator"], charts: ["60"] },
-    situation: { stuck: "structure", session: "london" },
-    text: "When the Prophet structure stayed a bull trap for 8 or more hourly candles, its bearish lean was wrong in 11 of 14 such bars.",
-    evidence: { candles: 8, bars: 14, wrong: 11, baseline_wrong_rate: 0.48, p_value: 0.03, window: ["2026-10-08", "2026-11-07"] },
-    provenance: { card_ids: cards(), canon_sha: CANON, scoring_version: "v3" },
+    situation: { chart: "60", session: "london" },
+    text: "On the hourly chart in the London session, the prophet agent was wrong in 79% of its decisive calls over 30 days, against 48% in its other situations.",
+    evidence: { agent: "prophet", chart: "60", session: "london", window_days: 30, decisive: 14, wrong: 11, wrong_pct: 79, baseline_wrong_pct: 48, baseline_decisive: 20, p_value: 0.03 },
+    provenance: { card_ids: cards(), canon_sha: CANON, canon_version: "aether.canon.v1", source: "aether" },
     ...over,
   };
 }
@@ -54,7 +54,7 @@ test("0029 grants knowledge.propose and knowledge.status to the Aether curator a
 
 test("validator: measured or role claims in plain words, numbers from the evidence, 10+ cited cards, no level, size or order", () => {
   assert.deepEqual(validateKnowledgeItem(item()), []);
-  assert.deepEqual(validateKnowledgeItem(item({ kind: "role_reminder", claim_type: "role_reminder", audience: { agents: ["r37_funnel", "moderator"], charts: [] }, text: "In the last 7 days the r37 funnel agent spoke of calibration in 11 of its 14 room turns; its role is to read its own indicator only.", evidence: { agent: "r37_funnel", window_days: 7, violations: 11, turns: 14 } })), [], "room agent ids may hold an underscore; the text uses words, and a number in a name comes from the evidence");
+  assert.deepEqual(validateKnowledgeItem(item({ kind: "role_reminder", claim_type: "role_reminder", audience: { agents: ["r37_funnel", "moderator"], charts: [] }, situation: { check: "calibration_talk" }, text: "In the last 7 days the r37 funnel agent spoke of calibration, parity or verification in 13% of the rooms it spoke in. Its role and the owner rules forbid this.", evidence: { agent: "r37_funnel", check: "calibration_talk", window_days: 7, rooms_with_break: 21, rooms: 168, rate_pct: 13 } })), [], "the current Aether role-reminder contract is accepted");
   assert.ok(validateKnowledgeItem(item({ audience: { agents: ["Bad Agent"], charts: [] } })).includes("audience_invalid"));
   const errs = (over: Record<string, unknown>) => validateKnowledgeItem(item(over));
   assert.ok(errs({ text: "Price rejected 4051 twice, so the lean was wrong in 11 of 14 bars." }).includes("text_price_like_number"));
@@ -80,6 +80,7 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(errs({ kind: "param_candidate" }).includes("params_invalid"));
   assert.deepEqual(validateKnowledgeItem(item({
     kind: "param_candidate",
+    situation: { family: "gmi_v12_70", stuck: "structure latch" },
     text: "The structure stayed stuck in several separate episodes.",
     evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 50, tested_values: [8, 12] },
     params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer holds in trends", metric: "paired sign test" },
@@ -172,10 +173,12 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
   const roleDrift = item({
     kind: "role_reminder",
     claim_type: "role_reminder",
+    situation: { check: "order_wording" },
     text: "The agent repeatedly broke its role in the rooms it spoke in.",
-    evidence: { agent: "prophet", check: "order_wording", window_days: 30, rooms_with_break: 6, rooms: 40, rate_pct: 15 },
+    evidence: { agent: "prophet", check: "order_wording", window_days: 7, rooms_with_break: 10, rooms: 40, rate_pct: 25 },
   });
   assert.equal(validateKnowledgeItem(roleDrift).includes("evidence_unscoped_numeric_field"), false);
+  assert.equal(validateKnowledgeItem(roleDrift).includes("evidence_metric_invalid"), false);
 
   const opaque = item({
     text: "The agent repeatedly broke its role.",
@@ -193,6 +196,7 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
 
   const paramCandidate = item({
     kind: "param_candidate",
+    situation: { family: "gmi_v12_70", stuck: "structure latch" },
     text: "The structure stayed stuck in several separate episodes.",
     evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 50, tested_values: [8, 12] },
     params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
@@ -216,6 +220,30 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
   assert.ok(validateKnowledgeItem(extraParamNumber).includes("params_invalid"), "unscoped numeric metadata is not allowed in params");
 });
 
+
+test("TP-028 enforces exact Aether schemas and bounded numeric evidence", () => {
+  const priceInMetric = item({
+    evidence: { agent: "prophet", chart: "60", session: "london", window_days: 30, decisive: 14, wrong: 4050, wrong_pct: 100, baseline_wrong_pct: 48, baseline_decisive: 20, p_value: 0.03 },
+  });
+  assert.ok(validateKnowledgeItem(priceInMetric).includes("evidence_metric_invalid"), "a price cannot masquerade as a valid miss count");
+
+  const extraTopLevel = item({ metadata: 4050 });
+  assert.ok(validateKnowledgeItem(extraTopLevel).includes("item_shape_invalid"), "unknown top-level fields cannot carry hidden numeric data");
+
+  const extraAudience = item({ audience: { agents: ["prophet"], charts: ["60"], metadata: 4050 } });
+  assert.ok(validateKnowledgeItem(extraAudience).includes("audience_shape_invalid"), "audience has an exact schema");
+
+  const extraProvenance = item({ provenance: { ...(item().provenance as Record<string, unknown>), metadata: 4050 } });
+  assert.ok(validateKnowledgeItem(extraProvenance).includes("provenance_shape_invalid"), "provenance has an exact schema");
+
+  const wrongRoleMetric = item({
+    kind: "role_reminder",
+    claim_type: "role_reminder",
+    situation: { check: "calibration_talk" },
+    evidence: { agent: "prophet", check: "calibration_talk", window_days: 7, rooms_with_break: 10, rooms: 40, rate_pct: 95 },
+  });
+  assert.ok(validateKnowledgeItem(wrongRoleMetric).includes("evidence_metric_invalid"), "rate_pct must match the underlying counts");
+});
 
 test("TP-028 guards structured situation and parameter text as well as evidence", () => {
   const situation = item({
