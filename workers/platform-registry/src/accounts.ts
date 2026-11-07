@@ -116,20 +116,23 @@ export async function disableAccount(request: Request, env: AccountsEnv, identit
   if (!body.ok) return body.response;
   if (body.value.confirm !== "REVOKE") return errorResponse(400, "confirmation_required", 'type "REVOKE" to disable an account');
   const actor = actorOf(identity);
-  if (email === actor) return errorResponse(403, "self_change", "nobody changes their own access");
-  const before = await env.DB.prepare("SELECT * FROM platform_accounts WHERE email = ?").bind(email).first<AccountRow>();
+  const normalizedEmail = email.trim().toLowerCase();
+  if (normalizedEmail === actor) return errorResponse(403, "self_change", "nobody changes their own access");
+  if (configuredEmails(env).has(normalizedEmail)) {
+    return errorResponse(409, "configured_identity", "owners and configured operators are managed in configuration, not here");
+  }
+  const before = await env.DB.prepare("SELECT * FROM platform_accounts WHERE email = ?").bind(normalizedEmail).first<AccountRow>();
   if (!before) return errorResponse(404, "not_found");
   if (before.status === "disabled") return json({ account: before, login_sync: await syncLogin(env) });
   await appendAuditEventWithMutation(
     env.DB,
-    { event_type: "account.disabled", actor, subject: email, outcome: "disabled", payload: { kind: before.kind, privilege: before.privilege } },
+    { event_type: "account.disabled", actor, subject: normalizedEmail, outcome: "disabled", payload: { kind: before.kind, privilege: before.privilege } },
     (event) => env.DB.prepare("UPDATE platform_accounts SET status = 'disabled', updated_by = ?, updated_at = ? WHERE email = ? AND status = 'active'")
-      .bind(actor, event.created_at, email),
+      .bind(actor, event.created_at, normalizedEmail),
   );
-  const account = await env.DB.prepare("SELECT * FROM platform_accounts WHERE email = ?").bind(email).first<AccountRow>();
+  const account = await env.DB.prepare("SELECT * FROM platform_accounts WHERE email = ?").bind(normalizedEmail).first<AccountRow>();
   return json({ account, login_sync: await syncLogin(env) });
 }
-
 export function loginSyncConfigured(env: AccountsEnv): boolean {
   return Boolean(env.ACCESS_GROUPS_TOKEN && env.CF_ACCOUNT_ID);
 }
