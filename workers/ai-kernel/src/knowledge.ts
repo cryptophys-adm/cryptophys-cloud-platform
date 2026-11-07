@@ -90,6 +90,13 @@ function evidenceHasUnscopedNumber(value: unknown, key = ""): boolean {
   return false;
 }
 
+function hasNumericLeaf(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.some(hasNumericLeaf);
+  if (isObject(value)) return Object.values(value).some(hasNumericLeaf);
+  return false;
+}
+
 function numbersOf(text: string): string[] {
   return [...text.matchAll(/\d+(?:\.\d+)?/g)].map((m) => String(Number(m[0])));
 }
@@ -122,6 +129,9 @@ export function validateKnowledgeItem(item: unknown): string[] {
   if (!charts.every((c) => typeof c === "string" && ["15", "60", "240", "1D"].includes(c))) errors.push("audience_charts_invalid");
   const text = typeof item.text === "string" ? item.text.trim() : "";
   if (!text || text.length > 300) errors.push("text_length");
+  if (evidenceHasTradingText(item.situation)) errors.push("situation_trading_value_wording");
+  if (hasNumericLeaf(item.situation)) errors.push("situation_numeric_value");
+  if (item.params !== undefined && evidenceHasTradingText(item.params)) errors.push("params_trading_value_wording");
   if (PRICE.test(text)) errors.push("text_price_like_number");
   if (TRADING_VALUE_TALK.test(text)) errors.push("text_trading_value_wording");
   if (ORDER.test(text)) errors.push("text_order_wording");
