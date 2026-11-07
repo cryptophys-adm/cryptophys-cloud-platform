@@ -67,15 +67,21 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     }
     const ks = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
     checks.push(check("agents_enabled", ks?.value === "1", "the global agent kill switch must be on"));
+    // Rate limits count actions that really ran (executing/executed). In shadow mode the shadow
+    // records stand in for them, so the simulation stays faithful; once the mode executes, shadow
+    // records never deployed anything and do not count (owner fix 2026-11-07: yesterday's six
+    // shadow_passed deploy records denied the first real deploy).
+    const mode = (await db.prepare("SELECT value FROM consensus_controls WHERE control = 'mode'").first<{ value: string }>())?.value ?? "shadow";
+    const ran = mode === "shadow" ? "('executing','executed','shadow_passed')" : "('executing','executed')";
     const now = Date.now();
     const hour = new Date(now - 3_600_000).toISOString();
     const day = new Date(now - 86_400_000).toISOString();
     const sameTarget = await db.prepare(
-      "SELECT COUNT(*) AS n FROM consensus_proposals WHERE target = ? AND action = ? AND status IN ('executing','executed','shadow_passed') AND decided_at >= ?",
+      `SELECT COUNT(*) AS n FROM consensus_proposals WHERE target = ? AND action = ? AND status IN ${ran} AND decided_at >= ?`,
     ).bind(target, act, hour).first<{ n: number }>();
     checks.push(check("target_rate_limit", (sameTarget?.n ?? 0) === 0, "at most one executed action per action and target per hour"));
     const platform = await db.prepare(
-      "SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ('executing','executed','shadow_passed') AND decided_at >= ?",
+      `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
     ).bind(day).first<{ n: number }>();
     checks.push(check("platform_daily_limit", !["deploy_commit", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < 6,
       "at most 6 deploys or rollbacks per day across the platform"));
