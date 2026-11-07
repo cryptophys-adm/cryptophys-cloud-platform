@@ -73,6 +73,23 @@ function evidenceHasTradingText(value: unknown): boolean {
   return false;
 }
 
+// Numeric evidence is allowed only under fields emitted by Aether's current deterministic
+// curator/calibrator contracts (plus the platform fixture metrics). An opaque numeric key such
+// as { observed_value: 4050 } could otherwise smuggle a price while bypassing string redaction.
+const SAFE_EVIDENCE_NUMERIC_KEYS = new Set([
+  "candles", "bars", "wrong", "baseline_wrong_rate", "p_value",
+  "window_days", "rooms_with_break", "rooms", "rate_pct",
+  "decisive", "wrong_pct", "baseline_wrong_pct", "baseline_decisive",
+  "episodes", "longest_candles", "proposed_value", "default_value", "tested_values",
+]);
+
+function evidenceHasUnscopedNumber(value: unknown, key = ""): boolean {
+  if (typeof value === "number") return Number.isFinite(value) && !SAFE_EVIDENCE_NUMERIC_KEYS.has(key);
+  if (Array.isArray(value)) return value.some((v) => evidenceHasUnscopedNumber(v, key));
+  if (isObject(value)) return Object.entries(value).some(([k, v]) => evidenceHasUnscopedNumber(v, k));
+  return false;
+}
+
 function numbersOf(text: string): string[] {
   return [...text.matchAll(/\d+(?:\.\d+)?/g)].map((m) => String(Number(m[0])));
 }
@@ -113,6 +130,7 @@ export function validateKnowledgeItem(item: unknown): string[] {
   if (!evidence) errors.push("evidence_missing");
   else {
     if (evidenceHasTradingText(evidence)) errors.push("evidence_trading_value_wording");
+    if (evidenceHasUnscopedNumber(evidence)) errors.push("evidence_unscoped_numeric_field");
     const known = evidenceNumbers(evidence);
     const missing = numbersOf(text).filter((n) => !known.has(n));
     if (missing.length) errors.push(`text_number_not_in_evidence:${missing.slice(0, 3).join(",")}`);
