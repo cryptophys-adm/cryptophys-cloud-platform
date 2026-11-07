@@ -238,12 +238,21 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
   // A new D1 migration is applied only by the Control Plane deploy, and every Worker's readiness
   // requires the newest migration: deploy the Control Plane first, alone (2026-11-07, migration 0026).
   const controlPlane = pendingUnits.find((u) => u.unit === "control-plane");
-  if (newMigration && controlPlane) {
-    out.units.push(controlPlane);
-    for (const u of pendingUnits) {
-      if (u.unit !== "control-plane") out.skipped.push({ unit: u.unit, reason: "control_plane_migration_first" });
+  if (newMigration) {
+    if (controlPlane) {
+      out.units.push(controlPlane);
+      for (const u of pendingUnits) {
+        if (u.unit !== "control-plane") out.skipped.push({ unit: u.unit, reason: "control_plane_migration_first" });
+      }
+      return out;
     }
-    return out;
+    // Never deploy another unit if the migration-bearing Control Plane cannot be verified.
+    // It may already be current (no skip recorded); otherwise fail closed on disabled,
+    // unregistered, unknown-version or compare-failed Control Plane state.
+    if (out.skipped.some((s) => s.unit === "control-plane")) {
+      out.skipped.push({ unit: "*", reason: "new_migration_control_plane_unavailable" });
+      return out;
+    }
   }
   // DeployRpc must exist before the AI Kernel is redeployed with its new service binding.
   // Do not propose the Control Plane (or another unit) in the same cycle as the orchestrator.

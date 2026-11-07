@@ -185,7 +185,7 @@ export default {
           "GET /v1/services", "GET /v1/services/{service_id}", "PUT /v1/services/{service_id}",
           "PUT /v1/services/{service_id}/desired-version",
           "GET /v1/accounts/me (any Access identity)", "GET /v1/accounts", "POST /v1/accounts (owner, GRANT)",
-          "POST /v1/accounts/{email}/disable (owner, REVOKE)", "POST /v1/accounts/sync-login (owner)",
+          "POST /v1/accounts/{email}/disable (owner, REVOKE)", "POST /v1/accounts/sync-login (owner, SYNC)",
         ]);
       }
     }

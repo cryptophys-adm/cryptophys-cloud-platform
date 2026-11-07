@@ -154,6 +154,13 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"], "after the Control Plane, the usual order resumes");
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
+    const cpStatus = (db.raw.prepare("SELECT status FROM service_registry WHERE service_id = 'cryptophys-policy-engine'").get() as any).status;
+    db.raw.prepare("UPDATE service_registry SET status = 'disabled' WHERE service_id = 'cryptophys-policy-engine'").run();
+    github({ files: ["workers/control-plane-migrations/0099_x.sql", "workers/deployment-orchestrator/src/index.ts"] });
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.equal(p.units.length, 0, "never deploy the Orchestrator when the migration-bearing Control Plane is unavailable");
+    assert.ok(p.skipped.some((s) => s.unit === "*" && s.reason === "new_migration_control_plane_unavailable"));
+    db.raw.prepare("UPDATE service_registry SET status = ? WHERE service_id = 'cryptophys-policy-engine'").run(cpStatus);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);

@@ -10,10 +10,11 @@
 // Accounts are disabled, never deleted.
 //
 // Sign-in: Nexus is behind Cloudflare Access. The Access application's allow policy includes the
-// group `cryptophys-nexus-accounts` (provision-access.yml). After each change this Worker sets
-// that group to the active accounts plus the owners, through the Access API with the Worker
-// secret ACCESS_GROUPS_TOKEN (Access: Groups Edit). Without the secret, accounts are stored and
-// their roles apply, but a new person cannot sign in until the owner sets it: the API says so.
+// group `cryptophys-nexus-accounts` (provision-access.yml). After each change this Worker attempts
+// to reconcile that group to the active accounts plus the owners, through the Access API with the
+// Worker secret ACCESS_GROUPS_TOKEN (Access: Groups Edit). A failed sync leaves Access membership
+// potentially stale; the API returns the status and an owner can retry. Without the secret, roles
+// still apply, but new people cannot sign in and disabled people may remain in the group.
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import { errorResponse, json, readJsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
