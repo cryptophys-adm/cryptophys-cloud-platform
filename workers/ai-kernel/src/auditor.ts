@@ -142,35 +142,44 @@ export function templateAuditDigest(
   reasons: string[],
 ): AuditDigestDraft {
   const c = obs.counts_24h;
+  // Plain English for operators (2026-11-07); the raw counts stay in the report body.
+  const plainReason = (r: string) => {
+    const [code, n] = r.split(":");
+    if (code === "denied_agent_syscalls") return `${n} agent request(s) were refused by policy`;
+    if (code === "failed_agent_syscalls") return `${n} agent request(s) failed`;
+    if (code === "kernel_agents_enabled_changed") return "the agents' kill switch was changed";
+    if (code === "agent_suspended") return `${n ?? "an"} agent was paused`;
+    return code.replace(/_/g, " ") + (n ? ` (${n})` : "");
+  };
   const headline = !obs.chain.valid
-    ? `CRITICAL: Audit hash chain verification failed at event ${obs.chain.first_invalid_event_id ?? "unknown"}`
+    ? `CRITICAL: the audit log has been altered (first bad entry: ${obs.chain.first_invalid_event_id ?? "unknown"})`
     : severity === "warning"
-      ? `Governance warning: ${reasons.join(", ")} in the last 24h`
-      : `Daily audit digest: chain verified (${obs.chain.events_checked} events)`;
+      ? `Needs a look: ${reasons.map(plainReason).join("; ")} in the last 24 hours`
+      : `Daily audit check: the audit log is intact (${obs.chain.events_checked} entries checked)`;
 
   const chainLine = obs.chain.valid
-    ? `Audit hash chain is valid across ${obs.chain.events_checked} events (head ${obs.chain.head_hash.slice(0, 16)}).`
-    : `Audit hash chain is INVALID after ${obs.chain.events_checked} events at ${obs.chain.first_invalid_event_id ?? "unknown"}: ${obs.chain.reason ?? "hash mismatch"}.`;
+    ? `The audit log is intact: all ${obs.chain.events_checked} entries check out.`
+    : `The audit log is NOT intact: entry ${obs.chain.first_invalid_event_id ?? "unknown"} does not match (${obs.chain.reason ?? "hash mismatch"}) after ${obs.chain.events_checked} entries.`;
 
   const gov = c.governance_audit_events;
   const summary =
-    `${chainLine} In the last 24h: ${c.denied_agent_syscalls} denied and ${c.failed_agent_syscalls} failed agent syscalls; ` +
-    `governance events: ${gov["agent.suspended"]} suspended, ${gov["agent.resumed"]} resumed, ${gov["kernel.agents_enabled"]} kill-switch changes; ` +
-    `${c.agent_recovery_plans} agent-authored recovery plans.`.slice(0, 800);
+    `${chainLine} In the last 24 hours, ${c.denied_agent_syscalls} agent request(s) were refused by policy and ${c.failed_agent_syscalls} failed. ` +
+    `Agents paused: ${gov["agent.suspended"]}, resumed: ${gov["agent.resumed"]}; kill-switch changes: ${gov["kernel.agents_enabled"]}. ` +
+    `Recovery plans written by agents: ${c.agent_recovery_plans}.`.slice(0, 800);
 
   const items: string[] = [
     obs.chain.valid
-      ? `Chain valid: ${obs.chain.events_checked} events checked`
-      : `Chain invalid at ${obs.chain.first_invalid_event_id ?? "unknown"}: ${obs.chain.reason ?? "tampered"}`.slice(0, 200),
-    `Agent syscalls (24h): ${c.denied_agent_syscalls} denied, ${c.failed_agent_syscalls} failed`,
-    `Governance events (24h): suspended=${gov["agent.suspended"]}, resumed=${gov["agent.resumed"]}, agents_enabled=${gov["kernel.agents_enabled"]}`,
-    `Agent recovery plans (24h): ${c.agent_recovery_plans}`,
+      ? `Audit log intact (${obs.chain.events_checked} entries checked)`
+      : `Audit log altered at entry ${obs.chain.first_invalid_event_id ?? "unknown"}: ${obs.chain.reason ?? "tampered"}`.slice(0, 200),
+    `Agent requests in 24 hours: ${c.denied_agent_syscalls} refused, ${c.failed_agent_syscalls} failed`,
+    `Agents paused ${gov["agent.suspended"]}, resumed ${gov["agent.resumed"]}; kill-switch changes ${gov["kernel.agents_enabled"]}`,
+    `Recovery plans written by agents in 24 hours: ${c.agent_recovery_plans}`,
   ];
   for (const a of c.agent_actions_by_agent.slice(0, 2)) {
-    items.push(`Agent ${a.agent_id}: denied=${a.denied}, failed=${a.failed}`.slice(0, 200));
+    items.push(`Agent ${a.agent_id}: ${a.denied} refused, ${a.failed} failed`.slice(0, 200));
   }
   for (const p of c.policy_denies_by_action.slice(0, 2)) {
-    items.push(`Policy deny ${p.action}: ${p.count}`.slice(0, 200));
+    items.push(`Policy refused "${p.action.replace(/[._]/g, " ")}" ${p.count} time(s)`.slice(0, 200));
   }
   return {
     headline: headline.slice(0, 160),

@@ -5,6 +5,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
+import { describeAction, explainReason } from "../lib/plain";
 
 export const statusTone = (s?: string): "green" | "amber" | "red" | "cyan" | "purple" | "slate" =>
   s === "shadow_passed" || s === "executed" ? "green" : s === "pending_owner" ? "purple" : s === "shadow_blocked" ? "amber" : s === "rejected" || s === "failed" ? "red" : s === "executing" ? "cyan" : "slate";
@@ -169,7 +170,8 @@ export default function Consensus() {
                   <span className="text-[11px] text-slate-500">policy {p.policy_decision ?? "—"}</span>
                   <span className="ml-auto flex items-center gap-2"><Badge tone={statusTone(p.status)}>{String(p.status).replace("_", " ")}</Badge><span className="text-[10px] text-slate-600">{ago(p.created_at)}</span></span>
                 </button>
-                <div className="mt-1 text-[10px] text-slate-500">proposed by <span className="mono">{p.proposer_agent_id}</span> · {p.evidence?.policy_reason}</div>
+                <div className="mt-1 text-[11px] text-slate-300">Proposal: {describeAction(p.action, p.target)}.</div>
+                <div className="mt-0.5 text-[10px] text-slate-500">proposed by <span className="mono">{p.proposer_agent_id}</span>{p.evidence?.policy_reason ? <> · {explainReason(p.evidence.policy_reason)}</> : null}</div>
                 {open === p.proposal_id && <Votes id={p.proposal_id} />}
               </div>
             ))}

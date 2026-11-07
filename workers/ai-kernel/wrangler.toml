@@ -23,11 +23,12 @@ binding = "AI"
 SERVICE_NAME = "cryptophys-ai-kernel"
 SERVICE_ENVIRONMENT = "production"
 API_CONTRACT_VERSION = "v1"
-AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 # 80 (was 40; owner 2026-11-07): the hourly Auditor digest alone needs 24, and on 2026-11-06 the
 # 40 cap was reached by 12:37, leaving the rest of the day's digests without AI text.
 AI_DAILY_REQUEST_LIMIT = "80"
-AI_ACCOUNT_DAILY_REQUEST_LIMIT = "400"
+# 250 keeps the worst case (6k-char input, 600 output tokens, ~34 neurons) under the free 10k neurons/day (2026-11-07).
+AI_ACCOUNT_DAILY_REQUEST_LIMIT = "250"
 
 [[d1_databases]]
 binding = "DB"

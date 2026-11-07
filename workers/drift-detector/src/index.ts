@@ -1,3 +1,4 @@
+import { explainCode, serviceName } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
@@ -233,8 +234,8 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
     // observations (manual) are excluded; versions are in flux then. Never blocks observation.
     await publishAgentReport(env.AGENTS, "drift-detector", {
       kind: "platform_digest", severity: "warning",
-      subject: `Drift: ${drifted} service(s) out of sync`,
-      body: { run_id: runId, observed_at: observedAt, drifted: services.filter((s) => s.drifted).map((s) => ({ service_id: s.service_id, reasons: s.reasons, desired: s.desired_version, observed: s.observed_version })) },
+      subject: driftSubject(services.filter((s) => s.drifted)),
+      body: { explanation: services.filter((s) => s.drifted).map((s) => `${serviceName(s.service_id)}: ${s.reasons.map(explainCode).join("; ")}.`).join(" ").slice(0, 500), run_id: runId, observed_at: observedAt, drifted: services.filter((s) => s.drifted).map((s) => ({ service_id: s.service_id, reasons: s.reasons, desired: s.desired_version, observed: s.observed_version })) },
     });
   }
   return { run_id: runId, observed_at: observedAt, services, drifted };
@@ -352,4 +353,11 @@ export async function pruneDriftObservations(env: Env, now = Date.now()): Promis
     });
   }
   return { deleted, cutoff, batches };
+}
+
+/** Plain-English report title (2026-11-07): which services, not just how many. */
+export function driftSubject(drifted: { service_id: string }[]): string {
+  const names = drifted.map((s) => serviceName(s.service_id));
+  const list = names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`;
+  return `${list} ${names.length === 1 ? "is" : "are"} not running the expected version`.slice(0, 200);
 }
