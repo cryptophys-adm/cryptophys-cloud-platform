@@ -48,10 +48,25 @@ export class KnowledgeDecisionError extends Error {
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
+const FORBIDDEN_KEY_PARTS = new Set(["price", "prices", "level", "levels", "size", "sizing", "entry", "entries", "target", "targets", "stop", "order", "orders", "lot", "lots", "plan"]);
+
 function forbiddenKeys(value: unknown, path = "item"): string[] {
   if (Array.isArray(value)) return value.flatMap((v, i) => forbiddenKeys(v, `${path}[${i}]`));
   if (!isObject(value)) return [];
-  return Object.entries(value).flatMap(([k, v]) => [...(FORBIDDEN_KEYS.has(k) ? [`${path}.${k}`] : []), ...forbiddenKeys(v, `${path}.${k}`)]);
+  return Object.entries(value).flatMap(([k, v]) => {
+    const normalized = k.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+    const parts = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+    const forbidden = FORBIDDEN_KEYS.has(normalized) || parts.some((part) => FORBIDDEN_KEY_PARTS.has(part));
+    return [...(forbidden ? [`${path}.${k}`] : []), ...forbiddenKeys(v, `${path}.${k}`)];
+  });
+}
+
+/** Evidence is structured data, but free-form strings must not smuggle trading language into the kernel. */
+function evidenceHasTradingText(value: unknown): boolean {
+  if (typeof value === "string") return TRADING_VALUE_TALK.test(value) || ORDER.test(value);
+  if (Array.isArray(value)) return value.some(evidenceHasTradingText);
+  if (isObject(value)) return Object.values(value).some(evidenceHasTradingText);
+  return false;
 }
 
 function numbersOf(text: string): string[] {
@@ -93,6 +108,7 @@ export function validateKnowledgeItem(item: unknown): string[] {
   const evidence = isObject(item.evidence) ? item.evidence : null;
   if (!evidence) errors.push("evidence_missing");
   else {
+    if (evidenceHasTradingText(evidence)) errors.push("evidence_trading_value_wording");
     const known = evidenceNumbers(evidence);
     const missing = numbersOf(text).filter((n) => !known.has(n));
     if (missing.length) errors.push(`text_number_not_in_evidence:${missing.slice(0, 3).join(",")}`);
