@@ -1,5 +1,7 @@
 # Owner setup: Google and Microsoft sign-in for Nexus (ADR-0010)
 
+> **Status 2026-11-07: not in use.** The owner tried this setup, and it failed because of Google's and Microsoft's own policies. Nexus signs in with the Cloudflare Access **one-time PIN** by email (ADR-0010). This guide is kept in case OIDC is added later. Provisioning picks the providers up without a code change.
+
 Nexus (`https://nexus.cryptophys.work`, with the Console at `/console/`) is protected by the Cloudflare Access application `cryptophys-cloud-platform`. Access is the only login. The platform stores no password, session or OAuth secret.
 
 The two owners sign in with their own providers:
