@@ -4,6 +4,11 @@ compatibility_date = "2026-11-01"
 workers_dev = true
 preview_urls = false
 
+# Hourly Cloudflare-native D1 backup fallback (src/backup.ts): acts only when no backup is newer
+# than 24 h, e.g. when the GitHub Action cannot reach R2. Minute :13 has no other platform cron.
+[triggers]
+crons = ["13 * * * *"]
+
 [observability]
 enabled = true
 
@@ -34,6 +39,11 @@ binding = "DB"
 database_name = "cryptophys-control-plane"
 database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
 migrations_dir = "../control-plane-migrations"
+
+# Private bucket for D1 backups, shared with the nightly d1-backup.yml (same key format).
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "cryptophys-d1-backups"
 
 # Execution must obtain an allow decision from the Policy Engine.
 [[services]]

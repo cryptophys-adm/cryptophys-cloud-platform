@@ -10,6 +10,8 @@ import { accessGate, authorize, listConfigured, requireOperator } from "../../co
 import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 import type { RecoveryDeployBinding } from "./autonomous.ts";
+import { backupIfStale, type R2BucketLike } from "./backup.ts";
+import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
 export interface PolicyRpcBinding {
@@ -27,6 +29,8 @@ export interface Env extends BaseEnv, LifecycleEnv {
   POLICY: PolicyRpcBinding;
   /** Deployment Orchestrator DeployRpc: redeploy steps of approved plans (autonomous recovery). */
   DEPLOY?: RecoveryDeployBinding;
+  /** Private R2 bucket for the Cloudflare-native D1 backup fallback (backup.ts). */
+  BACKUPS?: R2BucketLike;
 }
 
 const SERVICE = "cryptophys-recovery-manager";
@@ -229,6 +233,10 @@ async function recordExecution(request: Request, env: Env, plan: PlanRow, execut
 }
 
 export default {
+  /** Hourly: the Cloudflare-native D1 backup fallback writes a dump only when none is newer than 24 h. */
+  async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    ctx.waitUntil(backupIfStale(env).then((r) => console.log(JSON.stringify({ event: "d1_backup", ...r }))));
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const blocked = await accessGate(request, env);
