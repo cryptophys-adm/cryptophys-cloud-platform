@@ -101,9 +101,12 @@ export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestD
       const v = raw as Record<string, unknown>;
       const headline = boundedString(v.headline, 160);
       const summary = boundedString(v.summary, 800);
-      if (!headline || !summary || !Array.isArray(v.items) || v.items.length < 1 || v.items.length > 8) return null;
+      if (!headline || !summary || !Array.isArray(v.items) || v.items.length < 1) return null;
+      // The model often lists more than 8 points; keep the first 8 instead of discarding the whole
+      // draft (2026-11-07: items_invalid was the main AI failure). Every kept item is still checked,
+      // and the chain-validity checks below run on exactly the text that is published.
       const items: string[] = [];
-      for (const rawItem of v.items) {
+      for (const rawItem of v.items.slice(0, 8)) {
         const item = boundedString(rawItem, 200);
         if (!item) return null;
         items.push(item);
@@ -120,13 +123,13 @@ export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestD
       if (!headline) return "headline_invalid";
       const summary = boundedString(v.summary, 800);
       if (!summary) return "summary_invalid";
-      if (!Array.isArray(v.items) || v.items.length < 1 || v.items.length > 8) return "items_invalid";
-      for (const rawItem of v.items) {
+      if (!Array.isArray(v.items) || v.items.length < 1) return "items_invalid";
+      for (const rawItem of v.items.slice(0, 8)) {
         const item = boundedString(rawItem, 200);
         if (!item) return "item_invalid";
       }
       if (typeof v.chain_valid === "boolean" && v.chain_valid !== obs.chain.valid) return "chain_valid_mismatch";
-      const combined = `${headline}\n${summary}\n${(v.items as unknown[]).join("\n")}`;
+      const combined = `${headline}\n${summary}\n${(v.items as unknown[]).slice(0, 8).join("\n")}`;
       if (contradictsChainValidity(combined, obs.chain.valid)) return "chain_contradiction";
       return "unknown";
     },

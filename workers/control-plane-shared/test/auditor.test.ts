@@ -307,3 +307,30 @@ test("readiness fails without AUDITOR binding; MCP wake_agent and HTTP wake with
   assert.equal(statusRes.status, 200);
   assert.equal(statusRes.body.last_cycle.trigger, "scheduled");
 });
+
+// 2026-11-07 (owner: "lanjut 1 dan 2"): the AI often lists more than 8 points; keep the first 8
+// instead of discarding the draft, and give the Kernel enough daily AI requests for the hourly digest.
+test("digest drafts with more than 8 items keep the first 8; kept items are still checked; the Kernel AI cap is 80", async () => {
+  const obs = {
+    observed_at: "2026-11-07T08:37:00.000Z",
+    since: "2026-11-06T08:37:00.000Z",
+    chain: { valid: true, events_checked: 2, head_hash: "abc1234567890", first_invalid_event_id: null, reason: null },
+    valid: true,
+    events_checked: 2,
+    counts_24h: {
+      agent_actions_by_agent: [], denied_agent_syscalls: 4, failed_agent_syscalls: 0, policy_denies_by_action: [],
+      governance_audit_events: { "agent.suspended": 0, "agent.resumed": 0, "kernel.agents_enabled": 0 }, agent_recovery_plans: 0,
+    },
+  };
+  const task = draftAuditDigestTask(obs as never);
+  const items = Array.from({ length: 11 }, (_, i) => `Point ${i + 1}`);
+  const ok = task.validate({ headline: "Audit chain valid", summary: "Four denied syscalls in 24 h.", items }) as any;
+  assert.ok(ok, "an 11-item draft is accepted");
+  assert.deepEqual(ok.items, items.slice(0, 8));
+  assert.equal(task.validate({ headline: "h", summary: "s", items: [] }), null, "no items is still refused");
+  assert.equal(task.validate({ headline: "h", summary: "s", items: ["ok", "x".repeat(201)] }), null, "an over-long kept item is still refused");
+  assert.equal(task.validate({ headline: "h", summary: "s", items: [...items.slice(0, 7), "Chain is broken"] }), null, "a contradiction among the kept items is still refused");
+  assert.notEqual(task.diagnose!({ headline: "h", summary: "s", items }), "items_invalid");
+  const { readFileSync } = await import("node:fs");
+  assert.match(readFileSync(new URL("../../ai-kernel/wrangler.toml", import.meta.url), "utf8"), /^AI_DAILY_REQUEST_LIMIT = "80"$/m);
+});
