@@ -203,6 +203,8 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
     params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
   }) as Record<string, unknown>;
   assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
+  const embeddedPriceParam = { ...paramCandidate, params: { ...(paramCandidate.params as Record<string, unknown>), hypothesis: "XAUUSD_4078 is a price-like value" } };
+  assert.ok(validateKnowledgeItem(embeddedPriceParam).includes("params_trading_value_wording"), "price-like digits embedded after an identifier separator are rejected");
 
   const wrongKind = item({ evidence: { proposed_value: 4050, wrong: 11, bars: 14 } });
   assert.ok(validateKnowledgeItem(wrongKind).includes("evidence_unscoped_numeric_field"), "param-candidate numeric fields are not allowed on caution items");
