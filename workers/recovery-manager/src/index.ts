@@ -243,6 +243,8 @@ export default {
         console.error(JSON.stringify({ event: "d1_backup", status: "failed", message }));
         await appendAuditEvent(env.DB, { event_type: "backup.d1_failed", actor: "cryptophys-recovery-manager", subject: "cryptophys-d1-backups", outcome: "failed", payload: { message } })
           .catch(() => undefined);
+        // Preserve the failure after recording it so the scheduled invocation remains visibly failed.
+        throw e;
       },
     ));
   },
