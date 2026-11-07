@@ -87,7 +87,7 @@ test("N5. primary since 2026-11-07: GitHub's d1-backup.yml has no schedule, and 
   const broken: R2BucketLike = { async list() { throw new Error("r2 unavailable"); }, async put() { return {}; } };
   const waits: Promise<unknown>[] = [];
   await (recoveryWorker as any).scheduled({ cron: "13 * * * *", scheduledTime: Date.now() }, { DB: db, BACKUPS: broken }, { waitUntil: (p: Promise<unknown>) => waits.push(p) });
-  await Promise.all(waits);
+  await assert.rejects(Promise.all(waits), /r2 unavailable/, "scheduled waitUntil promise must reject after recording the failure");
   const ev = db.raw.prepare("SELECT outcome, payload_json FROM audit_events WHERE event_type = 'backup.d1_failed'").get() as any;
   assert.equal(ev.outcome, "failed");
   assert.match(ev.payload_json, /r2 unavailable/);
