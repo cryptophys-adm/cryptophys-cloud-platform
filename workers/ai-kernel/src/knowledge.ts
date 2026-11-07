@@ -78,7 +78,7 @@ function evidenceHasTradingText(value: unknown): boolean {
 // as { observed_value: 4050 } could otherwise smuggle a price while bypassing string redaction.
 const SAFE_EVIDENCE_NUMERIC_KEYS = new Set([
   "candles", "bars", "wrong", "baseline_wrong_rate", "p_value",
-  "window_days", "rooms_with_break", "rooms", "rate_pct",
+  "window_days", "rooms_with_break", "rooms", "rate_pct", "violations", "turns",
   "decisive", "wrong_pct", "baseline_wrong_pct", "baseline_decisive",
   "episodes", "longest_candles", "proposed_value", "default_value", "tested_values",
 ]);
