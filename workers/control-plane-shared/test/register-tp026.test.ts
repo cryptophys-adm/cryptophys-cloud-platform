@@ -31,6 +31,7 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
     EXT_XAUUSD_NEWS: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_PULL_ADAPTER: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_NEXUS: http(() => new Response("<html>", { status: 200 })),
+    EXT_AETHER: http(() => Response.json({ status: "ok" })),
     ...extra,
   } as any;
 }
@@ -64,7 +65,7 @@ test("1. Migration: service_registry has 16 rows (15 + Aether from 0027), consol
   assert.equal(homeMeta.data_classification, "internal");
   assert.equal(homeMeta.source, "workers/home");
 
-  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
+  assert.equal(REQUIRED_MIGRATION, "0028_aether_observed.sql");
   const env = baseEnv("cryptophys-drift-detector", db);
   assert.equal(await schemaReady(env), true);
 });
@@ -210,13 +211,23 @@ test("6. No regressions: drift detector readiness and targets mapping cover all 
   assert.equal(missingHome.body.checks.observation_bindings, false);
 });
 
-test("TP-027: the disabled cryptophys-aether row is recorded without probing and never drifts before its first deploy", async () => {
+test("TP-027: after 0028 the cryptophys-aether row is registered and probed at /health over EXT_AETHER; a failing Aether drifts", async () => {
+  const db = migratedDb();
+  const row = db.raw.prepare("SELECT status, metadata_json FROM service_registry WHERE service_id = 'cryptophys-aether'").get() as { status: string; metadata_json: string };
+  assert.equal(row.status, "registered");
+  assert.equal(JSON.parse(row.metadata_json).health_path, "/health");
+  assert.equal(targets(driftTestEnv(db) as never)["cryptophys-aether"], undefined, "Aether is an external target, not an RPC target");
+  const ok: any = await observe(driftTestEnv(db), "test", "test");
+  const aether = ok.services.find((s: any) => s.service_id === "cryptophys-aether");
+  assert.equal(aether.drifted, false);
+  assert.equal(aether.probe.healthy, true);
+  const down: any = await observe(driftTestEnv(db, { EXT_AETHER: { fetch: async () => Response.json({ status: "degraded" }) } }), "test", "test");
+  assert.equal(down.services.find((s: any) => s.service_id === "cryptophys-aether").drifted, true);
+});
+
+test("TP-027: the Drift Detector is not ready without its EXT_AETHER binding", async () => {
   const db = migratedDb();
   const env = driftTestEnv(db);
-  const result: any = await observe(env, "test", "test");
-  const aether = result.services.find((s: any) => s.service_id === "cryptophys-aether");
-  assert.ok(aether, "the Aether row is observed");
-  assert.equal(aether.status, "disabled");
-  assert.equal(aether.drifted, false);
-  assert.deepEqual(aether.reasons, ["disabled"]);
+  assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
+  assert.equal((await call(drift, { ...env, EXT_AETHER: undefined }, req("GET", "/ready"))).status, 503);
 });

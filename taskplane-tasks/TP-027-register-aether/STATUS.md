@@ -36,3 +36,13 @@ New tests:
 
 - After Aether's first deploy, the follow-up adds the Drift Detector `EXT_AETHER` binding and sets the row to `registered`.
 - Aether's own `AGENTS` binding is added in the Aether repository once this migration is live.
+
+## Follow-up (same task, after Aether's first deploy on 2026-11-07)
+
+Aether answered `GET /health` (`status: ok`, canon `1347833f…`) after its first Workers Builds deploy.
+
+| Change | Detail |
+|---|---|
+| `0028_aether_observed.sql` | The row moves from `disabled` to `registered`, with `health_path` `/health` |
+| Drift Detector | Gains the `EXT_AETHER` service binding to `cryptophys-aether`. It is health-managed only, like the xauusd Workers, and its readiness requires the binding. |
+| Tests | 282 pass, 0 fail. The pins move to 0028. Aether is probed at `/health`, and a degraded Aether drifts. Readiness fails without `EXT_AETHER`. The drift fixture no longer gives the external Aether a desired version. |

@@ -99,6 +99,12 @@ service = "xauusd-tradingview-pull-adapter"
 binding = "EXT_XAUUSD_NEXUS"
 service = "xauusd-nexus-dashboard"
 
+# Aether, the Knowledge Guardian cluster (TP-027): an external Worker deployed by Workers Builds
+# from cryptophys-adm/cryptophys-aether, probed at /health like the xauusd Workers.
+[[services]]
+binding = "EXT_AETHER"
+service = "cryptophys-aether"
+
 # No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
 # deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.
 
