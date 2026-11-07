@@ -181,6 +181,13 @@ test("4. supervisor proposes deploy_commit once per unit and commit; shadow reco
     assert.equal(ps.length, 1, "the same commit is not proposed twice");
     assert.deepEqual(gh.dispatched, []);
     assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM deployment_requests").get() as any).n, 0);
+    // A Policy veto (shadow_blocked, e.g. the hourly rate limit) is retried after an hour, not before.
+    db.raw.prepare("UPDATE consensus_proposals SET status = 'shadow_blocked', created_at = ? WHERE action = 'deploy_commit'").run(new Date(Date.now() - 30 * 60_000).toISOString());
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(proposals(db).filter((p) => p.action === "deploy_commit").length, 1, "not within the hour");
+    db.raw.prepare("UPDATE consensus_proposals SET created_at = ? WHERE action = 'deploy_commit'").run(new Date(Date.now() - 61 * 60_000).toISOString());
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(proposals(db).filter((p) => p.action === "deploy_commit").length, 2, "a vetoed commit is proposed again after an hour");
   } finally { globalThis.fetch = realFetch; }
 });
 
