@@ -67,6 +67,16 @@ jobs:
             fi
             # Diagnostics: Cloudflare's error codes and messages only (never the token).
             echo "${name}: $(jq -c '[.errors[]? | {code, message}]' <<<"$out" 2>/dev/null || echo 'no JSON response')"
+            # Which token is this? The token ID is not secret; the owner matches it in the dashboard
+            # (user tokens: My Profile → API Tokens; account tokens: Manage Account → Account API Tokens).
+            for scope in "user" "accounts/${CLOUDFLARE_ACCOUNT_ID}"; do
+              v="$(curl --silent --proto '=https' --max-time 20 --header "Authorization: Bearer ${token}" \
+                "https://api.cloudflare.com/client/v4/${scope}/tokens/verify" || true)"
+              if jq -e '.success == true' <<<"$v" >/dev/null 2>&1; then
+                echo "${name}: $( [[ $scope == user ]] && echo 'user' || echo 'account') token id $(jq -r '.result.id' <<<"$v"), status $(jq -r '.result.status' <<<"$v"), expires $(jq -r '.result.expires_on // "never"' <<<"$v")"
+                break
+              fi
+            done
             if jq -e '[.errors[]?.code] | index(10042)' <<<"$out" >/dev/null 2>&1; then
               echo "::warning::R2 is not enabled on the Cloudflare account. Owner action: Cloudflare dashboard → R2 → enable (included in Workers Paid). The nightly D1 backup starts the next night."
               echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
