@@ -10,7 +10,7 @@ import { CAPABILITIES, agentSyscallChecks, verifySyscallDecision } from "../src/
 import policy, { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import recovery, { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import kernel from "../../ai-kernel/src/index.ts";
-import { runCycle, SerialCycleQueue, templateProposal } from "../../ai-kernel/src/supervisor.ts";
+import { AI_DRAFT_STEP_ACTIONS, draftTask, onlyUntaggedVersion, runCycle, SerialCycleQueue, templateProposal } from "../../ai-kernel/src/supervisor.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
 import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
 
@@ -493,4 +493,31 @@ test("TP-027 Aether: four tier-1 agents hosted by cryptophys-aether, reachable o
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = 'aether-guardian' AND kind = 'knowledge_audit'").get() as { n: number }).n, 1);
   // A capability Aether was not granted is denied by the normal syscall checks.
   assert.equal((await rpcSyscall(env as never, aether, "aether-curator", "recovery.propose", {})).outcome, "denied");
+});
+
+// 2026-11-07: a healthy service with an untagged version (a dashboard secret change) got an AI plan
+// that included restore_d1_bookmark. Now: no plan for that case, and AI drafts never carry
+// owner-only actions.
+test("supervisor: an untagged but healthy service gets no recovery plan; AI drafts drop owner-only actions", async () => {
+  assert.deepEqual([...AI_DRAFT_STEP_ACTIONS].sort(), ["disable_service", "manual", "redeploy_commit", "rollback_worker_version"]);
+  assert.equal(onlyUntaggedVersion({ reasons: ["observed_version_unavailable"] }), true);
+  assert.equal(onlyUntaggedVersion({ reasons: ["health_check_failed", "observed_version_unavailable"] }), false, "unhealthy is still a case");
+  const drafted = draftTask.validate({ title: "t", rationale: "r", steps: [
+    { action: "rollback_worker_version", description: "roll back" },
+    { action: "restore_d1_bookmark", description: "restore D1" },
+    { action: "rotate_secret", description: "rotate" },
+  ] }) as any;
+  assert.deepEqual(drafted.steps.map((x: any) => x.action), ["rollback_worker_version"]);
+  assert.equal(draftTask.validate({ title: "t", rationale: "r", steps: [{ action: "restore_d1_bookmark", description: "restore" }] }), null, "nothing executable left -> template");
+  assert.match(draftTask.instructions, /Never propose restoring data or rotating secrets/);
+  assert.doesNotMatch(draftTask.instructions, /restore_d1_bookmark|rotate_secret/);
+
+  const { env, db, mem } = kernelEnv(migratedDb(), { AI: fakeAi(AI_PLAN) });
+  drift(db, "cryptophys-platform-registry", true, 20, ["observed_version_unavailable"]);
+  drift(db, "cryptophys-platform-registry", true, 5, ["observed_version_unavailable"]);
+  const report = await runCycle(env as never, mem, "scheduled");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM recovery_plans").get() as any).n, 0);
+  const f = report.findings.find((x) => x.service_id === "cryptophys-platform-registry");
+  assert.equal(f?.action, "none");
+  assert.match(String(f?.why), /only the version tag is missing/);
 });

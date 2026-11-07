@@ -53,12 +53,30 @@ interface Observation { services: ServiceObs[]; open_agent_plans: { service_id: 
 
 export interface Proposal { title: string; rationale: string; steps: { action: string; description: string }[] }
 
+/**
+ * Steps an AI-drafted plan may contain: only those the Recovery Manager can execute, plus manual
+ * notes. Restoring D1 and rotating secrets are critical, owner-run actions (ADR-0009); an AI draft
+ * never proposes them (2026-11-07: a healthy service with an untagged version got a plan that
+ * included restore_d1_bookmark).
+ */
+export const AI_DRAFT_STEP_ACTIONS = RECOVERY_STEP_ACTIONS.filter((a) => a !== "restore_d1_bookmark" && a !== "rotate_secret");
+
+/**
+ * A healthy, reachable service whose only finding is a missing version tag is not a recovery case:
+ * a dashboard secret or settings change creates a new, untagged version (2026-11-07). It is
+ * reported, and the next tagged deploy clears it.
+ */
+export function onlyUntaggedVersion(s: { reasons: string[] }): boolean {
+  return s.reasons.length === 1 && s.reasons[0] === "observed_version_unavailable";
+}
+
 export const draftTask: AiTask<Proposal> = {
   name: "draft_recovery_proposal",
   instructions:
     "You are the platform supervisor agent of a Cloudflare Workers control plane. Given drift evidence for one service, " +
     'draft a recovery plan for a human approver. Return {"title": at most 160 characters, "rationale": at most 1500 characters, ' +
-    `"steps": 1-5 objects {"action": one of ${RECOVERY_STEP_ACTIONS.join(", ")}, "description": at most 300 characters}}. ` +
+    `"steps": 1-5 objects {"action": one of ${AI_DRAFT_STEP_ACTIONS.join(", ")}, "description": at most 300 characters}}. ` +
+    "Never propose restoring data or rotating secrets; those are owner actions. " +
     "Only use the evidence given. Never claim anything was executed. Never mention trading, orders or funds.",
   maxInputChars: 6000,
   maxOutputTokens: 600,
@@ -71,8 +89,11 @@ export const draftTask: AiTask<Proposal> = {
     for (const raw of o.steps as Record<string, unknown>[]) {
       const description = boundedString(raw?.description, 300);
       if (!description || !(RECOVERY_STEP_ACTIONS as readonly string[]).includes(raw?.action as string)) return null;
+      // Drop owner-only actions from AI drafts instead of passing them on for approval.
+      if (!(AI_DRAFT_STEP_ACTIONS as readonly string[]).includes(raw.action as string)) continue;
       steps.push({ action: raw.action as string, description });
     }
+    if (steps.length === 0) return null;
     return { title, rationale, steps };
   },
 };
@@ -124,6 +145,10 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   for (const s of obs.services) {
     const managed = !(s.reasons.length === 1 && s.reasons[0] === "desired_version_unset");
     if (!s.drifted || !s.persistent || !managed || s.service_id === SERVICE) continue;
+    if (onlyUntaggedVersion(s)) {
+      report.findings.push({ kind: "drift", service_id: s.service_id, action: "none", why: "healthy; only the version tag is missing (e.g. a dashboard secret change); the next tagged deploy clears it" });
+      continue;
+    }
     if (open.has(s.service_id) || now - (proposals[s.service_id] ?? 0) < PROPOSAL_COOLDOWN_MS) {
       report.findings.push({ kind: "drift", service_id: s.service_id, action: "none", why: "proposal already open or recent" });
       continue;
