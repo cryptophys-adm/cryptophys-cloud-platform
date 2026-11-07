@@ -67,9 +67,8 @@ function evidenceHasTradingText(value: unknown, path = ""): boolean {
     // "240" is an approved four-hour chart identifier, not a price. The exact situation/evidence
     // contracts validate this categorical field against CHARTS before storage.
     if (path === "chart" && CHARTS.has(value)) return false;
-    // ISO date windows are legitimate evidence strings; other 3+ digit runs in free-form evidence are not.
-    const withoutDates = value.replace(/\\b\\d{4}-\\d{2}-\\d{2}(?:[T ][0-9:.]+Z?)?\\b/g, "");
-    return TRADING_VALUE_TALK.test(value) || ORDER.test(value) || PRICE.test(withoutDates);
+    // The current exact Aether evidence schema has no free-form date-window fields; reject unknown numeric strings.
+    return TRADING_VALUE_TALK.test(value) || ORDER.test(value) || PRICE.test(value);
   }
   if (Array.isArray(value)) return value.some((v) => evidenceHasTradingText(v, `${path}[]`));
   if (isObject(value)) return Object.entries(value).some(([k, v]) => evidenceHasTradingText(v, path ? `${path}.${k}` : k));
