@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
-  Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel,
+  Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
 } from "lucide-react";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -22,6 +22,7 @@ export const NAV = [
   { label: "Ledger", href: "#/ledger", key: "ledger", icon: Database },
   { label: "Pipelines", href: "#/pipelines", key: "pipelines", icon: GitBranch },
   { label: "Markets", href: "#/markets", key: "markets", icon: CandlestickChart },
+  { label: "Users", href: "#/users", key: "users", icon: Users },
 ];
 
 function PriorityQueue() {

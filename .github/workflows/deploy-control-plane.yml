@@ -169,7 +169,10 @@ jobs:
           for dir in $DEPLOY_ORDER; do
             name="cryptophys-${dir}"
             vars=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}")
-            [[ "$dir" == "recovery-manager" || "$dir" == "ai-kernel" ]] && vars+=(--var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}")
+            [[ "$dir" == "recovery-manager" || "$dir" == "ai-kernel" || "$dir" == "platform-registry" ]] && vars+=(--var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}")
+            # Users page (2026-11-07): the Registry syncs Nexus sign-in to the Access group with the Worker
+            # secret ACCESS_GROUPS_TOKEN (set by the owner; wrangler keeps it); the account ID is not secret.
+            [[ "$dir" == "platform-registry" ]] && vars+=(--var "CF_ACCOUNT_ID:${CLOUDFLARE_ACCOUNT_ID}")
             echo "::group::Deploy ${name}"
             # Wrangler preserves secret bindings; remove only the retired shared-token names that the current identity-auth code no longer reads.
             "$GITHUB_WORKSPACE/.github/scripts/remove-worker-secrets.sh" "$name" ADMIN_TOKEN APPROVER_TOKEN

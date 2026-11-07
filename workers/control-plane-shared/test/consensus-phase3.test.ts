@@ -143,6 +143,17 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
+    // A new D1 migration (2026-11-07): only the Control Plane deploy applies it, and every Worker's
+    // readiness needs it, so the Control Plane goes first and alone; the orchestrator follows.
+    github({ files: ["workers/control-plane-migrations/0099_x.sql", "workers/control-plane-shared/src/access.ts"] });
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual(p.units.map((u) => u.unit), ["control-plane"]);
+    assert.deepEqual(p.skipped.filter((s) => s.reason === "control_plane_migration_first").map((s) => s.unit).sort(),
+      ["console", "deployment-orchestrator", "home", "platform-api"]);
+    db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id IN ('cryptophys-policy-engine','cryptophys-audit-ledger','cryptophys-platform-registry','cryptophys-recovery-manager','cryptophys-drift-detector','cryptophys-ai-kernel')").run(MAIN.slice(0, 12));
+    p = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"], "after the Control Plane, the usual order resumes");
+    db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
     github({ ciConclusion: "failure" });
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.equal(p.ci_green, false);

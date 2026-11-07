@@ -211,6 +211,7 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
   if (!out.ci_green) { out.skipped.push({ unit: "*", reason: "ci_not_green" }); return out; }
   const tag = sha.slice(0, 12);
   const pendingUnits: PendingDeploys["units"] = [];
+  let newMigration = false;
   for (const unit of DEPLOY_UNITS) {
     const rows = await env.DB.prepare(
       `SELECT service_id, status, desired_version FROM service_registry WHERE service_id IN (${unit.services.map(() => "?").join(", ")})`,
@@ -226,11 +227,23 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
       if (!res.ok) { failed = true; break; }
       const cmp = await res.json() as { status?: string; files?: { filename: string }[] };
       if (cmp.status !== "ahead") { failed = cmp.status !== "identical"; if (failed) break; continue; }
+      const files = (cmp.files ?? []).map((f) => f.filename);
+      if (files.some((f) => f.startsWith("workers/control-plane-migrations/") && f.endsWith(".sql"))) newMigration = true;
       // GitHub lists at most 300 files; a larger diff is treated as touching every unit.
-      if ((cmp.files ?? []).length >= 300 || unitChanged(unit, (cmp.files ?? []).map((f) => f.filename))) { changed = true; break; }
+      if (files.length >= 300 || unitChanged(unit, files)) { changed = true; break; }
     }
     if (failed) { out.skipped.push({ unit: unit.unit, reason: "compare_failed_or_diverged" }); continue; }
     if (changed) pendingUnits.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
+  }
+  // A new D1 migration is applied only by the Control Plane deploy, and every Worker's readiness
+  // requires the newest migration: deploy the Control Plane first, alone (2026-11-07, migration 0026).
+  const controlPlane = pendingUnits.find((u) => u.unit === "control-plane");
+  if (newMigration && controlPlane) {
+    out.units.push(controlPlane);
+    for (const u of pendingUnits) {
+      if (u.unit !== "control-plane") out.skipped.push({ unit: u.unit, reason: "control_plane_migration_first" });
+    }
+    return out;
   }
   // DeployRpc must exist before the AI Kernel is redeployed with its new service binding.
   // Do not propose the Control Plane (or another unit) in the same cycle as the orchestrator.

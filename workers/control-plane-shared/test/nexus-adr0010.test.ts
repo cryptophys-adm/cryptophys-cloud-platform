@@ -69,7 +69,8 @@ test("3. the mount changes nothing about security: Access, operators, CSRF and t
   const ok = await consoleWorker.fetch(req(`${NEXUS}/console/api/drift/v1/observe`, "POST", OPERATOR_JWT, { origin: NEXUS, "x-cryptophys-console": "1" }), e.env as never);
   assert.equal(ok.status, 200, "same-origin on the Nexus host is accepted");
   assert.equal((await consoleWorker.fetch(req(`${NEXUS}/console/api/kernel/mcp`, "POST", OPERATOR_JWT, { origin: NEXUS, "x-cryptophys-console": "1" }), e.env as never)).status, 404);
-  assert.equal(e.forwarded.length, 1);
+  // Outsiders cost one role lookup each (GET /v1/accounts/me); only the operator's observe is forwarded.
+  assert.equal(e.forwarded.filter((r) => !new URL(r.url).pathname.endsWith("/v1/accounts/me")).length, 1);
 });
 
 test("4. console.cryptophys.work redirects to the Nexus mount, keeping the path; health stays for verification", async () => {

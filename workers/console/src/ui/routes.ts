@@ -50,6 +50,11 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("registry.service", "registry", "GET", "/v1/services/{id}", false, null),
   r("registry.upsert", "registry", "PUT", "/v1/services/{id}", false, "UPDATE {id}"),
   r("registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", false, "VERSION {id}"),
+  // Users page (owner decision 2026-11-07): owners manage accounts; the server checks the owner and the phrase.
+  r("registry.accounts", "registry", "GET", "/v1/accounts", false, null),
+  r("registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"),
+  r("registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"),
+  r("registry.accounts_sync", "registry", "POST", "/v1/accounts/sync-login", true, "SYNC"),
   r("policy.decisions", "policy", "GET", "/v1/decisions", false, null),
   r("policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null),
   r("policy.evaluate", "policy", "POST", "/v1/evaluate", false, null),

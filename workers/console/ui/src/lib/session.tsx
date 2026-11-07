@@ -4,7 +4,7 @@ import { CheckCircle2, X, AlertTriangle } from "lucide-react";
 import { call, phraseFor, type Json } from "./api";
 import ConfirmModal from "../components/ConfirmModal";
 
-export interface Who { actor: string; type: string; operator: boolean; approver: boolean }
+export interface Who { actor: string; type: string; operator: boolean; approver: boolean; role?: string; owner?: boolean; viewer?: boolean }
 interface Toast { id: number; tone: "ok" | "err"; text: string }
 interface ActOptions {
   route: string; params?: string | string[]; body?: Json; query?: Record<string, string>;

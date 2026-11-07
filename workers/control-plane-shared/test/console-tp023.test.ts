@@ -47,7 +47,10 @@ function consoleEnv(extra: Record<string, unknown> = {}) {
     ...bindings,
     ...extra,
   };
-  return { env, recorders, total: () => Object.values(recorders).reduce((n, r) => n + r.calls.length, 0) };
+  // Role lookups (GET /v1/accounts/me on the Registry, 2026-11-07) are not forwards of the caller's request.
+  const forwards = (r: Recorder) => r.calls.filter((c) => !c.url.includes("/v1/accounts/me")).length;
+  const lookups = () => recorders.registry.calls.length - forwards(recorders.registry);
+  return { env, recorders, lookups, total: () => Object.values(recorders).reduce((n, r) => n + forwards(r), 0) };
 }
 
 interface Opts { jwt?: string | null; origin?: string | null; csrf?: boolean; body?: BodyInit; type?: string; headers?: Record<string, string> }
@@ -102,7 +105,7 @@ test("1. access: no JWT and outsiders are denied without a forward; operators ge
 test("2. whoami: operator is not an approver, a dual identity is, and the actor is lower-case", async () => {
   const { env } = consoleEnv();
   const plain = await run(env, creq("GET", "/api/whoami"));
-  assert.deepEqual(plain.body, { actor: OPERATOR_EMAIL, type: "user", operator: true, approver: false });
+  assert.deepEqual(plain.body, { actor: OPERATOR_EMAIL, type: "user", role: "operator", operator: true, approver: false, owner: false, viewer: false });
   const both = await run({ ...env, APPROVER_IDENTITIES: `${OPERATOR_EMAIL},${APPROVER_EMAIL}` }, creq("GET", "/api/whoami"));
   assert.equal(both.body.approver, true);
   assert.equal(both.body.actor, OPERATOR_EMAIL);
@@ -243,15 +246,16 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   const key = (r: { service: string; method: string; path: string }) => `${r.service} ${r.method} ${r.path}`;
   const keys = CONSOLE_ALLOW_LIST.map(key);
   assert.equal(new Set(keys).size, keys.length);
-  // 33 TP-023 rows + 2 read-only consensus rows (ADR-0009 phase 1) + 2 owner-click rows (phase 4) + the agreement report (Wave B) + the mode control.
-  assert.equal(keys.length, 39);
+  // 33 TP-023 rows + 2 read-only consensus rows (ADR-0009 phase 1) + 2 owner-click rows (phase 4) + the agreement report (Wave B) + the mode control + 4 Users page rows (2026-11-07).
+  assert.equal(keys.length, 43);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode"].map((p) => `kernel POST ${p}`),
     "kernel DELETE /v1/agents/{id}/principals/{id}",
     ...["/v1/plans", "/v1/plans/{id}"].map((p) => `recovery GET ${p}`),
     ...["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/executions", "/v1/plans/{id}/disable"].map((p) => `recovery POST ${p}`),
-    ...["/v1/services", "/v1/services/{id}"].map((p) => `registry GET ${p}`),
+    ...["/v1/services", "/v1/services/{id}", "/v1/accounts"].map((p) => `registry GET ${p}`),
+    ...["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable"].map((p) => `registry POST ${p}`),
     ...["/v1/services/{id}", "/v1/services/{id}/desired-version"].map((p) => `registry PUT ${p}`),
     ...["/v1/decisions", "/v1/decisions/{id}"].map((p) => `policy GET ${p}`),
     "policy POST /v1/evaluate",

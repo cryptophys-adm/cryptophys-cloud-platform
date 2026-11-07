@@ -179,7 +179,88 @@ export function listConfigured(allowList: string | undefined): boolean {
   return (allowList ?? "").split(",").some((v) => v.trim().length > 0);
 }
 
-/** Operators of the control-plane /v1 APIs: the CI service token's Client ID plus operator emails. */
-export function requireOperator(request: Request, env: AccessEnv & { OPERATOR_IDENTITIES?: string }): Promise<Authorization> {
-  return authorize(request, env, env.OPERATOR_IDENTITIES, "OPERATOR_IDENTITIES");
+// ---------------------------------------------------------------------------------------------
+// Roles (owner decision 2026-11-07, migration 0026). The configured identities stay the root of
+// trust: APPROVER_IDENTITIES are the owners (people), OPERATOR_IDENTITIES the operators and the CI
+// service token. People added in the Cerebrum Console's Users page live in platform_accounts:
+// kind 'admin' with a privilege (viewer | operator | approver) may use the control plane, and kind
+// 'user' may only sign in to Nexus. A lookup error fails closed (no role).
+
+export type Role = "approver" | "operator" | "viewer" | "user";
+export interface RoleEnv extends AccessEnv {
+  OPERATOR_IDENTITIES?: string;
+  APPROVER_IDENTITIES?: string;
+  DB?: { prepare(sql: string): { bind(...v: unknown[]): { first<T>(): Promise<T | null> } } };
+}
+export interface RoleResolution { role: Role | null; source: "config" | "account" | null; owner: boolean }
+
+/** An owner: a person in APPROVER_IDENTITIES. Only owners manage accounts. */
+export function isOwner(identity: AccessIdentity, env: RoleEnv): boolean {
+  return identity.type === "user" && identityAllowed(identity, env.APPROVER_IDENTITIES);
+}
+
+/** The role a Users page account grants, or null (configured identities are not accounts). */
+async function accountRole(env: RoleEnv, identity: AccessIdentity): Promise<Role | null> {
+  if (identity.type !== "user" || !env.DB) return null;
+  try {
+    const row = await env.DB.prepare("SELECT kind, privilege FROM platform_accounts WHERE email = ? AND status = 'active'")
+      .bind(identity.subject.toLowerCase()).first<{ kind: string; privilege: string | null }>();
+    if (!row) return null;
+    if (row.kind === "user") return "user";
+    if (row.privilege === "viewer" || row.privilege === "operator" || row.privilege === "approver") return row.privilege;
+  } catch (e) {
+    console.warn(JSON.stringify({ event: "role_lookup_failed", message: String((e as Error)?.message ?? e).slice(0, 200) }));
+  }
+  return null;
+}
+
+/** The highest role, for display (whoami). Authorization uses requireOperator / requireApprover. */
+export async function roleOf(env: RoleEnv, identity: AccessIdentity): Promise<RoleResolution> {
+  if (isOwner(identity, env)) return { role: "approver", source: "config", owner: true };
+  if (identityAllowed(identity, env.OPERATOR_IDENTITIES)) return { role: "operator", source: "config", owner: false };
+  const role = await accountRole(env, identity);
+  return { role, source: role ? "account" : null, owner: false };
+}
+
+const READ_METHODS = new Set(["GET", "HEAD"]);
+
+/**
+ * Operators of the control-plane /v1 APIs: configured operators and owners, plus accounts with the
+ * operator or approver privilege. A viewer account may only read (GET/HEAD). An unset
+ * OPERATOR_IDENTITIES still fails closed with 503.
+ */
+export async function requireOperator(request: Request, env: RoleEnv): Promise<Authorization> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return auth;
+  if (!listConfigured(env.OPERATOR_IDENTITIES)) return { ok: false, response: denied(503, "operator_identities_not_configured") };
+  // Configured: OPERATOR_IDENTITIES only (an approver-only owner is not an operator, as before).
+  // Accounts: operator and approver privileges operate; viewer reads.
+  let allowed = identityAllowed(auth.identity, env.OPERATOR_IDENTITIES);
+  let role: Role | null = allowed ? "operator" : null;
+  if (!allowed) {
+    role = await accountRole(env, auth.identity);
+    allowed = role === "operator" || role === "approver" || (role === "viewer" && READ_METHODS.has(request.method));
+  }
+  if (!allowed) {
+    console.warn(JSON.stringify({ event: "identity_not_authorized", list: "OPERATOR_IDENTITIES", type: auth.identity.type, role }));
+    return { ok: false, response: denied(403, "forbidden") };
+  }
+  return { ok: true, identity: auth.identity, actor: actorOf(auth.identity) };
+}
+
+/**
+ * Approvers: owners (APPROVER_IDENTITIES) and accounts with the approver privilege. Always a
+ * person: an Access service token is never an approver. An unset APPROVER_IDENTITIES fails closed.
+ */
+export async function requireApprover(request: Request, env: RoleEnv): Promise<Authorization> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return auth;
+  if (!listConfigured(env.APPROVER_IDENTITIES)) return { ok: false, response: denied(503, "approver_identities_not_configured") };
+  const approver = auth.identity.type === "user"
+    && (identityAllowed(auth.identity, env.APPROVER_IDENTITIES) || (await accountRole(env, auth.identity)) === "approver");
+  if (!approver) {
+    console.warn(JSON.stringify({ event: "identity_not_authorized", list: "APPROVER_IDENTITIES", type: auth.identity.type }));
+    return { ok: false, response: denied(403, "forbidden") };
+  }
+  return { ok: true, identity: auth.identity, actor: actorOf(auth.identity) };
 }

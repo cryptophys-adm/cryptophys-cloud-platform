@@ -82,6 +82,10 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["registry.service", "registry", "GET", "/v1/services/{id}", false, null],
   ["registry.upsert", "registry", "PUT", "/v1/services/{id}", false, "UPDATE {id}"],
   ["registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", false, "VERSION {id}"],
+  ["registry.accounts", "registry", "GET", "/v1/accounts", false, null],
+  ["registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"],
+  ["registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"],
+  ["registry.accounts_sync", "registry", "POST", "/v1/accounts/sync-login", true, "SYNC"],
   ["policy.decisions", "policy", "GET", "/v1/decisions", false, null],
   ["policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null],
   ["policy.evaluate", "policy", "POST", "/v1/evaluate", false, null],
@@ -94,8 +98,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 41 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 41);
+test("1. route table: exactly the 45 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 45);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -104,7 +108,7 @@ test("1. route table: exactly the 41 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 41);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 45);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -112,9 +116,9 @@ test("1. route table: exactly the 41 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the eight approverOnly ids (owner clicks: approve, reject, raise mode)", () => {
+test("2. approver flags: exactly the eleven approverOnly ids (owner clicks: approve, reject, raise mode, accounts)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.principal_add","kernel.principal_remove","kernel.resume","recovery.approve"].sort());
+  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.principal_add","kernel.principal_remove","kernel.resume","recovery.approve","registry.account_disable","registry.account_upsert","registry.accounts_sync"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -190,7 +194,7 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  assert.equal(CONSOLE_ALLOW_LIST.length, 39);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 43);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

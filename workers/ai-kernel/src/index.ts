@@ -13,7 +13,7 @@
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata } from "../../control-plane-shared/src/http.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, actorOf, authenticate, authorize, identityAllowed, listConfigured, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessGate, actorOf, authenticate, identityAllowed, listConfigured, requireApprover, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { CAPABILITIES, getActivePrincipalByIdentity, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import {
   addAgentPrincipal, agentStatus, listActions, listAgents, revokeAgentPrincipal,
@@ -33,9 +33,9 @@ export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
 
 async function isApprover(request: Request, env: Env): Promise<boolean> {
-  const authorization = await authorize(request, env, env.APPROVER_IDENTITIES, "APPROVER_IDENTITIES");
-  // An Access service token is never a human approver, even if its common_name resembles an email.
-  return authorization.ok && authorization.identity.type === "user";
+  // Owners and approver accounts (2026-11-07); requireApprover refuses service tokens.
+  const authorization = await requireApprover(request, env);
+  return authorization.ok;
 }
 
 export default {

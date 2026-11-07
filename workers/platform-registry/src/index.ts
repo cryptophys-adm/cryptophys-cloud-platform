@@ -7,10 +7,11 @@ import {
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessGate, authenticate, isOwner, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
+import { disableAccount, listAccounts, resyncLogin, upsertAccount, whoAmI, type AccountsEnv } from "./accounts.ts";
 
-export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
+export type Env = AccountsEnv & { AGENTS?: AgentRpcBinding };
 
 const SERVICE = "cryptophys-platform-registry";
 const ENVIRONMENTS = ["development", "preview", "production"];
@@ -183,10 +184,36 @@ export default {
         return serviceMetadata(env, "Desired inventory and resource ownership metadata", [
           "GET /v1/services", "GET /v1/services/{service_id}", "PUT /v1/services/{service_id}",
           "PUT /v1/services/{service_id}/desired-version",
+          "GET /v1/accounts/me (any Access identity)", "GET /v1/accounts", "POST /v1/accounts (owner, GRANT)",
+          "POST /v1/accounts/{email}/disable (owner, REVOKE)", "POST /v1/accounts/sync-login (owner)",
         ]);
       }
     }
     if (!path.startsWith("/v1/")) return errorResponse(404, "not_found");
+    // Users page (2026-11-07). /me answers any valid identity (the Console asks it for every visitor);
+    // writes need an owner (checked inside); the list is for owners, operators and viewers.
+    if (path === "/v1/accounts" || path.startsWith("/v1/accounts/")) {
+      if (path === "/v1/accounts/me" && request.method === "GET") return await whoAmI(request, env);
+      const auth = await authenticate(request, env);
+      if (!auth.ok) return auth.response;
+      try {
+        if (path === "/v1/accounts" && request.method === "GET") {
+          if (!isOwner(auth.identity, env)) {
+            const reader = await requireOperator(request, env);
+            if (!reader.ok) return reader.response;
+          }
+          return await listAccounts(env);
+        }
+        if (path === "/v1/accounts" && request.method === "POST") return await upsertAccount(request, env, auth.identity);
+        if (path === "/v1/accounts/sync-login" && request.method === "POST") return await resyncLogin(env, auth.identity);
+        const acct = /^\/v1\/accounts\/([^/]{6,254})\/disable$/.exec(path);
+        if (acct && request.method === "POST") return await disableAccount(request, env, auth.identity, decodeURIComponent(acct[1]).toLowerCase());
+        return errorResponse(404, "not_found");
+      } catch (err) {
+        console.error(JSON.stringify({ event: "accounts_error", message: String((err as Error)?.message ?? err).slice(0, 200) }));
+        return errorResponse(500, "internal_error");
+      }
+    }
     const operator = await requireOperator(request, env);
     if (!operator.ok) return operator.response;
     try {
