@@ -77,11 +77,8 @@ function evidenceHasTradingText(value: unknown): boolean {
 // curator/calibrator contracts (plus the platform fixture metrics). An opaque numeric key such
 // as { observed_value: 4050 } could otherwise smuggle a price while bypassing string redaction.
 const SAFE_EVIDENCE_NUMERIC_PATHS_BY_KIND: Readonly<Record<string, ReadonlySet<string>>> = {
-  caution: new Set([
-    "candles", "bars", "wrong", "baseline_wrong_rate", "p_value", "window_days",
-    "decisive", "wrong_pct", "baseline_wrong_pct", "baseline_decisive",
-  ]),
-  role_reminder: new Set(["window_days", "rooms_with_break", "rooms", "rate_pct", "violations", "turns"]),
+  caution: new Set(["window_days", "decisive", "wrong", "wrong_pct", "baseline_wrong_pct", "baseline_decisive", "p_value"]),
+  role_reminder: new Set(["window_days", "rooms_with_break", "rooms", "rate_pct"]),
   param_candidate: new Set(["window_days", "episodes", "longest_candles", "proposed_value", "default_value", "tested_values[]"]),
 };
 
@@ -93,10 +90,95 @@ function evidenceHasUnscopedNumber(value: unknown, kind: string, path = ""): boo
   return false;
 }
 
-const PARAMETER_GRIDS: Readonly<Record<string, { grid: string; values: readonly number[]; defaultValue: number }>> = {
-  prophet_r37: { grid: "TUNING_GRID.prophet_r37.stateMaxAge", values: [8, 12, 16, 24], defaultValue: 50 },
-  gmi_v12_70: { grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: [8, 12, 16, 24], defaultValue: 50 },
+const PARAMETER_GRIDS: Readonly<Record<string, { grid: string; values: readonly number[]; defaultValue: number; testedValues: readonly number[] }>> = {
+  prophet_r37: { grid: "TUNING_GRID.prophet_r37.stateMaxAge", values: [8, 12, 16, 24], defaultValue: 50, testedValues: [8, 12] },
+  gmi_v12_70: { grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: [8, 12, 16, 24], defaultValue: 50, testedValues: [8, 12] },
 };
+
+const ROLE_CHECKS = new Set(["order_wording", "stance_bias_conflict", "calibration_talk", "natural_language", "data_scope"]);
+const CHARTS = new Set(["15", "60", "240", "1D"]);
+const SESSIONS = new Set(["asia", "london", "new_york", "late"]);
+const EVIDENCE_KEYS_BY_KIND: Readonly<Record<string, readonly string[]>> = {
+  caution: ["agent", "chart", "session", "window_days", "decisive", "wrong", "wrong_pct", "baseline_wrong_pct", "baseline_decisive", "p_value"],
+  role_reminder: ["agent", "check", "window_days", "rooms_with_break", "rooms", "rate_pct"],
+  param_candidate: ["family", "window_days", "episodes", "longest_candles", "proposed_value", "default_value", "tested_values"],
+};
+const SITUATION_KEYS_BY_KIND: Readonly<Record<string, readonly string[]>> = {
+  caution: ["chart", "session"],
+  role_reminder: ["check"],
+  param_candidate: ["family", "stuck"],
+};
+
+function hasExactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (!isObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function integerInRange(value: unknown, min: number, max: number): value is number {
+  return Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
+}
+
+function situationContractErrors(value: unknown, kind: string): string[] {
+  const expected = SITUATION_KEYS_BY_KIND[kind];
+  if (!expected || !hasExactKeys(value, expected)) return ["situation_shape_invalid"];
+  if (kind === "caution") {
+    return CHARTS.has(String(value.chart)) && SESSIONS.has(String(value.session)) ? [] : ["situation_contract_invalid"];
+  }
+  if (kind === "role_reminder") {
+    return ROLE_CHECKS.has(String(value.check)) ? [] : ["situation_contract_invalid"];
+  }
+  return PARAMETER_GRIDS[String(value.family)] && value.stuck === "structure latch" ? [] : ["situation_contract_invalid"];
+}
+
+function evidenceContractErrors(value: unknown, kind: string, situation: unknown): string[] {
+  const expected = EVIDENCE_KEYS_BY_KIND[kind];
+  if (!expected || !hasExactKeys(value, expected)) return ["evidence_shape_invalid"];
+  const e = value;
+  const errors: string[] = [];
+  if (typeof e.agent !== "string" || !AGENT_ID.test(e.agent)) errors.push("evidence_agent_invalid");
+
+  if (kind === "caution") {
+    if (!CHARTS.has(String(e.chart)) || !SESSIONS.has(String(e.session))) errors.push("evidence_context_invalid");
+    if (!isObject(situation) || e.chart !== situation.chart || e.session !== situation.session) errors.push("evidence_situation_mismatch");
+    if (e.window_days !== 30 ||
+        !integerInRange(e.decisive, 12, Number.MAX_SAFE_INTEGER) ||
+        !integerInRange(e.wrong, 1, Number.MAX_SAFE_INTEGER) ||
+        !integerInRange(e.baseline_decisive, 12, Number.MAX_SAFE_INTEGER) ||
+        !integerInRange(e.wrong_pct, 0, 100) ||
+        !integerInRange(e.baseline_wrong_pct, 0, 100) ||
+        e.wrong > e.decisive ||
+        e.wrong_pct !== Math.round((e.wrong as number) / (e.decisive as number) * 100) ||
+        typeof e.p_value !== "number" || !Number.isFinite(e.p_value) || e.p_value < 0 || e.p_value > 0.05) {
+      errors.push("evidence_metric_invalid");
+    }
+  } else if (kind === "role_reminder") {
+    if (!ROLE_CHECKS.has(String(e.check)) || !isObject(situation) || e.check !== situation.check) errors.push("evidence_situation_mismatch");
+    if (e.window_days !== 7 ||
+        !integerInRange(e.rooms_with_break, 10, Number.MAX_SAFE_INTEGER) ||
+        !integerInRange(e.rooms, 20, Number.MAX_SAFE_INTEGER) ||
+        !integerInRange(e.rate_pct, 6, 100) ||
+        e.rooms_with_break > e.rooms ||
+        e.rate_pct !== Math.round((e.rooms_with_break as number) / (e.rooms as number) * 100)) {
+      errors.push("evidence_metric_invalid");
+    }
+  } else {
+    const grid = PARAMETER_GRIDS[String(e.family)];
+    if (!grid || !isObject(situation) || e.family !== situation.family) errors.push("evidence_situation_mismatch");
+    if (e.window_days !== 30 ||
+        !integerInRange(e.episodes, 3, Number.MAX_SAFE_INTEGER) ||
+        !integerInRange(e.longest_candles, 0, Number.MAX_SAFE_INTEGER) ||
+        !grid?.values.includes(e.proposed_value as number) ||
+        e.default_value !== grid?.defaultValue ||
+        !Array.isArray(e.tested_values) ||
+        e.tested_values.length !== grid?.testedValues.length ||
+        !e.tested_values.every((v, i) => v === grid?.testedValues[i]) ||
+        e.tested_values.includes(e.proposed_value)) {
+      errors.push("evidence_metric_invalid");
+    }
+  }
+  return errors;
+}
 
 function hasUnexpectedParamNumber(value: unknown, path = ""): boolean {
   if (typeof value === "number") return Number.isFinite(value) && path !== "values.stateMaxAge";
@@ -130,6 +212,10 @@ function evidenceNumbers(value: unknown, out = new Set<string>()): Set<string> {
 export function validateKnowledgeItem(item: unknown): string[] {
   if (!isObject(item)) return ["not_an_object"];
   const errors: string[] = [];
+  const commonItemKeys = ["schema", "item_id", "version", "kind", "claim_type", "label", "audience", "situation", "text", "evidence", "provenance"];
+  const expectedItemKeys = item.kind === "param_candidate" ? [...commonItemKeys, "params"] : commonItemKeys;
+  if (!hasExactKeys(item, expectedItemKeys)) errors.push("item_shape_invalid");
+  if (item.label !== "learned") errors.push("label_invalid");
   if (item.schema !== KNOWLEDGE_ITEM_VERSION) errors.push("unsupported_schema");
   if (typeof item.item_id !== "string" || !ITEM_ID.test(item.item_id)) errors.push("item_id_invalid");
   if (!Number.isInteger(item.version) || (item.version as number) < 1 || (item.version as number) > 999) errors.push("version_invalid");
@@ -138,12 +224,14 @@ export function validateKnowledgeItem(item: unknown): string[] {
   if (item.kind === "role_reminder" && item.claim_type !== "role_reminder") errors.push("claim_type_mismatch");
   if (item.kind !== "role_reminder" && item.claim_type !== "measured_outcome") errors.push("claim_type_mismatch");
   const audience = isObject(item.audience) ? item.audience : null;
+  if (!hasExactKeys(audience, ["agents", "charts"])) errors.push("audience_shape_invalid");
   const agents = Array.isArray(audience?.agents) ? audience!.agents as unknown[] : [];
   if (!agents.length || agents.length > 20 || !agents.every((a) => typeof a === "string" && AGENT_ID.test(a))) errors.push("audience_invalid");
   const charts = Array.isArray(audience?.charts) ? audience!.charts as unknown[] : [];
-  if (!charts.every((c) => typeof c === "string" && ["15", "60", "240", "1D"].includes(c))) errors.push("audience_charts_invalid");
+  if (!charts.every((c) => typeof c === "string" && CHARTS.has(c))) errors.push("audience_charts_invalid");
   const text = typeof item.text === "string" ? item.text.trim() : "";
   if (!text || text.length > 300) errors.push("text_length");
+  errors.push(...situationContractErrors(item.situation, String(item.kind)));
   if (evidenceHasTradingText(item.situation)) errors.push("situation_trading_value_wording");
   if (hasNumericLeaf(item.situation)) errors.push("situation_numeric_value");
   if (item.params !== undefined && evidenceHasTradingText(item.params)) errors.push("params_trading_value_wording");
@@ -156,11 +244,15 @@ export function validateKnowledgeItem(item: unknown): string[] {
   else {
     if (evidenceHasTradingText(evidence)) errors.push("evidence_trading_value_wording");
     if (evidenceHasUnscopedNumber(evidence, String(item.kind))) errors.push("evidence_unscoped_numeric_field");
+    errors.push(...evidenceContractErrors(evidence, String(item.kind), item.situation));
     const known = evidenceNumbers(evidence);
     const missing = numbersOf(text).filter((n) => !known.has(n));
     if (missing.length) errors.push(`text_number_not_in_evidence:${missing.slice(0, 3).join(",")}`);
   }
   const provenance = isObject(item.provenance) ? item.provenance : null;
+  if (!hasExactKeys(provenance, ["card_ids", "canon_sha", "canon_version", "source"])) errors.push("provenance_shape_invalid");
+  if (provenance?.source !== "aether") errors.push("provenance_source_invalid");
+  if (typeof provenance?.canon_version !== "string" || !provenance.canon_version.trim() || provenance.canon_version.length > 100) errors.push("provenance_version_invalid");
   const cards = Array.isArray(provenance?.card_ids) ? provenance!.card_ids as unknown[] : [];
   const distinct = new Set(cards.filter((c) => typeof c === "string" && CARD_ID.test(c)));
   if (distinct.size < MIN_CITED_CARDS || distinct.size !== cards.length) errors.push("provenance_cards");
@@ -184,7 +276,7 @@ export function validateKnowledgeItem(item: unknown): string[] {
       typeof value === "number" && grid.values.includes(value) &&
       e.proposed_value === value &&
       e.default_value === grid.defaultValue &&
-      Array.isArray(tested) && tested.every((v) => typeof v === "number" && grid.values.includes(v)) &&
+      Array.isArray(tested) && tested.length === grid.testedValues.length && tested.every((v, i) => v === grid.testedValues[i]) &&
       !tested.includes(value) &&
       typeof p.hypothesis === "string" && p.hypothesis.trim().length > 0 && p.hypothesis.length <= 500 &&
       typeof p.metric === "string" && p.metric.trim().length > 0 && p.metric.length <= 300 &&
