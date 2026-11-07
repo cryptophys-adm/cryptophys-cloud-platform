@@ -87,5 +87,5 @@ Run 42216870947 verified:
 Nexus is now the single origin.
 
 **Remaining:**
-- The owner adds the Google and Microsoft identity providers (`docs/OWNER-OIDC-SETUP.md`), then Provision Access runs again.
+- ~~The owner adds the Google and Microsoft identity providers, then Provision Access runs again.~~ **Closed 2026-11-07 (owner):** setting up Google and Microsoft sign-in failed because of the providers' own policies, so Nexus keeps the Cloudflare Access **one-time PIN** by email as its sign-in. Nothing else changes: Access still guards all of Nexus, `ACCESS_ALLOWED_EMAILS` still decides who may enter, and `provision-access.yml` still binds whichever Google, Microsoft or one-time-PIN providers exist, so OIDC can be added later without a code change (`docs/OWNER-OIDC-SETUP.md`).
 - After a week with no issues, remove the `console.` and `home.` custom domains and retire `cryptophys-home`.
