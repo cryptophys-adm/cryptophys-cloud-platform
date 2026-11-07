@@ -76,17 +76,32 @@ function evidenceHasTradingText(value: unknown): boolean {
 // Numeric evidence is allowed only under fields emitted by Aether's current deterministic
 // curator/calibrator contracts (plus the platform fixture metrics). An opaque numeric key such
 // as { observed_value: 4050 } could otherwise smuggle a price while bypassing string redaction.
-const SAFE_EVIDENCE_NUMERIC_KEYS = new Set([
-  "candles", "bars", "wrong", "baseline_wrong_rate", "p_value",
-  "window_days", "rooms_with_break", "rooms", "rate_pct", "violations", "turns",
-  "decisive", "wrong_pct", "baseline_wrong_pct", "baseline_decisive",
-  "episodes", "longest_candles", "proposed_value", "default_value", "tested_values",
-]);
+const SAFE_EVIDENCE_NUMERIC_KEYS_BY_KIND: Readonly<Record<string, ReadonlySet<string>>> = {
+  caution: new Set([
+    "candles", "bars", "wrong", "baseline_wrong_rate", "p_value", "window_days",
+    "decisive", "wrong_pct", "baseline_wrong_pct", "baseline_decisive",
+  ]),
+  role_reminder: new Set(["window_days", "rooms_with_break", "rooms", "rate_pct", "violations", "turns"]),
+  param_candidate: new Set(["window_days", "episodes", "longest_candles", "proposed_value", "default_value", "tested_values"]),
+};
 
-function evidenceHasUnscopedNumber(value: unknown, key = ""): boolean {
-  if (typeof value === "number") return Number.isFinite(value) && !SAFE_EVIDENCE_NUMERIC_KEYS.has(key);
-  if (Array.isArray(value)) return value.some((v) => evidenceHasUnscopedNumber(v, key));
-  if (isObject(value)) return Object.entries(value).some(([k, v]) => evidenceHasUnscopedNumber(v, k));
+function evidenceHasUnscopedNumber(value: unknown, kind: string, key = ""): boolean {
+  const allowed = SAFE_EVIDENCE_NUMERIC_KEYS_BY_KIND[kind] ?? new Set<string>();
+  if (typeof value === "number") return Number.isFinite(value) && !allowed.has(key);
+  if (Array.isArray(value)) return value.some((v) => evidenceHasUnscopedNumber(v, kind, key));
+  if (isObject(value)) return Object.entries(value).some(([k, v]) => evidenceHasUnscopedNumber(v, kind, k));
+  return false;
+}
+
+const PARAMETER_GRIDS: Readonly<Record<string, { grid: string; values: readonly number[]; defaultValue: number }>> = {
+  prophet_r37: { grid: "TUNING_GRID.prophet_r37.stateMaxAge", values: [8, 12, 16, 24], defaultValue: 50 },
+  gmi_v12_70: { grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: [8, 12, 16, 24], defaultValue: 50 },
+};
+
+function hasUnexpectedParamNumber(value: unknown, path = ""): boolean {
+  if (typeof value === "number") return Number.isFinite(value) && path !== "values.stateMaxAge";
+  if (Array.isArray(value)) return value.some((v, i) => hasUnexpectedParamNumber(v, `${path}[${i}]`));
+  if (isObject(value)) return Object.entries(value).some(([k, v]) => hasUnexpectedParamNumber(v, path ? `${path}.${k}` : k));
   return false;
 }
 
@@ -140,7 +155,7 @@ export function validateKnowledgeItem(item: unknown): string[] {
   if (!evidence) errors.push("evidence_missing");
   else {
     if (evidenceHasTradingText(evidence)) errors.push("evidence_trading_value_wording");
-    if (evidenceHasUnscopedNumber(evidence)) errors.push("evidence_unscoped_numeric_field");
+    if (evidenceHasUnscopedNumber(evidence, String(item.kind))) errors.push("evidence_unscoped_numeric_field");
     const known = evidenceNumbers(evidence);
     const missing = numbersOf(text).filter((n) => !known.has(n));
     if (missing.length) errors.push(`text_number_not_in_evidence:${missing.slice(0, 3).join(",")}`);
@@ -152,7 +167,29 @@ export function validateKnowledgeItem(item: unknown): string[] {
   if (typeof provenance?.canon_sha !== "string" || !/^[0-9a-f]{64}$/.test(provenance.canon_sha as string)) errors.push("provenance_canon");
   if (item.kind === "param_candidate") {
     const p = isObject(item.params) ? item.params : null;
-    if (!p || typeof p.family !== "string" || typeof p.grid !== "string" || !isObject(p.values) || typeof p.hypothesis !== "string" || typeof p.metric !== "string") errors.push("params_invalid");
+    const e = isObject(item.evidence) ? item.evidence : null;
+    const family = typeof p?.family === "string" ? p.family : "";
+    const grid = PARAMETER_GRIDS[family];
+    const values = isObject(p?.values) ? p.values : null;
+    const value = values?.stateMaxAge;
+    const paramKeys = p ? Object.keys(p).sort().join(",") : "";
+    const valueKeys = values ? Object.keys(values).sort().join(",") : "";
+    const tested = e?.tested_values;
+    const valid =
+      !!p && !!e && !!grid &&
+      paramKeys === "family,grid,hypothesis,metric,values" &&
+      p.family === e.family &&
+      p.grid === grid.grid &&
+      valueKeys === "stateMaxAge" &&
+      typeof value === "number" && grid.values.includes(value) &&
+      e.proposed_value === value &&
+      e.default_value === grid.defaultValue &&
+      Array.isArray(tested) && tested.every((v) => typeof v === "number" && grid.values.includes(v)) &&
+      !tested.includes(value) &&
+      typeof p.hypothesis === "string" && p.hypothesis.trim().length > 0 && p.hypothesis.length <= 500 &&
+      typeof p.metric === "string" && p.metric.trim().length > 0 && p.metric.length <= 300 &&
+      !hasUnexpectedParamNumber(p);
+    if (!valid) errors.push("params_invalid");
   } else if (item.params !== undefined) errors.push("params_only_for_param_candidate");
   for (const k of forbiddenKeys(item)) errors.push(`forbidden_key:${k}`);
   if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_ITEM_BYTES) errors.push("item_too_large");
