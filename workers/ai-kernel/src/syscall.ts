@@ -211,16 +211,15 @@ export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input:
     const conf = num(raw?.confidence);
     const confidence = conf !== null && conf >= 0 && conf <= 1 ? conf : null;
     const decidedAt = typeof raw?.timestamp === "string" ? raw.timestamp.slice(0, 40) : null;
-    const reasoning = typeof raw?.reasoning === "string" ? raw.reasoning.slice(0, 300) : "";
+    // No price level ever enters the kernel (owner rule, 2026-11-07): entry, stop and target are not
+    // read, and price-like numbers in the reasoning become "[level]". The risk/reward ratio is kept.
+    const reasoning = typeof raw?.reasoning === "string" ? withoutLevels(raw.reasoning).slice(0, 300) : "";
     items.push({
       candle_key: key,
       candle_open_ms: openMs,
       decided_at: decidedAt,
       decision,
       confidence,
-      entry_price: pos(raw?.entry_price),
-      stop_loss: pos(raw?.stop_loss),
-      take_profit: pos(raw?.take_profit),
       risk_reward: pos(raw?.risk_reward),
       reasoning,
     });
@@ -239,6 +238,11 @@ export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input:
     latest: latest as unknown as JsonObject,
     recent: items,
   };
+}
+
+/** Price-like numbers (3 to 5 digits, or a thousands separator, optional decimals) become "[level]". */
+export function withoutLevels(text: string): string {
+  return text.replace(/\$?\b(?:\d{1,2},\d{3}|\d{3,5})(?:\.\d+)?\b/g, "[level]");
 }
 
 /** Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only). */

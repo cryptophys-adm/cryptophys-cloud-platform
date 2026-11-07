@@ -6,6 +6,7 @@ import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
+import CognitionPanel from "../components/CognitionPanel";
 import { statusTone } from "./Consensus";
 
 export default function Command() {
@@ -23,6 +24,8 @@ export default function Command() {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* AI Cognition (Ask the platform AI) for phones and laptops; on 2xl screens it is in the right rail (2026-11-07). */}
+      <div className="2xl:hidden"><CognitionPanel /></div>
       <h1 className="sr-only">Command center</h1>
 
       <div className="grid grid-cols-2 items-stretch gap-3 lg:grid-cols-[auto_1fr_1fr_1fr_1fr]">

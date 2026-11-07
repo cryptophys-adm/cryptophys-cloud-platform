@@ -29,9 +29,7 @@ export interface XauusdDecision {
   decided_at: string | null;
   decision: "BUY" | "SELL" | "WAIT" | "NO_TRADE" | "UNKNOWN";
   confidence: number | null;
-  entry_price: number | null;
-  stop_loss: number | null;
-  take_profit: number | null;
+  // No entry, stop or target: the kernel never holds a price level (owner rule, 2026-11-07).
   risk_reward: number | null;
   reasoning: string;
 }
@@ -177,9 +175,6 @@ export async function runSignalCycle(
           decision: latest.decision,
           previous_decision: mem.last_decision ?? null,
           confidence: latest.confidence,
-          entry_price: latest.entry_price,
-          stop_loss: latest.stop_loss,
-          take_profit: latest.take_profit,
           risk_reward: latest.risk_reward,
           reasoning: latest.reasoning,
           decided_at: latest.decided_at,
