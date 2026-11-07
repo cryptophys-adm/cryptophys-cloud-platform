@@ -1,8 +1,9 @@
-// Cloudflare-native D1 backup (owner decision 2026-11-07: "fallback build internal cloudflare saja
-// jika action github tidak bisa"). The nightly GitHub Action (d1-backup.yml) needs an API token
-// with R2 permissions; this fallback needs none: it reads D1 and writes R2 through the Worker's own
-// bindings. It runs hourly and writes a dump only when no backup object was uploaded in the last
-// 24 hours, so a working GitHub Action keeps being the primary and this never duplicates it.
+// Cloudflare-native daily D1 backup. Introduced 2026-11-07 as a fallback ("fallback build internal
+// cloudflare saja jika action github tidak bisa") and made the primary the same day ("B, karena
+// kedepannya kita tidak bergantung Github"); d1-backup.yml is on-demand only. It needs no API
+// token: it reads D1 and writes R2 through the Worker's own bindings. It runs hourly and writes a
+// dump only when no backup object was uploaded in the last 24 hours, so a manual d1-backup.yml
+// copy is never duplicated by it. A failure is audited as backup.d1_failed.
 //
 // Format: a SQL script like `wrangler d1 export` (CREATE TABLE, INSERT rows, then indexes,
 // triggers and views), gzip-compressed, at control-plane/<UTC stamp>.sql.gz in the private bucket.
