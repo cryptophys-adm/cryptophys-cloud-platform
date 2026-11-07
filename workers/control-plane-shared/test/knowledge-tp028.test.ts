@@ -67,6 +67,8 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(errs({ evidence: { summary: "123456" } }).includes("evidence_trading_value_wording"), "a bare price-like value cannot hide in free-form evidence");
   assert.ok(errs({ evidence: { note: "A buy limit was placed near 4051." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle order language into the kernel");
   assert.deepEqual(validateKnowledgeItem(item()), [], "ISO date windows and structured numeric metrics remain valid evidence");
+  assert.ok(errs({ evidence: { summary: "XAUUSD 4_078.50" } }).includes("evidence_trading_value_wording"), "underscore-grouped price values are rejected in free-form evidence");
+  assert.ok(errs({ text: "The pattern appeared 4_078 times in the sample." }).includes("text_price_like_number"), "underscore-grouped price values are rejected in candidate text");
   assert.ok(errs({ evidence: { lastKnownPrice: 4051 } }).some((e) => e === "forbidden_key:item.evidence.lastKnownPrice"), "camelCase price fields are forbidden recursively");
   assert.ok(errs({ text: "Place a buy limit when the lean was wrong in 11 of 14 bars." }).includes("text_order_wording"));
   assert.ok(errs({ text: "The gmi_dir field was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
@@ -179,7 +181,7 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
     text: "The structure stayed stuck in several separate episodes.",
     evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 12, tested_values: [8, 12] },
     params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
-  });
+  }) as Record<string, unknown>;
   assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
 
   const wrongKind = item({ evidence: { proposed_value: 4050, wrong: 11, bars: 14 } });
