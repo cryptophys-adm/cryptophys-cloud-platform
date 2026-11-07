@@ -65,6 +65,8 @@ jobs:
               fi
               echo "token=${name}" >> "$GITHUB_OUTPUT"; echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
             fi
+            # Diagnostics: Cloudflare's error codes and messages only (never the token).
+            echo "${name}: $(jq -c '[.errors[]? | {code, message}]' <<<"$out" 2>/dev/null || echo 'no JSON response')"
             if jq -e '[.errors[]?.code] | index(10042)' <<<"$out" >/dev/null 2>&1; then
               echo "::warning::R2 is not enabled on the Cloudflare account. Owner action: Cloudflare dashboard → R2 → enable (included in Workers Paid). The nightly D1 backup starts the next night."
               echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0

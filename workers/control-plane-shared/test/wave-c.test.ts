@@ -57,6 +57,8 @@ test("C3/C4. wiring: nightly D1 backup to a private R2 bucket, UI render smoke i
   assert.match(backup, /r2 object put "\$\{BUCKET\}\/control-plane\/\$\{stamp\}\.sql\.gz"/);
   assert.match(backup, /R2 is not enabled on the Cloudflare account/);
   assert.doesNotMatch(backup, /upload-artifact/, "backups never become public artifacts");
+  assert.match(backup, /jq -c '\[\.errors\[\]\? \| \{code, message\}\]'/, "a refused token logs Cloudflare's error codes, never the token");
+  assert.match(readFileSync(new URL(".github/workflows/ops-dispatch.yml", ROOT), "utf8"), /d1-backup\.yml\) ref=main ;;/, "the operator can run a backup on demand");
   const validate = readFileSync(new URL(".github/workflows/validate-control-plane.yml", ROOT), "utf8");
   assert.match(validate, /npx playwright install --with-deps chromium\n\s+npm run render-smoke/);
   const pullRequestTrigger = validate.match(/\n  pull_request:\n([\s\S]*?)\n  push:/)?.[1] ?? "";
