@@ -233,9 +233,18 @@ async function recordExecution(request: Request, env: Env, plan: PlanRow, execut
 }
 
 export default {
-  /** Hourly: the Cloudflare-native D1 backup fallback writes a dump only when none is newer than 24 h. */
+  /** Hourly: the Cloudflare-native daily D1 backup (primary since 2026-11-07) writes a dump when none is newer than 24 h. */
   async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
-    ctx.waitUntil(backupIfStale(env).then((r) => console.log(JSON.stringify({ event: "d1_backup", ...r }))));
+    ctx.waitUntil(backupIfStale(env).then(
+      (r) => console.log(JSON.stringify({ event: "d1_backup", ...r })),
+      // The primary backup now (owner 2026-11-07): a failure is audited, so checks and people see it.
+      async (e: unknown) => {
+        const message = String((e as Error)?.message ?? e).slice(0, 300);
+        console.error(JSON.stringify({ event: "d1_backup", status: "failed", message }));
+        await appendAuditEvent(env.DB, { event_type: "backup.d1_failed", actor: "cryptophys-recovery-manager", subject: "cryptophys-d1-backups", outcome: "failed", payload: { message } })
+          .catch(() => undefined);
+      },
+    ));
   },
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);

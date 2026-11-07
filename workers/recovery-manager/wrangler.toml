@@ -4,8 +4,8 @@ compatibility_date = "2026-11-01"
 workers_dev = true
 preview_urls = false
 
-# Hourly Cloudflare-native D1 backup fallback (src/backup.ts): acts only when no backup is newer
-# than 24 h, e.g. when the GitHub Action cannot reach R2. Minute :13 has no other platform cron.
+# Hourly check for the Cloudflare-native daily D1 backup (src/backup.ts, primary since 2026-11-07):
+# writes a dump only when no backup is newer than 24 h. Minute :13 has no other platform cron.
 [triggers]
 crons = ["13 * * * *"]
 

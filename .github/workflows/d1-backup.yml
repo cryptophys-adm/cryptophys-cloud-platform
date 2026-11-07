@@ -6,10 +6,13 @@ name: D1 Backup
 # CLOUDFLARE_ACCESS_API_TOKEN (D1 Edit) to export, CLOUDFLARE_API_TOKEN for R2 (either token may
 # hold R2 permissions; both are tried). If R2 is not enabled on the account yet, the run ends with
 # a warning naming the owner action instead of failing every night.
+#
+# Owner decision 2026-11-07 ("B, karena kedepannya kita tidak bergantung Github"): the primary
+# daily backup is the Recovery Manager's Cloudflare-native backup (workers/recovery-manager/src/
+# backup.ts, R2 binding, no API token). This workflow has no schedule any more; it stays for an
+# on-demand `wrangler d1 export` copy (Actions → Run workflow, or an ops-dispatch request).
 
 on:
-  schedule:
-    - cron: "41 2 * * *"
   workflow_dispatch:
 
 permissions:
