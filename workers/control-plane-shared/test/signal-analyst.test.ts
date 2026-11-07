@@ -248,4 +248,6 @@ test("withoutLevels redacts common thousands and decimal separators", () => {
   for (const value of ["4,078.50", "4 078.50", "4_078.50", "4'078.50", "4.078,50", "4\u202F078,50", "$4,078.50"]) {
     assert.equal(withoutLevels(value), "[level]", value);
   }
+  assert.equal(withoutLevels("XAUUSD_4078"), "XAUUSD_[level]", "numeric levels embedded in symbol-like text are redacted");
+  assert.equal(withoutLevels("XAUUSD4078"), "XAUUSD[level]", "numeric levels adjacent to letters are redacted");
 });
