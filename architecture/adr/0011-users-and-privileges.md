@@ -38,6 +38,8 @@
   - The API returns `synced`, `not_configured`, `group_missing` or `failed`. A failed sync does not roll back the D1 role change: Access membership may remain stale until an owner retries Sync sign-in. In particular, a disabled account may still pass Nexus Access while the group is stale; the Console must show this explicitly.
   - Without the secret, roles still apply, but new people cannot sign in and disabled people may remain in the Access group. An already open Access session lasts until it expires (8 h).
 - **Deploy order.** A commit with a new migration deploys the Control Plane first and alone, because only that workflow applies migrations and every Worker's readiness needs the newest one (`pendingDeploys`).
+  - *First rollout (owner, 2026-11-07: "Merge and race it").* The Orchestrator running in production predates this guard and still deploys itself first. Migration 0026 is therefore applied by a manual Control Plane deploy (ops-dispatch) right after the merge, inside the same kernel-cycle window. Its readiness then holds before the agents propose the Orchestrator. If the race is lost, the Orchestrator deploy fails verification and rolls back automatically.
+- **Access edge scope (owner, 2026-11-07: "Accept, Workers are the gate").** The platform has one Access application, so `user` accounts pass the Access edge for every platform Worker destination, not only Nexus. The security boundary for them is the role check in each Worker. Every `/v1` route requires a role. Without one, only `/health`, `/ready` and service metadata answer. Splitting Nexus into its own Access application stays a possible later change.
 
 ## Owner steps (one time)
 
