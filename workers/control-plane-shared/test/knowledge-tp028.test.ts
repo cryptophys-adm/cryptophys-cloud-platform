@@ -63,6 +63,9 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(errs({ text: "The level stayed relevant for 11 of 14 bars." }).includes("text_trading_value_wording"));
   assert.ok(errs({ text: "The sample size was 14 bars and the lean was wrong in 11." }).includes("text_trading_value_wording"));
   assert.ok(errs({ text: "The pattern appeared 123456 times in the sample.", evidence: { occurrences: 123456, wrong: 11, bars: 14 } }).includes("text_price_like_number"), "six-digit values cannot bypass the price-like number guard");
+  assert.ok(errs({ evidence: { summary: "Price reached 123456 before the reversal." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle price language into the kernel");
+  assert.ok(errs({ evidence: { note: "A buy limit was placed near 4051." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle order language into the kernel");
+  assert.ok(errs({ evidence: { lastKnownPrice: 4051 } }).some((e) => e === "forbidden_key:item.evidence.lastKnownPrice"), "camelCase price fields are forbidden recursively");
   assert.ok(errs({ text: "Place a buy limit when the lean was wrong in 11 of 14 bars." }).includes("text_order_wording"));
   assert.ok(errs({ text: "The gmi_dir field was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
   assert.ok(errs({ text: "Code 3 means a trap; it was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
