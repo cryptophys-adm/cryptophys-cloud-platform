@@ -39,5 +39,5 @@ Aether reports to the kernel and asks it for approvals. It never writes control-
 
 ## Drift observation
 
-- **Now:** the `service_registry` row is `disabled` until the first deploy.
-- **After the first deploy:** a follow-up adds the Drift Detector `EXT_AETHER` service binding and sets the row to `registered`.
+- `0027` added the row as `disabled`.
+- After Aether's first deploy, `0028` sets it to `registered`, and the Drift Detector probes `/health` over its `EXT_AETHER` service binding. Aether is health-managed only, like the xauusd Workers.

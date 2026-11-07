@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
+  assert.equal(REQUIRED_MIGRATION, "0028_aether_observed.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -473,9 +473,9 @@ test("TP-027 Aether: four tier-1 agents hosted by cryptophys-aether, reachable o
   }
   assert.ok((REPORT_KINDS as readonly string[]).includes("knowledge_audit"));
 
-  // The service row exists (it hosts the agents) but stays disabled until the Worker is deployed.
+  // The service row hosts the agents; 0027 adds it disabled, 0028 registers it once Aether is deployed.
   const svc = db.raw.prepare("SELECT status, metadata_json FROM service_registry WHERE service_id = 'cryptophys-aether'").get() as { status: string; metadata_json: string };
-  assert.equal(svc.status, "disabled");
+  assert.equal(svc.status, "registered");
   assert.equal(JSON.parse(svc.metadata_json).health_path, "/health");
 
   const aether = { host_worker: "cryptophys-aether" };

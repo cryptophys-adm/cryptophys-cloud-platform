@@ -164,7 +164,7 @@ test("registry exposes the seeded inventory and enforces ownership metadata", as
   const db = migratedDb();
   const env = baseEnv("cryptophys-platform-registry", db);
   const list = await call(registry, env, req("GET", "/v1/services"));
-  assert.equal(list.body.services.length, 16); // 15 + cryptophys-aether (0027, disabled until deployed)
+  assert.equal(list.body.services.length, 16); // 15 + cryptophys-aether (0027; registered by 0028)
   assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-audit-ledger").metadata.owner, "cryptophys-adm");
 
   const base = { display_name: "News Ingest", environment: "production", status: "registered", actor: "operator@cryptophys" };
@@ -319,11 +319,13 @@ test("drift detector compares registry desired versions with live versions over 
     EXT_XAUUSD_NEWS: http(() => new Response("boom", { status: 500 })),
     EXT_XAUUSD_PULL_ADAPTER: http(() => Response.json({ status: "degraded" })),
     EXT_XAUUSD_NEXUS: http((path) => path === "/" ? new Response("<html>", { status: 200 }) : new Response("no", { status: 404 })),
+    EXT_AETHER: http((path) => path === "/health" ? Response.json({ status: "ok", service: "cryptophys-aether" }) : new Response("no", { status: 404 })),
   };
   assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
   assert.equal((await call(drift, { ...env, SVC_POLICY_ENGINE: undefined }, req("GET", "/ready"))).status, 503);
   assert.equal((await call(drift, { ...env, EXT_XAUUSD_NEXUS: undefined }, req("GET", "/ready"))).status, 503);
-  db.raw.exec("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id LIKE 'cryptophys-%' AND service_id <> 'cryptophys-recovery-manager'");
+  // Platform Workers only: cryptophys-aether is external (Workers Builds) and health-managed, like the xauusd Workers.
+  db.raw.exec("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-recovery-manager', 'cryptophys-aether')");
 
   const report = await call(drift, env, req("POST", "/v1/observe", { actor: "operator" }));
   const by = Object.fromEntries(report.body.services.map((s: any) => [s.service_id, s]));
@@ -345,13 +347,14 @@ test("drift detector compares registry desired versions with live versions over 
   assert.deepEqual([by["xauusd-fundamental-news-ingestion"].status, by["xauusd-fundamental-news-ingestion"].probe.error], ["unavailable", "http_500"]);
   assert.equal(by["xauusd-tradingview-pull-adapter"].probe.error, "health_check_failed");
   assert.equal(by["xauusd-nexus-dashboard"].status, "healthy", "the dashboard is probed at its registered health_path /");
-  assert.ok(probed.includes("/") && probed.filter((p) => p === "/health").length === 3);
+  assert.deepEqual([by["cryptophys-aether"].drifted, by["cryptophys-aether"].managed, by["cryptophys-aether"].status], [false, false, "healthy"], "Aether (0028) is probed at /health over EXT_AETHER, health-managed only");
+  assert.ok(probed.includes("/") && probed.filter((p) => p === "/health").length === 4, "three xauusd Workers and Aether are probed at /health");
   assert.equal(report.body.drifted, 6);
 
   const row = db.raw.prepare("SELECT observed_version, status FROM service_registry WHERE service_id = 'cryptophys-deployment-orchestrator'").get() as any;
   assert.deepEqual([row.observed_version, row.status], ["bbbbbbbbbbbb", "degraded"]);
   const latest = await call(drift, env, req("GET", "/v1/drift"));
-  assert.equal(latest.body.services.length, 16); // 15 + cryptophys-aether (0027, disabled until deployed)
+  assert.equal(latest.body.services.length, 16); // 15 + cryptophys-aether (0027; registered by 0028)
   const history = await call(drift, env, req("GET", "/v1/drift/cryptophys-platform-api"));
   assert.equal(history.body.observations.length, 1);
 
