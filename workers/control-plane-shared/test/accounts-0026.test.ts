@@ -217,3 +217,18 @@ test("U8. configured identities never inherit stale account privileges", async (
   assert.equal((await requireApprover(requestFor(OPERATOR_JWT), operatorEnv as never)).ok, false,
     "a configured operator must not inherit a stale approver row");
 });
+
+test("U9. REVOKE refuses configured identities even when a stale account row exists", async () => {
+  const db = migratedDb();
+  db.raw.prepare(
+    `INSERT INTO platform_accounts (email, kind, privilege, status, note, created_by, created_at, updated_by, updated_at)
+     VALUES (?, 'admin', 'approver', 'active', NULL, 'legacy', '2026-11-06T00:00:00Z', 'legacy', '2026-11-06T00:00:00Z')`,
+  ).run(OPERATOR_EMAIL);
+  const env = regEnv(db, { OPERATOR_IDENTITIES: OPERATOR_EMAIL });
+  const response = await call(registry, env, req("POST", `/v1/accounts/${OPERATOR_EMAIL}/disable`, { confirm: "REVOKE" }, APPROVER_JWT));
+  assert.deepEqual([response.status, response.body.error], [409, "configured_identity"]);
+  const row = db.raw.prepare("SELECT status FROM platform_accounts WHERE email = ?").get(OPERATOR_EMAIL) as any;
+  assert.equal(row.status, "active", "the configured identity's stale row is left untouched");
+  const events = db.raw.prepare("SELECT event_type FROM audit_events WHERE event_type LIKE 'account.%'").all() as any[];
+  assert.equal(events.length, 0, "a refused REVOKE writes no account audit event");
+});
