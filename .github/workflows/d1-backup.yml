@@ -53,27 +53,37 @@ jobs:
         run: |
           set -euo pipefail
           for name in DEPLOY_TOKEN ACCESS_TOKEN; do
-            token="${!name}"
-            out="$(curl --silent --proto '=https' --max-time 20 --retry 3 --header "Authorization: Bearer ${token}" \
-              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets?name_contains=${BUCKET}" || true)"
+            token="\${!name}"
+            if ! out="$(curl --silent --show-error --proto '=https' --max-time 20 --retry 3 --header "Authorization: Bearer \${token}" "https://api.cloudflare.com/client/v4/accounts/\${CLOUDFLARE_ACCOUNT_ID}/r2/buckets?name_contains=\${BUCKET}")"; then
+              echo "::error::Cloudflare R2 bucket API request failed for \${name}; backup cannot proceed."
+              exit 1
+            fi
+            if ! jq -e 'type == "object" and has("success")' <<<"$out" >/dev/null 2>&1; then
+              echo "::error::Cloudflare R2 bucket API returned a non-JSON response for \${name}; backup cannot proceed."
+              exit 1
+            fi
             if jq -e '.success == true' <<<"$out" >/dev/null 2>&1; then
               if ! jq -e --arg b "$BUCKET" 'any(.result.buckets[]?; .name == $b)' <<<"$out" >/dev/null; then
-                curl --fail --silent --show-error --proto '=https' --max-time 20 --request POST --header "Authorization: Bearer ${token}" \
-                  --header "Content-Type: application/json" --data "{\"name\":\"${BUCKET}\"}" \
-                  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets" | jq -e '.success == true' >/dev/null
-                echo "Created private bucket ${BUCKET}"
+                curl --fail --silent --show-error --proto '=https' --max-time 20 --request POST --header "Authorization: Bearer \${token}" --header "Content-Type: application/json" --data "{\"name\":\"\${BUCKET}\"}" "https://api.cloudflare.com/client/v4/accounts/\${CLOUDFLARE_ACCOUNT_ID}/r2/buckets" | jq -e '.success == true' >/dev/null
+                echo "Created private bucket \${BUCKET}"
               fi
-              echo "token=${name}" >> "$GITHUB_OUTPUT"; echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
+              echo "token=\${name}" >> "$GITHUB_OUTPUT"; echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
             fi
-            # Diagnostics: Cloudflare's error codes and messages only (never the token).
-            echo "${name}: $(jq -c '[.errors[]? | {code, message}]' <<<"$out" 2>/dev/null || echo 'no JSON response')"
-            if jq -e '[.errors[]?.code] | index(10042)' <<<"$out" >/dev/null 2>&1; then
+            errors="$(jq -c '[.errors[]? | {code, message}]' <<<"$out")"
+            echo "\${name}: \${errors}"
+            if jq -e '[.errors[]?.code] | length > 0 and all(. == 10042)' <<<"$out" >/dev/null 2>&1; then
               echo "::warning::R2 is not enabled on the Cloudflare account. Owner action: Cloudflare dashboard → R2 → enable (included in Workers Paid). The nightly D1 backup starts the next night."
               echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
+            if jq -e '[.errors[]?.code] | length > 0 and all(. == 10000)' <<<"$out" >/dev/null 2>&1; then
+              echo "::warning::Cloudflare rejected \${name} authentication; trying the other configured token."
+              continue
+            fi
+            echo "::error::Cloudflare rejected \${name} for the R2 bucket API: \${errors}"
+            exit 1
           done
-          echo "::warning::Neither token can use R2 (Workers R2 Storage: Edit). Owner action: add that permission to CLOUDFLARE_API_TOKEN."
-          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "::error::Neither configured Cloudflare token authenticated for R2. No D1 export was created."
+          exit 1
       - name: Export D1 and upload it to R2
         if: steps.r2.outputs.ready == 'true'
         env:
