@@ -14,6 +14,7 @@ import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
+import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -307,6 +308,7 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "signals.observe": (env, input) => observeSignals(env, typeof input.now === "number" ? input.now : Date.now()),
   "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
+  "knowledge.status": (env, input, agentId) => knowledgeStatus(env.DB, agentId, input),
 };
 
 async function dispatch(env: SyscallEnv, capability: string, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
@@ -315,6 +317,7 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "reports.publish": return { report: await publishReport(env.DB, agentId, decisionId, input) };
     case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
     case "consensus.propose": return { proposal: await consensusPropose(env, agentId, decisionId, input) };
+    case "knowledge.propose": return { proposal: await proposeKnowledge(env.DB, agentId, decisionId, input) };
     default: throw new Error("capability_not_dispatchable");
   }
 }

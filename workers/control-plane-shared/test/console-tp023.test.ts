@@ -246,11 +246,12 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   const key = (r: { service: string; method: string; path: string }) => `${r.service} ${r.method} ${r.path}`;
   const keys = CONSOLE_ALLOW_LIST.map(key);
   assert.equal(new Set(keys).size, keys.length);
-  // 33 TP-023 rows + 2 read-only consensus rows (ADR-0009 phase 1) + 2 owner-click rows (phase 4) + the agreement report (Wave B) + the mode control + 4 Users page rows (2026-11-07).
-  assert.equal(keys.length, 43);
+  // 33 TP-023 rows + 2 read-only consensus rows (ADR-0009 phase 1) + 2 owner-click rows (phase 4) + the agreement report (Wave B) + the mode control + 4 Users page rows (2026-11-07)
+  // + 3 knowledge-review rows (TP-028: the list, approve and reject).
+  assert.equal(keys.length, 46);
   const expected = [
-    ...["/v1/kernel", "/v1/status", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}"].map((p) => `kernel GET ${p}`),
-    ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode"].map((p) => `kernel POST ${p}`),
+    ...["/v1/kernel", "/v1/status", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge"].map((p) => `kernel GET ${p}`),
+    ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"].map((p) => `kernel POST ${p}`),
     "kernel DELETE /v1/agents/{id}/principals/{id}",
     ...["/v1/plans", "/v1/plans/{id}"].map((p) => `recovery GET ${p}`),
     ...["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/executions", "/v1/plans/{id}/disable"].map((p) => `recovery POST ${p}`),

@@ -32,6 +32,10 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.consensus_mode_shadow", "kernel", "POST", "/v1/consensus/mode", false, "SHADOW"),
   r("kernel.consensus_approve", "kernel", "POST", "/v1/consensus/{id}/approve", true, "APPROVE {id13}"),
   r("kernel.consensus_reject", "kernel", "POST", "/v1/consensus/{id}/reject", true, "REJECT {id13}"),
+  // TP-028: learned-knowledge proposals from Aether; an approver approves them for shadow testing or rejects them.
+  r("kernel.knowledge", "kernel", "GET", "/v1/knowledge", false, null),
+  r("kernel.knowledge_approve", "kernel", "POST", "/v1/knowledge/{id}/approve", true, "APPROVE {id13}"),
+  r("kernel.knowledge_reject", "kernel", "POST", "/v1/knowledge/{id}/reject", true, "REJECT {id13}"),
   r("kernel.agents_disabled", "kernel", "POST", "/v1/kernel/agents-enabled", false, "AGENTS OFF"),
   r("kernel.agents_enabled", "kernel", "POST", "/v1/kernel/agents-enabled", true, "AGENTS ON"),
   r("kernel.wake", "kernel", "POST", "/v1/agents/{id}/wake", false, "WAKE {id}"),
