@@ -66,7 +66,8 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(errs({ evidence: { summary: "Price reached 123456 before the reversal." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle price language into the kernel");
   assert.ok(errs({ evidence: { summary: "123456" } }).includes("evidence_trading_value_wording"), "a bare price-like value cannot hide in free-form evidence");
   assert.ok(errs({ evidence: { note: "A buy limit was placed near 4051." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle order language into the kernel");
-  assert.deepEqual(validateKnowledgeItem(item()), [], "ISO date windows and structured numeric metrics remain valid evidence");
+  assert.deepEqual(validateKnowledgeItem(item()), [], "structured numeric metrics in the current Aether evidence contract remain valid");
+  assert.ok(errs({ evidence: { ...item().evidence, window: ["2026-10-08", "2026-11-07"] } }).includes("evidence_shape_invalid"), "date-window arrays are not part of the current exact evidence contract");
   assert.ok(errs({ evidence: { summary: "XAUUSD 4_078.50" } }).includes("evidence_trading_value_wording"), "underscore-grouped price values are rejected in free-form evidence");
   assert.ok(errs({ text: "The pattern appeared 4_078 times in the sample." }).includes("text_price_like_number"), "underscore-grouped price values are rejected in candidate text");
   assert.ok(errs({ evidence: { lastKnownPrice: 4051 } }).some((e) => e === "forbidden_key:item.evidence.lastKnownPrice"), "camelCase price fields are forbidden recursively");
