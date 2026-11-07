@@ -118,9 +118,14 @@ test("U5. sign-in sync: the Access group gets the owners plus active accounts; m
     return init?.method === "PUT" ? Response.json({ success: true }) : Response.json({ success: true, result: groups });
   }) as typeof fetch;
   assert.equal((await syncLogin(regEnv(db) as never)).status, "not_configured");
+  const noConfirm = await call(registry, regEnv(db), req("POST", "/v1/accounts/sync-login", {}, APPROVER_JWT));
+  assert.deepEqual([noConfirm.status, noConfirm.body.error], [400, "confirmation_required"]);
+  const confirmed = await call(registry, regEnv(db), req("POST", "/v1/accounts/sync-login", { confirm: "SYNC" }, APPROVER_JWT));
+  assert.equal(confirmed.body.login_sync.status, "not_configured");
   assert.equal((await syncLogin(env as never, fake([]))).status, "group_missing");
   const ok = await syncLogin(env as never, fake([{ id: "g1", name: ACCESS_GROUP_NAME }]));
   assert.deepEqual(ok, { status: "synced", group_id: "g1", emails: 3 });
+  assert.equal(calls[0].url, "https://api.cloudflare.com/client/v4/accounts/acct/access/groups?per_page=1000");
   const put = calls.find((c) => c.init?.method === "PUT")!;
   assert.equal(put.url, "https://api.cloudflare.com/client/v4/accounts/acct/access/groups/g1");
   const body = JSON.parse(String(put.init!.body));
@@ -186,4 +191,29 @@ test("U7. wiring: Registry gets the owners and the account ID at deploy; Access 
   assert.match(prov, /\{group: \{id: \$group\}\}/);
   const toml = readFileSync(new URL("workers/platform-registry/wrangler.toml", ROOT), "utf8");
   assert.doesNotMatch(toml, /ACCESS_GROUPS_TOKEN\s*=/, "the token is a Worker secret, never in Git");
+});
+
+
+test("U8. configured identities never inherit stale account privileges", async () => {
+  const db = migratedDb();
+  const seed = db.raw.prepare(
+    `INSERT INTO platform_accounts (email, kind, privilege, status, note, created_by, created_at, updated_by, updated_at)
+     VALUES (?, 'admin', ?, 'active', NULL, 'legacy', '2026-11-06T00:00:00Z', 'legacy', '2026-11-06T00:00:00Z')`,
+  );
+  // These rows could predate a later change to the configured root-of-trust lists.
+  seed.run(APPROVER_EMAIL, "operator");
+  seed.run(OPERATOR_EMAIL, "approver");
+  const ownerOnly = regEnv(db, { OPERATOR_IDENTITIES: CI_CLIENT_ID });
+  const requestFor = (jwt: string) => new Request("https://x/v1/services", {
+    method: "POST", headers: { "cf-access-jwt-assertion": jwt },
+  });
+  assert.equal((await requireOperator(requestFor(APPROVER_JWT), ownerOnly as never)).ok, false,
+    "an owner not listed as an operator must not inherit a stale operator row");
+  assert.equal((await requireApprover(requestFor(APPROVER_JWT), ownerOnly as never)).ok, true,
+    "the configured owner remains an approver");
+  const operatorEnv = regEnv(db, { OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}` });
+  assert.equal((await requireOperator(requestFor(OPERATOR_JWT), operatorEnv as never)).ok, true,
+    "the configured operator keeps its configured operator access");
+  assert.equal((await requireApprover(requestFor(OPERATOR_JWT), operatorEnv as never)).ok, false,
+    "a configured operator must not inherit a stale approver row");
 });

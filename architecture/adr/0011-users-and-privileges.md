@@ -33,9 +33,10 @@
   - The Users page lives at `#/users`.
 - **Nexus sign-in is managed without GitHub.**
   - The Access application's allow policy includes the Access group `cryptophys-nexus-accounts`. `provision-access.yml` creates it once and never overwrites it.
-  - After every change, the Registry sets the group to the owners plus the active accounts through the Access API, with the Worker secret `ACCESS_GROUPS_TOKEN`.
-  - Without the secret, roles still apply, but a **new** person cannot sign in. The page says so.
-  - Disabling removes a person from the group. An already open Access session lasts until it expires (8 h).
+  - After every change, the Registry attempts to set the group to the owners plus the active accounts through the Access API, with the Worker secret `ACCESS_GROUPS_TOKEN`.
+  - `POST /v1/accounts/sync-login` requires the server-side confirmation `SYNC`.
+  - The API returns `synced`, `not_configured`, `group_missing` or `failed`. A failed sync does not roll back the D1 role change: Access membership may remain stale until an owner retries Sync sign-in. In particular, a disabled account may still pass Nexus Access while the group is stale; the Console must show this explicitly.
+  - Without the secret, roles still apply, but new people cannot sign in and disabled people may remain in the Access group. An already open Access session lasts until it expires (8 h).
 - **Deploy order.** A commit with a new migration deploys the Control Plane first and alone, because only that workflow applies migrations and every Worker's readiness needs the newest one (`pendingDeploys`).
 
 ## Owner steps (one time)

@@ -205,7 +205,7 @@ export default {
           return await listAccounts(env);
         }
         if (path === "/v1/accounts" && request.method === "POST") return await upsertAccount(request, env, auth.identity);
-        if (path === "/v1/accounts/sync-login" && request.method === "POST") return await resyncLogin(env, auth.identity);
+        if (path === "/v1/accounts/sync-login" && request.method === "POST") return await resyncLogin(request, env, auth.identity);
         const acct = /^\/v1\/accounts\/([^/]{6,254})\/disable$/.exec(path);
         if (acct && request.method === "POST") return await disableAccount(request, env, auth.identity, decodeURIComponent(acct[1]).toLowerCase());
         return errorResponse(404, "not_found");

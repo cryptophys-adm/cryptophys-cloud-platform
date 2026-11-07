@@ -201,7 +201,8 @@ export function isOwner(identity: AccessIdentity, env: RoleEnv): boolean {
 
 /** The role a Users page account grants, or null (configured identities are not accounts). */
 async function accountRole(env: RoleEnv, identity: AccessIdentity): Promise<Role | null> {
-  if (identity.type !== "user" || !env.DB) return null;
+  // Configured identities are authoritative and must never inherit a stale account row.
+  if (identity.type !== "user" || !env.DB || isOwner(identity, env) || identityAllowed(identity, env.OPERATOR_IDENTITIES)) return null;
   try {
     const row = await env.DB.prepare("SELECT kind, privilege FROM platform_accounts WHERE email = ? AND status = 'active'")
       .bind(identity.subject.toLowerCase()).first<{ kind: string; privilege: string | null }>();

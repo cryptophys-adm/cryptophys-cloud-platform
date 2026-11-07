@@ -150,7 +150,7 @@ export async function syncLogin(env: AccountsEnv, fetcher: typeof fetch = fetch)
   const base = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/groups`;
   const headers = { authorization: `Bearer ${env.ACCESS_GROUPS_TOKEN}`, "content-type": "application/json" };
   try {
-    const list = await fetcher(`${base}?per_page=100`, { headers });
+    const list = await fetcher(`${base}?per_page=1000`, { headers });
     const listed = await list.json() as { success?: boolean; result?: { id: string; name: string }[]; errors?: { code: number }[] };
     if (!list.ok || !listed.success) return { status: "failed", detail: `list groups: HTTP ${list.status} ${JSON.stringify(listed.errors ?? []).slice(0, 200)}` };
     const group = (listed.result ?? []).find((g) => g.name === ACCESS_GROUP_NAME);
@@ -170,9 +170,12 @@ export async function syncLogin(env: AccountsEnv, fetcher: typeof fetch = fetch)
 }
 
 /** POST /v1/accounts/sync-login: owner-only resync (e.g. after the secret was set). */
-export async function resyncLogin(env: AccountsEnv, identity: AccessIdentity): Promise<Response> {
+export async function resyncLogin(request: Request, env: AccountsEnv, identity: AccessIdentity): Promise<Response> {
   const denied = ownerOnly(identity, env);
   if (denied) return denied;
+  const body = await readJsonObject(request);
+  if (!body.ok) return body.response;
+  if (body.value.confirm !== "SYNC") return errorResponse(400, "confirmation_required", 'type "SYNC" to reconcile the Nexus sign-in group');
   return json({ login_sync: await syncLogin(env) });
 }
 

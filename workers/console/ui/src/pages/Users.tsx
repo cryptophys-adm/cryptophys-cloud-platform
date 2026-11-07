@@ -22,13 +22,29 @@ const label = (a: any) => a.kind === "user" ? "user · Nexus only" : `admin · $
 
 function SyncBanner({ state, onSync, owner }: { state?: any; onSync: () => void; owner: boolean }) {
   if (!state) return null;
-  const configured = state === "configured" || state?.status === "synced";
+  const status = typeof state === "string" ? state : state?.status;
+  const synced = status === "synced";
+  const failed = status === "failed";
+  const groupMissing = status === "group_missing";
+  const configured = status === "configured";
+  const notConfigured = status === "not_configured";
+  const tone = synced ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200"
+    : failed ? "border-rose-400/30 bg-rose-400/5 text-rose-200"
+    : "border-amber-400/20 bg-amber-400/5 text-amber-200";
   return (
-    <div className={`mb-3 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-[12px] ${configured ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200" : "border-amber-400/20 bg-amber-400/5 text-amber-200"}`}>
+    <div role={failed || groupMissing ? "alert" : "status"} className={`mb-3 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-[12px] ${tone}`}>
       <KeyRound className="h-3.5 w-3.5" />
-      {configured
-        ? <span>Nexus sign-in follows this list (Access group cryptophys-nexus-accounts).</span>
-        : <span>Roles apply now, but a <b>new</b> person cannot sign in to Nexus until the owner sets the Worker secret <span className="mono">ACCESS_GROUPS_TOKEN</span> on cryptophys-platform-registry.</span>}
+      {synced
+        ? <span>Nexus sign-in group synchronized for <b>{state.emails}</b> active account(s).</span>
+        : failed
+          ? <span><b>Access group sync failed.</b> {state.detail || "Cloudflare rejected the update."} Disabled accounts may still sign in to Nexus until a successful sync removes them from the group.</span>
+          : groupMissing
+            ? <span>Access group <span className="mono">cryptophys-nexus-accounts</span> is missing. Run Provision Access before syncing sign-in.</span>
+            : configured
+              ? <span>Sync credentials are configured, but group membership has not been verified on this page load. Run Sync sign-in to reconcile it.</span>
+              : notConfigured
+                ? <span>Access group sync is not configured. New accounts cannot sign in to Nexus, and disabled accounts may remain in the group, until the owner sets <span className="mono">ACCESS_GROUPS_TOKEN</span> on cryptophys-platform-registry.</span>
+                : <span>Access group sync status is unknown. Run Sync sign-in to verify membership.</span>}
       {owner && <button type="button" className="btn ml-auto" onClick={onSync}><RefreshCw className="h-3.5 w-3.5" />Sync sign-in</button>}
     </div>
   );
@@ -59,7 +75,7 @@ export default function Users() {
     act({
       route: "registry.account_upsert", body, title: `${target ? "Change" : "Add"} ${e}`,
       lines: [KIND_TEXT[k], ...(k === "admin" ? [PRIVILEGE_TEXT[body.privilege]] : []), "Recorded in the audit chain under your identity."],
-      done: "Saved.", after: (d) => { after(d); if (!target) { setEmail(""); setNote(""); } },
+      done: "Account record saved. Check the Nexus sign-in status below.", after: (d) => { after(d); if (!target) { setEmail(""); setNote(""); } },
     });
   };
 
@@ -71,7 +87,7 @@ export default function Users() {
           Only the owners manage this list; nobody changes their own access, and accounts are disabled, never deleted.
         </p>
         <SyncBanner state={sync ?? data?.login_sync} owner={owner}
-          onSync={() => act({ route: "registry.accounts_sync", title: "Sync Nexus sign-in", done: "Sign-in synced.", after })} />
+          onSync={() => act({ route: "registry.accounts_sync", body: { confirm: "SYNC" }, title: "Sync Nexus sign-in", done: "Nexus sign-in sync request completed; check the status below.", after })} />
         {loading && !data ? <Skeleton rows={4} /> : error ? <Empty>Could not load accounts: {String(error)}</Empty> : (
           <div className="space-y-1.5">
             {[...owners.map((e) => ({ email: e, cfg: "owner" })), ...operators.map((e) => ({ email: e, cfg: "operator" }))].map((c) => (
@@ -103,8 +119,8 @@ export default function Users() {
                     {a.status === "active" && (
                       <button type="button" className="btn btn-danger !py-1" onClick={() => act({
                         route: "registry.account_disable", params: a.email, body: { confirm: "REVOKE" }, title: `Disable ${a.email}`,
-                        lines: ["Their role ends at once and they are removed from Nexus sign-in. An open Access session can last until it expires."],
-                        done: "Disabled.", after,
+                        lines: ["Their control-plane role ends at once. Nexus sign-in removal depends on a successful Access group sync; an existing Access session can last up to 8 hours. If sync fails, the account may still pass Access until you retry Sync sign-in."],
+                        done: "Control-plane role disabled. Check the Nexus sign-in status below.", after,
                       })}><Ban className="h-3.5 w-3.5" />Disable…</button>
                     )}
                   </div>
