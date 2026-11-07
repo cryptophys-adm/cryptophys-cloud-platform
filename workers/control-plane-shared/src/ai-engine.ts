@@ -168,13 +168,16 @@ export class AiEngine {
 
   /** Reserve one request from the per-service and account-wide daily budgets. */
   private async reserve(day: string): Promise<boolean> {
-    const total = await this.db.prepare("SELECT COALESCE(SUM(requests), 0) AS n FROM ai_usage WHERE day = ?")
-      .bind(day).first<{ n: number }>();
-    if ((total?.n ?? 0) >= this.accountDailyLimit) return false;
+    // One conditional UPSERT is required: a separate SUM then INSERT lets concurrent Workers
+    // observe the same remaining account budget and exceed the shared daily cap.
     const result = await this.db.prepare(
-      `INSERT INTO ai_usage (service_id, day, requests, failures) VALUES (?, ?, 1, 0)
-       ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1 WHERE requests < ?`,
-    ).bind(this.service, day, this.dailyLimit).run();
+      `INSERT INTO ai_usage (service_id, day, requests, failures)
+       SELECT ?, ?, 1, 0
+       WHERE (SELECT COALESCE(SUM(requests), 0) FROM ai_usage WHERE day = ?) < ?
+       ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1
+       WHERE requests < ?
+         AND (SELECT COALESCE(SUM(requests), 0) FROM ai_usage WHERE day = ?) < ?`,
+    ).bind(this.service, day, day, this.accountDailyLimit, this.dailyLimit, day, this.accountDailyLimit).run();
     return (result.meta.changes ?? 0) > 0;
   }
 
