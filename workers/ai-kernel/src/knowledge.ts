@@ -76,20 +76,20 @@ function evidenceHasTradingText(value: unknown): boolean {
 // Numeric evidence is allowed only under fields emitted by Aether's current deterministic
 // curator/calibrator contracts (plus the platform fixture metrics). An opaque numeric key such
 // as { observed_value: 4050 } could otherwise smuggle a price while bypassing string redaction.
-const SAFE_EVIDENCE_NUMERIC_KEYS_BY_KIND: Readonly<Record<string, ReadonlySet<string>>> = {
+const SAFE_EVIDENCE_NUMERIC_PATHS_BY_KIND: Readonly<Record<string, ReadonlySet<string>>> = {
   caution: new Set([
     "candles", "bars", "wrong", "baseline_wrong_rate", "p_value", "window_days",
     "decisive", "wrong_pct", "baseline_wrong_pct", "baseline_decisive",
   ]),
   role_reminder: new Set(["window_days", "rooms_with_break", "rooms", "rate_pct", "violations", "turns"]),
-  param_candidate: new Set(["window_days", "episodes", "longest_candles", "proposed_value", "default_value", "tested_values"]),
+  param_candidate: new Set(["window_days", "episodes", "longest_candles", "proposed_value", "default_value", "tested_values[]"]),
 };
 
-function evidenceHasUnscopedNumber(value: unknown, kind: string, key = ""): boolean {
-  const allowed = SAFE_EVIDENCE_NUMERIC_KEYS_BY_KIND[kind] ?? new Set<string>();
-  if (typeof value === "number") return Number.isFinite(value) && !allowed.has(key);
-  if (Array.isArray(value)) return value.some((v) => evidenceHasUnscopedNumber(v, kind, key));
-  if (isObject(value)) return Object.entries(value).some(([k, v]) => evidenceHasUnscopedNumber(v, kind, k));
+function evidenceHasUnscopedNumber(value: unknown, kind: string, path = ""): boolean {
+  const allowed = SAFE_EVIDENCE_NUMERIC_PATHS_BY_KIND[kind] ?? new Set<string>();
+  if (typeof value === "number") return Number.isFinite(value) && !allowed.has(path);
+  if (Array.isArray(value)) return value.some((v) => evidenceHasUnscopedNumber(v, kind, `${path}[]`));
+  if (isObject(value)) return Object.entries(value).some(([k, v]) => evidenceHasUnscopedNumber(v, kind, path ? `${path}.${k}` : k));
   return false;
 }
 
