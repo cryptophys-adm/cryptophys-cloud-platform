@@ -58,6 +58,11 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(validateKnowledgeItem(item({ audience: { agents: ["Bad Agent"], charts: [] } })).includes("audience_invalid"));
   const errs = (over: Record<string, unknown>) => validateKnowledgeItem(item(over));
   assert.ok(errs({ text: "Price rejected 4051 twice, so the lean was wrong in 11 of 14 bars." }).includes("text_price_like_number"));
+  assert.ok(errs({ text: "The price reached 123456 before the signal changed.", evidence: { price: 123456, wrong: 11, bars: 14 } }).includes("text_trading_value_wording"));
+  assert.ok(errs({ text: "The price reached 123456 before the signal changed.", evidence: { price: 123456, wrong: 11, bars: 14 } }).includes("text_price_like_number"));
+  assert.ok(errs({ text: "The level stayed relevant for 11 of 14 bars." }).includes("text_trading_value_wording"));
+  assert.ok(errs({ text: "The sample size was 14 bars and the lean was wrong in 11." }).includes("text_trading_value_wording"));
+  assert.ok(errs({ text: "The pattern appeared 123456 times in the sample.", evidence: { occurrences: 123456, wrong: 11, bars: 14 } }).includes("text_price_like_number"), "six-digit values cannot bypass the price-like number guard");
   assert.ok(errs({ text: "Place a buy limit when the lean was wrong in 11 of 14 bars." }).includes("text_order_wording"));
   assert.ok(errs({ text: "The gmi_dir field was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
   assert.ok(errs({ text: "Code 3 means a trap; it was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
