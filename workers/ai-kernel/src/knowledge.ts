@@ -35,7 +35,7 @@ const AGENT_ID = /^[a-z0-9][a-z0-9_-]{1,39}$/;
 /** Price-like numbers: 3 to 5 digits, or a thousands separator (no level ever leaves Aether). */
 const PRICE = /\b(?:\d{3,}(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)\b/;
 const ORDER = /\b(?:buy|sell)\s+(?:limit|stop)\b|\b(?:place|open|enter)\s+(?:an?\s+|the\s+)?(?:order|position)\b|\blots?\b|\blot size\b|\bposition siz(?:e|ing)\b|\b(?:stop[- ]loss|take[- ]profit|entry|target)\s+(?:at|of|to|near)\b/i;
-const TRADING_VALUE_TALK = /\\b(?:prices?|levels?|sizes?|sizing|entries?|targets?|support|resistance|zones?)\\b/i;
+const TRADING_VALUE_TALK = /\b(?:prices?|levels?|sizes?|sizing|entries?|targets?|support|resistance|zones?)\b/i;
 /** Field names, key=value and field definitions belong to the canon, never to learned text. */
 const FIELD_TALK = /\b[a-z]+_[a-z0-9_]+\b|\w+\s*=\s*\S|\bmeans\b|\bcode\s+\d+\s+is\b/i;
 const FORBIDDEN_KEYS = new Set(["entry", "entry_price", "stop", "stop_loss", "take_profit", "tp1", "tp2", "trade_plan", "plan", "key_levels", "zones", "levels", "close", "price", "atr", "position_size_pct", "lots", "size"]);
