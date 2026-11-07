@@ -54,7 +54,7 @@ const votes = (db: Db, id: string) => db.raw.prepare("SELECT voter_agent_id, vot
 
 test("1. migration 0023: consensus tables, shadow mode, supervisor may propose", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0026_platform_accounts.sql");
+  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   assert.deepEqual(db.raw.prepare("SELECT control, value FROM consensus_controls").all().map((r: any) => [r.control, r.value]), [["mode", "shadow"]]);
   const sup = db.raw.prepare("SELECT tier_max, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;

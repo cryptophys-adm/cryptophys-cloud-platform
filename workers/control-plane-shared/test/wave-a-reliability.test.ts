@@ -39,7 +39,7 @@ function counting(db: Db) {
 }
 
 test("A1. migration 0025 is required; a full verification anchors the checkpoint", async () => {
-  assert.equal(REQUIRED_MIGRATION, "0026_platform_accounts.sql");
+  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
   const db = migratedDb();
   await fill(db, 30);
   const full = await verifyAuditChain(db as never);

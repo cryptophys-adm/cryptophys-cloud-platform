@@ -35,10 +35,10 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
   } as any;
 }
 
-test("1. Migration: service_registry has 15 rows, console and home registered, schemaReady is true", async () => {
+test("1. Migration: service_registry has 16 rows (15 + Aether from 0027), console and home registered, schemaReady is true", async () => {
   const db = migratedDb();
   const rows = db.raw.prepare("SELECT * FROM service_registry ORDER BY service_id").all() as any[];
-  assert.equal(rows.length, 15);
+  assert.equal(rows.length, 16);
 
   const consoleRow = rows.find((r) => r.service_id === "cryptophys-console");
   assert.ok(consoleRow);
@@ -64,7 +64,7 @@ test("1. Migration: service_registry has 15 rows, console and home registered, s
   assert.equal(homeMeta.data_classification, "internal");
   assert.equal(homeMeta.source, "workers/home");
 
-  assert.equal(REQUIRED_MIGRATION, "0026_platform_accounts.sql");
+  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
   const env = baseEnv("cryptophys-drift-detector", db);
   assert.equal(await schemaReady(env), true);
 });
@@ -208,4 +208,15 @@ test("6. No regressions: drift detector readiness and targets mapping cover all 
   const missingHome = await call(drift, { ...env, SVC_HOME: undefined }, req("GET", "/ready"));
   assert.equal(missingHome.status, 503);
   assert.equal(missingHome.body.checks.observation_bindings, false);
+});
+
+test("TP-027: the disabled cryptophys-aether row is recorded without probing and never drifts before its first deploy", async () => {
+  const db = migratedDb();
+  const env = driftTestEnv(db);
+  const result: any = await observe(env, "test", "test");
+  const aether = result.services.find((s: any) => s.service_id === "cryptophys-aether");
+  assert.ok(aether, "the Aether row is observed");
+  assert.equal(aether.status, "disabled");
+  assert.equal(aether.drifted, false);
+  assert.deepEqual(aether.reasons, ["disabled"]);
 });
