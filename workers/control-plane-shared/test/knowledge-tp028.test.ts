@@ -260,3 +260,13 @@ test("TP-028 guards structured situation and parameter text as well as evidence"
   });
   assert.ok(validateKnowledgeItem(params).includes("params_trading_value_wording"));
 });
+
+test("TP-028 accepts the four-hour chart identifier without treating it as a price", () => {
+  const fourHour = item({
+    audience: { agents: ["prophet", "moderator"], charts: ["240"] },
+    situation: { chart: "240", session: "london" },
+    text: "On the four-hour chart in the London session, the prophet agent was wrong in 79% of its decisive calls over 30 days, against 48% in its other situations.",
+    evidence: { agent: "prophet", chart: "240", session: "london", window_days: 30, decisive: 14, wrong: 11, wrong_pct: 79, baseline_wrong_pct: 48, baseline_decisive: 20, p_value: 0.03 },
+  });
+  assert.deepEqual(validateKnowledgeItem(fourHour), []);
+});
