@@ -188,3 +188,31 @@ test("TP-016 extractJsonObject keeps behaviour", async () => {
   assert.deepEqual(extractJsonObject('prefix {"a":1} suffix'), { a: 1 });
   assert.equal(extractJsonObject("no json"), null);
 });
+
+test("TP-016 account-wide daily budget is reserved atomically across Workers", async () => {
+  const db = migratedDb();
+  const ai1 = fakeAi({ response: { ok: true } });
+  const ai2 = fakeAi({ response: { ok: true } });
+  const model = "@cf/google/gemma-4-26b-a4b-it";
+  const task: AiTask<any> = {
+    name: "budget", instructions: "x", maxInputChars: 1000, maxOutputTokens: 100,
+    validate: (value) => value,
+  };
+  const common = {
+    db, model, allowedModels: [model], allowedTasks: [task.name],
+    dailyLimit: 80, accountDailyLimit: 1, timeoutMs: 1000,
+  };
+  const first = new AiEngine({ ...common, service: "cryptophys-policy-engine", ai: ai1 });
+  const second = new AiEngine({ ...common, service: "cryptophys-platform-registry", ai: ai2 });
+
+  const results = await Promise.all([
+    first.run(task, { sample: 1 }, "budget-1"),
+    second.run(task, { sample: 2 }, "budget-2"),
+  ]);
+  assert.equal(results.filter((r) => r.status === "ok").length, 1, "only one Worker may reserve the final account-wide request");
+  assert.equal(results.filter((r) => r.reason === "daily_budget_exhausted").length, 1);
+  assert.equal(ai1.calls.length + ai2.calls.length, 1, "the denied request never reaches Workers AI");
+  const today = new Date().toISOString().slice(0, 10);
+  const total = db.raw.prepare("SELECT COALESCE(SUM(requests), 0) AS n FROM ai_usage WHERE day = ?").get(today) as { n: number };
+  assert.equal(total.n, 1, "the shared account budget cannot overshoot under concurrent Workers");
+});
