@@ -210,7 +210,7 @@ test("TP-016 account-wide daily budget is reserved atomically across Workers", a
     second.run(task, { sample: 2 }, "budget-2"),
   ]);
   assert.equal(results.filter((r) => r.status === "ok").length, 1, "only one Worker may reserve the final account-wide request");
-  assert.equal(results.filter((r) => r.reason === "daily_budget_exhausted").length, 1);
+  assert.equal(results.filter((r) => r.status !== "ok" && r.reason === "daily_budget_exhausted").length, 1);
   assert.equal(ai1.calls.length + ai2.calls.length, 1, "the denied request never reaches Workers AI");
   const today = new Date().toISOString().slice(0, 10);
   const total = db.raw.prepare("SELECT COALESCE(SUM(requests), 0) AS n FROM ai_usage WHERE day = ?").get(today) as { n: number };
