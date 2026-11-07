@@ -182,3 +182,20 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
   });
   assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
 });
+
+
+test("TP-028 guards structured situation and parameter text as well as evidence", () => {
+  const situation = item({
+    text: "The structure held for several candles.",
+    situation: { stuck: "structure", opaque_value: 4050 },
+  });
+  assert.ok(validateKnowledgeItem(situation).includes("situation_numeric_value"));
+
+  const params = item({
+    kind: "param_candidate",
+    text: "The structure stayed stuck in several separate episodes.",
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 12, tested_values: [8, 12] },
+    params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "Buy at 4050", metric: "paired sign test" },
+  });
+  assert.ok(validateKnowledgeItem(params).includes("params_trading_value_wording"));
+});
