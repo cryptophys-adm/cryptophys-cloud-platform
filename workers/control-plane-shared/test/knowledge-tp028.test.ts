@@ -181,6 +181,22 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
     params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
   });
   assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
+
+  const wrongKind = item({ evidence: { proposed_value: 4050, wrong: 11, bars: 14 } });
+  assert.ok(validateKnowledgeItem(wrongKind).includes("evidence_unscoped_numeric_field"), "param-candidate numeric fields are not allowed on caution items");
+
+  const unsafeParamValue = {
+    ...paramCandidate,
+    evidence: { ...(paramCandidate.evidence as Record<string, unknown>), proposed_value: 4050 },
+    params: { ...(paramCandidate.params as Record<string, unknown>), values: { stateMaxAge: 4050 } },
+  };
+  assert.ok(validateKnowledgeItem(unsafeParamValue).includes("params_invalid"), "parameter values must belong to the reviewed tuning grid");
+
+  const extraParamNumber = {
+    ...paramCandidate,
+    params: { ...(paramCandidate.params as Record<string, unknown>), metadata: 4050 },
+  };
+  assert.ok(validateKnowledgeItem(extraParamNumber).includes("params_invalid"), "unscoped numeric metadata is not allowed in params");
 });
 
 
