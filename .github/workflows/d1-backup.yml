@@ -2,8 +2,9 @@ name: D1 Backup
 
 # On-demand D1 export of the control-plane database to the private R2 bucket. The primary
 # daily backup is the Recovery Manager's Cloudflare-native cron (see workers/recovery-manager).
-# This workflow has no schedule. After a successful manual upload it attempts to add a 90-day
-# lifecycle rule, but retention is not guaranteed until that rule is verified on the bucket.
+# This workflow has no schedule. Retention: the owner set the R2 lifecycle rule `expire-90d`
+# (prefix control-plane/, 90 days) on the bucket in the dashboard on 2026-11-07; the lifecycle
+# step below only re-adds it if it is missing.
 # Restoring data stays an owner decision (ADR-0009 critical class). Uses the existing tokens:
 # CLOUDFLARE_ACCESS_API_TOKEN (D1 Edit) to export and CLOUDFLARE_API_TOKEN for R2 (either may
 # hold R2 permissions; both are tried). Only R2-not-enabled (10042) is a warning; auth and other
