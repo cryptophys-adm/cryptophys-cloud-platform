@@ -65,7 +65,7 @@ test("1. Migration: service_registry has 16 rows (15 + Aether from 0027), consol
   assert.equal(homeMeta.data_classification, "internal");
   assert.equal(homeMeta.source, "workers/home");
 
-  assert.equal(REQUIRED_MIGRATION, "0028_aether_observed.sql");
+  assert.equal(REQUIRED_MIGRATION, "0029_knowledge_proposals.sql");
   const env = baseEnv("cryptophys-drift-detector", db);
   assert.equal(await schemaReady(env), true);
 });

@@ -13,6 +13,7 @@ import Pipelines from "./pages/Pipelines";
 import Markets from "./pages/Markets";
 import Users from "./pages/Users";
 import Consensus from "./pages/Consensus";
+import Knowledge from "./pages/Knowledge";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -34,6 +35,7 @@ export default function App() {
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;
+    case "knowledge": page = <Knowledge />; break;
     case "recovery": page = id ? <RecoveryDetail id={id} /> : <Recovery />; break;
     case "infrastructure": page = <Infrastructure />; break;
     case "policy": page = <Policy />; break;

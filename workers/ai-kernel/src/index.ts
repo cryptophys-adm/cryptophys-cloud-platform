@@ -28,6 +28,7 @@ import { pruneSyscallConsumptions } from "./retention.ts";
 import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { OwnerDecisionError, agreementReport, getProposal, listProposals, ownerDecide, setConsensusMode } from "./consensus.ts";
+import { KnowledgeDecisionError, decideKnowledge, getKnowledge, listKnowledge } from "./knowledge.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -122,6 +123,26 @@ export default {
         }
       }
       if (path === "/v1/consensus/report" && request.method === "GET") return json(await agreementReport(env, Number(url.searchParams.get("days") ?? "7")));
+      // TP-028: learned-knowledge proposals from Aether (tier 1 drafts). Listing is open to operators;
+      // a decision needs an approver, a person, never the proposer.
+      if (path === "/v1/knowledge" && request.method === "GET") return json(await listKnowledge(env.DB, { limit: limitParam(url), status: url.searchParams.get("status") }));
+      const knowledgeDecision = /^\/v1\/knowledge\/(knw_[0-9a-f-]{36})\/(approve|reject)$/.exec(path);
+      if (knowledgeDecision) {
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "a knowledge review needs an approver");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        try {
+          return json(await decideKnowledge(env.DB, knowledgeDecision[1], knowledgeDecision[2] === "approve" ? "approve" : "reject", operator.actor, body.value.reason));
+        } catch (err) {
+          if (err instanceof KnowledgeDecisionError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
+      }
+      if (path.startsWith("/v1/knowledge/") && request.method === "GET") {
+        const found = await getKnowledge(env.DB, path.slice("/v1/knowledge/".length));
+        return found ? json(found) : errorResponse(404, "not_found", "unknown knowledge proposal");
+      }
       const ownerMatch = /^\/v1\/consensus\/(cns_[0-9a-f-]{36})\/(approve|reject)$/.exec(path);
       if (ownerMatch) {
         // ADR-0009 phase 4: one owner click on a critical proposal. Approvers only; a person, never a token.

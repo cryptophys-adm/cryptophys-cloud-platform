@@ -16,6 +16,7 @@ export const NAV = [
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },
+  { label: "Knowledge", href: "#/knowledge", key: "knowledge", icon: Sparkles },
   { label: "Recovery", href: "#/recovery", key: "recovery", icon: Wrench },
   { label: "Infrastructure", href: "#/infrastructure", key: "infrastructure", icon: Server },
   { label: "Policy", href: "#/policy", key: "policy", icon: Scale },
