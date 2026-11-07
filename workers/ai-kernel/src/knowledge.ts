@@ -136,7 +136,7 @@ function evidenceContractErrors(value: unknown, kind: string, situation: unknown
   if (!expected || !hasExactKeys(value, expected)) return ["evidence_shape_invalid"];
   const e = value;
   const errors: string[] = [];
-  if (typeof e.agent !== "string" || !AGENT_ID.test(e.agent)) errors.push("evidence_agent_invalid");
+  if (kind !== "param_candidate" && (typeof e.agent !== "string" || !AGENT_ID.test(e.agent))) errors.push("evidence_agent_invalid");
 
   if (kind === "caution") {
     if (!CHARTS.has(String(e.chart)) || !SESSIONS.has(String(e.session))) errors.push("evidence_context_invalid");
