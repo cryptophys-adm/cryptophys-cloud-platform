@@ -7,7 +7,7 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { newId, nowIso, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 
-export const REPORT_KINDS = ["signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest"] as const;
+export const REPORT_KINDS = ["signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest", "knowledge_audit"] as const;
 export const REPORT_SEVERITIES = ["info", "warning", "critical"] as const;
 export const MAX_REPORT_BODY_BYTES = 16 * 1024;
 export type ReportKind = (typeof REPORT_KINDS)[number];

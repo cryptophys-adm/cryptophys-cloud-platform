@@ -19,7 +19,7 @@ const SUB = "agent:supervisor";
 
 test("readiness requires the atomic syscall-consumption migration and the newest required migration", async () => {
   const db = migratedDb();
-  assert.equal(REQUIRED_MIGRATION, "0026_platform_accounts.sql");
+  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
   assert.equal(await schemaReady({ DB: db } as never), true);
   db.raw.prepare("DELETE FROM d1_migrations WHERE name = '0011_agent_syscall_consumptions.sql'").run();
   assert.equal(await schemaReady({ DB: db } as never), false);
@@ -41,8 +41,10 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
     status: string;
     status_reason: string | null;
   }>;
-  // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32 total
-  assert.equal(rows.length, 32);
+  // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32,
+  // plus the 4 Aether agents of 0027 (TP-027, tested in register-aether-tp027.test.ts) = 36 total.
+  assert.equal(rows.length, 36);
+  assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 4);
   const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
   assert.equal(xauusdAgents.length, 21);
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
@@ -451,4 +453,44 @@ test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <=
   assert.equal((await rpcSyscall(env as never, api, "platform-api", "recovery.propose", {})).outcome, "denied");
   const rows = db.raw.prepare("SELECT outcome FROM agent_actions WHERE agent_id = 'platform-api' ORDER BY rowid").all() as Array<{ outcome: string }>;
   assert.deepEqual(rows.map((r) => r.outcome), ["succeeded", "denied"]);
+});
+
+test("TP-027 Aether: four tier-1 agents hosted by cryptophys-aether, reachable only through AgentRpc with that host, publishing knowledge_audit reports", async () => {
+  const { rpcWhoami, rpcSyscall } = await import("../../ai-kernel/src/agent-rpc.ts");
+  const { REPORT_KINDS } = await import("../../ai-kernel/src/reports.ts");
+  const { env, db } = kernelEnv();
+  const rows = db.raw.prepare("SELECT agent_id, tier_max, capabilities_json, status FROM agents WHERE host_worker = 'cryptophys-aether' ORDER BY agent_id").all() as Array<{ agent_id: string; tier_max: number; capabilities_json: string; status: string }>;
+  assert.deepEqual(rows.map((r) => r.agent_id), ["aether-auditor", "aether-calibrator", "aether-curator", "aether-guardian"]);
+  for (const r of rows) {
+    assert.equal(r.tier_max, 1);
+    assert.equal(r.status, "enabled");
+    const caps = JSON.parse(r.capabilities_json) as string[];
+    assert.ok(caps.includes("reports.publish"));
+    for (const c of caps) {
+      assert.ok(Object.hasOwn(CAPABILITIES, c), c);
+      assert.ok((CAPABILITIES as Record<string, { tier: number }>)[c]!.tier <= 1, `${r.agent_id} ${c} must be tier <= 1`);
+    }
+  }
+  assert.ok((REPORT_KINDS as readonly string[]).includes("knowledge_audit"));
+
+  // The service row exists (it hosts the agents) but stays disabled until the Worker is deployed.
+  const svc = db.raw.prepare("SELECT status, metadata_json FROM service_registry WHERE service_id = 'cryptophys-aether'").get() as { status: string; metadata_json: string };
+  assert.equal(svc.status, "disabled");
+  assert.equal(JSON.parse(svc.metadata_json).health_path, "/health");
+
+  const aether = { host_worker: "cryptophys-aether" };
+  const xau = { host_worker: "xauusd-ai-trading-assistant" };
+  assert.equal((await rpcWhoami(env as never, aether, "aether-guardian")).access_identity, "rpc:cryptophys-aether");
+  // No cross-host impersonation in either direction.
+  assert.deepEqual(await rpcWhoami(env as never, xau, "aether-auditor"), { error: "agent_not_hosted_by_caller" });
+  assert.deepEqual(await rpcWhoami(env as never, aether, "xauusd-moderator"), { error: "agent_not_hosted_by_caller" });
+
+  const published = await rpcSyscall(env as never, aether, "aether-guardian", "reports.publish", {
+    kind: "knowledge_audit", severity: "warning", subject: "Calibration talk in room messages",
+    ai_status: "deterministic", body: { summary: "advisory only; not an order", rate_per_100: 57 },
+  });
+  assert.equal(published.outcome, "succeeded");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = 'aether-guardian' AND kind = 'knowledge_audit'").get() as { n: number }).n, 1);
+  // A capability Aether was not granted is denied by the normal syscall checks.
+  assert.equal((await rpcSyscall(env as never, aether, "aether-curator", "recovery.propose", {})).outcome, "denied");
 });

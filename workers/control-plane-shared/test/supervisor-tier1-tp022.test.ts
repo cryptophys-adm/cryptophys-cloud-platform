@@ -28,7 +28,7 @@ test("TP-022 migration", async () => {
   assert.deepEqual(JSON.parse(sup.capabilities_json), ["platform.observe", "recovery.propose", "memory.recall", "memory.remember", "consensus.propose"]);
   const anyTier2OrHigher = db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE tier_max >= 2").get() as any;
   assert.equal(anyTier2OrHigher.n, 0, "TP-022 must leave no agent at tier 2 or above");
-  assert.equal(REQUIRED_MIGRATION, "0026_platform_accounts.sql");
+  assert.equal(REQUIRED_MIGRATION, "0027_register_aether.sql");
   assert.equal(await schemaReady({ DB: db } as any), true);
 });
 
