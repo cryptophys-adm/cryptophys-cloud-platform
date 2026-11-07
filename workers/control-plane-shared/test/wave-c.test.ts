@@ -60,6 +60,7 @@ test("C3/C4. wiring: nightly D1 backup to a private R2 bucket, UI render smoke i
   assert.match(backup, /jq -c '\[\.errors\[\]\? \| \{code, message\}\]'/, "a refused token logs Cloudflare's error codes, never the token");
   assert.match(backup, /all\(\. == 10042\)/, "only the explicit R2-disabled response is a non-failing skip");
   assert.match(backup, /all\(\. == 10000\)/, "an authentication rejection tries the other configured token");
+  assert.match(backup, /Cloudflare rejected \$\{name\} authentication; trying the other configured token\.[\s\S]*?continue/, "a rejected first token does not prevent trying the second token");
   assert.match(backup, /non-JSON response for \$\{name\}[\s\S]*?exit 1/, "a non-JSON Cloudflare response fails the backup preflight");
   assert.match(backup, /Neither configured Cloudflare token authenticated for R2\. No D1 export was created\.[\s\S]*?exit 1/, "two rejected tokens fail the backup job instead of reporting success");
   assert.match(backup, /Cloudflare rejected \$\{name\} for the R2 bucket API[\s\S]*?exit 1/, "unexpected Cloudflare errors fail closed");
