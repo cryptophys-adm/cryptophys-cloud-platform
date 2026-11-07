@@ -159,3 +159,26 @@ test("pending proposals expire after 14 days, and each agent proposes at most 20
   assert.equal(over.outcome, "failed");
   assert.match((over as { reason: string }).reason, /knowledge_daily_limit/);
 });
+
+
+test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declared metric contracts", () => {
+  const roleDrift = item({
+    text: "The agent repeatedly broke its role in the rooms it spoke in.",
+    evidence: { agent: "prophet", check: "order_wording", window_days: 30, rooms_with_break: 6, rooms: 40, rate_pct: 15 },
+  });
+  assert.equal(validateKnowledgeItem(roleDrift).includes("evidence_unscoped_numeric_field"), false);
+
+  const opaque = item({
+    text: "The agent repeatedly broke its role.",
+    evidence: { agent: "prophet", check: "role_drift", window_days: 30, rooms: 40, observed_value: 4050 },
+  });
+  assert.ok(validateKnowledgeItem(opaque).includes("evidence_unscoped_numeric_field"));
+
+  const paramCandidate = item({
+    kind: "param_candidate",
+    text: "The structure stayed stuck in several separate episodes.",
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 12, tested_values: [8, 12] },
+    params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
+  });
+  assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
+});
