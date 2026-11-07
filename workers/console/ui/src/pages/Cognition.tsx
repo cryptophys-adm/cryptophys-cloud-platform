@@ -5,6 +5,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { ago, listOf } from "../lib/format";
 import { explainCode } from "../lib/plain";
+import CognitionPanel from "../components/CognitionPanel";
 
 const KINDS = ["", "signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest"];
 
@@ -17,6 +18,9 @@ export default function Cognition() {
   const { data, loading, error, refresh } = usePoll(() => call("kernel.reports", undefined, undefined, q), 60_000, [agent, kind, limit]);
   const rows = listOf(data, "reports");
   return (
+    <div className="flex flex-col gap-3">
+    {/* The AI Cognition rail sits in the right column only on very wide screens (2xl); show it here otherwise (2026-11-07). */}
+    <div className="2xl:hidden"><CognitionPanel /></div>
     <Panel title="Agent Reports" icon={<Brain className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length} shown</Badge>}>
       <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px_auto]">
         <Field label="Agent id"><input className="field mono" value={agent} onChange={(e) => setAgent(e.target.value)} /></Field>
@@ -41,5 +45,6 @@ export default function Cognition() {
         </div>
       )}
     </Panel>
+    </div>
   );
 }

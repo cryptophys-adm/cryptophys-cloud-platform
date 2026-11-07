@@ -89,7 +89,7 @@ export default function CognitionPanel() {
       <button type="button" className="btn justify-center text-[11px]" onClick={ask} disabled={busy}>
         <Sparkles className="h-3.5 w-3.5 text-cyan-300" />{busy ? "Thinking…" : "Ask the platform AI"}
       </button>
-      <a href="#/cognition" className="text-center text-[9px] uppercase tracking-widest text-slate-600 transition-colors hover:text-cyan-400">Open Cognition Panel →</a>
+      {!window.location.hash.startsWith("#/cognition") && <a href="#/cognition" className="text-center text-[9px] uppercase tracking-widest text-slate-600 transition-colors hover:text-cyan-400">Open Cognition Panel →</a>}
     </div>
   );
 }
