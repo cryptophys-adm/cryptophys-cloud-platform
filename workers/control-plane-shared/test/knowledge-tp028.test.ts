@@ -78,7 +78,12 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(errs({ kind: "role_reminder" }).includes("claim_type_mismatch"));
   assert.ok(errs({ evidence: { bars: 14, wrong: 11, candles: 8, entry: 1 } }).some((e) => e.startsWith("forbidden_key:")));
   assert.ok(errs({ kind: "param_candidate" }).includes("params_invalid"));
-  assert.deepEqual(errs({ kind: "param_candidate", params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer holds in trends", metric: "paired sign test" } }), []);
+  assert.deepEqual(validateKnowledgeItem(item({
+    kind: "param_candidate",
+    text: "The structure stayed stuck in several separate episodes.",
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 50, tested_values: [8, 12] },
+    params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer holds in trends", metric: "paired sign test" },
+  })), []);
 });
 
 test("Aether's curator proposes through AgentRpc; xauusd and the other Aether agents cannot; denials are final", async () => {
@@ -179,7 +184,7 @@ test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declare
   const paramCandidate = item({
     kind: "param_candidate",
     text: "The structure stayed stuck in several separate episodes.",
-    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 12, tested_values: [8, 12] },
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 50, tested_values: [8, 12] },
     params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
   }) as Record<string, unknown>;
   assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
