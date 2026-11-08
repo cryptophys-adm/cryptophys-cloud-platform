@@ -17,7 +17,7 @@ const V_NOW = "11111111-1111-4111-8111-111111111111";
 const V_OLD = "22222222-2222-4222-8222-222222222222";
 const PLAN = "plan_11111111-1111-1111-1111-111111111111";
 const DEC = "dec_22222222-2222-2222-2222-222222222222";
-/** 2026-11-08T03:10:00Z: minute 10 is SAFE. */
+const nextSafeMinute = (after: number): number => {\n  const first = Math.ceil(after / 60_000) * 60_000;\n  for (let i = 0; i < 60; i++) {\n    const candidate = first + i * 60_000;\n    if (SAFE_MINUTES.includes(new Date(candidate).getUTCMinutes())) return candidate;\n  }\n  throw new Error("no safe minute found");\n};\n\n/** 2026-11-08T03:10:00Z: minute 10 is SAFE. */
 const SAFE_AT = Date.parse("2026-11-08T03:10:00Z");
 
 function lockNs() {
@@ -166,6 +166,49 @@ test("N5. without the deploy credentials the GitHub workflow stays the path; que
   assert.equal((db.raw.prepare("SELECT status FROM deployment_requests WHERE request_id = 'dep_stale'").get() as any).status, "failed");
 });
 
+test("N9. a queued rollback expires after three hours even when credentials are configured", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const cf = fakeCloudflare();
+  const expiredAt = nextSafeMinute(Date.now() + 4 * 3_600_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, expiredAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0, "an expired request never reaches the Workers Deployments API");
+  const row = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(row.status, "failed");
+  assert.equal(JSON.parse(row.details_json).outcome.reason, "stale: native rollback request expired");
+});
+
+test("N10. the executor refuses a forged non-platform target before calling Cloudflare", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  db.raw.prepare("UPDATE deployment_requests SET service_id = 'xauusd-ai-trading-assistant'").run();
+  const cf = fakeCloudflare();
+  const at = nextSafeMinute(Date.now() + 1_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, at, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0);
+  const row = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(row.status, "failed");
+  assert.equal(JSON.parse(row.details_json).outcome.reason, "invalid_native_rollback_request");
+});
+
+test("N11. a D1-tampered rollback row fails its Orchestrator-only signature", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const row = db.raw.prepare("SELECT request_id, details_json FROM deployment_requests").get() as any;
+  const details = JSON.parse(row.details_json);
+  details.signature = "0".repeat(64);
+  db.raw.prepare("UPDATE deployment_requests SET details_json = ? WHERE request_id = ?").run(JSON.stringify(details), row.request_id);
+  const cf = fakeCloudflare();
+  const at = nextSafeMinute(Date.now() + 1_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, at, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0);
+  const updated = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(updated.status, "failed");
+  assert.equal(JSON.parse(updated.details_json).outcome.reason, "invalid_native_rollback_signature");
+});
 test("N6. the Registry records a rollback version only for a running native rollback request of the last hour", async () => {
   const db = migratedDb();
   const insert = (id: string, status: string, details: object, created = new Date().toISOString()) => db.raw.prepare(
