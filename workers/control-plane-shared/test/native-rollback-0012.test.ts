@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { baseEnv, migratedDb } from "./harness.ts";
 import { appendAuditEvent } from "../src/audit.ts";
-import worker, { DeploymentLock, rollbackForRecovery, runNativeRollbacks } from "../../deployment-orchestrator/src/index.ts";
+import worker, { DeploymentLock, NATIVE_ROLLBACK_EXECUTION_LEASE_MS, rollbackForRecovery, runNativeRollbacks } from "../../deployment-orchestrator/src/index.ts";
 import { CloudflareWorkers, executeRollback, nativeRollbackConfigured, SAFE_MINUTES } from "../../deployment-orchestrator/src/native-rollback.ts";
 import { recordRollback } from "../../platform-registry/src/index.ts";
 import { probeService } from "../../drift-detector/src/index.ts";
@@ -232,6 +232,80 @@ test("N12. restoring a completed signed D1 row to approved cannot replay its rol
   const secondAt = nextSafeMinute(firstAt + 60_000);
   assert.deepEqual(await runNativeRollbacks(env as never, secondAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
   assert.equal(cf.posted.length, 1, "the request-scoped Durable Object claim prevents a second Workers Deployments API call");
+});
+
+test("N13. a D1 transition failure does not consume the one-time claim; the next pass safely retries", async () => {
+  const db = await setup();
+  let failTransition = true;
+  const wrappedDb = new Proxy(db as any, {
+    get(target, property) {
+      if (property === "prepare") return (sql: string) => {
+        const statement = target.prepare(sql);
+        if (sql.startsWith("UPDATE deployment_requests SET status = 'running'")) {
+          return {
+            bind: (...values: unknown[]) => {
+              const bound = statement.bind(...values);
+              return {
+                run: async () => {
+                  if (failTransition) {
+                    failTransition = false;
+                    throw new Error("injected_d1_transition_failure");
+                  }
+                  return bound.run();
+                },
+              };
+            },
+          };
+        }
+        return statement;
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const env = nativeEnv(wrappedDb, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const cf = fakeCloudflare();
+  const firstAt = nextSafeMinute(Date.now() + 1_000);
+  await assert.rejects(runNativeRollbacks(env as never, firstAt, cf.fetcher, { delayMs: 0 }), /injected_d1_transition_failure/);
+  assert.equal(cf.posted.length, 0);
+  assert.equal((db.raw.prepare("SELECT status FROM deployment_requests").get() as any).status, "approved");
+
+  const retryAt = nextSafeMinute(firstAt + 60_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, retryAt, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+  assert.equal(cf.posted.length, 1, "the failed D1 transition left the DO execution claim available for the retry");
+});
+
+test("N14. a one-time claim abandoned before deployment is terminally audited after its lease", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const row = db.raw.prepare("SELECT request_id, idempotency_key FROM deployment_requests").get() as any;
+  const claimedAt = Date.now();
+  db.raw.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ?")
+    .run(new Date(claimedAt).toISOString(), row.request_id);
+
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + row.request_id),
+  );
+  const sha = Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const lock = env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(row.idempotency_key));
+  const claimResponse = await lock.fetch("https://lock.internal/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sha }),
+  });
+  assert.equal(claimResponse.status, 201);
+
+  const expiredAt = nextSafeMinute(claimedAt + NATIVE_ROLLBACK_EXECUTION_LEASE_MS + 60_000);
+  const cf = fakeCloudflare();
+  assert.deepEqual(await runNativeRollbacks(env as never, expiredAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0, "an abandoned claim is never replayed");
+  const updated = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(updated.status, "failed");
+  assert.equal(JSON.parse(updated.details_json).outcome.reason, "native_rollback_execution_claim_expired");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'deployment.rollback_failed'").get() as any).n, 1);
 });
 
 test("N6. the Registry records a rollback version only for a running native rollback request of the last hour", async () => {
