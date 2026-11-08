@@ -33,7 +33,7 @@ export default function Command() {
 
       {active.length > 0 && (
         <Panel title="Needs your attention" icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
-          right={<Badge tone="amber">{notices.data?.email === "configured" ? "emailed to the owner" : "Console only"}</Badge>}>
+          right={<Badge tone="amber">{notices.data?.email === "configured" ? "Email enabled" : "Console only"}</Badge>}>
           <div className="space-y-2">
             {active.map((n: any) => (
               <div key={n.topic} className="glass-inner px-3 py-2.5">
