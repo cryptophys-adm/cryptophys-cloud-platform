@@ -164,7 +164,7 @@ test("registry exposes the seeded inventory and enforces ownership metadata", as
   const db = migratedDb();
   const env = baseEnv("cryptophys-platform-registry", db);
   const list = await call(registry, env, req("GET", "/v1/services"));
-  assert.equal(list.body.services.length, 16); // 15 + cryptophys-aether (0027; registered by 0028)
+  assert.equal(list.body.services.length, 17); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030)
   assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-audit-ledger").metadata.owner, "cryptophys-adm");
 
   const base = { display_name: "News Ingest", environment: "production", status: "registered", actor: "operator@cryptophys" };
@@ -314,6 +314,7 @@ test("drift detector compares registry desired versions with live versions over 
     SVC_AI_KERNEL: healthy("aaaaaaaaaaaa"),
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
     SVC_HOME: healthy("aaaaaaaaaaaa"),
+    SVC_FORGE: healthy("aaaaaaaaaaaa"),
     // External xauusd Workers: plain fetch service bindings, probed over HTTP.
     EXT_XAUUSD_AI: http((path) => path === "/health" ? Response.json({ status: "ok", service: "xauusd-ai-trading-assistant" }) : new Response("no", { status: 404 })),
     EXT_XAUUSD_NEWS: http(() => new Response("boom", { status: 500 })),
@@ -354,7 +355,7 @@ test("drift detector compares registry desired versions with live versions over 
   const row = db.raw.prepare("SELECT observed_version, status FROM service_registry WHERE service_id = 'cryptophys-deployment-orchestrator'").get() as any;
   assert.deepEqual([row.observed_version, row.status], ["bbbbbbbbbbbb", "degraded"]);
   const latest = await call(drift, env, req("GET", "/v1/drift"));
-  assert.equal(latest.body.services.length, 16); // 15 + cryptophys-aether (0027; registered by 0028)
+  assert.equal(latest.body.services.length, 17); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030)
   const history = await call(drift, env, req("GET", "/v1/drift/cryptophys-platform-api"));
   assert.equal(history.body.observations.length, 1);
 

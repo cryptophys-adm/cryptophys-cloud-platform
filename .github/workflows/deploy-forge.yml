@@ -143,6 +143,14 @@ jobs:
             sleep 10
           done
           echo "::error::the Forge repository did not become readable: HTTP ${status} $(head -c 300 "$out")"; exit 1
+      - name: Record the desired version in the Platform Registry (drift baseline)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/record-desired-version.sh" cryptophys-forge "$COMMIT_SHA"'
       - name: Automatic rollback to the captured versions after a failure or cancellation
         if: always() && (failure() || cancelled()) && steps.capture.outcome == 'success'
         env:
