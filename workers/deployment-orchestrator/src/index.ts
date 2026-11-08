@@ -147,6 +147,8 @@ export const DEPLOY_UNITS = [
   { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/", SHARED_SRC] },
   { unit: "home", workflow: "deploy-home.yml", services: ["cryptophys-home"], paths: ["workers/home/", SHARED_SRC] },
   { unit: "platform-api", workflow: "deploy-platform-api.yml", services: ["cryptophys-platform-api"], paths: ["workers/platform-api/", SHARED_SRC] },
+  // ADR-0012 phase 1b: the Forge (platform source on Cloudflare Artifacts).
+  { unit: "forge", workflow: "deploy-forge.yml", services: ["cryptophys-forge"], paths: ["workers/forge/", SHARED_SRC] },
 ] as const;
 export type DeployUnit = (typeof DEPLOY_UNITS)[number];
 
