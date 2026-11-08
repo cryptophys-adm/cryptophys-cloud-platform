@@ -27,6 +27,7 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
     SVC_AI_KERNEL: healthy("aaaaaaaaaaaa"),
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
     SVC_HOME: healthy("bbbbbbbbbbbb"),
+    SVC_FORGE: healthy("bbbbbbbbbbbb"),
     EXT_XAUUSD_AI: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_NEWS: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_PULL_ADAPTER: http(() => Response.json({ status: "ok" })),
@@ -36,10 +37,10 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
   } as any;
 }
 
-test("1. Migration: service_registry has 16 rows (15 + Aether from 0027), console and home registered, schemaReady is true", async () => {
+test("1. Migration: service_registry has 17 rows (15 + Aether from 0027 + Forge from 0030), console and home registered, schemaReady is true", async () => {
   const db = migratedDb();
   const rows = db.raw.prepare("SELECT * FROM service_registry ORDER BY service_id").all() as any[];
-  assert.equal(rows.length, 16);
+  assert.equal(rows.length, 17);
 
   const consoleRow = rows.find((r) => r.service_id === "cryptophys-console");
   assert.ok(consoleRow);
@@ -75,6 +76,7 @@ test("2. Probed and healthy: console and home are probed, healthy, drifted: fals
   const env = driftTestEnv(db, {
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
     SVC_HOME: healthy("bbbbbbbbbbbb"),
+    SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report = await observe(env, "test", "operator");
   const by = Object.fromEntries(report.services.map((s) => [s.service_id, s]));
@@ -113,6 +115,7 @@ test("3. Managed: setting desired_version via registry makes console and home ma
   const env = driftTestEnv(db, {
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
     SVC_HOME: healthy("bbbbbbbbbbbb"),
+    SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report = await observe(env, "test", "operator");
   const by = Object.fromEntries(report.services.map((s) => [s.service_id, s]));
@@ -144,6 +147,7 @@ test("4. Real drift: version mismatch drifts console; throwing binding makes hom
   const mismatchEnv = driftTestEnv(db, {
     SVC_CONSOLE: healthy("cccccccccccc"), // different tag
     SVC_HOME: healthy("bbbbbbbbbbbb"),    // matches desired
+    SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report1 = await observe(mismatchEnv, "test", "operator");
   const by1 = Object.fromEntries(report1.services.map((s) => [s.service_id, s]));
@@ -161,6 +165,7 @@ test("4. Real drift: version mismatch drifts console; throwing binding makes hom
   const throwingEnv = driftTestEnv(db, {
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
     SVC_HOME: { health: async () => { throw new Error("unreachable"); } },
+    SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report2 = await observe(throwingEnv, "test", "operator");
   const by2 = Object.fromEntries(report2.services.map((s) => [s.service_id, s]));
@@ -191,7 +196,7 @@ test("6. No regressions: drift detector readiness and targets mapping cover all 
   const env = driftTestEnv(db);
   const targetMap = targets(env);
 
-  assert.equal(Object.keys(targetMap).length, 9);
+  assert.equal(Object.keys(targetMap).length, 10);
   assert.ok("cryptophys-console" in targetMap);
   assert.ok("cryptophys-home" in targetMap);
   assert.ok(targetMap["cryptophys-console"]);
