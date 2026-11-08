@@ -109,6 +109,13 @@ if (!run || run.error) {
   console.log("FAIL", stderr.replace(/\n/g, " ⏎ ").slice(0, 1200));
   process.exit(1);
 }
-console.log(JSON.stringify({ runtime: "workerd", runner: "forge", files: run.files, pass: run.pass, fail: run.fail, skip: run.skip, unexpected: run.fail, duration_ms: run.duration_ms, snapshot_files: run.snapshot_files }));
+const bundles = run.steps.bundles;
+const secrets = run.steps.secrets;
+console.log(JSON.stringify({
+  runtime: "workerd", runner: "forge", status: run.status, guard_status: run.guard_status,
+  files: run.files, pass: run.pass, fail: run.fail, skip: run.skip, unexpected: run.fail,
+  bundles: `${bundles.workers - bundles.failed.length}/${bundles.workers}`, secret_findings: secrets.findings.length,
+  duration_ms: run.duration_ms, snapshot_files: run.snapshot_files,
+}));
 for (const x of run.failures) console.log("FAIL", String(x).replace(/\n/g, " ⏎ ").slice(0, 600));
-process.exit(run.fail === 0 ? 0 : 1);
+process.exit(run.status === "passed" && run.guard_status === "clean" ? 0 : 1);
