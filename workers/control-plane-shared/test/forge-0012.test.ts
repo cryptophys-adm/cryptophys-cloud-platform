@@ -109,8 +109,11 @@ test("F4b. commit metadata is read defensively: hash/oid/sha/id, nested or epoch
   const h = "b".repeat(40);
   assert.deepEqual(presentCommit({ hash: h, message: "t\nbody", author: { name: "A", timestamp: 1794110000 } }), { sha: h, title: "t", author: "A", date: new Date(1794110000 * 1000).toISOString() });
   assert.equal(presentCommit({ oid: h }).sha, h);
-  assert.equal(presentCommit({ something: h }).sha, h, "any 40-hex field");
+  assert.equal(presentCommit({ treeHash: h }).sha, "", "a tree hash is not a commit id");
+  assert.equal(presentCommit({ something: h }).sha, "", "unknown 40-hex fields are not commit ids");
   assert.equal(presentCommit({ id: h, author: "B", authorDate: "2026-11-08T05:00:00Z" }).date, "2026-11-08T05:00:00.000Z");
+  assert.equal(presentCommit({ hash: h, message: "binding commit", author: { name: "A", email: "a@example.invalid" }, committer: { name: "A", email: "a@example.invalid" }, authoredAt: 1794110000, committedAt: 1794110000 }).date, new Date(1794110000 * 1000).toISOString(), "Artifacts binding authoredAt/committedAt are parsed");
+  assert.equal(presentCommit({ hash: h, authoredAt: 1e100 }).date, "", "invalid epoch values fail closed without throwing");
   assert.deepEqual(presentCommit({}), { sha: "", title: "", author: "", date: "" });
 });
 
