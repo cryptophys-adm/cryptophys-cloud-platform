@@ -51,7 +51,7 @@ jobs:
           [[ "$CONFIRM" == "ROLLBACK" ]] || { echo "::error::Exact confirmation ROLLBACK required"; exit 1; }
           [[ "$TAG" =~ ^[0-9a-f]{12}$ ]] || { echo "::error::version_tag must be 12 lowercase hex characters"; exit 1; }
           case "$WORKER" in
-            cryptophys-policy-engine|cryptophys-audit-ledger|cryptophys-platform-registry|cryptophys-recovery-manager|cryptophys-drift-detector|cryptophys-ai-kernel|cryptophys-console|cryptophys-home|cryptophys-platform-api|cryptophys-deployment-orchestrator) ;;
+            cryptophys-policy-engine|cryptophys-audit-ledger|cryptophys-platform-registry|cryptophys-recovery-manager|cryptophys-drift-detector|cryptophys-ai-kernel|cryptophys-console|cryptophys-home|cryptophys-platform-api|cryptophys-deployment-orchestrator|cryptophys-forge) ;;
             *) echo "::error::${WORKER} is not a platform Worker that can be rolled back"; exit 1 ;;
           esac
       - name: Checkout main (scripts only)

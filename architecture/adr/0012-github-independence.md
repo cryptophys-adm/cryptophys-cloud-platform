@@ -159,9 +159,9 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   - a 10-minute write token that only the CI service token can get.
 
   `mirror-to-forge.yml` pushes `main` to the Forge after every push, so GitHub and the Forge hold the same SHAs while GitHub remains the source of truth. Deployment is by `deploy-forge.yml`, after Provision Access has added the Worker to the platform Access application.
+- **1a live (2026-11-08).** The import is at `09a2533`, and the mirror has been running since `3dbbead`.
+- **1b, part 1 (this change).** The Forge is in the Platform Registry (migration 0030) and the Drift Detector (`SVC_FORGE`). It is an Orchestrator deploy unit (`deploy-forge.yml`, paths `workers/forge/`), and it is in the Rollback Worker allow-list. `deploy-forge.yml` records its desired version.
 - **1b (next).**
-  - Register the Forge in the Platform Registry and Drift Detector.
-  - Add it as an Orchestrator deploy unit.
   - Add the Console `#/code` page.
   - Back up the repository with a daily `git bundle` to R2.
   - Spike the Forge-side merge (ADR §2.5).

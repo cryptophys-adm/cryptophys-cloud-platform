@@ -138,10 +138,10 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     // A shared-library change touches every unit; the orchestrator goes first and the rest wait a cycle.
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
     assert.deepEqual(p.skipped.filter((s) => s.reason === "deployment_orchestrator_must_complete_first").map((s) => s.unit).sort(),
-      ["console", "control-plane", "home", "platform-api"]);
+      ["console", "control-plane", "forge", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
     p = await pendingDeploys(orchestratorEnv(db) as never);
-    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "home", "platform-api"]);
+    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "forge", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
     // A new D1 migration (2026-11-07): only the Control Plane deploy applies it, and every Worker's
     // readiness needs it, so the Control Plane goes first and alone; the orchestrator follows.
@@ -149,7 +149,7 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.deepEqual(p.units.map((u) => u.unit), ["control-plane"]);
     assert.deepEqual(p.skipped.filter((s) => s.reason === "control_plane_migration_first").map((s) => s.unit).sort(),
-      ["console", "deployment-orchestrator", "home", "platform-api"]);
+      ["console", "deployment-orchestrator", "forge", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id IN ('cryptophys-policy-engine','cryptophys-audit-ledger','cryptophys-platform-registry','cryptophys-recovery-manager','cryptophys-drift-detector','cryptophys-ai-kernel')").run(MAIN.slice(0, 12));
     p = await pendingDeploys(orchestratorEnv(db) as never);
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"], "after the Control Plane, the usual order resumes");
@@ -303,7 +303,7 @@ test("11. deploy proposals: never on an operator wake; at most one per scheduled
     const first = await runCycle(env as never, memory, "scheduled");
     let ps = proposals(db).filter((p) => p.action === "deploy_commit");
     assert.equal(ps.length, 1);
-    assert.equal(first.findings.filter((f) => f.kind === "deploy" && String(f.why ?? "").startsWith("deferred")).length, 3);
+    assert.equal(first.findings.filter((f) => f.kind === "deploy" && String(f.why ?? "").startsWith("deferred")).length, 4);
     await runCycle(env as never, memory, "scheduled");
     ps = proposals(db).filter((p) => p.action === "deploy_commit");
     assert.equal(ps.length, 2);
