@@ -290,7 +290,8 @@ test("N14. a one-time claim abandoned before deployment is terminally audited af
     new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + row.request_id),
   );
   const sha = Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const lock = env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(row.idempotency_key));
+  const deploymentLock = (env as any).DEPLOYMENT_LOCK;
+  const lock = deploymentLock.get(deploymentLock.idFromName(row.idempotency_key));
   const claimResponse = await lock.fetch("https://lock.internal/claim", {
     method: "POST",
     headers: { "content-type": "application/json" },
