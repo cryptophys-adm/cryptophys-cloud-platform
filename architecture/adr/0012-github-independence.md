@@ -163,7 +163,7 @@ How notices are kept and shown:
 
 - Each change of a topic (opened, changed, closed) is one audit event (`owner.notice_*`). That is the notice state, so no table is needed.
 - The Console shows the active notices on the Command page ("Needs your attention") from `GET /v1/notices`.
-- **Email** goes to the people in `APPROVER_IDENTITIES` once the owner onboards a sending domain in Email Service (Email Sending) and the kernel gets a `send_email` binding `OWNER_EMAIL` plus the var `NOTIFY_FROM`. Until then, notices appear in the Console only.
+- **Email** goes to the people in `APPROVER_IDENTITIES`. It is sent through the kernel's `send_email` binding `OWNER_EMAIL` from `NOTIFY_FROM = alerts@notify.cryptophys.work`, and the owner onboards `notify.cryptophys.work` in Email Service → Email Sending. Onboarding a subdomain adds its own `cf-bounce` MX, SPF, DKIM and DMARC records, and leaves the mail setup of `cryptophys.work` untouched. If sending fails, the notice is retried every run until delivery succeeds.
 
 `owner-attention.yml` and `drift-alert.yml` keep running in parallel. They are retired once email delivery is verified.
 
