@@ -180,16 +180,71 @@ export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((co
 export interface CheckSummary {
   commit: string; status: string; runner: string; files: number | null; pass: number | null; fail: number | null; skip: number | null;
   failures: string[]; started_at: string; finished_at: string | null; duration_ms: number | null;
+  /** The GitHub CI conclusion for the same commit, and whether the two agree (null while either is missing). */
+  github: "success" | "failure" | null; agrees: boolean | null;
 }
 
-export async function listChecks(db: D1Database, limit: number): Promise<{ checks: CheckSummary[] }> {
-  const n = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
-  const rows = await db.prepare("SELECT * FROM forge_check_runs ORDER BY started_at DESC LIMIT ?").bind(n).all<CheckRow>();
+/** ADR-0012 §5c: the Forge checks must agree with GitHub CI on this many consecutive commits. */
+export const PARITY_TARGET = 20;
+const PARITY_WINDOW = 100;
+
+export interface Parity { target: number; consecutive: number; compared: number; disagreements: string[] }
+
+/** Agreement: the Forge passed and GitHub CI succeeded, or the Forge failed and GitHub CI failed. */
+export function agreement(status: string, github: string | null): boolean | null {
+  if (!github || status === "running") return null;
+  if (status === "error") return false;
+  return (status === "passed") === (github === "success");
+}
+
+/** Consecutive agreements, newest first, over commits that have both results. */
+export function parity(rows: Array<{ commit: string; agrees: boolean | null }>): Parity {
+  let consecutive = 0;
+  let broken = false;
+  let compared = 0;
+  const disagreements: string[] = [];
+  for (const r of rows) {
+    if (r.agrees === null) continue;
+    compared++;
+    if (r.agrees && !broken) consecutive++;
+    if (!r.agrees) { broken = true; disagreements.push(r.commit); }
+  }
+  return { target: PARITY_TARGET, consecutive, compared, disagreements: disagreements.slice(0, 20) };
+}
+
+type JoinedRow = CheckRow & { github: "success" | "failure" | null };
+
+function summary(r: JoinedRow): CheckSummary {
+  let failures: string[] = [];
+  try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
   return {
-    checks: (rows.results ?? []).map((r) => {
-      let failures: string[] = [];
-      try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
-      return { commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures, started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms };
-    }),
+    commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures,
+    started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms, github: r.github ?? null, agrees: agreement(r.status, r.github ?? null),
   };
+}
+
+export async function listChecks(db: D1Database, limit: number): Promise<{ checks: CheckSummary[]; parity: Parity }> {
+  const n = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const rows = await db.prepare(
+    `SELECT r.*, g.conclusion AS github FROM forge_check_runs r LEFT JOIN forge_ci_reports g ON g.commit_sha = r.commit_sha
+     ORDER BY r.started_at DESC LIMIT ?`,
+  ).bind(Math.max(n, PARITY_WINDOW)).all<JoinedRow>();
+  const all = (rows.results ?? []).map(summary);
+  return { checks: all.slice(0, n), parity: parity(all) };
+}
+
+/** GitHub CI's conclusion for a commit of main (forge-ci-report.yml). A re-run replaces it. */
+export async function recordCiReport(db: D1Database, input: { commit: unknown; conclusion: unknown; workflow_run_id: unknown }, actor: string, nowMs = Date.now()): Promise<{ commit: string; conclusion: string }> {
+  const commit = typeof input.commit === "string" ? input.commit : "";
+  const conclusion = input.conclusion;
+  const runId = typeof input.workflow_run_id === "string" || typeof input.workflow_run_id === "number" ? String(input.workflow_run_id) : "";
+  if (!HEX40.test(commit)) throw Object.assign(new Error("invalid_commit"), { status: 400 });
+  if (conclusion !== "success" && conclusion !== "failure") throw Object.assign(new Error("invalid_conclusion"), { status: 400 });
+  if (!/^\d{1,20}$/.test(runId)) throw Object.assign(new Error("invalid_workflow_run_id"), { status: 400 });
+  await db.prepare(
+    `INSERT INTO forge_ci_reports (commit_sha, conclusion, workflow_run_id, reported_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(commit_sha) DO UPDATE SET conclusion = excluded.conclusion, workflow_run_id = excluded.workflow_run_id, reported_at = excluded.reported_at`,
+  ).bind(commit, conclusion, runId, new Date(nowMs).toISOString()).run();
+  await appendAuditEvent(db, { event_type: "forge.ci_reported", actor, subject: commit, outcome: conclusion, payload: { workflow_run_id: runId } });
+  return { commit, conclusion };
 }

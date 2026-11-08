@@ -21,6 +21,7 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("platform.overview", "platform", "GET", "/v1/overview", false, null),
   r("forge.status", "forge", "GET", "/v1/forge/status", false, null),
   r("forge.commits", "forge", "GET", "/v1/forge/commits", false, null),
+  r("forge.checks", "forge", "GET", "/v1/forge/checks", false, null),
   r("kernel.kernel", "kernel", "GET", "/v1/kernel", false, null),
   r("kernel.status", "kernel", "GET", "/v1/status", false, null),
   r("kernel.notices", "kernel", "GET", "/v1/notices", false, null),

@@ -248,8 +248,8 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   assert.equal(new Set(keys).size, keys.length);
   // 33 TP-023 rows + 2 read-only consensus rows (ADR-0009 phase 1) + 2 owner-click rows (phase 4) + the agreement report (Wave B) + the mode control + 4 Users page rows (2026-11-07)
   // + 3 knowledge-review rows (TP-028: the list, approve and reject).
-  // + 2 read-only Forge rows (ADR-0012 phase 1b: the Code page).
-  assert.equal(keys.length, 49);
+  // + 2 read-only Forge rows (ADR-0012 phase 1b: the Code page) + the Forge checks (phase 3).
+  assert.equal(keys.length, 50);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"].map((p) => `kernel POST ${p}`),
@@ -268,6 +268,7 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
     "platform GET /v1/overview",
     "forge GET /v1/forge/status",
     "forge GET /v1/forge/commits",
+    "forge GET /v1/forge/checks",
   ];
   assert.deepEqual([...keys].sort(), [...expected].sort());
   assert.ok(!keys.some((k) => k.includes("mcp")));

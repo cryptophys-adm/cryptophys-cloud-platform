@@ -186,9 +186,14 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   - **Schedule.** A cron at `:04/:19/:34/:49` checks at most one commit per tick: the oldest unchecked one among the newest 5 on `main`. A run still `running` after 30 minutes is retried.
   - **Same code locally.** `tools/forge-runner/run.mjs` runs this same checks code in local workerd. The only stand-in is the Artifacts repo, built from the working tree. Result: 329/329 in 38 s.
   - **Informational until parity.** Forge checks are not in the deploy gate until they agree with GitHub CI on 20 consecutive commits of `main`.
+  - **Live since 2026-11-08 09:19 UTC.** The first run checked `8588e21` on Cloudflare: 43 files, 321 passed and 1 failed, in 43 s. The failure was expected. That commit predates the Forge bundler, so its TP-025 still called `npx wrangler`.
+  - **Parity record.**
+    - `forge-ci-report.yml` runs after "Validate Control Plane Workers" finishes on a push to `main`. It reports the conclusion to `POST /v1/forge/ci-report`, with the CI service token only.
+    - Reports land in D1 `forge_ci_reports` (migration 0032).
+    - `GET /v1/forge/checks` puts GitHub's conclusion next to each Forge check. It also counts consecutive agreements, newest first. A Forge `error` is never an agreement.
+    - The Console Code page shows the checks and the `parity N/20` count.
 - **Parity CI.** `forge-runner-parity.yml` runs `tools/forge-runner` next to the Node suite on every PR and push.
 - **Next.**
-  - Compare Forge checks with GitHub CI per commit, and show them on the Console Code page.
   - Use the Forge bundler for the deploy bundles, then the Console build (Vite/React).
   - Run checks for branches and proposals (phase 4).
 
