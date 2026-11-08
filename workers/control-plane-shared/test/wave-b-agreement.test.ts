@@ -2,7 +2,7 @@
 // attention workflow wiring.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
 import { appendAuditEvent } from "../src/audit.ts";
 import { agreementReport } from "../../ai-kernel/src/consensus.ts";
@@ -63,14 +63,15 @@ test("B3. agreement: an empty window reports no rate; the window is bounded", as
   assert.equal(r.agreement_rate, null);
 });
 
-test("B2/B3. wiring: kernel route, Console panel and route, owner-attention workflow", () => {
+test("B2/B3. wiring: kernel route, Console panel and route; owner notices come from the AI Kernel (ADR-0012)", () => {
   assert.match(readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8"), /path === "\/v1\/consensus\/report"/);
   assert.match(readFileSync(new URL("workers/console/ui/src/pages/Consensus.tsx", ROOT), "utf8"), /call\("kernel\.consensus_report"/);
-  const wf = readFileSync(new URL(".github/workflows/owner-attention.yml", ROOT), "utf8");
-  assert.match(wf, /issues: write/);
-  assert.match(wf, /OWNER_LOGIN: cryptophys-adm/);
-  assert.match(wf, /status=draft/);
-  assert.match(readFileSync(new URL(".github/workflows/validate.yml", ROOT), "utf8"), /owner-attention\.test\.sh/);
+  // ADR-0012 phase 2: the GitHub issue workflows are retired; the kernel's owner notices replace them.
+  for (const f of [".github/workflows/owner-attention.yml", ".github/workflows/drift-alert.yml"]) {
+    assert.equal(existsSync(new URL(f, ROOT)), false, `${f} is retired`);
+  }
+  assert.match(readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8"), /reconcileNotices\(env, event\.scheduledTime\)/);
+  assert.doesNotMatch(readFileSync(new URL(".github/workflows/validate.yml", ROOT), "utf8"), /owner-attention\.test\.sh|drift-summary\.test\.sh|report-summary\.test\.sh/);
 });
 
 // ---------------------------------------------------------------- B1: rollback to the previous recorded version

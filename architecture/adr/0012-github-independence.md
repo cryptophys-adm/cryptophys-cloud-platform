@@ -165,7 +165,7 @@ How notices are kept and shown:
 - The Console shows the active notices on the Command page ("Needs your attention") from `GET /v1/notices`.
 - **Email** goes to the people in `APPROVER_IDENTITIES`. It is sent through the kernel's `send_email` binding `OWNER_EMAIL` from `NOTIFY_FROM = alerts@notify.cryptophys.work`, and the owner onboards `notify.cryptophys.work` in Email Service → Email Sending. Onboarding a subdomain adds its own `cf-bounce` MX, SPF, DKIM and DMARC records, and leaves the mail setup of `cryptophys.work` untouched. If sending fails, the notice is retried every run until delivery succeeds.
 
-`owner-attention.yml` and `drift-alert.yml` keep running in parallel. They are retired once email delivery is verified.
+`owner-attention.yml` and `drift-alert.yml` were retired on 2026-11-08, after the first owner email was delivered (audit `delivery: sent`). Their summary scripts and script tests went with them.
 
 ### 6. Owner decisions (2026-11-08)
 
