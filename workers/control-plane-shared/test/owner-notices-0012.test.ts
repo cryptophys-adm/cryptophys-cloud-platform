@@ -166,5 +166,6 @@ test("O5. wiring: kernel schedule, kernel route, Console route and panel", () =>
   const toml = readFileSync(new URL("workers/ai-kernel/wrangler.toml", ROOT), "utf8");
   assert.match(toml, /\[\[send_email\]\]\nname = "OWNER_EMAIL"\n/, "owner notices are emailed through the send_email binding");
   assert.match(toml, /^NOTIFY_FROM = "alerts@notify\.cryptophys\.work"$/m, "the sender is on the onboarded subdomain");
-  assert.doesNotMatch(toml, /destination_address/, "recipients come from APPROVER_IDENTITIES, not from config");
+  assert.match(toml, /allowed_destination_addresses = \\["owner-notify-placeholder@example\\.invalid"\\]/, "source config fails closed; deploy rendering injects protected approver identities");
+  assert.match(toml, /allowed_sender_addresses = \\["alerts@notify\\.cryptophys\\.work"\\]/, "binding restricts the sender as well as recipients");
 });
