@@ -479,6 +479,27 @@ async function verifyNativeRollbackRequest(secret: string, row: NativeRollbackSi
   return crypto.subtle.verify("HMAC", key, bytes, new TextEncoder().encode(nativeRollbackPayload(row, details)));
 }
 
+/**
+ * Claim execution outside shared D1. The HMAC authenticates the immutable request, but a
+ * D1 writer could restore an old signed row to status='approved'. A request-scoped Durable
+ * Object claim makes each signed request executable at most once, even after D1 status replay.
+ */
+async function claimNativeRollbackExecution(env: Env, requestId: string): Promise<boolean> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + requestId),
+  );
+  const sha = Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName("native-rollback-execution:" + requestId))
+    .fetch("https://lock.internal/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sha }),
+    });
+  const result = await response.json() as { claimed?: boolean };
+  return response.ok && result.claimed === true;
+}
+
 async function failNativeRollbackRequest(env: Env, row: NativeRollbackSignedRow, details: Record<string, unknown>, reason: string, now: number): Promise<void> {
   await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'approved'")
     .bind(JSON.stringify({ ...details, outcome: { reason } }), new Date(now).toISOString(), row.request_id).run();
@@ -579,6 +600,9 @@ export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: ty
       continue;
     }
     if (!nativeRollbackConfigured(env)) continue;
+    // HMAC alone is not a one-time token: a shared-D1 writer could restore the original signed
+    // details and reset status to approved. Claim a request-scoped DO key before the D1 transition.
+    if (!(await claimNativeRollbackExecution(env, r.request_id))) continue;
 
     const claim = await env.DB.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ? AND status = 'approved'")
       .bind(new Date(now).toISOString(), r.request_id).run();
