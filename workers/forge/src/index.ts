@@ -23,6 +23,8 @@ export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
+/** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -174,7 +176,7 @@ export async function mirrorToken(env: Env, identity: AccessIdentity): Promise<{
 async function readiness(env: Env): Promise<Response> {
   const checks = {
     production_environment: env.SERVICE_ENVIRONMENT === "production",
-    database_schema: await schemaReady(env as never),
+    database_schema: await schemaReady(env as never, FORGE_MIGRATIONS),
     operator_identities_configured: listConfigured(env.OPERATOR_IDENTITIES),
     artifacts_binding: Boolean(env.ARTIFACTS),
     access_configured: accessConfigured(env),

@@ -188,6 +188,32 @@ export function templateAuditDigest(
   };
 }
 
+/** A governance warning that persists unchanged is published again at most this often. */
+export const AUDIT_WARNING_REPEAT_MS = 6 * 60 * 60_000;
+
+/** The last published governance warning: its counts per reason and when it was published. */
+export interface LastAuditWarning { counts: Record<string, number>; at: number }
+
+/**
+ * The 24-hour counts roll: one burst of denied syscalls stays above the threshold for a whole day,
+ * and every hourly cycle used to publish the same warning again (2026-11-06: nine warnings for one
+ * burst). A warning is now published when a reason is new or its count has grown since the last
+ * published warning, or after AUDIT_WARNING_REPEAT_MS. A critical finding (invalid chain) always is.
+ */
+export function warningIsNew(reasons: string[], last: LastAuditWarning | undefined, now: number): boolean {
+  if (!last) return true;
+  for (const r of reasons) {
+    const [name, n] = r.split(":");
+    const count = Number(n ?? 0);
+    if (!(name in last.counts) || count > last.counts[name]) return true;
+  }
+  return now - last.at >= AUDIT_WARNING_REPEAT_MS;
+}
+
+export function warningCounts(reasons: string[]): Record<string, number> {
+  return Object.fromEntries(reasons.map((r) => { const [name, n] = r.split(":"); return [name, Number(n ?? 0)]; }));
+}
+
 function evaluateAuditTriggers(
   obs: AuditObservation,
   now: number,
@@ -253,8 +279,10 @@ export async function runAuditCycle(
   }
 
   const { shouldPublish, severity, reasons, dailyDay } = evaluateAuditTriggers(obs, now, lastDailyDay);
-  if (!shouldPublish) {
-    report.findings.push({ kind: "audit", action: "none" });
+  const lastWarning = await memory.get<LastAuditWarning>("last_warning");
+  const repeated = severity === "warning" && !warningIsNew(reasons, lastWarning, now);
+  if (!shouldPublish || repeated) {
+    report.findings.push({ kind: "audit", action: "none", ...(repeated ? { why: "same governance warning already published" } : {}) });
     await memory.put("last_cycle", report);
     return report;
   }
@@ -306,6 +334,7 @@ export async function runAuditCycle(
     if (dailyDay) {
       await memory.put("last_daily_digest_day", dailyDay);
     }
+    if (severity === "warning") await memory.put("last_warning", { counts: warningCounts(reasons), at: now });
     const reportId = String(((pub.result.report as JsonObject | undefined)?.report_id) ?? "");
     await rememberOutcomeForAgent(env, AUDITOR_ID, "audit_digest", draft.headline, reportId || null, report);
   }

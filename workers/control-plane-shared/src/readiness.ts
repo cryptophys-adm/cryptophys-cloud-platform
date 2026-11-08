@@ -28,9 +28,14 @@ const REQUIRED_MIGRATIONS = [
 
 export type Checks = Record<string, boolean>;
 
-export async function schemaReady(env: BaseEnv): Promise<boolean> {
+/**
+ * Every service needs REQUIRED_MIGRATIONS. A service that owns newer tables passes its own (for
+ * example the Forge: forge_check_runs and forge_ci_reports), so it is never ready before they exist
+ * without making every other Worker wait for migrations it does not use.
+ */
+export async function schemaReady(env: BaseEnv, extra: readonly string[] = []): Promise<boolean> {
   try {
-    for (const name of REQUIRED_MIGRATIONS) {
+    for (const name of [...REQUIRED_MIGRATIONS, ...extra]) {
       const row = await env.DB.prepare("SELECT name FROM d1_migrations WHERE name = ?").bind(name).first();
       if (row === null) return false;
     }
