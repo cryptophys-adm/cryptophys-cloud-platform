@@ -82,6 +82,7 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("drift", "GET", ["/v1/drift", "/v1/drift/{id}"]),
   ...rows("drift", "POST", ["/v1/observe"]),
   ...rows("audit", "GET", ["/v1/events", "/v1/events/{id}", "/v1/verify"]),
+  ...rows("orchestrator", "GET", ["/v1/deployments"]),
   ...rows("orchestrator", "POST", ["/v1/deployments"]),
   ...rows("platform", "GET", ["/v1/overview"]),
   // ADR-0012 phase 1b: the Code page reads the Forge (no write route is forwarded); phase 3 adds checks.
