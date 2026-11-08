@@ -31,6 +31,8 @@ export interface Env {
   AUDIT?: ServiceBinding;
   ORCHESTRATOR?: ServiceBinding;
   PLATFORM?: ServiceBinding;
+  /** ADR-0012: the Forge (platform source on Cloudflare Artifacts), read-only from the Console. */
+  FORGE?: ServiceBinding;
   ASSETS?: AssetsBinding;
   /** ADR-0010: the one public origin. The Console lives at <NEXUS_ORIGIN>/console/. */
   NEXUS_ORIGIN?: string;
@@ -41,7 +43,7 @@ export interface Env {
 /** ADR-0010: the Console is mounted under this path on the Nexus host (Workers route nexus.cryptophys.work/console*). */
 export const MOUNT = "/console";
 
-export type ConsoleService = "kernel" | "recovery" | "registry" | "policy" | "drift" | "audit" | "orchestrator" | "platform";
+export type ConsoleService = "kernel" | "recovery" | "registry" | "policy" | "drift" | "audit" | "orchestrator" | "platform" | "forge";
 
 /** URL service name -> binding name. */
 export const SERVICE_BINDINGS: Record<ConsoleService, keyof Env> = {
@@ -53,6 +55,7 @@ export const SERVICE_BINDINGS: Record<ConsoleService, keyof Env> = {
   audit: "AUDIT",
   orchestrator: "ORCHESTRATOR",
   platform: "PLATFORM",
+  forge: "FORGE",
 };
 
 export interface AllowRule { service: ConsoleService; method: string; path: string }
@@ -79,6 +82,8 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("audit", "GET", ["/v1/events", "/v1/events/{id}", "/v1/verify"]),
   ...rows("orchestrator", "POST", ["/v1/deployments"]),
   ...rows("platform", "GET", ["/v1/overview"]),
+  // ADR-0012 phase 1b: the Code page reads the Forge (no write route is forwarded).
+  ...rows("forge", "GET", ["/v1/forge/status", "/v1/forge/commits"]),
 ];
 
 const SEGMENT = /^[A-Za-z0-9._@+:-]{1,128}$/;
