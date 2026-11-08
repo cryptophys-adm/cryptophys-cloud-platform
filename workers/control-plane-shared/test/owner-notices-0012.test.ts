@@ -143,7 +143,7 @@ test("O5. wiring: kernel schedule, kernel route, Console route and panel", () =>
   assert.match(idx, /path === "\/v1\/notices" && request\.method === "GET"/);
   assert.match(readFileSync(new URL("workers/console/src/ui/routes.ts", ROOT), "utf8"), /r\("kernel\.notices", "kernel", "GET", "\/v1\/notices", false, null\)/);
   const command = readFileSync(new URL("workers/console/ui/src/pages/Command.tsx", ROOT), "utf8");
-  assert.match(command, /call\("kernel\\.notices"\)/);
+  assert.match(command, /call\("kernel\.notices"\)/);
   assert.match(command, /Email enabled/);
   assert.doesNotMatch(command, /emailed to the owner/, "configuration is not proof of delivery");
   assert.doesNotMatch(readFileSync(new URL("workers/ai-kernel/wrangler.toml", ROOT), "utf8"), /send_email/, "the email binding is added only after the owner onboards the sending domain");
