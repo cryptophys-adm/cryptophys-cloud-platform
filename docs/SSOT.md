@@ -9,6 +9,7 @@ Last reviewed: 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 These hold everywhere:
 
 - **Advisory only.** No trading, no funds, no orders, no price levels (ADR-0009, the knowledge validator).
+- **No containers, with one exception.** Production runs on Workers and their bindings only. The exception, chosen by the owner on 2026-11-08, is the Forge type-check, which runs in a Cloudflare Container with no internet (ADR-0005 decision 1, ADR-0012 §5c).
 - **Never weaken Access, auth or tests.** No test is skipped. A test that cannot run somewhere keeps running where it can.
 - **The owner creates every secret and credential.** None is created by an agent or stored in the repository.
 - **Data deletion and irreversible actions are critical.** The owner decides them.
@@ -43,7 +44,7 @@ These hold everywhere:
 | `cryptophys-drift-detector` | Desired-versus-observed versions and health; reports once per episode | every 15 min |
 | `cryptophys-deployment-orchestrator` | Deploy requests, the deployments list (Console Pipelines), native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
-| `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers | :04/:19/:34/:49 |
+| `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check in a Container (`TypecheckContainer`) | :04/:19/:34/:49 |
 | `cryptophys-home` | Retired (redirects to Nexus); scheduled for removal | — |
 | `cryptophys-signal-engine` | Disabled (TP-018) | — |
 
