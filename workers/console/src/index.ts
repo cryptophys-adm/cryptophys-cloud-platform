@@ -7,7 +7,7 @@
  * verifies it and enforces the operator rule, approver rule and separation of duties.
  */
 import { accessConfigured, accessGate, actorOf, authenticate, identityAllowed, listConfigured, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
-import { CONSOLE_ACCESS_HEADER, deniedPage, wantsHtml } from "./denied.ts";
+import { CONSOLE_ACCESS_HEADER, SWITCH_ACCOUNT_PATH, deniedPage, switchAccountPage, wantsHtml } from "./denied.ts";
 import { MAX_BODY_BYTES, healthBody } from "../../control-plane-shared/src/http.ts";
 
 export interface ServiceBinding { fetch(request: Request): Promise<Response> }
@@ -269,12 +269,20 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return path.startsWith("/health") ? json(consoleHealth(env)) : readiness(env);
   }
 
+  // Switch account: any signed-in person may sign out, including those the Console refuses.
+  if (path === SWITCH_ACCOUNT_PATH) {
+    const blocked = await accessGate(request, env);
+    if (blocked) return blocked;
+    if (method !== "GET" && method !== "HEAD") return json({ error: "method_not_allowed" }, 405);
+    return switchAccountPage(url.pathname.startsWith(`${MOUNT}/`) ? MOUNT : "", env.ACCESS_TEAM_DOMAIN, method);
+  }
+
   const operator = await consoleGate(request, env);
   if (!operator.ok) {
     // A signed-in person without Console access who opens a page gets a page, not JSON: who they
     // are, and a way to switch to an account that has access. API calls keep the JSON 403.
     if (operator.deniedActor && !path.startsWith("/api/") && (method === "GET" || method === "HEAD") && wantsHtml(request)) {
-      return deniedPage(operator.deniedActor, env.NEXUS_ORIGIN, method);
+      return deniedPage(operator.deniedActor, env.NEXUS_ORIGIN, method, url.pathname.startsWith(`${MOUNT}/`) ? MOUNT : "");
     }
     return operator.response;
   }

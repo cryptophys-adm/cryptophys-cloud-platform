@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb, signAccessJwt } from "./harness.ts";
 import consoleWorker, { SERVICE_BINDINGS } from "../../console/src/index.ts";
-import { ACCESS_LOGOUT_PATH, CONSOLE_ACCESS_HEADER } from "../../console/src/denied.ts";
+import { ACCESS_LOGOUT_PATH, CONSOLE_ACCESS_HEADER, SWITCH_DELAY_S } from "../../console/src/denied.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -51,7 +51,7 @@ test("SO1. a Nexus-only account opening the Console gets a page: who they are, S
   assert.match(html, /This account cannot open the Cerebrum Console/);
   assert.ok(html.includes("nexus.user+&lt;b&gt;@example.com"), "the identity is shown, escaped");
   assert.ok(!html.includes("<b>@"), "never as markup");
-  assert.ok(html.includes(`href="${ACCESS_LOGOUT_PATH}">Switch account</a>`));
+  assert.ok(html.includes(`href="/console/switch-account">Switch account</a>`), "Switch account goes through the Console's switch page");
   assert.ok(html.includes(`href="${NEXUS}/">Back to Nexus</a>`));
   assert.doesNotMatch(html, /<script/i, "no script on the page");
   // The page keeps the Console's strict CSP: no inline style without its hash, nothing else allowed.
@@ -100,11 +100,35 @@ test("SO4. the UI: account menu with Switch account and Sign out, the role shown
   assert.match(api, /res\.status === 403 && res\.headers\.get\("x-cryptophys-console-access"\) === "denied"/);
   const shell = read("workers/console/ui/src/components/AppShell.tsx");
   assert.match(shell, /function AccountMenu\(\)/);
-  assert.equal((shell.match(/href=\{ACCESS_LOGOUT\}/g) ?? []).length, 4, "Switch account and Sign out, in the desktop menu and the mobile menu");
+  assert.equal((shell.match(/href=\{SWITCH_ACCOUNT\}[^>]*>.*Switch account/g) ?? []).length, 2, "Switch account, in the desktop menu and the mobile menu");
+  assert.equal((shell.match(/href=\{ACCESS_LOGOUT\}[^>]*>.*Sign out/g) ?? []).length, 2, "Sign out, in the desktop menu and the mobile menu");
+  assert.match(api, /export const SWITCH_ACCOUNT = `\$\{MOUNT\}\/switch-account`;/);
   assert.match(shell, /Sign out/);
   assert.match(shell, /if \(who\.viewer \|\| who\.role === "viewer"\) return "Viewer";/, "a viewer is no longer labelled Operator");
   assert.match(shell, /\{roleLabel\(who\)\}<\/span>/);
   const main = read("workers/console/ui/src/main.tsx");
   assert.match(main, /err\?\.status === 403 \? <AccessNeeded \/>/);
-  assert.match(main, /href=\{ACCESS_LOGOUT\}[^>]*>Switch account/);
+  assert.match(main, /href=\{SWITCH_ACCOUNT\}[^>]*>Switch account/);
+});
+
+test("SO5. Switch account signs out in the background, then brings the person back to sign in to the Console", async () => {
+  const jwt = await signAccessJwt({ email: "nexus.user@example.com" });
+  const r = await get(`${NEXUS}/console/switch-account`, jwt, HTML);
+  assert.equal(r.status, 200, "open to any signed-in person, including those the Console refuses");
+  assert.equal(r.headers.get("cache-control"), "no-store");
+  const html = await r.text();
+  assert.ok(html.includes(`<meta http-equiv="refresh" content="${SWITCH_DELAY_S};url=/console/">`), "back to the Console, which Access answers with its sign-in page");
+  assert.ok(html.includes(`<img src="${ACCESS_LOGOUT_PATH}"`), "logout on this host");
+  const team = env().ACCESS_TEAM_DOMAIN;
+  assert.ok(html.includes(`<img src="https://${team}${ACCESS_LOGOUT_PATH}"`), "and on the team domain");
+  assert.ok(html.includes(`<a class="btn primary" href="/console/">Continue to sign in</a>`));
+  assert.doesNotMatch(html, /<script/i);
+  const csp = r.headers.get("content-security-policy") ?? "";
+  assert.match(csp, new RegExp(`img-src 'self' https://${team.replace(/\./g, "\\.")};`));
+  assert.match(csp, /^default-src 'none'; style-src 'sha256-[A-Za-z0-9+/=]+';/);
+  const dev = await get("https://cryptophys-console.x.workers.dev/switch-account", jwt, HTML);
+  assert.ok((await dev.text()).includes('content="3;url=/"'), "without the mount it returns to /");
+  assert.equal((await get(`${NEXUS}/console/switch-account`, null, HTML)).status, 403, "no anonymous page");
+  const post = await consoleWorker.fetch(new Request(`${NEXUS}/console/switch-account`, { method: "POST", headers: { "cf-access-jwt-assertion": jwt } }), env() as never);
+  assert.equal(post.status, 405);
 });

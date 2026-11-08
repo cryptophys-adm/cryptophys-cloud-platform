@@ -5,7 +5,7 @@ import {
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
   FolderGit2, LogOut, UserRound, ArrowLeftRight,
 } from "lucide-react";
-import { ACCESS_LOGOUT } from "../lib/api";
+import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
 import { Dot } from "./ui";
@@ -101,7 +101,7 @@ function AccountMenu() {
           <div className="mono break-all text-[12px] text-slate-200">{who.actor}</div>
           <div className="mt-1 text-[11px] text-cyan-200">{roleLabel(who)}</div>
         </div>
-        <a role="menuitem" href={ACCESS_LOGOUT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
+        <a role="menuitem" href={SWITCH_ACCOUNT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
         <a role="menuitem" href={ACCESS_LOGOUT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-rose-200 hover:bg-rose-500/10"><LogOut className="h-4 w-4" />Sign out</a>
       </div>
     </details>
@@ -169,7 +169,7 @@ export default function AppShell({ current, children }: { current: string; child
             {navLinks(true)}
             <a href="https://nexus.cryptophys.work/" className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><Home className="h-4 w-4 text-slate-500" />Nexus</a>
             <div className="mt-1 border-t border-white/10 px-4 pt-3 text-[11px] text-slate-500">Signed in as <span className="mono break-all text-slate-300">{who.actor}</span> · {roleLabel(who)}</div>
-            <a href={ACCESS_LOGOUT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
+            <a href={SWITCH_ACCOUNT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
             <a href={ACCESS_LOGOUT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-rose-200 hover:text-rose-100"><LogOut className="h-4 w-4" />Sign out</a>
           </div>
         )}

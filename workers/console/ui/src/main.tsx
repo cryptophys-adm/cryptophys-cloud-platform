@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import NeuralMeshBackground from "./components/NeuralMeshBackground";
-import { ACCESS_LOGOUT, ApiError, NEXUS_HOME, whoami } from "./lib/api";
+import { ACCESS_LOGOUT, ApiError, NEXUS_HOME, SWITCH_ACCOUNT, whoami } from "./lib/api";
 import { SessionProvider, type Who } from "./lib/session";
 import { OverviewProvider } from "./lib/overview";
 
@@ -17,10 +17,10 @@ function AccessNeeded({ actor }: { actor?: string }) {
         {actor ? <p className="mt-3 text-slate-400">Signed in as <span className="mono break-all text-slate-200">{actor}</span></p> : null}
         <p className="mt-3 text-slate-400">This account can use Nexus. The Cerebrum Console needs an admin account (viewer, operator or approver). Sign in with an account that has access, or ask an owner to grant it on the Users page.</p>
         <div className="mt-5 flex flex-wrap gap-2">
-          <a href={ACCESS_LOGOUT} className="inline-flex min-h-10 items-center rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-4 font-semibold text-cyan-100 hover:border-cyan-300/60">Switch account</a>
+          <a href={SWITCH_ACCOUNT} className="inline-flex min-h-10 items-center rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-4 font-semibold text-cyan-100 hover:border-cyan-300/60">Switch account</a>
           <a href={NEXUS_HOME} className="inline-flex min-h-10 items-center rounded-lg border border-white/10 px-4 font-semibold text-slate-200 hover:border-white/25">Back to Nexus</a>
         </div>
-        <p className="mt-4 text-[11px] text-slate-500">Switch account signs you out of Cloudflare Access. Then open the Console again and sign in with the account that has access.</p>
+        <p className="mt-4 text-[11px] text-slate-500">Switch account signs you out and brings you straight back to the sign-in page. If your identity provider signs you in automatically, choose another account there.</p>
       </div>
     </div>
   );
