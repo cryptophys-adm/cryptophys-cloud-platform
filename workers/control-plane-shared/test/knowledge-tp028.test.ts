@@ -18,12 +18,12 @@ const cards = (n = 12) => Array.from({ length: n }, (_, i) => `d:60:${1793000000
 
 function item(over: Record<string, unknown> = {}) {
   return {
-    schema: KNOWLEDGE_ITEM_VERSION, item_id: "k-prophet-trap", version: 1, kind: "caution", claim_type: "measured_outcome",
+    schema: KNOWLEDGE_ITEM_VERSION, item_id: "k-prophet-trap", version: 1, kind: "caution", claim_type: "measured_outcome", label: "learned",
     audience: { agents: ["prophet", "moderator"], charts: ["60"] },
-    situation: { stuck: "structure", session: "london" },
-    text: "When the Prophet structure stayed a bull trap for 8 or more hourly candles, its bearish lean was wrong in 11 of 14 such bars.",
-    evidence: { candles: 8, bars: 14, wrong: 11, baseline_wrong_rate: 0.48, p_value: 0.03, window: ["2026-10-08", "2026-11-07"] },
-    provenance: { card_ids: cards(), canon_sha: CANON, scoring_version: "v3" },
+    situation: { chart: "60", session: "london" },
+    text: "On the hourly chart in the London session, the prophet agent was wrong in 79% of its decisive calls over 30 days, against 48% in its other situations.",
+    evidence: { agent: "prophet", chart: "60", session: "london", window_days: 30, decisive: 14, wrong: 11, wrong_pct: 79, baseline_wrong_pct: 48, baseline_decisive: 20, p_value: 0.03 },
+    provenance: { card_ids: cards(), canon_sha: CANON, canon_version: "aether.canon.v1", source: "aether" },
     ...over,
   };
 }
@@ -54,10 +54,23 @@ test("0029 grants knowledge.propose and knowledge.status to the Aether curator a
 
 test("validator: measured or role claims in plain words, numbers from the evidence, 10+ cited cards, no level, size or order", () => {
   assert.deepEqual(validateKnowledgeItem(item()), []);
-  assert.deepEqual(validateKnowledgeItem(item({ kind: "role_reminder", claim_type: "role_reminder", audience: { agents: ["r37_funnel", "moderator"], charts: [] }, text: "In the last 7 days the r37 funnel agent spoke of calibration in 11 of its 14 room turns; its role is to read its own indicator only.", evidence: { agent: "r37_funnel", window_days: 7, violations: 11, turns: 14 } })), [], "room agent ids may hold an underscore; the text uses words, and a number in a name comes from the evidence");
+  assert.deepEqual(validateKnowledgeItem(item({ kind: "role_reminder", claim_type: "role_reminder", audience: { agents: ["r37_funnel", "moderator"], charts: [] }, situation: { check: "calibration_talk" }, text: "In the last 7 days the r37 funnel agent spoke of calibration, parity or verification in 13% of the rooms it spoke in. Its role and the owner rules forbid this.", evidence: { agent: "r37_funnel", check: "calibration_talk", window_days: 7, rooms_with_break: 21, rooms: 168, rate_pct: 13 } })), [], "the current Aether role-reminder contract is accepted");
   assert.ok(validateKnowledgeItem(item({ audience: { agents: ["Bad Agent"], charts: [] } })).includes("audience_invalid"));
   const errs = (over: Record<string, unknown>) => validateKnowledgeItem(item(over));
   assert.ok(errs({ text: "Price rejected 4051 twice, so the lean was wrong in 11 of 14 bars." }).includes("text_price_like_number"));
+  assert.ok(errs({ text: "The price reached 123456 before the signal changed.", evidence: { price: 123456, wrong: 11, bars: 14 } }).includes("text_trading_value_wording"));
+  assert.ok(errs({ text: "The price reached 123456 before the signal changed.", evidence: { price: 123456, wrong: 11, bars: 14 } }).includes("text_price_like_number"));
+  assert.ok(errs({ text: "The level stayed relevant for 11 of 14 bars." }).includes("text_trading_value_wording"));
+  assert.ok(errs({ text: "The sample size was 14 bars and the lean was wrong in 11." }).includes("text_trading_value_wording"));
+  assert.ok(errs({ text: "The pattern appeared 123456 times in the sample.", evidence: { occurrences: 123456, wrong: 11, bars: 14 } }).includes("text_price_like_number"), "six-digit values cannot bypass the price-like number guard");
+  assert.ok(errs({ evidence: { summary: "Price reached 123456 before the reversal." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle price language into the kernel");
+  assert.ok(errs({ evidence: { summary: "123456" } }).includes("evidence_trading_value_wording"), "a bare price-like value cannot hide in free-form evidence");
+  assert.ok(errs({ evidence: { note: "A buy limit was placed near 4051." } }).includes("evidence_trading_value_wording"), "free-form evidence cannot smuggle order language into the kernel");
+  assert.deepEqual(validateKnowledgeItem(item()), [], "structured numeric metrics in the current Aether evidence contract remain valid");
+  assert.ok(errs({ evidence: { ...item().evidence, window: ["2026-10-08", "2026-11-07"] } }).includes("evidence_shape_invalid"), "date-window arrays are not part of the current exact evidence contract");
+  assert.ok(errs({ evidence: { summary: "XAUUSD 4_078.50" } }).includes("evidence_trading_value_wording"), "underscore-grouped price values are rejected in free-form evidence");
+  assert.ok(errs({ text: "The pattern appeared 4_078 times in the sample." }).includes("text_price_like_number"), "underscore-grouped price values are rejected in candidate text");
+  assert.ok(errs({ evidence: { lastKnownPrice: 4051 } }).some((e) => e === "forbidden_key:item.evidence.lastKnownPrice"), "camelCase price fields are forbidden recursively");
   assert.ok(errs({ text: "Place a buy limit when the lean was wrong in 11 of 14 bars." }).includes("text_order_wording"));
   assert.ok(errs({ text: "The gmi_dir field was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
   assert.ok(errs({ text: "Code 3 means a trap; it was wrong in 11 of 14 bars." }).includes("text_not_natural_language"));
@@ -66,7 +79,13 @@ test("validator: measured or role claims in plain words, numbers from the eviden
   assert.ok(errs({ kind: "role_reminder" }).includes("claim_type_mismatch"));
   assert.ok(errs({ evidence: { bars: 14, wrong: 11, candles: 8, entry: 1 } }).some((e) => e.startsWith("forbidden_key:")));
   assert.ok(errs({ kind: "param_candidate" }).includes("params_invalid"));
-  assert.deepEqual(errs({ kind: "param_candidate", params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer holds in trends", metric: "paired sign test" } }), []);
+  assert.deepEqual(validateKnowledgeItem(item({
+    kind: "param_candidate",
+    situation: { family: "gmi_v12_70", stuck: "structure latch" },
+    text: "The structure stayed stuck in several separate episodes.",
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 50, tested_values: [8, 12] },
+    params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer holds in trends", metric: "paired sign test" },
+  })), []);
 });
 
 test("Aether's curator proposes through AgentRpc; xauusd and the other Aether agents cannot; denials are final", async () => {
@@ -148,4 +167,109 @@ test("pending proposals expire after 14 days, and each agent proposes at most 20
   const over = await rpcSyscall(e as never, AETHER, "aether-calibrator", "knowledge.propose", { item: item({ item_id: "k-over" }) });
   assert.equal(over.outcome, "failed");
   assert.match((over as { reason: string }).reason, /knowledge_daily_limit/);
+});
+
+
+test("TP-028 evidence rejects opaque numeric fields but accepts Aether's declared metric contracts", () => {
+  const roleDrift = item({
+    kind: "role_reminder",
+    claim_type: "role_reminder",
+    situation: { check: "order_wording" },
+    text: "The agent repeatedly broke its role in the rooms it spoke in.",
+    evidence: { agent: "prophet", check: "order_wording", window_days: 7, rooms_with_break: 10, rooms: 40, rate_pct: 25 },
+  });
+  assert.equal(validateKnowledgeItem(roleDrift).includes("evidence_unscoped_numeric_field"), false);
+  assert.equal(validateKnowledgeItem(roleDrift).includes("evidence_metric_invalid"), false);
+
+  const opaque = item({
+    text: "The agent repeatedly broke its role.",
+    evidence: { agent: "prophet", check: "role_drift", window_days: 30, rooms: 40, observed_value: 4050 },
+  });
+  assert.ok(validateKnowledgeItem(opaque).includes("evidence_unscoped_numeric_field"));
+
+  const nestedOpaque = item({
+    evidence: {
+      candles: 8, bars: 14, wrong: 11, baseline_wrong_rate: 0.48, p_value: 0.03,
+      window: ["2026-10-08", "2026-11-07"], metadata: { wrong: 4050 },
+    },
+  });
+  assert.ok(validateKnowledgeItem(nestedOpaque).includes("evidence_unscoped_numeric_field"), "a safe metric name cannot be nested to smuggle a price");
+
+  const paramCandidate = item({
+    kind: "param_candidate",
+    situation: { family: "gmi_v12_70", stuck: "structure latch" },
+    text: "The structure stayed stuck in several separate episodes.",
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 50, tested_values: [8, 12] },
+    params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "fewer stuck episodes", metric: "paired sign test" },
+  }) as Record<string, unknown>;
+  assert.equal(validateKnowledgeItem(paramCandidate).includes("evidence_unscoped_numeric_field"), false);
+  const embeddedPriceParam = { ...paramCandidate, params: { ...(paramCandidate.params as Record<string, unknown>), hypothesis: "XAUUSD_4078 is a price-like value" } };
+  assert.ok(validateKnowledgeItem(embeddedPriceParam).includes("params_trading_value_wording"), "price-like digits embedded after an identifier separator are rejected");
+
+  const wrongKind = item({ evidence: { proposed_value: 4050, wrong: 11, bars: 14 } });
+  assert.ok(validateKnowledgeItem(wrongKind).includes("evidence_unscoped_numeric_field"), "param-candidate numeric fields are not allowed on caution items");
+
+  const unsafeParamValue = {
+    ...paramCandidate,
+    evidence: { ...(paramCandidate.evidence as Record<string, unknown>), proposed_value: 4050 },
+    params: { ...(paramCandidate.params as Record<string, unknown>), values: { stateMaxAge: 4050 } },
+  };
+  assert.ok(validateKnowledgeItem(unsafeParamValue).includes("params_invalid"), "parameter values must belong to the reviewed tuning grid");
+
+  const extraParamNumber = {
+    ...paramCandidate,
+    params: { ...(paramCandidate.params as Record<string, unknown>), metadata: 4050 },
+  };
+  assert.ok(validateKnowledgeItem(extraParamNumber).includes("params_invalid"), "unscoped numeric metadata is not allowed in params");
+});
+
+
+test("TP-028 enforces exact Aether schemas and bounded numeric evidence", () => {
+  const priceInMetric = item({
+    evidence: { agent: "prophet", chart: "60", session: "london", window_days: 30, decisive: 14, wrong: 4050, wrong_pct: 100, baseline_wrong_pct: 48, baseline_decisive: 20, p_value: 0.03 },
+  });
+  assert.ok(validateKnowledgeItem(priceInMetric).includes("evidence_metric_invalid"), "a price cannot masquerade as a valid miss count");
+
+  const extraTopLevel = item({ metadata: 4050 });
+  assert.ok(validateKnowledgeItem(extraTopLevel).includes("item_shape_invalid"), "unknown top-level fields cannot carry hidden numeric data");
+
+  const extraAudience = item({ audience: { agents: ["prophet"], charts: ["60"], metadata: 4050 } });
+  assert.ok(validateKnowledgeItem(extraAudience).includes("audience_shape_invalid"), "audience has an exact schema");
+
+  const extraProvenance = item({ provenance: { ...(item().provenance as Record<string, unknown>), metadata: 4050 } });
+  assert.ok(validateKnowledgeItem(extraProvenance).includes("provenance_shape_invalid"), "provenance has an exact schema");
+
+  const wrongRoleMetric = item({
+    kind: "role_reminder",
+    claim_type: "role_reminder",
+    situation: { check: "calibration_talk" },
+    evidence: { agent: "prophet", check: "calibration_talk", window_days: 7, rooms_with_break: 10, rooms: 40, rate_pct: 95 },
+  });
+  assert.ok(validateKnowledgeItem(wrongRoleMetric).includes("evidence_metric_invalid"), "rate_pct must match the underlying counts");
+});
+
+test("TP-028 guards structured situation and parameter text as well as evidence", () => {
+  const situation = item({
+    text: "The structure held for several candles.",
+    situation: { stuck: "structure", opaque_value: 4050 },
+  });
+  assert.ok(validateKnowledgeItem(situation).includes("situation_numeric_value"));
+
+  const params = item({
+    kind: "param_candidate",
+    text: "The structure stayed stuck in several separate episodes.",
+    evidence: { family: "gmi_v12_70", window_days: 30, episodes: 3, longest_candles: 8, proposed_value: 16, default_value: 12, tested_values: [8, 12] },
+    params: { family: "gmi_v12_70", grid: "TUNING_GRID.gmi_v12_70.stateMaxAge", values: { stateMaxAge: 16 }, hypothesis: "Buy at 4050", metric: "paired sign test" },
+  });
+  assert.ok(validateKnowledgeItem(params).includes("params_trading_value_wording"));
+});
+
+test("TP-028 accepts the four-hour chart identifier without treating it as a price", () => {
+  const fourHour = item({
+    audience: { agents: ["prophet", "moderator"], charts: ["240"] },
+    situation: { chart: "240", session: "london" },
+    text: "On the four-hour chart in the London session, the prophet agent was wrong in 79% of its decisive calls over 30 days, against 48% in its other situations.",
+    evidence: { agent: "prophet", chart: "240", session: "london", window_days: 30, decisive: 14, wrong: 11, wrong_pct: 79, baseline_wrong_pct: 48, baseline_decisive: 20, p_value: 0.03 },
+  });
+  assert.deepEqual(validateKnowledgeItem(fourHour), []);
 });
