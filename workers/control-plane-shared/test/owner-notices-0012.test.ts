@@ -137,6 +137,23 @@ test("O8. critical reports with future timestamps are not treated as current", a
   const c = (await collectNotices(db as never, NOW))[2];
   assert.equal(c.active, false);
 });
+test("O9. repeated closure email failures keep retrying until delivered", async () => {
+  const db = migratedDb();
+  healthy(db);
+  const now = at(0);
+  db.raw.prepare(`INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, approved_by, last_execution_json, created_by, created_at, updated_at)
+    VALUES ('plan_close_retry', 'cryptophys-console', 'aaaaaaaaaaaa', 'draft', '{}', NULL, NULL, 'agent:supervisor', ?, ?)`).run(now, now);
+  let attempts = 0;
+  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", NOTIFY_FROM: "alerts@notify.example.com", OWNER_EMAIL: { send: async () => { attempts++; if (attempts === 2 || attempts === 3) throw new Error("temporary provider failure"); return { messageId: "m" + attempts }; } } };
+  assert.equal((await reconcileNotices(env as never, NOW))[0].delivery, "sent");
+  db.raw.prepare("UPDATE recovery_plans SET status = 'approved' WHERE plan_id = 'plan_close_retry'").run();
+  assert.equal((await reconcileNotices(env as never, NOW))[0].delivery, "failed: temporary provider failure");
+  assert.equal((await reconcileNotices(env as never, NOW))[0].change, "delivery_retry");
+  assert.equal((await reconcileNotices(env as never, NOW))[0].delivery, "sent");
+  assert.equal((await reconcileNotices(env as never, NOW))[0].change, "unchanged");
+  assert.equal(attempts, 4);
+});
+
 test("O5. wiring: kernel schedule, kernel route, Console route and panel", () => {
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
   assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(reconcileNotices\(env, event\.scheduledTime\)/);
