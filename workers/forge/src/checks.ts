@@ -3,11 +3,16 @@
 //   1. snapshot: the commit's tree read through the Artifacts binding (readCommit/readTree/readBlob);
 //   2. bundle: esbuild-wasm in the Forge isolate (runner/core.ts);
 //   3. run: Dynamic Workers (Worker Loader), with no network access;
-//   4. record: one row per commit in D1 (forge_check_runs), plus an audit event.
+//   4. type-check: the compiler in a Cloudflare Container (typecheck.ts; it does not fit in an isolate);
+//   5. record: one row per commit in D1 (forge_check_runs), plus an audit event.
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
+import { runTypecheck, type TypecheckCall, type TypecheckStep } from "./typecheck.ts";
+
+/** What one check needs: the test-suite toolchain and, when the Container is bound, the type-check. */
+export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckCall }
 
 const HEX40 = /^[0-9a-f]{40}$/;
 export const RUNNER_ID = "forge-runner/1";
@@ -92,6 +97,8 @@ export interface CheckSteps {
   tests: { files: number; pass: number; fail: number; skip: number };
   bundles: { workers: number; failed: BundleStep["failed"]; bundles: BundleStep["bundles"] };
   secrets: { files: number; findings: SecretFinding[] };
+  /** Absent in runs recorded before the type-check Container. */
+  typecheck?: TypecheckStep;
 }
 export interface CheckRun extends SuiteResult {
   commit: string; status: "passed" | "failed"; guard_status: "clean" | "findings"; steps: CheckSteps;
@@ -99,7 +106,7 @@ export interface CheckRun extends SuiteResult {
 }
 
 /** Snapshot, bundle and run one commit. Test failures are a result; only infrastructure errors throw. */
-export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<SuiteDeps>, now = () => Date.now(), only?: string[]): Promise<CheckRun> {
+export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<CheckDeps>, now = () => Date.now(), only?: string[]): Promise<CheckRun> {
   const started = now();
   const snap = await snapshotFromArtifacts(repo, commit);
   lastSnapshot = { commit, snapshot: snap.snapshot };
@@ -108,15 +115,23 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
   if (result.files === 0) throw new Error("no_test_files");
   const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot);
   const secrets = scanSecrets(snap.snapshot);
-  const failures = [...result.failures, ...bundles.failed.map((b) => `bundle ${b.dir}: ${b.error}`), ...secrets.findings.map((f) => `secret ${f.rule} at ${f.path}:${f.line}`)];
+  // A type error fails the check, as it fails GitHub CI. A Container error is recorded in the step
+  // and does not decide the status (it is not a pass either: phase 4's gate requires "passed").
+  const typecheck = await runTypecheck(suite.typecheck, snap.snapshot);
+  const failures = [
+    ...result.failures, ...bundles.failed.map((b) => `bundle ${b.dir}: ${b.error}`),
+    ...(typecheck.diagnostics ?? []).map((d) => `typecheck ${d}`), ...(typecheck.status === "error" ? [`typecheck error: ${typecheck.reason}`] : []),
+    ...secrets.findings.map((f) => `secret ${f.rule} at ${f.path}:${f.line}`),
+  ];
   return {
     ...result, failures, commit,
-    status: result.fail === 0 && bundles.failed.length === 0 ? "passed" : "failed",
+    status: result.fail === 0 && bundles.failed.length === 0 && typecheck.status !== "failed" ? "passed" : "failed",
     guard_status: secrets.findings.length === 0 ? "clean" : "findings",
     steps: {
       tests: { files: result.files, pass: result.pass, fail: result.fail, skip: result.skip },
       bundles: { workers: bundles.workers, failed: bundles.failed, bundles: bundles.bundles },
       secrets,
+      typecheck,
     },
     duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes,
   };
@@ -179,7 +194,7 @@ export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string):
 export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number };
 
 /** One cron tick: check at most one commit of main. */
-export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<SuiteDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
+export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
   if (!env.ARTIFACTS || !deps) return { outcome: "not_configured" };
   const repo = await env.ARTIFACTS.get(repoName);
   try {
@@ -210,6 +225,8 @@ export interface CheckSummary {
   failures: string[]; started_at: string; finished_at: string | null; duration_ms: number | null;
   /** Bundles and guards: Worker count and failures, secret-scan outcome (null for runs before 0033). */
   bundles: { workers: number; failed: number } | null; guard_status: string | null;
+  /** The type-check step (null for runs before the Container). */
+  typecheck: { status: string; errors: number | null; reason: string | null } | null;
   /** The GitHub CI conclusion for the same commit, and whether the two agree (null while either is missing). */
   github: "success" | "failure" | null; agrees: boolean | null;
 }
@@ -251,13 +268,20 @@ function stepsBundles(steps: string | null): { workers: number; failed: number }
   } catch { return null; }
 }
 
+function stepsTypecheck(steps: string | null): CheckSummary["typecheck"] {
+  try {
+    const t = (JSON.parse(steps ?? "null") as { typecheck?: TypecheckStep } | null)?.typecheck;
+    return t ? { status: String(t.status), errors: typeof t.errors === "number" ? t.errors : null, reason: t.reason ?? null } : null;
+  } catch { return null; }
+}
+
 function summary(r: JoinedRow): CheckSummary {
   let failures: string[] = [];
   try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
   return {
     commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures,
     started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms,
-    bundles: stepsBundles(r.steps), guard_status: r.guard_status ?? null,
+    bundles: stepsBundles(r.steps), guard_status: r.guard_status ?? null, typecheck: stepsTypecheck(r.steps),
     github: r.github ?? null, agrees: agreement(r.status, r.github ?? null),
   };
 }

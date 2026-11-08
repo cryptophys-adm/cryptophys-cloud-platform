@@ -60,6 +60,21 @@ jobs:
             exit 1
           fi
 
+  typecheck-container:
+    # ADR-0012 §5c (owner decision 2026-11-08): the Forge type-check runs in a Cloudflare Container.
+    # Build its image and run this repository's type-check in it with no network, as the Forge does.
+    name: Forge type-check Container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Build the image and type-check the repository in it
+        run: .github/scripts/typecheck-container-smoke.sh
+
   platform-api:
     name: Type-check platform API
     runs-on: ubuntu-latest

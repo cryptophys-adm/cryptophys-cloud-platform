@@ -7,8 +7,18 @@ import { healthBody, type HealthBody } from "../../control-plane-shared/src/http
 import { cachedSnapshot, checksTick, snapshotFromArtifacts } from "./checks.ts";
 import { bundleWorkerDir, type WorkerBundle } from "./runner/core.ts";
 import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
+import type { TypecheckCall } from "./typecheck.ts";
 
-type RunnerEnv = Env & { LOADER?: WorkerLoader };
+export { TypecheckContainer } from "./typecheck-container.ts";
+
+interface DurableObjectNamespaceLike { idFromName(name: string): unknown; get(id: unknown): { fetch(input: string, init?: RequestInit): Promise<Response> } }
+type RunnerEnv = Env & { LOADER?: WorkerLoader; TYPECHECK?: DurableObjectNamespaceLike };
+
+/** One Container instance serves the type-checks; a tick runs at most one check. */
+function typecheckCall(ns: DurableObjectNamespaceLike | undefined): TypecheckCall | undefined {
+  if (!ns) return undefined;
+  return (body) => ns.get(ns.idFromName("forge-typecheck")).fetch("http://typecheck/typecheck", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+}
 interface RunnerCtx {
   exports?: { ForgeBundler?: (opts: { props: { commit: string } }) => unknown };
   props?: { commit?: string };
@@ -19,7 +29,8 @@ export default {
   async scheduled(_controller: unknown, env: RunnerEnv, ctx: RunnerCtx): Promise<void> {
     const loader = env.LOADER;
     const bundler = ctx.exports?.ForgeBundler;
-    const deps = loader && bundler ? (commit: string) => suiteDeps(loader, bundler({ props: { commit } })) : null;
+    const typecheck = typecheckCall(env.TYPECHECK);
+    const deps = loader && bundler ? async (commit: string) => ({ ...(await suiteDeps(loader, bundler({ props: { commit } }))), typecheck }) : null;
     const outcome = await checksTick(env, REPO, deps);
     console.log(JSON.stringify({ event: "forge.checks_tick", ...outcome }));
   },
