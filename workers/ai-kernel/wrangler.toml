@@ -143,3 +143,7 @@ new_sqlite_classes = ["AuditorAgent"]
 # people in APPROVER_IDENTITIES (owner-notices.ts); the sender must be on the onboarded domain.
 [[send_email]]
 name = "OWNER_EMAIL"
+# The deploy renderer replaces this reserved .invalid destination from the protected Environment's APPROVER_IDENTITIES.
+# Owner addresses are not committed; the source config is fail-closed if rendered deployment config is not used.
+allowed_destination_addresses = ["owner-notify-placeholder@example.invalid"]
+allowed_sender_addresses = ["alerts@notify.cryptophys.work"]
