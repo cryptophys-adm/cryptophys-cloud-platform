@@ -180,23 +180,6 @@ test("scheduled monitoring runs neither block nor satisfy the CI gate", async ()
   assert.equal(github.dispatched.length, dispatchedBefore);
 });
 
-test("trusted main request workflow is excluded from its own CI gate", async () => {
-  github.runs = [
-    { workflow_id: 1, name: "Validate", path: ".github/workflows/validate.yml", status: "completed", conclusion: "success", run_number: 7 },
-    { workflow_id: 405003375, name: "Request Platform API Deployment", path: ".github/workflows/request-platform-api-deployment.yml@refs/heads/main", status: "in_progress", conclusion: null, run_number: 5 },
-  ];
-  const res = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.equal(res.status, 202, "the trusted request workflow must not self-block the deployment gate");
-  assert.equal(github.dispatched.length, 1);
-
-  // The request workflow alone is not CI evidence; a real validation/deployment run remains required.
-  github.runs = [
-    { workflow_id: 405003375, name: "Request Platform API Deployment", path: ".github/workflows/request-platform-api-deployment.yml", status: "in_progress", conclusion: null, run_number: 6 },
-  ];
-  const noCi = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([noCi.status, noCi.body.error], [409, "ci_not_green"]);
-  assert.equal(github.dispatched.length, 1);
-});
 
 test("gate uses the latest run of each workflow, requires runs, and blocks in-progress work", async () => {
   // A failed deploy attempt superseded by a later successful run of the same workflow does not block.

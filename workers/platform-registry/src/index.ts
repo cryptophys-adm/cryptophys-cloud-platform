@@ -7,7 +7,7 @@ import {
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, authenticate, isOwner, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessGate, authenticate, isOwner, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { disableAccount, listAccounts, resyncLogin, upsertAccount, whoAmI, type AccountsEnv } from "./accounts.ts";
 
@@ -242,25 +242,28 @@ export default {
         return errorResponse(500, "internal_error");
       }
     }
-    const operator = await requireOperator(request, env);
+    const match = /^\/v1\/services\/([^/]+)(\/desired-version)?$/.exec(path);
+    // Changing what production should run (a service record, a desired version) is an approver's act
+    // for a person; the deploy workflows (service token) record versions as before. Reads stay with operators.
+    const gate = match && request.method === "PUT" ? requireApproverOrServiceOperator : requireOperator;
+    const operator = await gate(request, env);
     if (!operator.ok) return operator.response;
     try {
       if (path === "/v1/services" && request.method === "GET") {
         const rows = await env.DB.prepare("SELECT * FROM service_registry ORDER BY service_id").all<ServiceRow>();
         return json({ services: rows.results.map(present) });
       }
-      const match = /^\/v1\/services\/([^/]+)(\/desired-version)?$/.exec(path);
       if (!match) return errorResponse(404, "not_found");
       const id = decodeURIComponent(match[1]);
       if (!SERVICE_ID.test(id)) return errorResponse(400, "invalid_service_id");
-      if (match[2]) {
-        return request.method === "PUT" ? await setDesiredVersion(request, env, id, operator.actor) : errorResponse(405, "method_not_allowed");
+      if (request.method === "PUT") {
+        return match[2] ? await setDesiredVersion(request, env, id, operator.actor) : await upsertService(request, env, id, url, operator.actor);
       }
+      if (match[2]) return errorResponse(405, "method_not_allowed");
       if (request.method === "GET") {
         const row = await getService(env, id);
         return row ? json({ service: present(row) }) : errorResponse(404, "service_not_registered");
       }
-      if (request.method === "PUT") return await upsertService(request, env, id, url, operator.actor);
       return errorResponse(405, "method_not_allowed");
     } catch (err) {
       const id = newId("err");

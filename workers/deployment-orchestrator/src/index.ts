@@ -107,18 +107,10 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
 type CommitStatus = { state?: string; total_count?: number };
 type WorkflowRun = { workflow_id: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number };
 
-const REQUEST_WORKFLOW_PATH = ".github/workflows/request-platform-api-deployment.yml";
-
-/**
- * Latest run of each validation/deployment workflow. The request workflow is
- * excluded because it runs from trusted main and is necessarily in progress
- * while it asks this gate to evaluate the same commit.
- */
+/** Latest run of each validation/deployment workflow. */
 export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
   const latest = new Map<number, WorkflowRun>();
   for (const run of runs) {
-    // `path` may carry an "@<ref>" suffix; compare the file path only.
-    if (run.path?.split("@")[0] === REQUEST_WORKFLOW_PATH) continue;
     // Scheduled runs (e.g. drift monitoring) observe production; they are not CI for the commit.
     if (run.event === "schedule") continue;
     const seen = latest.get(run.workflow_id);

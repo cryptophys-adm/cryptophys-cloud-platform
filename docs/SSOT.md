@@ -18,12 +18,13 @@ These hold everywhere:
 ## Entry point and sign-in (ADR-0008, ADR-0010, ADR-0011)
 
 - **Hosts.** `https://nexus.cryptophys.work` is the only public origin. The Cerebrum Console is mounted at `/console/`, through the Workers route `nexus.cryptophys.work/console*`. `console.` and `home.` redirect there.
-- **Sign-in.** Cloudflare Access is the only login. The identity providers are Google, Microsoft (OIDC) and one-time PIN. There is one Access application, `cryptophys-cloud-platform`, so there is one AUD and one 8-hour session.
+- **Sign-in.** Cloudflare Access is the only login. The identity providers are Google, Microsoft (OIDC) and one-time PIN (kept for now by owner decision, 2026-11-08). There is one Access application, `cryptophys-cloud-platform`, so there is one AUD and one 8-hour session.
 - **Roles.** Configured identities come from `OPERATOR_IDENTITIES` and `APPROVER_IDENTITIES` (the owners). Accounts live in D1 `platform_accounts`:
   - `admin`: viewer, operator or approver;
   - `user`: Nexus only.
 
   Every Worker checks roles itself through `control-plane-shared/src/access.ts`.
+- **Writes that shape production** (a recovery plan by hand, a service record, a desired version) need the approver role for a person (`requireApproverOrServiceOperator`, 2026-11-08). The deploy workflows' service token keeps recording versions and its verification plan, which is marked `synthetic` and hidden from the Console list.
 - **Console sign-out.**
   - Sign out goes to `/cdn-cgi/access/logout`.
   - Switch account goes to `/console/switch-account`.
@@ -33,7 +34,7 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 50-route allow-list, CSP, CSRF | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 49-route allow-list, CSP, CSRF | — |
 | `cryptophys-platform-api` | Overview for the Console | — |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
@@ -52,7 +53,7 @@ These hold everywhere:
 
 ## Data
 
-- **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/` (0001–0033).
+- **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/` (0001–0034).
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033.
 - **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). Other tables are kept.
@@ -72,7 +73,7 @@ These hold everywhere:
 |---|---|---|
 | Source of truth | GitHub `cryptophys-adm/cryptophys-cloud-platform` (`main`) | Artifacts `cryptophys/platform` |
 | Mirror | `mirror-to-forge.yml` on every push | — |
-| CI | GitHub Actions (`validate-control-plane.yml`, `forge-runner-parity.yml`) | Forge checks |
+| CI | GitHub Actions (`validate-control-plane.yml` for every PR and main push, `forge-runner-parity.yml`) | Forge checks |
 | Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate |
 | Deploy | `ops-dispatch.yml` (request files in `ops/requests/`), then `deploy-*.yml` (wait for SAFE minute, deploy, verify live, roll back on failure) | Orchestrator: Scripts API upload and Deployments API |
 | Rollback | Native in the Orchestrator (`CF_DEPLOY_TOKEN`); `rollback-worker.yml` until the native path has run | native |

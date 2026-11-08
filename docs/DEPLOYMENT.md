@@ -23,7 +23,7 @@ Production has three protected `workflow_dispatch` workflows, all gated by the `
 
 | Workflow | Deploys | Started by |
 |---|---|---|
-| `deploy-platform-api.yml` | `cryptophys-platform-api` | The Deployment Orchestrator (`POST /v1/deployments`), via `request-platform-api-deployment.yml` |
+| `deploy-platform-api.yml` | `cryptophys-platform-api` | The Deployment Orchestrator (`POST /v1/deployments`, or a consensus `deploy_commit`) dispatches it directly |
 | `deploy-deployment-orchestrator.yml` | `cryptophys-deployment-orchestrator` | Operator |
 | `deploy-control-plane.yml` | The five control-plane services | Operator — see [CONTROL-PLANE-DEPLOYMENT.md](CONTROL-PLANE-DEPLOYMENT.md) |
 
@@ -31,7 +31,7 @@ Production has three protected `workflow_dispatch` workflows, all gated by the `
 
 The repository owner authorized the platform's automation operator to start these workflows (2026-11-03). Its GitHub integration cannot call the `workflow_dispatch` API, so it commits one request file per action to `ops/requests/` on its operator branch, `claude/gracious-brown-tkc4e8`. `.github/workflows/ops-dispatch.yml` then dispatches the requested workflow using the job's own `GITHUB_TOKEN` and follows the run to completion.
 
-- **Allowed workflows:** `provision-access.yml`, `deploy-control-plane.yml` and `deploy-deployment-orchestrator.yml` (all run on `main`), and `request-platform-api-deployment.yml`. All of them run from `main`: no workflow definition that receives production secrets is ever loaded from the operator branch, so the `production` Environment no longer needs to allow that branch.
+- **Allowed workflows:** `provision-access.yml`, `deploy-control-plane.yml` and `deploy-deployment-orchestrator.yml` (all run on `main`). All of them run from `main`: no workflow definition that receives production secrets is ever loaded from the operator branch, so the `production` Environment no longer needs to allow that branch.
 - **Allowed inputs:** `confirm_production`, `commit_sha` and `orchestrator_url`.
 - Every gate of the dispatched workflow still applies, and the request files form the audit trail.
 

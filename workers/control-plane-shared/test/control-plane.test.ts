@@ -162,7 +162,7 @@ test("audit ledger appends, redacts, lists, fetches and verifies events", async 
 
 test("registry exposes the seeded inventory and enforces ownership metadata", async () => {
   const db = migratedDb();
-  const env = baseEnv("cryptophys-platform-registry", db);
+  const env = { ...baseEnv("cryptophys-platform-registry", db), APPROVER_IDENTITIES: APPROVER_EMAIL };
   const list = await call(registry, env, req("GET", "/v1/services"));
   assert.equal(list.body.services.length, 17); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030)
   assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-audit-ledger").metadata.owner, "cryptophys-adm");
@@ -180,9 +180,13 @@ test("registry exposes the seeded inventory and enforces ownership metadata", as
   assert.equal(updated.body.service.status, "disabled");
   assert.equal((await call(registry, env, req("PUT", "/v1/services/Bad_ID", base))).status, 400);
 
-  const dv = await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "spoofed" }, OPERATOR_JWT));
+  // Hardening 2026-11-08: a person needs the approver role to set a desired version or change a record; the deploy
+  // workflow's service token (CI_JWT, above) keeps recording versions.
+  assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "a" }, OPERATOR_JWT))).status, 403, "an operator person cannot set the desired version");
+  assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-news", { ...base, metadata: { owner: "x", purpose: "y", data_classification: "internal" } }, OPERATOR_JWT))).status, 403, "nor change a service record");
+  const dv = await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "spoofed" }, APPROVER_JWT));
   const dvEvent = db.raw.prepare("SELECT actor FROM audit_events WHERE event_type = 'registry.desired_version_set' ORDER BY rowid DESC LIMIT 1").get() as { actor: string };
-  assert.equal(dvEvent.actor, OPERATOR_EMAIL, "operator email recorded in lower case");
+  assert.equal(dvEvent.actor, APPROVER_EMAIL, "the verified identity is recorded, not the body's actor");
   assert.equal(dv.body.service.desired_version, "823108ad3da4");
   assert.equal((await call(registry, env, req("PUT", "/v1/services/unknown-svc/desired-version", { desired_version: "823108ad3da4", actor: "a" }))).status, 404);
   assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "main", actor: "a" }))).status, 400);
@@ -252,7 +256,9 @@ test("recovery plans need a different approver and a policy allow before executi
     created_by: "spoofed", steps: [{ action: "rollback_worker_version", description: "Roll back to the previous version" }] };
   assert.equal((await call(recovery, env, req("POST", "/v1/plans", { ...plan, steps: [{ action: "rm -rf", description: "x" }] }))).status, 400);
   assert.equal((await call(recovery, env, req("POST", "/v1/plans", { ...plan, service_id: "ghost-svc" }))).status, 404);
-  // The operator who is also an approver authors the plan.
+  // Hardening 2026-11-08: a person creating a plan by hand needs the approver role. In this env the operator is also
+  // an approver and authors the plan; without that role the same person is refused.
+  assert.equal((await call(recovery, { ...env, APPROVER_IDENTITIES: APPROVER_EMAIL }, req("POST", "/v1/plans", plan, OPERATOR_JWT))).status, 403, "an operator who is not an approver cannot author plans by hand");
   const created = await call(recovery, env, req("POST", "/v1/plans", plan, OPERATOR_JWT));
   assert.equal(created.status, 201);
   assert.equal(created.body.plan.created_by, OPERATOR_EMAIL, "author is the verified identity");
@@ -269,7 +275,6 @@ test("recovery plans need a different approver and a policy allow before executi
   const self = await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, { approved_by: "someone-else" }, OPERATOR_JWT));
   assert.deepEqual([self.status, self.body.error], [403, "separation_of_duties"], "the author cannot approve, whatever the body claims");
   assert.equal((await call(recovery, env, req("POST", "/v1/plans/plan_00000000-0000-0000-0000-000000000000/approve", {}, APPROVER_JWT))).status, 404);
-  assert.equal((await call(recovery, env, req("POST", "/v1/plans", plan, APPROVER_JWT))).status, 403, "approvers are not operators");
   const approved = await call(recovery, env, req("POST", `/v1/plans/${id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
   assert.equal(approved.body.plan.approved_by, APPROVER_EMAIL);

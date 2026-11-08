@@ -6,7 +6,7 @@ import {
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, listConfigured, requireApprover, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessGate, listConfigured, requireApprover, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 import type { RecoveryDeployBinding } from "./autonomous.ts";
@@ -70,9 +70,18 @@ const draftTask: AiTask<Draft> = {
   },
 };
 
+/**
+ * A plan authored by a service token (the deploy workflow's lifecycle verification) is synthetic:
+ * people author plans as emails and agents as agent:<id>. Hidden from the list by default
+ * (hardening 2026-11-08: 56 such plans sat on the Console's Recovery page).
+ */
+export function isSyntheticPlan(row: { created_by: string | null }): boolean {
+  return typeof row.created_by === "string" && row.created_by.endsWith(".access");
+}
+
 function present(row: PlanRow): JsonObject {
   const { steps_json, last_execution_json, ...rest } = row;
-  return { ...rest, plan: JSON.parse(steps_json), last_execution: last_execution_json ? JSON.parse(last_execution_json) : null };
+  return { ...rest, synthetic: isSyntheticPlan(row), plan: JSON.parse(steps_json), last_execution: last_execution_json ? JSON.parse(last_execution_json) : null };
 }
 
 const getPlan = (env: Env, id: string) => env.DB.prepare("SELECT * FROM recovery_plans WHERE plan_id = ?").bind(id).first<PlanRow>();
@@ -280,9 +289,14 @@ export default {
         const plan = await getPlan(env, match[1]);
         return plan ? await approvePlan(env, plan, approver.actor) : errorResponse(404, "not_found");
       }
+      if (path === "/v1/plans" && request.method === "POST") {
+        // A person creating a plan by hand needs the approver role; the deploy workflow's service token keeps its verification plan.
+        const author = await requireApproverOrServiceOperator(request, env);
+        if (!author.ok) return author.response;
+        return await createPlan(request, env, url, author.actor);
+      }
       const operator = await requireOperator(request, env);
       if (!operator.ok) return operator.response;
-      if (path === "/v1/plans" && request.method === "POST") return await createPlan(request, env, url, operator.actor);
       if (path === "/v1/plans" && request.method === "GET") {
         const filters: string[] = [];
         const params: unknown[] = [];
@@ -290,6 +304,7 @@ export default {
           const value = url.searchParams.get(key);
           if (value) { filters.push(`${key} = ?`); params.push(value.slice(0, 63)); }
         }
+        if (url.searchParams.get("include_synthetic") !== "1") filters.push("(created_by IS NULL OR created_by NOT LIKE '%.access')");
         const rows = await env.DB.prepare(
           `SELECT * FROM recovery_plans ${filters.length ? `WHERE ${filters.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`,
         ).bind(...params, limitParam(url)).all<PlanRow>();

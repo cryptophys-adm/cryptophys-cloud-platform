@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_JWT, APPROVER_EMAIL, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeWorkflow, migratedDb, req } from "./harness.ts";
+import { APPROVER_JWT, APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeWorkflow, migratedDb, req } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import recovery from "../../recovery-manager/src/index.ts";
 import { runLifecycle } from "../../recovery-manager/src/lifecycle.ts";
@@ -77,7 +77,8 @@ function observe(db: Db, serviceId: string, drifted: boolean, tag = MAIN.slice(0
 }
 
 async function approvedPlan(env: Record<string, unknown>, steps: { action: string; description: string }[], version = MAIN.slice(0, 12), serviceId = "cryptophys-console") {
-  const created = await call(recovery, env, req("POST", "/v1/plans", { service_id: serviceId, plan_version: version, title: "Recover", rationale: "test", steps }, OPERATOR_JWT));
+  // The deploy workflow's service token (an operator) may author; a person needs the approver role (hardening 2026-11-08).
+  const created = await call(recovery, env, req("POST", "/v1/plans", { service_id: serviceId, plan_version: version, title: "Recover", rationale: "test", steps }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const approved = await call(recovery, env, req("POST", `/v1/plans/${created.body.plan.plan_id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
@@ -108,7 +109,7 @@ test("1. after one approval click the AI runs the whole plan: policy, steps, ver
     assert.equal(exec.pipeline[2].link, "https://github.com/x/actions/runs/42");
     assert.deepEqual(dispatched, [{ workflow: "deploy-console.yml", body: { ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: MAIN } } }]);
     const trail = db.raw.prepare("SELECT event_type, actor FROM audit_events WHERE subject = ? AND event_type LIKE 'recovery.%' ORDER BY rowid").all(id).map((r: any) => `${r.event_type}:${r.actor}`);
-    assert.deepEqual(trail, [`recovery.plan_created:${OPERATOR_EMAIL}`, `recovery.plan_approved:${APPROVER_EMAIL}`, `recovery.execution_started:${AI_EXECUTOR}`, `recovery.execution_finished:${AI_EXECUTOR}`]);
+    assert.deepEqual(trail, [`recovery.plan_created:${CI_CLIENT_ID}`, `recovery.plan_approved:${APPROVER_EMAIL}`, `recovery.execution_started:${AI_EXECUTOR}`, `recovery.execution_finished:${AI_EXECUTOR}`]);
     const req0 = db.raw.prepare("SELECT requested_by, approval_id, status FROM deployment_requests").get() as any;
     assert.deepEqual({ ...req0 }, { requested_by: `recovery:${id}`, approval_id: id, status: "running" });
     assert.equal((await verifyAuditChain(db as never)).valid, true);

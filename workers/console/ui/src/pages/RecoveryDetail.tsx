@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { AlertTriangle, ArrowLeft, Ban, Bot, Check, CircleDashed, ExternalLink, Flag, Loader2, Lock, MinusCircle, ShieldCheck, XCircle } from "lucide-react";
-import { Badge, Field, Panel, Skeleton } from "../components/ui";
+import { AlertTriangle, ArrowLeft, Ban, Bot, Check, CircleDashed, ExternalLink, Loader2, Lock, MinusCircle, ShieldCheck, XCircle } from "lucide-react";
+import { Badge, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -92,14 +92,10 @@ export default function RecoveryDetail({ id }: { id: string }) {
     setLive(st === "approved" || st === "executing");
     return r;
   }, live ? 4_000 : 0, [id, live]);
-  const [outcome, setOutcome] = useState("completed");
-  const [finishNotes, setFinishNotes] = useState("");
   const plan = data?.plan ?? data ?? {};
   const pid = String(plan.plan_id ?? id);
   const reload = () => void refresh();
   const autonomous = plan.status === "approved" || plan.last_execution?.autonomous === true;
-  // Plans started by hand before autonomous execution existed are closed by hand.
-  const legacyExecuting = plan.status === "executing" && !plan.last_execution?.autonomous;
 
   return (
     <div className="flex flex-col gap-3">
@@ -141,22 +137,8 @@ export default function RecoveryDetail({ id }: { id: string }) {
             <button type="button" className="btn btn-danger" onClick={() => act({ route: "recovery.disable", params: pid, title: `Disable plan ${pid}`, lines: ["The plan can no longer be approved or executed."], done: "Plan disabled.", after: reload })}><Ban className="h-3.5 w-3.5" />Disable…</button>
           )}
           {autonomous && <span className="text-[12px] text-slate-400">{plan.status === "completed" || plan.status === "failed" ? "The AI finished this plan." : "No action needed: the AI is executing this plan."}</span>}
-          {!autonomous && !legacyExecuting && plan.status !== "draft" && <span className="text-[12px] text-slate-500">Nothing to do.</span>}
+          {!autonomous && plan.status !== "draft" && <span className="text-[12px] text-slate-500">Nothing to do.</span>}
         </div>
-        {legacyExecuting && (
-          <div className="mt-4 border-t border-white/5 pt-4">
-            <p className="mb-2 text-[12px] text-amber-200">This plan was started by hand before autonomous execution existed. Record its outcome to close it.</p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[200px_1fr]">
-              <Field label="Outcome"><select className="field" value={outcome} onChange={(e) => setOutcome(e.target.value)}><option>completed</option><option>failed</option></select></Field>
-              <Field label="Notes (optional, up to 2000)"><input className="field" maxLength={2000} value={finishNotes} onChange={(e) => setFinishNotes(e.target.value)} /></Field>
-            </div>
-            <button type="button" className="btn mt-2" onClick={() => {
-              const b: any = { phase: "finish", outcome };
-              if (finishNotes.trim()) b.notes = finishNotes.trim();
-              act({ route: "recovery.execute_finish", params: pid, body: b, title: `Finish plan ${pid}`, lines: [`Records the outcome: ${outcome}.`], done: "Execution finished.", after: reload });
-            }}><Flag className="h-3.5 w-3.5" />Finish…</button>
-          </div>
-        )}
       </Panel>
     </div>
   );
