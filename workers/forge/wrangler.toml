@@ -28,3 +28,23 @@ migrations_dir = "../control-plane-migrations"
 [[artifacts]]
 binding = "ARTIFACTS"
 namespace = "cryptophys"
+
+# ADR-0012 phase 3: Forge checks. Each tick checks at most one new commit of main (checks.ts), off
+# the minutes the other control-plane crons use (:02/:07/:10/:13/:15/...).
+[triggers]
+crons = ["4,19,34,49 * * * *"]
+
+# The test suite runs in Dynamic Workers, with no network access.
+[[worker_loaders]]
+binding = "LOADER"
+
+# Bundling the suite with esbuild-wasm takes seconds of CPU; a cron tick may use up to 5 minutes.
+[limits]
+cpu_ms = 300000
+
+# The runner shims and the sql.js glue are shipped as text and loaded into the test Workers.
+# Wrangler matches these globs against the import specifier as written in runner/assets.js.
+[[rules]]
+type = "Text"
+globs = ["**/shims/node-*.js", "**/sql.js/dist/sql-wasm.js"]
+fallthrough = true

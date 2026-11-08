@@ -55,6 +55,13 @@ jobs:
       - name: Bundle every control-plane Worker (dry run, no credentials)
         run: |
           set -euo pipefail
-          for dir in platform-registry policy-engine audit-ledger recovery-manager ai-kernel drift-detector platform-api console home; do
+          for dir in platform-registry policy-engine audit-ledger recovery-manager ai-kernel drift-detector platform-api console home forge; do
             npx wrangler deploy --dry-run --config "../${dir}/wrangler.toml" --outdir "$RUNNER_TEMP/dry-run-${dir}"
           done
+          # The Forge ships its runner shims as Text modules (wrangler.toml [[rules]]). If the rule
+          # stopped matching, Wrangler would inline them as code and every Forge check would fail.
+          shims="$(find "$RUNNER_TEMP/dry-run-forge" -maxdepth 1 -name '*-node-*.js' | wc -l)"
+          if [ "$shims" -ne 5 ]; then
+            echo "::error::expected the 5 Forge runner shims as separate text modules, found ${shims}" >&2
+            exit 1
+          fi

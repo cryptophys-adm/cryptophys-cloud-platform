@@ -171,16 +171,26 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
 - **Spike passed.** The control-plane suite runs in **workerd** through `tools/forge-runner`, with **all 329 tests passing** and the same per-file counts as Node.
   - The shims replace `node:test`, `node:sqlite` (sql.js), `node:fs` (a snapshot of the repository) and `node:os`/`node:child_process`.
   - Test modules are deferred to request time, because workerd's clock reads 0 at module evaluation.
-- **Forge bundler (closes the last gap).** `shims/forge-bundle.js` runs **esbuild-wasm 0.28.2 inside the isolate** and reads the repository snapshot.
+- **Forge bundler (closes the last gap).** esbuild-wasm 0.28.2 runs inside the isolate and reads the repository snapshot.
   - It bundles the `main` named in a Worker's `wrangler.toml`, as ESM with `node:` and `cloudflare:` imports external.
-  - In workerd, the TP-025 dry-run test bundles `workers/home` through `globalThis.__FORGE_BUNDLE`. In Node CI it still runs `wrangler deploy --dry-run`, unchanged.
+  - The TP-025 dry-run test bundles `workers/home` through `globalThis.__FORGE_BUNDLE`. In Node CI it still runs `wrangler deploy --dry-run`, unchanged.
   - Measured in workerd: initialization 0.18 s; Home 22 KB in 0.35 s; Forge 22 KB in 0.11 s; AI Kernel 179 KB in 0.44 s.
-  - The 14 MB `esbuild.wasm` is loaded only for tests that bundle.
 - **Harness change.** `FakeD1.batch` now runs batches one at a time, as D1 does. Under workerd's faster `crypto.subtle`, concurrent batches had interleaved.
-- **Parity CI.** `forge-runner-parity.yml` runs the workerd suite next to the Node suite on every PR and push. It is informational and not in the deploy gate, until the two agree on 20 consecutive commits.
+- **Forge checks (the runner moved into the Forge).** The suite now runs **on Cloudflare** for each new commit of `main` in the Artifacts repo (`workers/forge/src/checks.ts`, `runner/`).
+  1. **Snapshot.** The commit's tree is read through the Artifacts binding (`readCommit`/`readTree`/`readBlob`). It contains text files only, with no `node_modules`/`dist`, no symlinks or submodules, and no file of 2 MB or more. Today that is 424 files, 2.7 MB.
+  2. **Bundle.** esbuild-wasm runs in the Forge isolate: the test files, plus sql.js once per isolate. Measured: 43 files in about 5 s of CPU, with 31 MB of wasm memory.
+  3. **Run.** Each Dynamic Worker (Worker Loader) runs up to 8 files: 6 Workers per run, under the 32 Worker invocations one request may make.
+     - The test Workers have no network access (`globalOutbound: null`) and a 60 s CPU limit each.
+     - TP-025 calls back to the Forge's `ForgeBundler` entrypoint (`ctx.exports`, with the commit as props), because the test Workers have no esbuild.
+  4. **Record.** One row per commit in D1 `forge_check_runs` (migration 0031), plus the audit event `forge.checks_completed`. Operators read the runs at `GET /v1/forge/checks`.
+  - **Schedule.** A cron at `:04/:19/:34/:49` checks at most one commit per tick: the oldest unchecked one among the newest 5 on `main`. A run still `running` after 30 minutes is retried.
+  - **Same code locally.** `tools/forge-runner/run.mjs` runs this same checks code in local workerd. The only stand-in is the Artifacts repo, built from the working tree. Result: 329/329 in 38 s.
+  - **Informational until parity.** Forge checks are not in the deploy gate until they agree with GitHub CI on 20 consecutive commits of `main`.
+- **Parity CI.** `forge-runner-parity.yml` runs `tools/forge-runner` next to the Node suite on every PR and push.
 - **Next.**
+  - Compare Forge checks with GitHub CI per commit, and show them on the Console Code page.
   - Use the Forge bundler for the deploy bundles, then the Console build (Vite/React).
-  - Move the runner into the Forge, with Dynamic Workers loading these bundles and the snapshot read from Artifacts.
+  - Run checks for branches and proposals (phase 4).
 
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
