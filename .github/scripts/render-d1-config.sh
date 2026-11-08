@@ -63,10 +63,10 @@ for dir in "$@"; do
     done
     (( count > 0 )) || { echo "::error::APPROVER_IDENTITIES must contain at least one human approver email" >&2; exit 1; }
     escaped_email_placeholder="${email_placeholder//./\\.}"
-    rendered="$(printf '%s\\n' "$rendered" | sed "s|${escaped_email_placeholder}|${email_values}|")"
+    rendered="$(printf '%s\n' "$rendered" | sed "s|${escaped_email_placeholder}|${email_values}|")"
   fi
 
-  printf '%s\\n' "$rendered" > "${dir%/}/wrangler.deploy.toml"
+  printf '%s\n' "$rendered" > "${dir%/}/wrangler.deploy.toml"
   if grep -q "$placeholder" "${dir%/}/wrangler.deploy.toml" || grep -Fq "$email_placeholder" "${dir%/}/wrangler.deploy.toml"; then
     echo "::error::a deploy-config placeholder was not replaced in $dir" >&2
     exit 1

@@ -53,6 +53,14 @@ if APPROVER_IDENTITIES="owner@example.com,security@example.com" run "$tmp/w1" "$
   ok "renders D1 and owner email allowlists, masks identities, leaves source configs untouched"
 else bad "renders D1 and owner email allowlists"; fi
 
+# The rendered file is the source with substitutions only: real newlines, no literal "\n" text,
+# so Wrangler parses it (regression: printf '%s\\n' wrote a backslash-n instead of a newline).
+expected="$(sed -e "s/__CONTROL_PLANE_D1_DATABASE_ID__/$id/" -e 's/owner-notify-placeholder@example.invalid/owner@example.com", "security@example.com/' "$tmp/w1/wrangler.toml")"
+if [[ "$(cat "$tmp/w1/wrangler.deploy.toml")" == "$expected" ]] && [[ "$(tail -c 1 "$tmp/w1/wrangler.deploy.toml" | od -An -c | tr -d ' ')" == '\n' ]] \
+  && ! grep -q '\\n' "$tmp/w1/wrangler.deploy.toml"; then
+  ok "rendered config keeps the source lines and ends with a newline"
+else bad "rendered config is not byte-identical apart from substitutions"; fi
+
 if (unset APPROVER_IDENTITIES; run "$tmp/w1"); then bad "missing approver allowlist must fail"; else ok "missing approver allowlist fails closed"; fi
 if APPROVER_IDENTITIES="owner@example.com,not-an-email" run "$tmp/w1"; then bad "invalid approver identity must fail"; else ok "invalid approver identity fails closed"; fi
 
