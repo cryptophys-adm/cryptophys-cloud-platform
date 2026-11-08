@@ -69,5 +69,6 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("audit.events", "audit", "GET", "/v1/events", false, null),
   r("audit.event", "audit", "GET", "/v1/events/{id}", false, null),
   r("audit.verify", "audit", "GET", "/v1/verify", false, null),
+  r("orchestrator.deployments", "orchestrator", "GET", "/v1/deployments", false, null),
   r("orchestrator.deploy", "orchestrator", "POST", "/v1/deployments", false, "DEPLOY {sha12}"),
 ];

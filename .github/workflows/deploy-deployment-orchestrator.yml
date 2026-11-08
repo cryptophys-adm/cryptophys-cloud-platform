@@ -71,6 +71,8 @@ jobs:
           lists="$RUNNER_TEMP/identities.env"
           "$GITHUB_WORKSPACE/.github/scripts/access-identities.sh" "$lists"
           sed -n 's/^OPERATOR_IDENTITIES=/DEPLOY_ALLOWED_IDENTITIES=/p' "$lists" >> "$GITHUB_ENV"
+          # The same operator list (and the approvers) gate the read-only deployments list, with D1 accounts.
+          grep -E '^(OPERATOR|APPROVER)_IDENTITIES=' "$lists" >> "$GITHUB_ENV"
           npx wrangler whoami
       - name: Resolve the control-plane D1 database and render the deploy config
         env:
@@ -113,6 +115,7 @@ jobs:
           npx wrangler deploy --config wrangler.deploy.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" \
             --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" \
             --var "DEPLOY_ALLOWED_IDENTITIES:${DEPLOY_ALLOWED_IDENTITIES}" \
+            --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}" --var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}" \
             --var "CF_ACCOUNT_ID:${CLOUDFLARE_ACCOUNT_ID}"
       - name: Verify production bindings without exposing secrets
         env:

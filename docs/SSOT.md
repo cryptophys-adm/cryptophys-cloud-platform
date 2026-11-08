@@ -34,14 +34,14 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 49-route allow-list, CSP, CSRF | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 50-route allow-list, CSP, CSRF | — |
 | `cryptophys-platform-api` | Overview for the Console | — |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
 | `cryptophys-audit-ledger` | Hash-chained audit events | — |
 | `cryptophys-recovery-manager` | Recovery plans and execution; daily D1 backup to R2 | :13 |
 | `cryptophys-drift-detector` | Desired-versus-observed versions and health; reports once per episode | every 15 min |
-| `cryptophys-deployment-orchestrator` | Deploy requests, native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
+| `cryptophys-deployment-orchestrator` | Deploy requests, the deployments list (Console Pipelines), native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
 | `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers | :04/:19/:34/:49 |
 | `cryptophys-home` | Retired (redirects to Nexus); scheduled for removal | — |

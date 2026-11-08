@@ -3,7 +3,7 @@ import type { AiBinding, D1Database, ExecutionContextLike, ScheduledEventLike } 
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
-import { accessConfigured, actorOf, authenticate, identityAllowed } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, actorOf, authenticate, identityAllowed, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
@@ -31,6 +31,9 @@ export interface Env extends NativeRollbackEnv {
    * service-token Client IDs and/or operator emails. Replaces the former shared secret.
    */
   DEPLOY_ALLOWED_IDENTITIES?: string;
+  /** Operators (the same list); with D1 accounts they may read the deployments list (viewers too). */
+  OPERATOR_IDENTITIES?: string;
+  APPROVER_IDENTITIES?: string;
   DEPLOYMENT_LOCK: DurableObjectNamespaceLike;
   CF_VERSION_METADATA?: { id: string; tag?: string };
   /** Shared control-plane D1: deployment ledger, audit log and AI budget. */
@@ -795,6 +798,69 @@ export async function reconcileDeployments(env: Env, now = Date.now()): Promise<
   return { checked: rows.results.length, closed };
 }
 
+// ---------------------------------------------------------------- deployments list (Console "Pipelines")
+const ACTIVE_REQUEST_STATUSES = ["pending", "approved", "running"];
+const ACTIVE_PROPOSAL_STATUSES = ["pending_owner", "executing"];
+
+/** Who started a deployment, in words the Console shows. */
+export function deploymentOrigin(actor: string | null | undefined): "consensus" | "agent" | "deploy workflow" | "person" | "other" {
+  const a = String(actor ?? "");
+  if (a.startsWith("consensus:")) return "consensus";
+  if (a.startsWith("agent:") || a.startsWith("ai:")) return "agent";
+  if (a.endsWith(".access")) return "deploy workflow";
+  if (a.includes("@")) return "person";
+  return "other";
+}
+
+function text(v: unknown, max = 200): string | null {
+  return typeof v === "string" && v.length > 0 ? v.slice(0, max) : null;
+}
+
+/** A deployment_requests row with only display fields (never the native-rollback signature). */
+export function presentDeploymentRequest(r: Record<string, unknown>) {
+  let d: Record<string, unknown> = {};
+  try { d = JSON.parse(String(r.details_json ?? "{}")) ?? {}; } catch { d = {}; }
+  const outcome = (d.outcome && typeof d.outcome === "object" ? d.outcome : {}) as Record<string, unknown>;
+  const runUrl = text(outcome.run_url, 300);
+  return {
+    request_id: r.request_id, service_id: r.service_id, version: r.requested_version, status: r.status,
+    requested_by: r.requested_by, origin: deploymentOrigin(r.requested_by as string),
+    workflow: text(d.workflow) ?? (d.executor ? "native rollback" : null),
+    proposal_id: text(d.proposal_id), run_url: runUrl?.startsWith("https://github.com/") ? runUrl : null,
+    note: text(outcome.reason) ?? text(outcome.conclusion),
+    created_at: r.created_at, updated_at: r.updated_at,
+  };
+}
+
+/**
+ * What is deploying now and what was deployed: the Orchestrator's request ledger (Platform API,
+ * consensus deploys, native rollbacks), consensus proposals still in flight, and every version a
+ * deploy workflow or a person recorded in the registry (registry.desired_version_set).
+ */
+export async function listDeployments(env: Pick<Env, "DB">, limit = 25) {
+  const n = Math.min(Math.max(Number.isFinite(limit) ? Math.trunc(limit) : 25, 1), 100);
+  const marks = (xs: string[]) => xs.map(() => "?").join(", ");
+  const [active, recent, proposals, deploys] = await Promise.all([
+    env.DB.prepare(`SELECT * FROM deployment_requests WHERE status IN (${marks(ACTIVE_REQUEST_STATUSES)}) ORDER BY created_at DESC LIMIT 50`)
+      .bind(...ACTIVE_REQUEST_STATUSES).all<Record<string, unknown>>(),
+    env.DB.prepare("SELECT * FROM deployment_requests ORDER BY created_at DESC LIMIT ?").bind(n).all<Record<string, unknown>>(),
+    env.DB.prepare(`SELECT proposal_id, action, target, class, status, approvals, eligible, created_at, decided_at FROM consensus_proposals WHERE status IN (${marks(ACTIVE_PROPOSAL_STATUSES)}) ORDER BY created_at DESC LIMIT 50`)
+      .bind(...ACTIVE_PROPOSAL_STATUSES).all<Record<string, unknown>>(),
+    env.DB.prepare("SELECT subject, actor, payload_json, created_at FROM audit_events WHERE event_type = 'registry.desired_version_set' ORDER BY created_at DESC LIMIT ?")
+      .bind(n).all<{ subject: string; actor: string; payload_json: string; created_at: string }>(),
+  ]);
+  return {
+    active: { requests: active.results.map(presentDeploymentRequest), proposals: proposals.results.map((p) => ({ ...p })) },
+    requests: recent.results.map(presentDeploymentRequest),
+    deploys: deploys.results.map((e) => {
+      let p: Record<string, unknown> = {};
+      try { p = JSON.parse(e.payload_json) ?? {}; } catch { p = {}; }
+      return { service_id: e.subject, version: text(p.desired_version, 64), previous: text(p.previous, 64), origin: deploymentOrigin(e.actor), actor: e.actor, at: e.created_at };
+    }),
+    generated_at: new Date().toISOString(),
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -827,6 +893,12 @@ export default {
     }
 
     if (url.pathname !== "/v1/deployments") return json({ error: "not_found" }, 404);
+    if (request.method === "GET") {
+      // Read-only list for the Console's Pipelines page: operators and viewer accounts.
+      const reader = await requireOperator(request, env as never);
+      if (!reader.ok) return reader.response;
+      return json(await listDeployments(env, Number(url.searchParams.get("limit") ?? 25)));
+    }
     if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
     if (env.SERVICE_ENVIRONMENT !== "production") {
       return json({ error: "production_worker_required", production_dispatch_enabled: false }, 503);
@@ -870,9 +942,7 @@ export default {
     }
 
     // CI gate (owner decision, option B): the combined commit status plus the latest GitHub
-    // Actions run of every validation/deployment workflow on this commit. The trusted
-    // request workflow is excluded because its own in-progress run is the caller of this
-    // endpoint, not a CI result. Both lookups are readable by a fine-grained PAT
+    // Actions run of every validation/deployment workflow on this commit. Both lookups are readable by a fine-grained PAT
     // (Commit statuses: Read, Actions: Read); the Checks API is not.
     const [statusResponse, workflowRunsResponse] = await Promise.all([
       gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
