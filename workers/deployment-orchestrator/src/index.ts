@@ -481,16 +481,17 @@ async function verifyNativeRollbackRequest(secret: string, row: NativeRollbackSi
 
 /**
  * Claim execution outside shared D1. The HMAC authenticates the immutable request, but a
- * D1 writer could restore an old signed row to status='approved'. A request-scoped Durable
- * Object claim makes each signed request executable at most once, even after D1 status replay.
+ * D1 writer could restore an old signed row to status='approved'. A second claim in the same
+ * idempotency-key Durable Object makes each signed request executable at most once without
+ * creating a second Durable Object for the rollback intent.
  */
-async function claimNativeRollbackExecution(env: Env, requestId: string): Promise<boolean> {
+async function claimNativeRollbackExecution(env: Env, requestId: string, idempotencyKey: string): Promise<boolean> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + requestId),
   );
   const sha = Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName("native-rollback-execution:" + requestId))
+  const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(idempotencyKey))
     .fetch("https://lock.internal/claim", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -602,7 +603,7 @@ export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: ty
     if (!nativeRollbackConfigured(env)) continue;
     // HMAC alone is not a one-time token: a shared-D1 writer could restore the original signed
     // details and reset status to approved. Claim a request-scoped DO key before the D1 transition.
-    if (!(await claimNativeRollbackExecution(env, r.request_id))) continue;
+    if (!(await claimNativeRollbackExecution(env, r.request_id, r.idempotency_key))) continue;
 
     const claim = await env.DB.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ? AND status = 'approved'")
       .bind(new Date(now).toISOString(), r.request_id).run();
