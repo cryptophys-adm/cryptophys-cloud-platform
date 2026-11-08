@@ -8,7 +8,8 @@ the checks that run the control-plane test suite against it (phase 3).
 | `GET /health`, `GET /ready` | Access | Health and readiness (`artifacts_binding`, D1 schema, Access) |
 | `GET /v1/forge/status` | operators, viewers | The repo and the head of `main` |
 | `GET /v1/forge/commits?limit=` | operators, viewers | History of `main` (newest first) |
-| `GET /v1/forge/checks?limit=` | operators, viewers | Forge checks of recent commits of `main` (newest first) |
+| `GET /v1/forge/checks?limit=` | operators, viewers | Forge checks of recent commits of `main` (newest first), each with GitHub CI's conclusion, plus the parity count |
+| `POST /v1/forge/ci-report` `{confirm:"REPORT", commit, conclusion, workflow_run_id}` | the CI service token only | GitHub CI's conclusion for a commit of `main` (`forge-ci-report.yml`) |
 | `POST /v1/forge/import` `{confirm:"IMPORT"}` | operators | One-time import of the GitHub repository; an existing repo is left alone |
 | `POST /v1/forge/mirror-token` `{confirm:"MIRROR"}` | the CI service token only | 10-minute write token for the mirror workflow |
 

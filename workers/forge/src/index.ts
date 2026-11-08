@@ -7,14 +7,17 @@
 //     CI service token only. The mirror workflow pushes GitHub main to the Artifacts repo with it,
 //     so both carry the same commit SHAs while GitHub is still the source of truth (phases 1-4).
 //   - GET /v1/forge/status, GET /v1/forge/commits: the repo and its main history, for the Console.
-//   - GET /v1/forge/checks: the Forge checks of main's recent commits (phase 3, checks.ts).
+//   - GET /v1/forge/checks: the Forge checks of main's recent commits (phase 3, checks.ts), each
+//     next to GitHub CI's conclusion, and the parity count towards phase 4.
+//   - POST /v1/forge/ci-report {confirm: "REPORT"}: GitHub CI's conclusion for a commit of main, from
+//     the CI service token only (forge-ci-report.yml), while GitHub is still the source of truth.
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { accessConfigured, accessGate, actorOf, listConfigured, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
 import { errorResponse, healthBody, json, readJsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
-import { listChecks, type ArtifactsReader } from "./checks.ts";
+import { listChecks, recordCiReport, type ArtifactsReader } from "./checks.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
@@ -193,9 +196,14 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
-      if (request.method === "POST" && (url.pathname === "/v1/forge/import" || url.pathname === "/v1/forge/mirror-token")) {
+      if (request.method === "POST" && (url.pathname === "/v1/forge/import" || url.pathname === "/v1/forge/mirror-token" || url.pathname === "/v1/forge/ci-report")) {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
+        if (url.pathname === "/v1/forge/ci-report") {
+          if (operator.identity.type !== "service_token") return errorResponse(403, "service_token_required");
+          if (body.value.confirm !== "REPORT") return errorResponse(400, "confirmation_required", 'type "REPORT" to record a CI result');
+          return json(await recordCiReport(env.DB, body.value as never, actorOf(operator.identity)));
+        }
         if (url.pathname === "/v1/forge/import") {
           if (body.value.confirm !== "IMPORT") return errorResponse(400, "confirmation_required", 'type "IMPORT" to import the repository');
           return json(await importRepo(env, operator.identity));

@@ -4,9 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
+import { CI_JWT, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
 import forge, { REPO } from "../../forge/src/index.ts";
-import { LOOKBACK_COMMITS, RUNNER_ID, STALE_RUN_MS, checksTick, claim, snapshotFromArtifacts, type ArtifactsReader, type ArtifactsTreeEntry } from "../../forge/src/checks.ts";
+import { LOOKBACK_COMMITS, PARITY_TARGET, RUNNER_ID, STALE_RUN_MS, agreement, checksTick, claim, parity, snapshotFromArtifacts, type ArtifactsReader, type ArtifactsTreeEntry } from "../../forge/src/checks.ts";
 import {
   FILES_PER_WORKER, MAX_FILE_BYTES, deferTopLevel, groupFiles, runSuite, runnerEntry, snapshotPathAllowed, tally, testFiles, testWorkerCode,
   type EsbuildLike, type ShimSources, type SuiteDeps, type TestWorkerCode,
@@ -229,4 +229,69 @@ test("FC10. Forge config: cron off the other minutes, Worker Loader, toolchain k
   assert.match(assets, /from "[^"]*\/sql\.js\/dist\/sql-wasm\.js"/);
   for (const f of ["index.ts", "checks.ts", "runner/core.ts"]) assert.doesNotMatch(read("workers/forge/src/" + f), /assets\.js|runtime\.ts/, f + " must not load the wasm toolchain");
   assert.match(read("workers/forge/src/worker.ts"), /export class ForgeBundler extends WorkerEntrypoint/);
+});
+
+test("FC11. GitHub CI reports come from the CI service token only, validated and audited", async () => {
+  const db = migratedDb();
+  const e = baseEnv("cryptophys-forge", db, { ARTIFACTS: {} });
+  const report = (body: unknown, jwt = CI_JWT) => call(forge, e, req("POST", "/v1/forge/ci-report", body, jwt));
+  const ok = { confirm: "REPORT", commit: h("1"), conclusion: "success", workflow_run_id: 42465870987 };
+  assert.equal((await report(ok, OPERATOR_JWT)).status, 403, "a person cannot write a CI result");
+  assert.equal((await report(ok, OUTSIDER_JWT)).status, 403);
+  assert.equal((await report({ ...ok, confirm: "yes" })).status, 400);
+  for (const bad of [{ commit: "abc" }, { conclusion: "cancelled" }, { workflow_run_id: "1; DROP" }]) {
+    assert.equal((await report({ ...ok, ...bad })).status, 400, JSON.stringify(bad));
+  }
+  const r = await report(ok);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { commit: h("1"), conclusion: "success" });
+  assert.equal((await report({ ...ok, conclusion: "failure", workflow_run_id: "43" })).status, 200, "a re-run replaces the result");
+  assert.deepEqual(db.raw.prepare("SELECT conclusion, workflow_run_id FROM forge_ci_reports").all().map((r: any) => ({ ...r })), [{ conclusion: "failure", workflow_run_id: "43" }]);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'forge.ci_reported'").get() as any).n, 2);
+});
+
+test("FC12. parity counts consecutive agreements, newest first, over commits with both results", () => {
+  assert.equal(agreement("passed", "success"), true);
+  assert.equal(agreement("failed", "failure"), true);
+  assert.equal(agreement("failed", "success"), false);
+  assert.equal(agreement("error", "success"), false, "a Forge error never counts as agreement");
+  assert.equal(agreement("passed", null), null);
+  assert.equal(agreement("running", "success"), null);
+  const p = parity([
+    { commit: "n1", agrees: true }, { commit: "n2", agrees: null }, { commit: "n3", agrees: true },
+    { commit: "o1", agrees: false }, { commit: "o2", agrees: true },
+  ]);
+  assert.deepEqual(p, { target: PARITY_TARGET, consecutive: 2, compared: 4, disagreements: ["o1"] });
+  assert.equal(PARITY_TARGET, 20);
+});
+
+test("FC13. GET /v1/forge/checks shows GitHub CI next to each Forge check, and the parity", async () => {
+  const db = migratedDb();
+  const { repo } = fakeRepo({ commits: [h("2"), h("1")] });
+  const env = { DB: db, ARTIFACTS: { get: async () => repo } };
+  let now = Date.parse("2026-11-08T09:04:00Z");
+  await checksTick(env, REPO, passingDeps([]), () => now);
+  now += 15 * 60_000;
+  await checksTick(env, REPO, passingDeps([]), () => now);
+  const e = baseEnv("cryptophys-forge", db, { ARTIFACTS: {} });
+  for (const [commit, conclusion] of [[h("1"), "success"], [h("2"), "failure"]]) {
+    await call(forge, e, req("POST", "/v1/forge/ci-report", { confirm: "REPORT", commit, conclusion, workflow_run_id: 7 }, CI_JWT));
+  }
+  const r = await call(forge, e, req("GET", "/v1/forge/checks", undefined, OPERATOR_JWT));
+  assert.deepEqual(r.body.checks.map((c: any) => [c.commit, c.status, c.github, c.agrees]), [[h("2"), "passed", "failure", false], [h("1"), "passed", "success", true]]);
+  assert.deepEqual(r.body.parity, { target: 20, consecutive: 0, compared: 2, disagreements: [h("2")] });
+});
+
+test("FC14. the CI report workflow: main pushes only, read-only permissions, validated payload", () => {
+  const wf = read(".github/workflows/forge-ci-report.yml");
+  assert.match(wf, /workflows: \["Validate Control Plane Workers"\]\n\s+types: \[completed\]\n\s+branches: \[main\]/);
+  assert.match(wf, /github\.event\.workflow_run\.event == 'push'/, "pull request runs are never reported");
+  assert.match(wf, /conclusion == 'success' \|\| github\.event\.workflow_run\.conclusion == 'failure'/);
+  assert.match(wf, /permissions:\n  contents: read\n  actions: read\n\n/, "no write permission");
+  assert.doesNotMatch(wf, /ref: \$\{\{ github\.event\.workflow_run/, "the workflow never checks out the code under test");
+  assert.match(wf, /persist-credentials: false/);
+  assert.ok(wf.includes('[[ "$1" =~ ^[0-9a-f]{40}$ && "$3" =~ ^[0-9]{1,20}$ ]]'), "the commit and run id are validated before use");
+  assert.match(wf, /\/v1\/forge\/ci-report/);
+  assert.match(read(".github/workflows/ops-dispatch.yml"), /forge-ci-report\.yml\) ref=main ;;/);
+  assert.equal(read("workers/control-plane-shared/test/../../control-plane-migrations/0032_forge_ci_reports.sql").includes("CHECK (conclusion IN ('success', 'failure'))"), true);
 });
