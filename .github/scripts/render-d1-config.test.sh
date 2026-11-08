@@ -23,12 +23,17 @@ config='name = "x"
 [[d1_databases]]
 binding = "DB"
 database_name = "cryptophys-control-plane"
-database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"'
+database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
+[[send_email]]
+name = "OWNER_EMAIL"
+allowed_destination_addresses = ["owner-notify-placeholder@example.invalid"]
+allowed_sender_addresses = ["alerts@notify.cryptophys.work"]'
 printf '%s\n' "$config" >"$tmp/w1/wrangler.toml"
 printf '%s\n' "$config" >"$tmp/w2/wrangler.toml"
 
 run() {
   PATH="$tmp/bin:$PATH" FAKE_RESPONSE="$tmp/response.json" GITHUB_ACTIONS="" \
+    APPROVER_IDENTITIES="${APPROVER_IDENTITIES:-}" \
     CLOUDFLARE_ACCOUNT_ID=acct CLOUDFLARE_API_TOKEN=token D1_DATABASE_NAME=cryptophys-control-plane \
     "$here/render-d1-config.sh" "$@" >"$tmp/out" 2>&1
 }
@@ -37,11 +42,19 @@ ok() { echo "ok   $1"; passed=$((passed + 1)); }
 bad() { echo "FAIL $1"; sed 's/^/    /' "$tmp/out"; failed=$((failed + 1)); }
 
 printf '{"success":true,"result":[{"name":"cryptophys-control-plane","uuid":"%s"},{"name":"other","uuid":"x"}]}' "$id" >"$tmp/response.json"
-if run "$tmp/w1" "$tmp/w2" && grep -q "database_id = \"$id\"" "$tmp/w1/wrangler.deploy.toml" \
-  && grep -q "database_id = \"$id\"" "$tmp/w2/wrangler.deploy.toml" && ! grep -q "$id" "$tmp/out" \
-  && grep -q '__CONTROL_PLANE_D1_DATABASE_ID__' "$tmp/w1/wrangler.toml"; then
-  ok "renders every config, leaves sources untouched, never prints the id"
-else bad "renders every config"; fi
+if APPROVER_IDENTITIES="owner@example.com,security@example.com" run "$tmp/w1" "$tmp/w2" \
+  && grep -q "database_id = \"$id\"" "$tmp/w1/wrangler.deploy.toml" \
+  && grep -q "database_id = \"$id\"" "$tmp/w2/wrangler.deploy.toml" \
+  && grep -Fq 'allowed_destination_addresses = ["owner@example.com", "security@example.com"]' "$tmp/w1/wrangler.deploy.toml" \
+  && grep -Fq 'allowed_sender_addresses = ["alerts@notify.cryptophys.work"]' "$tmp/w1/wrangler.deploy.toml" \
+  && ! grep -q "$id\|owner@example.com\|security@example.com" "$tmp/out" \
+  && grep -q '__CONTROL_PLANE_D1_DATABASE_ID__' "$tmp/w1/wrangler.toml" \
+  && grep -q 'owner-notify-placeholder@example.invalid' "$tmp/w1/wrangler.toml"; then
+  ok "renders D1 and owner email allowlists, masks identities, leaves source configs untouched"
+else bad "renders D1 and owner email allowlists"; fi
+
+if (unset APPROVER_IDENTITIES; run "$tmp/w1"); then bad "missing approver allowlist must fail"; else ok "missing approver allowlist fails closed"; fi
+if APPROVER_IDENTITIES="owner@example.com,not-an-email" run "$tmp/w1"; then bad "invalid approver identity must fail"; else ok "invalid approver identity fails closed"; fi
 
 printf '{"success":true,"result":[{"name":"cryptophys-control-plane","uuid":"%s"},{"name":"cryptophys-control-plane","uuid":"%s"}]}' "$id" "$id" >"$tmp/response.json"
 if run "$tmp/w1"; then bad "ambiguous name must fail"; else ok "ambiguous database name fails"; fi
