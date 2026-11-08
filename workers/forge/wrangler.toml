@@ -1,0 +1,30 @@
+name = "cryptophys-forge"
+main = "src/worker.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
+
+[observability]
+enabled = true
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+[vars]
+# ACCESS_TEAM_DOMAIN, ACCESS_AUD, OPERATOR_IDENTITIES and APPROVER_IDENTITIES are set at deploy time.
+SERVICE_NAME = "cryptophys-forge"
+SERVICE_ENVIRONMENT = "production"
+API_CONTRACT_VERSION = "v1"
+
+# Audit chain (forge.imported, forge.mirror_token_issued). The account-specific database_id is
+# substituted at deploy time (ADR-0001).
+[[d1_databases]]
+binding = "DB"
+database_name = "cryptophys-control-plane"
+database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"
+migrations_dir = "../control-plane-migrations"
+
+# ADR-0012 phase 1: the platform source on Cloudflare Artifacts (namespace cryptophys, repo platform).
+[[artifacts]]
+binding = "ARTIFACTS"
+namespace = "cryptophys"
