@@ -70,7 +70,7 @@ test("F3. status and commits read main; viewers and operators read, outsiders do
   const e = env(migratedDb(), fakeArtifacts({ exists: true }).binding);
   const s = await call(forge, e, req("GET", "/v1/forge/status", undefined, OPERATOR_JWT));
   assert.equal(s.status, 200);
-  assert.deepEqual(s.body.head, { sha: SHA, title: "commit 0", author: "Claude", date: "2026-11-08T04:00:00Z" });
+  assert.deepEqual(s.body.head, { sha: SHA, title: "commit 0", author: "Claude", date: "2026-11-08T04:00:00.000Z" });
   assert.equal(s.body.repo.default_branch, "main");
   const c = await call(forge, e, req("GET", "/v1/forge/commits?limit=2", undefined, OPERATOR_JWT));
   assert.equal(c.body.commits.length, 2);
@@ -85,6 +85,16 @@ test("F4. readiness needs the Artifacts binding, the schema and Access", async (
   assert.equal(ok.body.checks.artifacts_binding, true);
   const missing = await call(forge, env(migratedDb(), undefined), req("GET", "/ready"));
   assert.deepEqual([missing.status, missing.body.checks.artifacts_binding], [503, false]);
+});
+
+test("F4b. commit metadata is read defensively: hash/oid/sha/id, nested or epoch timestamps", async () => {
+  const { presentCommit } = await import("../../forge/src/index.ts");
+  const h = "b".repeat(40);
+  assert.deepEqual(presentCommit({ hash: h, message: "t\nbody", author: { name: "A", timestamp: 1794110000 } }), { sha: h, title: "t", author: "A", date: new Date(1794110000 * 1000).toISOString() });
+  assert.equal(presentCommit({ oid: h }).sha, h);
+  assert.equal(presentCommit({ something: h }).sha, h, "any 40-hex field");
+  assert.equal(presentCommit({ id: h, author: "B", authorDate: "2026-11-08T05:00:00Z" }).date, "2026-11-08T05:00:00.000Z");
+  assert.deepEqual(presentCommit({}), { sha: "", title: "", author: "", date: "" });
 });
 
 test("F5. wiring: binding, Access destination, deploy and mirror workflows, ops-dispatch", () => {
