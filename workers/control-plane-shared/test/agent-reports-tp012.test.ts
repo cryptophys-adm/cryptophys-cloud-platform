@@ -44,7 +44,8 @@ const PLAN = { service_id: "cryptophys-platform-api", plan_version: "1", title: 
   steps: [{ action: "rollback_worker_version", description: "Roll back to the previous version" }] };
 
 async function newPlan(env: any) {
-  const created = await call(recovery, env, req("POST", "/v1/plans", PLAN, OPERATOR_JWT));
+  // Authored by the deploy workflow's service token (an operator), so the approver may approve it.
+  const created = await call(recovery, env, req("POST", "/v1/plans", PLAN));
   assert.equal(created.status, 201);
   return created.body.plan;
 }

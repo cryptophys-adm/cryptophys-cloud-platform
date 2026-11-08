@@ -250,6 +250,17 @@ export async function requireOperator(request: Request, env: RoleEnv): Promise<A
 }
 
 /**
+ * Writes that change what production should look like (a service's desired version or registry
+ * record, a recovery plan). Hardening 2026-11-08: a person needs the approver role; a service token
+ * in OPERATOR_IDENTITIES (the deploy workflows) keeps operating, because deploys record versions.
+ */
+export async function requireApproverOrServiceOperator(request: Request, env: RoleEnv): Promise<Authorization> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return auth;
+  return auth.identity.type === "service_token" ? requireOperator(request, env) : requireApprover(request, env);
+}
+
+/**
  * Approvers: owners (APPROVER_IDENTITIES) and accounts with the approver privilege. Always a
  * person: an Access service token is never an approver. An unset APPROVER_IDENTITIES fails closed.
  */

@@ -71,7 +71,7 @@ test("C3/C4. wiring: nightly D1 backup to a private R2 bucket, UI render smoke i
   assert.match(validate, /npx playwright install --with-deps chromium\n\s+npm run render-smoke/);
   const pullRequestTrigger = validate.match(/\n  pull_request:\n([\s\S]*?)\n  push:/)?.[1] ?? "";
   const pushTrigger = validate.match(/\n  push:\n([\s\S]*?)\n  workflow_dispatch:/)?.[1] ?? "";
-  assert.match(pullRequestTrigger, /paths:/, "PR validation keeps its scoped path filter");
+  assert.doesNotMatch(pullRequestTrigger, /paths:/, "every PR is validated (2026-11-08: validate.yml merged in, no path filter)");
   assert.match(pushTrigger, /branches:\s*\[main\]/, "main push validation is enabled");
   assert.doesNotMatch(pushTrigger, /paths:/, "every main SHA must receive the Control Plane validation required by ciGreen");
   const smoke = readFileSync(new URL("workers/console/ui/scripts/render-smoke.mjs", ROOT), "utf8");

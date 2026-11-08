@@ -71,7 +71,7 @@ test("B2/B3. wiring: kernel route, Console panel and route; owner notices come f
     assert.equal(existsSync(new URL(f, ROOT)), false, `${f} is retired`);
   }
   assert.match(readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8"), /reconcileNotices\(env, event\.scheduledTime\)/);
-  assert.doesNotMatch(readFileSync(new URL(".github/workflows/validate.yml", ROOT), "utf8"), /owner-attention\.test\.sh|drift-summary\.test\.sh|report-summary\.test\.sh/);
+  assert.doesNotMatch(readFileSync(new URL(".github/workflows/validate-control-plane.yml", ROOT), "utf8"), /owner-attention\.test\.sh|drift-summary\.test\.sh|report-summary\.test\.sh/);
 });
 
 // ---------------------------------------------------------------- B1: rollback to the previous recorded version

@@ -7,7 +7,7 @@ import { useSession } from "../lib/session";
 import { ago, fmt, listOf } from "../lib/format";
 
 function Editor({ id, onDone }: { id: string; onDone: () => void }) {
-  const { act, notify } = useSession();
+  const { who, act, notify } = useSession();
   const svc = usePoll(() => call("registry.service", id), 0, [id]);
   const s = svc.data?.service ?? svc.data ?? {};
   const meta = s.metadata && typeof s.metadata === "object" && !Array.isArray(s.metadata) ? s.metadata : {};
@@ -20,6 +20,8 @@ function Editor({ id, onDone }: { id: string; onDone: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [svc.data]);
   if (svc.loading && !svc.data) return <Skeleton rows={3} />;
+  // Hardening 2026-11-08: changing a service record or its desired version shapes production, so it is an approver's act.
+  if (!who.approver) return <Panel title={<>Edit <span className="mono normal-case tracking-normal text-slate-200">{id}</span></>}><Empty>Only an approver can change a service record or its desired version.</Empty></Panel>;
   return (
     <Panel title={<>Edit <span className="mono normal-case tracking-normal text-slate-200">{id}</span></>} icon={<Pencil className="h-3.5 w-3.5 text-cyan-300" />}>
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">

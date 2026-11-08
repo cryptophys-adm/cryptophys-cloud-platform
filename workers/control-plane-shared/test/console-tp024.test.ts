@@ -80,15 +80,13 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.principal_remove", "kernel", "DELETE", "/v1/agents/{id}/principals/{id}", true, "REVOKE {id}"],
   ["recovery.plans", "recovery", "GET", "/v1/plans", false, null],
   ["recovery.plan", "recovery", "GET", "/v1/plans/{id}", false, null],
-  ["recovery.create", "recovery", "POST", "/v1/plans", false, "CREATE PLAN"],
+  ["recovery.create", "recovery", "POST", "/v1/plans", true, "CREATE PLAN"],
   ["recovery.approve", "recovery", "POST", "/v1/plans/{id}/approve", true, "APPROVE {id13}"],
-  ["recovery.execute_start", "recovery", "POST", "/v1/plans/{id}/executions", false, "START {id13}"],
-  ["recovery.execute_finish", "recovery", "POST", "/v1/plans/{id}/executions", false, "FINISH {id13}"],
   ["recovery.disable", "recovery", "POST", "/v1/plans/{id}/disable", false, "DISABLE {id13}"],
   ["registry.services", "registry", "GET", "/v1/services", false, null],
   ["registry.service", "registry", "GET", "/v1/services/{id}", false, null],
-  ["registry.upsert", "registry", "PUT", "/v1/services/{id}", false, "UPDATE {id}"],
-  ["registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", false, "VERSION {id}"],
+  ["registry.upsert", "registry", "PUT", "/v1/services/{id}", true, "UPDATE {id}"],
+  ["registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", true, "VERSION {id}"],
   ["registry.accounts", "registry", "GET", "/v1/accounts", false, null],
   ["registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"],
   ["registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"],
@@ -105,8 +103,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 52 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 52);
+test("1. route table: exactly the 50 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 50);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -115,7 +113,7 @@ test("1. route table: exactly the 52 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 52);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 50);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -123,9 +121,9 @@ test("1. route table: exactly the 52 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the thirteen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews)", () => {
+test("2. approver flags: exactly the sixteen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.resume","recovery.approve","registry.account_disable","registry.account_upsert","registry.accounts_sync"].sort());
+  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -201,7 +199,7 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  assert.equal(CONSOLE_ALLOW_LIST.length, 50);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 49);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

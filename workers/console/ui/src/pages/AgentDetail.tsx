@@ -16,6 +16,7 @@ export default function AgentDetail({ id }: { id: string }) {
   const [principal, setPrincipal] = useState("");
   const [revoke, setRevoke] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  const [showPrincipals, setShowPrincipals] = useState(false);
   const a = agent.data?.agent ?? agent.data ?? {};
   const kernelHosted = a.host_worker === "cryptophys-ai-kernel";
   const reload = () => { void agent.refresh(); void actions.refresh(); };
@@ -48,7 +49,13 @@ export default function AgentDetail({ id }: { id: string }) {
             {KERNEL_AGENTS.includes(id) && <button type="button" className="btn" onClick={() => act({ route: "kernel.wake", params: id, title: `Wake ${id}`, lines: ["Runs one cycle of this agent now."], done: `Woke ${id}.`, after: reload })}><Zap className="h-3.5 w-3.5" />Wake…</button>}
           </div>
         </Panel>
-        {who.approver && !kernelHosted && (
+        {who.approver && !kernelHosted && !showPrincipals && (
+          <Panel title="External principals" icon={<KeyRound className="h-3.5 w-3.5 text-violet-300" />}>
+            <p className="text-[12px] text-slate-500">No external agent uses this platform yet (TP-009). The principal controls stay hidden until one does.</p>
+            <button type="button" className="btn mt-2" onClick={() => setShowPrincipals(true)}>Manage principals…</button>
+          </Panel>
+        )}
+        {who.approver && !kernelHosted && showPrincipals && (
           <Panel title="External principals" icon={<KeyRound className="h-3.5 w-3.5 text-violet-300" />}>
             <Field label="Access email or service-token Client ID"><input className="field mono" maxLength={200} value={principal} onChange={(e) => setPrincipal(e.target.value)} /></Field>
             <button type="button" className="btn btn-danger mt-2" onClick={() => {

@@ -72,7 +72,8 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("kernel", "POST", ["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"]),
   ...rows("kernel", "DELETE", ["/v1/agents/{id}/principals/{id}"]),
   ...rows("recovery", "GET", ["/v1/plans", "/v1/plans/{id}"]),
-  ...rows("recovery", "POST", ["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/executions", "/v1/plans/{id}/disable"]),
+  // Hardening 2026-11-08: manual START/FINISH of executions left the Console; the AI runs approved plans.
+  ...rows("recovery", "POST", ["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/disable"]),
   ...rows("registry", "GET", ["/v1/services", "/v1/services/{id}", "/v1/accounts"]),
   ...rows("registry", "POST", ["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable"]),
   ...rows("registry", "PUT", ["/v1/services/{id}", "/v1/services/{id}/desired-version"]),

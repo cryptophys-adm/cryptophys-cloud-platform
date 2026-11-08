@@ -94,25 +94,6 @@ jobs:
           ACCESS_APP_NAME: cryptophys-cloud-platform
           EXPECTED_WORKERS: cryptophys-deployment-orchestrator
         run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
-      - name: Remove the retired ORCHESTRATOR_SHARED_SECRET from the Worker
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Deployments never delete secrets, so remove it explicitly (before deploying, so the
-          # deployed version is the one annotated with this commit). Idempotent.
-          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/cryptophys-deployment-orchestrator"
-          if curl --fail --silent --show-error --max-time 20 --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${base}/settings" \
-              | jq -e '[.result.bindings[] | select(.name == "ORCHESTRATOR_SHARED_SECRET")] | length > 0' >/dev/null; then
-            curl --fail --silent --show-error --max-time 20 --request DELETE \
-              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${base}/secrets/ORCHESTRATOR_SHARED_SECRET" \
-              | jq -e '.success == true' >/dev/null
-            echo "Removed ORCHESTRATOR_SHARED_SECRET from the Worker."
-          else
-            echo "ORCHESTRATOR_SHARED_SECRET is not present on the Worker."
-          fi
       - name: Wait for a deploy window outside the drift and kernel cron minutes
         run: '"$GITHUB_WORKSPACE/.github/scripts/wait-cron-window.sh"'
       - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
