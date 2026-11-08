@@ -1,22 +1,19 @@
-# Forge runner (ADR-0012 phase 3)
+# Forge runner, local (ADR-0012 phase 3)
 
-Runs the control-plane test suite in **workerd**, the Workers runtime, instead of Node. These same
-shims are what the Forge loads into Dynamic Workers when the checks move off GitHub.
+Runs the **Forge checks** on this machine, in workerd (the Workers runtime), with the Forge's own
+code: `workers/forge/src/checks.ts` and `workers/forge/src/runner/`.
 
-| Node module | Replacement in the isolate |
+- **Bundling.** The control-plane test suite is bundled by esbuild-wasm inside the isolate.
+- **Running.** The bundles run in Dynamic Workers, 8 files per Worker, as the Forge Worker does on Cloudflare.
+- **The one stand-in.** The Artifacts repo is replaced by git-style trees built from the working tree (tracked files and untracked, not-ignored ones).
+
+| Node module | Replacement in the isolate (`workers/forge/src/runner/shims/`) |
 |---|---|
-| `node:test` | `shims/node-test.js`: `test`, `test.skip`/`todo`, `beforeEach`/`afterEach` |
-| `node:sqlite` | `shims/node-sqlite.js`: `DatabaseSync` over sql.js (SQLite in WebAssembly) |
-| `node:fs` | `shims/node-fs.js`: a read-only snapshot of the repository's text files, plus an in-memory scratch area |
+| `node:test` | `test`, `test.skip`/`todo`, `beforeEach`/`afterEach` |
+| `node:sqlite` | `DatabaseSync` over sql.js (SQLite in WebAssembly) |
+| `node:fs` | read-only snapshot of the commit's text files, plus an in-memory scratch area |
 | `node:os`, `node:child_process` | small stubs; `spawnSync` is not available |
-| Wrangler bundling | `shims/forge-bundle.js`: esbuild-wasm in the isolate, exposed to tests as `globalThis.__FORGE_BUNDLE(dir)` |
-
-How it works:
-
-- Each test file is bundled with esbuild.
-- `import.meta.url` is replaced by the file's own repository path, so relative reads resolve.
-- The module's top level is deferred until a request arrives, because workerd evaluates configured modules at startup, when `Date.now()` is 0.
-- Each file then runs in a fresh `workerd` process.
+| Wrangler bundling (TP-025) | `globalThis.__FORGE_BUNDLE(dir)`, which calls the Forge's `ForgeBundler` entrypoint |
 
 ```sh
 (cd workers/control-plane-shared && npm ci)
@@ -24,8 +21,4 @@ node tools/forge-runner/run.mjs              # whole suite
 node tools/forge-runner/run.mjs plain-english.test.ts
 ```
 
-Status (2026-11-08): **all 329 tests pass in workerd**, with the same per-file counts as Node. There are no known gaps.
-
-- The Wrangler dry-run test (TP-025) uses the Forge bundler when the runner provides it.
-- In Node it still runs `wrangler deploy --dry-run`.
-- The 14 MB `esbuild.wasm` is embedded only in test files that reference `__FORGE_BUNDLE`.
+Status (2026-11-08): **all 329 tests pass**, with the same per-file counts as Node, in about 38 s.

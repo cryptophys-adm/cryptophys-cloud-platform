@@ -7,12 +7,14 @@
 //     CI service token only. The mirror workflow pushes GitHub main to the Artifacts repo with it,
 //     so both carry the same commit SHAs while GitHub is still the source of truth (phases 1-4).
 //   - GET /v1/forge/status, GET /v1/forge/commits: the repo and its main history, for the Console.
+//   - GET /v1/forge/checks: the Forge checks of main's recent commits (phase 3, checks.ts).
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { accessConfigured, accessGate, actorOf, listConfigured, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
 import { errorResponse, healthBody, json, readJsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
+import { listChecks, type ArtifactsReader } from "./checks.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
@@ -24,6 +26,9 @@ export interface ArtifactsRepo {
   info(): Promise<{ name: string; remote: string; defaultBranch?: string; default_branch?: string; lastPushAt?: string | null; last_push_at?: string | null } | null>;
   createToken(scope?: "read" | "write", ttl?: number): Promise<{ plaintext: string; expiresAt: string | number }>;
   log(opts?: { ref?: string; limit?: number; offset?: number }): Promise<ArtifactsCommit[]>;
+  readCommit: ArtifactsReader["readCommit"];
+  readTree: ArtifactsReader["readTree"];
+  readBlob: ArtifactsReader["readBlob"];
   [Symbol.dispose]?(): void;
 }
 export interface ArtifactsBinding {
@@ -186,6 +191,7 @@ export default {
     if (!operator.ok) return operator.response;
     try {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
+      if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "POST" && (url.pathname === "/v1/forge/import" || url.pathname === "/v1/forge/mirror-token")) {
         const body = await readJsonObject(request);

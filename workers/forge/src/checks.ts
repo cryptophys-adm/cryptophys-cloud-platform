@@ -1,0 +1,195 @@
+// ADR-0012 phase 3: Forge checks. The control-plane test suite runs on Cloudflare against each new
+// commit of main in the Artifacts repo, with no GitHub involved:
+//   1. snapshot: the commit's tree read through the Artifacts binding (readCommit/readTree/readBlob);
+//   2. bundle: esbuild-wasm in the Forge isolate (runner/core.ts);
+//   3. run: Dynamic Workers (Worker Loader), with no network access;
+//   4. record: one row per commit in D1 (forge_check_runs), plus an audit event.
+// Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
+import type { D1Database } from "../../control-plane-shared/src/types.ts";
+import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { MAX_FILE_BYTES, SKIP_DIRS, runSuite, snapshotPathAllowed, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
+
+const HEX40 = /^[0-9a-f]{40}$/;
+export const RUNNER_ID = "forge-runner/1";
+/** A run that has not finished after this long is treated as lost and may be retried. */
+export const STALE_RUN_MS = 30 * 60_000;
+/** How many of main's newest commits a tick looks at. It checks the oldest unchecked one. */
+export const LOOKBACK_COMMITS = 5;
+export const MAX_SNAPSHOT_FILES = 5_000;
+export const MAX_SNAPSHOT_BYTES = 20_000_000;
+const MAX_FAILURES_STORED = 50;
+const CONCURRENCY = 16;
+
+export interface ArtifactsTreeEntry { name: string; mode: string; hash: string; type: "tree" | "blob" | "symlink" | "gitlink" | "exec" }
+export interface ArtifactsReader {
+  readCommit(hash: string): Promise<{ hash: string; treeHash: string } | null>;
+  readTree(hash: string): Promise<ArtifactsTreeEntry[] | null>;
+  readBlob(hash: string): Promise<Blob | null>;
+  log(opts?: { ref?: string; limit?: number }): Promise<Array<Record<string, unknown>>>;
+  [Symbol.dispose]?(): void;
+}
+
+async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++]);
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * The text files of a commit, as the runner sees a checkout: no node_modules, .git or build output,
+ * no binary files, nothing over 2 MB. Symlinks and submodules are left out.
+ */
+export async function snapshotFromArtifacts(repo: ArtifactsReader, commit: string): Promise<{ snapshot: Snapshot; files: number; bytes: number }> {
+  if (!HEX40.test(commit)) throw new Error("invalid_commit");
+  const meta = await repo.readCommit(commit);
+  if (!meta || meta.hash !== commit || !HEX40.test(meta.treeHash)) throw new Error("commit_not_found");
+  const blobs: Array<{ path: string; hash: string }> = [];
+  let level: Array<{ prefix: string; hash: string }> = [{ prefix: "", hash: meta.treeHash }];
+  while (level.length > 0) {
+    const nextLevel: typeof level = [];
+    await pool(level, CONCURRENCY, async ({ prefix, hash }) => {
+      const entries = await repo.readTree(hash);
+      if (!entries) throw new Error("tree_not_found");
+      for (const e of entries) {
+        if (!e.name || e.name === "." || e.name === ".." || e.name.includes("/") || !HEX40.test(e.hash)) throw new Error("invalid_tree_entry");
+        const path = prefix + e.name;
+        if (e.type === "tree") { if (!SKIP_DIRS.has(e.name)) nextLevel.push({ prefix: path + "/", hash: e.hash }); }
+        else if ((e.type === "blob" || e.type === "exec") && snapshotPathAllowed(path)) blobs.push({ path, hash: e.hash });
+      }
+    });
+    level = nextLevel;
+    if (blobs.length > MAX_SNAPSHOT_FILES) throw new Error("snapshot_too_large");
+  }
+  const snapshot: Snapshot = {};
+  let bytes = 0;
+  await pool(blobs, CONCURRENCY, async ({ path, hash }) => {
+    const blob = await repo.readBlob(hash);
+    if (!blob) throw new Error("blob_not_found");
+    if (blob.size >= MAX_FILE_BYTES) return;
+    bytes += blob.size;
+    if (bytes > MAX_SNAPSHOT_BYTES) throw new Error("snapshot_too_large");
+    snapshot[path] = await blob.text();
+  });
+  const sorted: Snapshot = {};
+  for (const k of Object.keys(snapshot).sort()) sorted[k] = snapshot[k];
+  return { snapshot: sorted, files: blobs.length, bytes };
+}
+
+/** The last snapshot taken in this isolate, for the bundler entrypoint the test Workers call back. */
+let lastSnapshot: { commit: string; snapshot: Snapshot } | null = null;
+export function cachedSnapshot(commit: string): Snapshot | null {
+  return lastSnapshot?.commit === commit ? lastSnapshot.snapshot : null;
+}
+
+export interface CheckRun extends SuiteResult { commit: string; status: "passed" | "failed"; duration_ms: number; snapshot_files: number; snapshot_bytes: number }
+
+/** Snapshot, bundle and run one commit. Test failures are a result; only infrastructure errors throw. */
+export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<SuiteDeps>, now = () => Date.now(), only?: string[]): Promise<CheckRun> {
+  const started = now();
+  const snap = await snapshotFromArtifacts(repo, commit);
+  lastSnapshot = { commit, snapshot: snap.snapshot };
+  const result = await runSuite(await deps(commit), snap.snapshot, only);
+  if (result.files === 0) throw new Error("no_test_files");
+  return { ...result, commit, status: result.fail === 0 ? "passed" : "failed", duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes };
+}
+
+export interface CheckRow {
+  commit_sha: string; status: string; runner: string; files: number | null; pass: number | null; fail: number | null; skip: number | null;
+  failures: string | null; started_at: string; finished_at: string | null; duration_ms: number | null;
+}
+
+/**
+ * Pick the commit to check: among main's newest commits, the oldest that has no run, or whose run
+ * was lost (still "running" after 30 minutes). Returns null when every one has been checked.
+ */
+export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
+  const log = await repo.log({ ref: "main", limit: LOOKBACK_COMMITS });
+  const shas = log.map((c) => (typeof c.hash === "string" ? c.hash : "")).filter((h) => HEX40.test(h));
+  if (shas.length === 0) return null;
+  const placeholders = shas.map(() => "?").join(",");
+  const rows = await db.prepare(`SELECT commit_sha, status, started_at FROM forge_check_runs WHERE commit_sha IN (${placeholders})`).bind(...shas).all<Pick<CheckRow, "commit_sha" | "status" | "started_at">>();
+  const done = new Map((rows.results ?? []).map((r) => [r.commit_sha, r]));
+  for (const sha of [...shas].reverse()) {
+    const row = done.get(sha);
+    if (!row) return sha;
+    if (row.status === "running" && Date.parse(row.started_at) < nowMs - STALE_RUN_MS) return sha;
+  }
+  return null;
+}
+
+/** Claim a commit for this tick. False if another tick holds a live run of it. */
+export async function claim(db: D1Database, commit: string, nowMs: number): Promise<boolean> {
+  const startedAt = new Date(nowMs).toISOString();
+  const staleBefore = new Date(nowMs - STALE_RUN_MS).toISOString();
+  const r = await db.prepare(
+    `INSERT INTO forge_check_runs (commit_sha, status, runner, started_at) VALUES (?, 'running', ?, ?)
+     ON CONFLICT(commit_sha) DO UPDATE SET status = 'running', runner = excluded.runner, started_at = excluded.started_at,
+       files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL
+     WHERE forge_check_runs.status = 'running' AND forge_check_runs.started_at < ?`,
+  ).bind(commit, RUNNER_ID, startedAt, staleBefore).run();
+  return (r.meta?.changes ?? 0) > 0;
+}
+
+function storedFailures(failures: string[]): string {
+  return JSON.stringify(failures.slice(0, MAX_FAILURES_STORED).map((f) => f.slice(0, 600)));
+}
+
+export async function record(db: D1Database, run: CheckRun | { commit: string; status: "error"; error: string; duration_ms: number }, nowMs: number): Promise<void> {
+  const finishedAt = new Date(nowMs).toISOString();
+  if (run.status === "error") {
+    await db.prepare("UPDATE forge_check_runs SET status = 'error', failures = ?, finished_at = ?, duration_ms = ? WHERE commit_sha = ?")
+      .bind(storedFailures([run.error]), finishedAt, run.duration_ms, run.commit).run();
+    return;
+  }
+  await db.prepare("UPDATE forge_check_runs SET status = ?, files = ?, pass = ?, fail = ?, skip = ?, failures = ?, finished_at = ?, duration_ms = ? WHERE commit_sha = ?")
+    .bind(run.status, run.files, run.pass, run.fail, run.skip, storedFailures(run.failures), finishedAt, run.duration_ms, run.commit).run();
+}
+
+export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> } }
+export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number };
+
+/** One cron tick: check at most one commit of main. */
+export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<SuiteDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
+  if (!env.ARTIFACTS || !deps) return { outcome: "not_configured" };
+  const repo = await env.ARTIFACTS.get(repoName);
+  try {
+    const commit = await nextCommit(env.DB, repo, nowMs());
+    if (!commit) return { outcome: "up_to_date" };
+    if (!(await claim(env.DB, commit, nowMs()))) return { outcome: "busy" };
+    const started = nowMs();
+    let status: string;
+    let counts: { pass?: number; fail?: number } = {};
+    try {
+      const run = await checkCommit(repo, commit, deps, nowMs);
+      await record(env.DB, run, nowMs());
+      status = run.status;
+      counts = { pass: run.pass, fail: run.fail };
+    } catch (e) {
+      status = "error";
+      await record(env.DB, { commit, status: "error", error: String((e as Error)?.message ?? e).slice(0, 300), duration_ms: nowMs() - started }, nowMs());
+    }
+    await appendAuditEvent(env.DB, { event_type: "forge.checks_completed", actor: "system:forge-checks", subject: commit, outcome: status, payload: { runner: RUNNER_ID, ...counts } });
+    return { outcome: "checked", commit, status, ...counts };
+  } finally {
+    repo[Symbol.dispose]?.();
+  }
+}
+
+export interface CheckSummary {
+  commit: string; status: string; runner: string; files: number | null; pass: number | null; fail: number | null; skip: number | null;
+  failures: string[]; started_at: string; finished_at: string | null; duration_ms: number | null;
+}
+
+export async function listChecks(db: D1Database, limit: number): Promise<{ checks: CheckSummary[] }> {
+  const n = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const rows = await db.prepare("SELECT * FROM forge_check_runs ORDER BY started_at DESC LIMIT ?").bind(n).all<CheckRow>();
+  return {
+    checks: (rows.results ?? []).map((r) => {
+      let failures: string[] = [];
+      try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
+      return { commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures, started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms };
+    }),
+  };
+}
