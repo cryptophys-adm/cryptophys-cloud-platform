@@ -216,6 +216,24 @@ test("N11. a D1-tampered rollback row fails its Orchestrator-only signature", as
   assert.equal(updated.status, "failed");
   assert.equal(JSON.parse(updated.details_json).outcome.reason, "invalid_native_rollback_signature");
 });
+test("N12. restoring a completed signed D1 row to approved cannot replay its rollback", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const original = db.raw.prepare("SELECT request_id, details_json FROM deployment_requests").get() as any;
+  const cf = fakeCloudflare();
+  const firstAt = nextSafeMinute(Date.now() + 1_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, firstAt, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+  assert.equal(cf.posted.length, 1);
+
+  // Simulate a different D1-bound Worker restoring the exact old signed payload and queue state.
+  db.raw.prepare("UPDATE deployment_requests SET status = 'approved', details_json = ?, updated_at = ? WHERE request_id = ?")
+    .run(original.details_json, new Date(firstAt + 1_000).toISOString(), original.request_id);
+  const secondAt = nextSafeMinute(firstAt + 60_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, secondAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 1, "the request-scoped Durable Object claim prevents a second Workers Deployments API call");
+});
+
 test("N6. the Registry records a rollback version only for a running native rollback request of the last hour", async () => {
   const db = migratedDb();
   const insert = (id: string, status: string, details: object, created = new Date().toISOString()) => db.raw.prepare(
