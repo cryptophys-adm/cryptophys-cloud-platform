@@ -137,6 +137,22 @@ The Console gets a **Code** section (`#/code`): change requests, diff, checks, r
 
 The owner creates every credential. None is created by an agent or stored in the repository.
 
+**Backlog for phase 4: Cloudflare Secrets Store** (owner, 2026-11-08: "masukan ke backlog ini akan masuk fase berikutnya").
+
+- **What moves.** The Worker secrets move to account-level secrets in Secrets Store, bound with `[[secrets_store_secrets]]` and read with `await env.X.get()`:
+  - `CF_DEPLOY_TOKEN` and `GH_ACTIONS_TOKEN` on the Orchestrator;
+  - `ACCESS_GROUPS_TOKEN` on the Platform Registry.
+- **Why.** The secrets are kept in one place and scoped to Workers. Their values cannot be read back by the API or the dashboard. Secrets Store has its own admin and deployer roles, and an audit log.
+- **Code.** It accepts both forms during the move (a plain Worker secret, or a Secrets Store binding). The binding is enabled once the store exists.
+- **Owner steps.**
+  1. Create the store.
+  2. Enter the three secrets with the `workers` scope.
+  3. Give the deploy tokens **Account Secrets Store Edit**, which deploying a Worker with this binding requires.
+  4. Share the store ID, which is not a secret.
+  5. Delete the old Worker secrets after verification.
+- **Limits.** Secrets Store is in beta: one store per account, 100 secrets.
+- **Not covered.** It does not replace the GitHub Actions secrets: runners cannot read Secrets Store values. Those leave with GitHub at phase 5.
+
 ### 5. Phases
 
 | Phase | What | GitHub after the phase |
