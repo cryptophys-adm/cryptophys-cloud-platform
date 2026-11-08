@@ -217,8 +217,22 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   - **How the result reads.** `status` covers tests and bundles, which GitHub CI also runs, so the two stay comparable. The scan is reported apart as `guard_status`.
   - **Phase 4.** The merge gate requires both `status` and `guard_status`.
 - **Parity CI.** `forge-runner-parity.yml` runs `tools/forge-runner` next to the Node suite on every PR and push.
+- **Type-check in an isolate: measured, does not fit (2026-11-08).** A Workers isolate has 128 MB of memory. The type-check needs more, even split.
+  - TypeScript 5.9 (`control-plane-tsconfig.json`, 276 files). Heap retained after `getPreEmitDiagnostics`, after GC:
+
+    | Program | Heap |
+    |---|---|
+    | the whole project | 190 MB |
+    | Worker sources only, no tests | 152 MB |
+    | the AI Kernel alone | 131 MB |
+    | one empty file with the same libs (`ES2022`, `DOM`, `@types/node`) | 109 MB |
+    | the compiler module alone | 20 MB |
+
+  - Dropping `DOM` (157 MB, 29 errors) or `@types/node` (143 MB, 176 errors) neither fits nor keeps the same check.
+  - TypeScript 7.0.2 (the native compiler) checks the project clean in 0.34 s, using 116 MB heap and 145 MB RSS. It ships only native binaries per platform, with no WebAssembly build.
+  - **Consequence.** The type-check cannot be a Forge check today without weakening it. It stays on GitHub Actions until a compiler fits in an isolate, or the owner chooses another runner. Phase 5 (archiving GitHub) waits for that decision.
 - **Next.**
-  - Type-check in the isolate. It needs the TypeScript compiler and `@types/node` from an R2 package cache (§2.1.2).
+  - Type-check: owner decision pending (see the measurements above).
   - Use the Forge bundles for deploys, then the Console build (Vite/React).
   - Run checks for branches and proposals (phase 4).
 
