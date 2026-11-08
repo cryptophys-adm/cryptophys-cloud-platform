@@ -20,6 +20,10 @@ const MOCK = {
     ],
   },
   "/api/kernel/v1/consensus": { mode: "shadow", stats_24h: {}, proposals: [] },
+  "/api/kernel/v1/notices": { email: "not_configured", notices: [
+    { topic: "owner_attention", active: true, fingerprint: "f", title: "1 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor): review at https://nexus.cryptophys.work/console/#/recovery/plan_00000000-0000-4000-8000-000000000000"] },
+    { topic: "drift", active: false, fingerprint: "", title: "All services are healthy", link: "https://nexus.cryptophys.work/console/#/infrastructure", lines: [] },
+  ] },
   "/api/kernel/v1/knowledge": { counts: { pending: 1 }, proposals: [{ proposal_id: "knw_00000000-0000-4000-8000-000000000000", proposer_agent_id: "aether-curator", item_id: "k-prophet-trap", item_version: 1, kind: "caution", content_sha256: "0".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null, item: { text: "Its bearish lean was wrong in 11 of 14 such bars.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { bars: 14, wrong: 11 }, provenance: { card_ids: [] } } }] },
   "/api/kernel/v1/consensus/report": { window_days: 7, total: 0, scored: 0, agree: 0, false_positive: 0, false_negative: 0, pending: 0, agreement_rate: null, by_action: {}, items: [] },
 };

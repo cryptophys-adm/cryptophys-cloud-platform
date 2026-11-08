@@ -1,4 +1,5 @@
 /** Kernel operations shared by the HTTP API and the MCP tools (ADR-0007). */
+import type { SendEmailBinding } from "./owner-notices.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -15,6 +16,9 @@ export interface KernelHttpEnv extends KernelEnv {
   SIGNAL_ANALYST?: SupervisorNamespace;
   AUDITOR?: SupervisorNamespace;
   APPROVER_IDENTITIES?: string;
+  /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
+  OWNER_EMAIL?: SendEmailBinding;
+  NOTIFY_FROM?: string;
 }
 
 const AGENT_ID_RE = /^[a-z0-9-]{2,40}$/;

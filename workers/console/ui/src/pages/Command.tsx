@@ -21,12 +21,35 @@ export default function Command() {
   const x = ov?.xauusd_latest;
   const cns = usePoll(() => call("kernel.consensus", undefined, undefined, { limit: "6" }), 60_000);
   const cnsRows = listOf(cns.data, "proposals");
+  // ADR-0012 phase 2: owner notices from the AI Kernel (replaces the GitHub issues).
+  const notices = usePoll(() => call("kernel.notices"), 60_000);
+  const active = listOf(notices.data, "notices").filter((n: any) => n?.active);
 
   return (
     <div className="flex flex-col gap-3">
       {/* AI Cognition (Ask the platform AI) for phones and laptops; on 2xl screens it is in the right rail (2026-11-07). */}
       <div className="2xl:hidden"><CognitionPanel /></div>
       <h1 className="sr-only">Command center</h1>
+
+      {active.length > 0 && (
+        <Panel title="Needs your attention" icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
+          right={<Badge tone="amber">{notices.data?.email === "configured" ? "emailed to the owner" : "Console only"}</Badge>}>
+          <div className="space-y-2">
+            {active.map((n: any) => (
+              <div key={n.topic} className="glass-inner px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Dot tone={n.topic === "owner_attention" ? "amber" : "red"} pulse />
+                  <span className="min-w-0 flex-1 break-words text-[12px] text-slate-200">{n.title}</span>
+                  <a href={String(n.link ?? "").replace(/^.*#/, "#")} className="text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Open →</a>
+                </div>
+                <ul className="mt-1.5 space-y-1 pl-4 text-[11px] leading-relaxed text-slate-400">
+                  {(Array.isArray(n.lines) ? n.lines : []).slice(0, 8).map((l: string, i: number) => <li key={i} className="list-disc break-words">{l}</li>)}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
 
       <div className="grid grid-cols-2 items-stretch gap-3 lg:grid-cols-[auto_1fr_1fr_1fr_1fr]">
         <div className="glass col-span-2 flex items-center px-6 py-4 lg:col-span-1">

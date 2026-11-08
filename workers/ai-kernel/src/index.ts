@@ -29,6 +29,7 @@ import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { OwnerDecisionError, agreementReport, getProposal, listProposals, ownerDecide, setConsensusMode } from "./consensus.ts";
 import { KnowledgeDecisionError, decideKnowledge, getKnowledge, listKnowledge } from "./knowledge.ts";
+import { collectNotices, emailConfigured, reconcileNotices } from "./owner-notices.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -59,7 +60,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
           "POST /v1/agents/{id}/principals (APPROVER_IDENTITIES)", "DELETE /v1/agents/{id}/principals/{access_identity} (APPROVER_IDENTITIES)",
@@ -111,6 +112,9 @@ export default {
     try {
       if (path === "/v1/kernel" && request.method === "GET") return json({ ...(await listAgents(env)), capabilities: CAPABILITIES });
       if (path === "/v1/status" && request.method === "GET") return json(await observe(env));
+      if (path === "/v1/notices" && request.method === "GET") {
+        return json({ notices: await collectNotices(env.DB), email: emailConfigured(env) ? "configured" : "not_configured" });
+      }
       if (path === "/v1/consensus" && request.method === "GET") return json(await listProposals(env, limitParam(url)));
       if (path === "/v1/consensus/mode" && request.method === "POST") {
         const body = await readJsonObject(request);
@@ -244,6 +248,12 @@ export default {
     if (minute === 37 && env.AUDITOR) {
       ctx.waitUntil(env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID)).cycle("scheduled").then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "auditor_cycle_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
+    // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
+    if (minute === 22 || minute === 52) {
+      ctx.waitUntil(reconcileNotices(env, event.scheduledTime).then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "owner_notices_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     const d = new Date(event.scheduledTime);
