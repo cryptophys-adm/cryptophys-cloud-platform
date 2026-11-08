@@ -17,7 +17,14 @@ const V_NOW = "11111111-1111-4111-8111-111111111111";
 const V_OLD = "22222222-2222-4222-8222-222222222222";
 const PLAN = "plan_11111111-1111-1111-1111-111111111111";
 const DEC = "dec_22222222-2222-2222-2222-222222222222";
-const nextSafeMinute = (after: number): number => {\n  const first = Math.ceil(after / 60_000) * 60_000;\n  for (let i = 0; i < 60; i++) {\n    const candidate = first + i * 60_000;\n    if (SAFE_MINUTES.includes(new Date(candidate).getUTCMinutes())) return candidate;\n  }\n  throw new Error("no safe minute found");\n};\n\n/** 2026-11-08T03:10:00Z: minute 10 is SAFE. */
+const nextSafeMinute = (after: number): number => {
+  const first = Math.ceil(after / 60_000) * 60_000;
+  for (let i = 0; i < 60; i++) {
+    const candidate = first + i * 60_000;
+    if (SAFE_MINUTES.includes(new Date(candidate).getUTCMinutes())) return candidate;
+  }
+  throw new Error("no safe minute found");
+};
 const SAFE_AT = Date.parse("2026-11-08T03:10:00Z");
 
 function lockNs() {
