@@ -116,7 +116,7 @@ test("N2. the executor deploys the tagged version at 100%, verifies it live, rec
   const cf = fakeCloudflare();
   assert.deepEqual(await runNativeRollbacks(env as never, Date.parse("2026-11-08T03:07:00Z"), cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 }, ":07 is a kernel cron minute");
   assert.equal(cf.posted.length, 0);
-  assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+  assert.deepEqual(await runNativeRollbacks(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
   assert.deepEqual(cf.posted.map((p) => p.versions), [[{ version_id: V_OLD, percentage: 100 }]]);
   assert.equal(cf.posted[0].strategy, "percentage");
   assert.deepEqual(probes, [SVC, SVC], "verification waits until the old tag is live");
@@ -128,7 +128,7 @@ test("N2. the executor deploys the tagged version at 100%, verifies it live, rec
   assert.match(set.actor, /^rollback:dep_/);
   assert.deepEqual(JSON.parse(set.payload_json), { previous: "bbbbbbbbbbbb", desired_version: "aaaaaaaaaaaa" });
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'deployment.rollback_succeeded'").get() as any).n, 1);
-  assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 }, "a finished request is not run again");
+  assert.deepEqual(await runNativeRollbacks(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 }, "a finished request is not run again");
 });
 
 test("N3. if the version never reports live, the captured deployment is restored and the request fails", async () => {
@@ -136,7 +136,7 @@ test("N3. if the version never reports live, the captured deployment is restored
   const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "bbbbbbbbbbbb", error: null }));
   await rollbackForRecovery(env as never, PLAN, DEC, SVC);
   const cf = fakeCloudflare();
-  assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 0 });
+  assert.deepEqual(await runNativeRollbacks(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 0 });
   assert.deepEqual(cf.posted.map((p) => p.versions[0].version_id), [V_OLD, V_NOW], "deployed, then restored");
   assert.deepEqual(cf.active(), [{ version_id: V_NOW, percentage: 100 }]);
   const row = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
