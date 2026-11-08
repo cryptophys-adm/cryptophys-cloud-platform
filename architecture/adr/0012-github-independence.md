@@ -151,6 +151,22 @@ The owner creates every credential. None is created by an agent or stored in the
 
 Every phase keeps all tests green, keeps Access as is, and leaves the brake (mode `shadow`, kill switch) working throughout.
 
+### 5a. Owner notices (phase 2, implemented 2026-11-08)
+
+The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):
+
+- `owner_attention`: draft recovery plans and `pending_owner` proposals;
+- `drift`: drifted, never-observed and stale (> 45 min) services, ignoring disabled ones;
+- `critical_reports`: critical agent reports in the last 24 h.
+
+How notices are kept and shown:
+
+- Each change of a topic (opened, changed, closed) is one audit event (`owner.notice_*`). That is the notice state, so no table is needed.
+- The Console shows the active notices on the Command page ("Needs your attention") from `GET /v1/notices`.
+- **Email** goes to the people in `APPROVER_IDENTITIES` once the owner onboards a sending domain in Email Service (Email Sending) and the kernel gets a `send_email` binding `OWNER_EMAIL` plus the var `NOTIFY_FROM`. Until then, notices appear in the Console only.
+
+`owner-attention.yml` and `drift-alert.yml` keep running in parallel. They are retired once email delivery is verified.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).
