@@ -130,6 +130,11 @@ export function publishToPlatform(env: Env, ctx: ExecutionContext, agentId: stri
    - Use `kind` `xauusd_digest` for the chain, bus and room agents, and `hud_digest` for `hud-*` agents.
 5. **The platform holds the controls.** The platform owner can suspend one agent or turn off all agents with the kill switch. When that happens, calls are denied. Do not work around it: no retry loops and no switching `agent_id`.
 6. **No reverse access.** The binding only lets the xauusd Worker publish reports and memories. The platform keeps only **reading** `GET /api/decisions`, and never writes to the xauusd repository or its Workers.
+7. **The xauusd read API is behind Access (owner 2026-11-08).** `provision-access.yml` adds `ai.cryptophys.work/api/*` as a path destination of the one platform Access application, with the same policies.
+   - **Who gets in:** the CI service token, the operators and the Nexus accounts.
+   - **What stays public:** the rest of that host. TradingView posts to `/webhook`, which is protected by its secret, and the deploys probe `/health` and `/ready`.
+   - **Who is unaffected:** the AI Kernel (`XAUUSD_AI`) and Nexus (`AI_WORKER`). Both read `/api/*` over Service Bindings, which do not pass through Access.
+   - **How it is checked:** each provisioning run verifies the lock on `/api/status` and that `/health` is still open.
 
 ### 4. In the xauusd repository (its rules, not ours)
 

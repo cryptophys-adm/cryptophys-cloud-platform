@@ -5,6 +5,7 @@ name: Provision Cloudflare Access
 # orchestrator custom domain are all covered), with exactly two policies:
 #   1. Service Auth for the CI service token (CF_ACCESS_CLIENT_ID), and
 #   2. Allow for the operator emails in the ACCESS_ALLOWED_EMAILS environment variable.
+# It also covers the public hostnames in PUBLIC_HOSTNAMES and the paths in PUBLIC_PATHS.
 # Idempotent: re-running converges the application to this definition.
 
 on:
@@ -32,6 +33,15 @@ env:
   # origin. Its hostname joins this same Access application, so one sign-in (and one AUD) covers the
   # XAUUSD room and the Console. Service bindings (drift checks) do not pass through Access.
   PUBLIC_HOSTNAMES: nexus.cryptophys.work
+  # xauusd read API (owner 2026-11-08, option a): only the /api/* path of the AI Worker's custom
+  # domain joins this application. The rest of that host stays public: TradingView posts to /webhook
+  # (secret-protected) and deploys probe /health and /ready. Nexus and the AI Kernel read /api/* over
+  # Service Bindings, which do not pass through Access. The Worker has no workers.dev or preview URL.
+  PUBLIC_PATHS: ai.cryptophys.work/api/*
+  # Verified after provisioning: each PATH_PROBE asks for sign-in and admits the CI token (HTTP 200);
+  # each OPEN_PROBE still answers HTTP 200 without credentials (the path did not cover the host).
+  PATH_PROBES: ai.cryptophys.work/api/status
+  OPEN_PROBES: ai.cryptophys.work/health
 
 jobs:
   provision:
@@ -130,6 +140,12 @@ jobs:
             [[ "$host" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || { echo "::error::invalid hostname ${host}"; exit 1; }
             destinations="$(jq -c --arg h "$host" '. + [{type: "public", uri: $h}]' <<< "$destinations")"
           done
+          read -r -a public_paths <<< "$PUBLIC_PATHS" # an array: the paths' "*" never glob-expands
+          for path in "${public_paths[@]}"; do
+            # A host with a path below it (never a bare host: that would cover the whole Worker).
+            [[ "$path" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+/[a-z0-9_-]+(/[a-z0-9_-]+)*(/\*)?$ ]] || { echo "::error::invalid path destination ${path}"; exit 1; }
+            destinations="$(jq -c --arg p "$path" '. + [{type: "public", uri: $p}]' <<< "$destinations")"
+          done
 
           body="$(jq -n --arg name "$ACCESS_APP_NAME" --arg token "$token_id" --arg group "$group" --argjson dest "$destinations" --argjson agents "$agent_tokens" --argjson idps "$idps" \
             --argjson emails "$(jq -R . <<< "$emails" | jq -s .)" '{
@@ -153,12 +169,12 @@ jobs:
             1) result="$(call PUT "/access/apps/$(jq -r '.[0].id' <<< "$existing")" "$body")"; action=updated ;;
             *) echo "::error::More than one Access application named ${ACCESS_APP_NAME}; resolve manually"; exit 1 ;;
           esac
-          jq -e --argjson n "$(( $(wc -w <<< "$PLATFORM_WORKERS") + $(wc -w <<< "$PUBLIC_HOSTNAMES") ))" '.result.aud and (.result.destinations | length == $n)' <<< "$result" >/dev/null \
+          jq -e --argjson n "$(( $(wc -w <<< "$PLATFORM_WORKERS") + $(wc -w <<< "$PUBLIC_HOSTNAMES") + $(wc -w <<< "$PUBLIC_PATHS") ))" '.result.aud and (.result.destinations | length == $n)' <<< "$result" >/dev/null \
             || { echo "::error::Access application response is missing its AUD or destinations"; exit 1; }
           echo "Access application ${ACCESS_APP_NAME} ${action}: $(jq -r '.result.destinations | length' <<< "$result") Workers, $(wc -l <<< "$emails") operator email(s), CI service token policy, $(jq length <<< "$agent_tokens") external agent token(s)."
           {
             echo "### Cloudflare Access"
-            echo "Application \`${ACCESS_APP_NAME}\` ${action}; protects: ${PLATFORM_WORKERS} and ${PUBLIC_HOSTNAMES}"
+            echo "Application \`${ACCESS_APP_NAME}\` ${action}; protects: ${PLATFORM_WORKERS}, ${PUBLIC_HOSTNAMES} and ${PUBLIC_PATHS}"
             echo "Identity providers: $(jq -r '[.[] | "\(.name) (\(.type))"] | join(", ")' <<< "$idps")"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -217,4 +233,21 @@ jobs:
             authed="$(curl --silent --proto '=https' --max-time 20 --header "@$headers" --output /dev/null --write-out '%{http_code}' "https://${host}/" || true)"
             [[ "$authed" == "200" ]] || { echo "::error::${host}: service token was not admitted (HTTP ${authed})"; exit 1; }
             echo "${host}: unauthenticated HTTP ${unauth}, service token HTTP ${authed}"
+          done
+          # Path destinations: the path asks for sign-in and admits the CI token; the rest of the host is untouched.
+          for probe in $PATH_PROBES; do
+            for _ in $(seq 1 12); do
+              unauth="$(curl --silent --proto '=https' --max-time 20 --output /dev/null --write-out '%{http_code}' "https://${probe}" || true)"
+              [[ "$unauth" =~ ^(302|401|403)$ ]] && break
+              sleep 5
+            done
+            [[ "$unauth" =~ ^(302|401|403)$ ]] || { echo "::error::${probe} answered HTTP ${unauth} without credentials"; exit 1; }
+            authed="$(curl --silent --proto '=https' --max-time 20 --header "@$headers" --output /dev/null --write-out '%{http_code}' "https://${probe}" || true)"
+            [[ "$authed" == "200" ]] || { echo "::error::${probe}: service token was not admitted (HTTP ${authed})"; exit 1; }
+            echo "${probe}: unauthenticated HTTP ${unauth}, service token HTTP ${authed}"
+          done
+          for probe in $OPEN_PROBES; do
+            open="$(curl --silent --proto '=https' --max-time 20 --output /dev/null --write-out '%{http_code}' "https://${probe}" || true)"
+            [[ "$open" == "200" ]] || { echo "::error::${probe} must stay public but answered HTTP ${open} without credentials"; exit 1; }
+            echo "${probe}: public, HTTP ${open}"
           done
