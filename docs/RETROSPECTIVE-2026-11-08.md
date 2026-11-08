@@ -52,7 +52,7 @@ Angka diambil dari D1 produksi dan repositori pada 2026-11-08 ±13:00 UTC.
 | Rollback | 0 |
 | Observasi drift | 7.782, dengan 142 drifted (1,8%), semuanya sudah pulih |
 | Audit event | 2.271, chain valid |
-| Rencana pemulihan | 5 selesai, 1 gagal, **54 dinonaktifkan** |
+| Rencana pemulihan | 6 dari agent (5 selesai, 1 gagal); 56 "dinonaktifkan" adalah artefak smoke test deploy (§9) |
 | Usulan knowledge (TP-028) | **0** |
 | Akun platform | 1 (`user`) |
 
@@ -84,7 +84,7 @@ Angka diambil dari D1 produksi dan repositori pada 2026-11-08 ±13:00 UTC.
 | Deploy Forge pertama gagal | Nama field commit Artifacts berbeda dari asumsi | Rollback otomatis, lalu parsing ketat (#214, #215) | Verifikasi live dan rollback otomatis bekerja. Jangan menebak skema API beta. |
 | Shim test ikut di-bundle sebagai kode | Glob `[[rules]]` Wrangler dicocokkan ke specifier import | Glob diperbaiki, plus cek di CI (5 modul teks) dan guard runtime | Perilaku tool harus diuji di CI, bukan hanya dibaca dari dokumentasi. |
 | 8 peringatan drift berulang (02:30–04:30) | Secret Worker diganti → versi baru tanpa tag | Pulih setelah deploy bertag. Drift Detector kini melapor sekali per episode (perbaikan berikutnya). | Mengganti secret = versi baru. Secrets Store (backlog fase 4) menghilangkan masalah ini. |
-| 54 rencana pemulihan dinonaktifkan | Draf AI untuk drift kosmetik (versi tanpa tag), termasuk langkah kritis | `onlyUntaggedVersion` dan `AI_DRAFT_STEP_ACTIONS` (2026-11-07) | AI hanya mendraf. Kasus kosmetik harus disaring sebelum masuk antrean owner. |
+| 56 rencana pemulihan dinonaktifkan | **Koreksi (§9):** bukan draf AI. Semua dibuat lalu dinonaktifkan oleh smoke test `deploy-control-plane.yml` pada tiap deploy. Draf AI yang nyata hanya 6 (5 selesai, 1 gagal). | Smoke test jangan menulis data bisnis produksi (§9.2) | Data uji harus bisa dibedakan dari data produksi. |
 | Policy menolak deploy Policy Engine 16× | Batas laju plus retry agent | Retry setelah 1 jam (#188) | Batas laju bekerja, tetapi agent perlu backoff yang sopan. |
 | Push ke branch tertimpa | `ops-dispatch` force-push ke branch kerja | Script deploy menunggu dan tidak push saat deploy berjalan | Jalur ops sebaiknya tidak memakai branch kerja (lihat §7). |
 | Peralihan via Switch account | Logout Access tidak punya redirect | Halaman `/console/switch-account` (#223) | Uji alur login dengan akun nyata. Smoke test service token tidak menangkapnya. |
@@ -132,3 +132,50 @@ Angka diambil dari D1 produksi dan repositori pada 2026-11-08 ±13:00 UTC.
 - **Tidak melemahkan apa pun:** auth, Access dan test tidak pernah dilonggarkan. Test tidak pernah di-skip.
 - **Wewenang owner:** semua secret dan kredensial dibuat owner. Penghapusan data dan tindakan yang tidak bisa dibatalkan selalu lewat owner.
 - **Rem selalu bisa dipakai:** mode `shadow` dan kill switch tersedia setiap saat.
+
+## 9. Hardening: yang seharusnya sudah tidak dipakai (2026-11-08)
+
+Permintaan owner: *"hardening, fitur atau menu apa yang seharusnya sudah tidak dipakai."* Audit kode, konfigurasi, workflow dan data produksi pada 2026-11-08 13:40 UTC.
+
+### 9.1 Siap dipensiunkan sekarang (keputusan owner, karena tidak bisa dibatalkan)
+
+| Item | Bukti | Tindakan |
+|---|---|---|
+| Worker `cryptophys-home` (Cerebrum lama) | Retired sejak ADR-0010 (2026-11-06); hanya redirect ke Nexus. Masih di-deploy (`f05e1b3`), masih di `PLATFORM_WORKERS` Access, binding `SVC_HOME` di Drift Detector, unit deploy di Orchestrator, allow-list rollback, `deploy-home.yml`. | Setelah minggu redirect (13 Nov): `retire-worker.yml` (kritis), hapus custom domain `home.cryptophys.work`, hapus unit/binding/workflow. |
+| Custom domain `console.cryptophys.work` + `LEGACY_HOSTS` | Redirect 301 ke `/console/`; smoke test deploy Console masih memverifikasinya. | Hapus domain dan redirect setelah minggu redirect; sederhanakan smoke test. |
+| IdP one-time PIN | Fallback saat Google/Microsoft belum ada. Keduanya kini aktif. | Owner mencabut OTP dari `allowed_idps` di Zero Trust. OTP paling rawan phishing. |
+
+### 9.2 Yang menulis data produksi padahal hanya uji
+
+| Item | Bukti | Tindakan |
+|---|---|---|
+| Smoke test `deploy-control-plane.yml` membuat lalu menonaktifkan rencana pemulihan | 56 baris `recovery_plans` (status `disabled`, dibuat token CI), 68 `policy.decision` dan 982 observasi drift `manual` dari token CI. Halaman Recovery di Console menampilkan 56 rencana palsu. | Tandai sintetis (prefix/`metadata.synthetic`) dan sembunyikan dari Console dan laporan, atau verifikasi lifecycle Workflow lewat jalur baca saja. Hapus 56 baris lama = keputusan owner. |
+
+### 9.3 Rute dan menu Console yang tidak terpakai
+
+| Rute / menu | Bukti | Tindakan |
+|---|---|---|
+| `recovery.execute_start` (START) | Tidak dirujuk halaman mana pun; 6 eksekusi yang ada semua dimulai `ai:recovery-manager`. | Hapus dari `UI_ROUTES` dan allow-list. |
+| `recovery.execute_finish` (FINISH) | Hanya untuk rencana yang dimulai manual (legacy); saat ini 0 rencana `executing`. | Hapus bersama START. |
+| `recovery.create` (CREATE PLAN manual) | 0 rencana dibuat manusia di produksi; semua dari agent atau smoke test. | Pertahankan sebagai jalur darurat, tetapi jadikan approver-only. |
+| `kernel.principal_add/remove`, `/mcp` untuk agent eksternal (TP-009) | `agent_principals` = 0, 0 panggilan agent eksternal. | Pertahankan `/mcp` (dipakai operator), sembunyikan tombol principal sampai ada agent eksternal. |
+| `registry.desired_version` (VERSION) dan `registry.upsert` (UPDATE) | Operator biasa dapat mengubah versi yang diharapkan dan metadata layanan; itu memicu drift dan usulan redeploy. | Jadikan approver-only. |
+
+### 9.4 Workflow GitHub yang tumpang tindih atau menunggu pensiun
+
+| Workflow | Status | Tindakan |
+|---|---|---|
+| `rollback-worker.yml` | 0 run; rollback native sudah dikonfigurasi (`CF_DEPLOY_TOKEN`). ADR-0012 mensyaratkan pensiun setelah jalur native pernah berjalan. | Uji satu rollback native terkontrol, lalu hapus. |
+| `request-platform-api-deployment.yml` | Jalur manual lama; Orchestrator kini men-dispatch `deploy-platform-api.yml` lewat consensus. | Hapus bersama allow-list ops-dispatch. |
+| `validate.yml` | Duplikasi type-check dengan `validate-control-plane.yml`. | Gabungkan. |
+| `d1-backup.yml` | Hanya on-demand; backup harian sudah native di Recovery Manager. | Pensiun di fase 5. |
+| Langkah "Remove the retired ORCHESTRATOR_SHARED_SECRET" | Secret sudah lama hilang. | Pertahankan hanya cek fail-closed bahwa secret tidak ada; hapus langkah penghapusan. |
+
+### 9.5 Permukaan yang bisa dikecilkan di fase 4
+
+| Item | Catatan |
+|---|---|
+| `workers_dev = true` di semua Worker | Setiap Worker punya hostname `*.workers.dev` (di belakang Access). Hanya Console/Nexus yang butuh host publik; Worker internal dipanggil lewat service binding. Verifikasi deploy masih lewat workers.dev, jadi matikan setelah smoke check pindah ke Orchestrator/Drift Detector (ADR-0012 §3). |
+| `GH_ACTIONS_TOKEN`, cek `ci_green` dari GitHub, dispatch workflow | Pergi bersama fase 4–5. |
+| `POST /v1/forge/import` | Sekali pakai, sudah dijalankan (1 event). Hapus setelah cut-over. |
+| Deskripsi agent `signal-analyst` | Masih menyebut Signal Engine yang sudah pensiun (TP-017 memindahkannya ke xauusd). Perbaiki teks di migrasi berikutnya. |
