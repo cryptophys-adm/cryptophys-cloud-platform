@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
+  FolderGit2,
 } from "lucide-react";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -22,6 +23,7 @@ export const NAV = [
   { label: "Policy", href: "#/policy", key: "policy", icon: Scale },
   { label: "Ledger", href: "#/ledger", key: "ledger", icon: Database },
   { label: "Pipelines", href: "#/pipelines", key: "pipelines", icon: GitBranch },
+  { label: "Code", href: "#/code", key: "code", icon: FolderGit2 },
   { label: "Markets", href: "#/markets", key: "markets", icon: CandlestickChart },
   { label: "Users", href: "#/users", key: "users", icon: Users },
 ];

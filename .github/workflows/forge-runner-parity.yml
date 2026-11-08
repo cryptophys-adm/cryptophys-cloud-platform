@@ -1,0 +1,41 @@
+name: Forge Runner Parity
+
+# ADR-0012 phase 3: run the same control-plane test suite in workerd (the Workers runtime) with the
+# Forge runner's shims, next to the Node suite in "Validate Control Plane Workers". Informational
+# while the two are compared (ADR-0012 §5: agree on >= 20 consecutive commits); it is not part of
+# the Orchestrator's CI gate. Node CI still runs every test, including the known gaps listed in
+# tools/forge-runner/run.mjs.
+
+on:
+  pull_request:
+    paths:
+      - "workers/**"
+      - "tools/forge-runner/**"
+      - ".github/workflows/forge-runner-parity.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workerd:
+    name: Control-plane tests in workerd
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Install locked toolchain (esbuild, sql.js, workerd)
+        working-directory: workers/control-plane-shared
+        run: npm ci
+      - name: Run every control-plane test in workerd
+        run: |
+          set -euo pipefail
+          node tools/forge-runner/run.mjs | tee "$RUNNER_TEMP/parity.txt"
+          { echo "### Forge runner (workerd)"; echo '```'; head -1 "$RUNNER_TEMP/parity.txt"; grep -E '^(GAP|FAIL)' "$RUNNER_TEMP/parity.txt" | cut -c1-300 || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
