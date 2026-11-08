@@ -234,21 +234,25 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
     ]);
     services.push({ service_id: row.service_id, desired_version: row.desired_version, observed_version: p.version_tag, drifted, managed, reasons, status, observation_id: observationId, probe: p });
   }
-  const drifted = services.filter((s) => s.drifted).length;
+  const driftedServices = services.filter((s) => s.drifted);
+  const drifted = driftedServices.length;
+  // One report per drift episode, not one per run (2026-11-08: a secret change left the Orchestrator
+  // untagged for two hours and produced eight identical warnings). Deploy-time observations
+  // (manual) never report; versions are in flux then.
+  const report = drifted > 0 && trigger === "scheduled" ? await driftEpisode(env, driftedServices, observedAt) : null;
   await appendAuditEvent(env.DB, {
     event_type: "drift.observation",
     actor,
     subject: "control-plane",
     outcome: drifted ? "drift_detected" : "in_sync",
-    payload: { run_id: runId, trigger, drifted: services.filter((s) => s.drifted).map((s) => ({ service_id: s.service_id, reasons: s.reasons })) },
+    payload: { run_id: runId, trigger, report, drifted: driftedServices.map((s) => ({ service_id: s.service_id, reasons: s.reasons })) },
   });
-  if (drifted > 0 && trigger === "scheduled") {
-    // Advisory: the Drift Detector's own agent (tier 1) reports scheduled drift. Deploy-time
-    // observations (manual) are excluded; versions are in flux then. Never blocks observation.
+  if (report) {
+    // Advisory: the Drift Detector's own agent (tier 1). Never blocks observation.
     await publishAgentReport(env.AGENTS, "drift-detector", {
       kind: "platform_digest", severity: "warning",
-      subject: driftSubject(services.filter((s) => s.drifted)),
-      body: { explanation: services.filter((s) => s.drifted).map((s) => `${serviceName(s.service_id)}: ${s.reasons.map(explainCode).join("; ")}.`).join(" ").slice(0, 500), run_id: runId, observed_at: observedAt, drifted: services.filter((s) => s.drifted).map((s) => ({ service_id: s.service_id, reasons: s.reasons, desired: s.desired_version, observed: s.observed_version })) },
+      subject: (report === "reminder" ? "Still: " : "") + driftSubject(driftedServices),
+      body: { episode: report, explanation: driftedServices.map((s) => `${serviceName(s.service_id)}: ${s.reasons.map(explainCode).join("; ")}.`).join(" ").slice(0, 500), run_id: runId, observed_at: observedAt, drifted: driftedServices.map((s) => ({ service_id: s.service_id, reasons: s.reasons, desired: s.desired_version, observed: s.observed_version })) },
     });
   }
   return { run_id: runId, observed_at: observedAt, services, drifted };
@@ -366,6 +370,44 @@ export async function pruneDriftObservations(env: Env, now = Date.now()): Promis
     });
   }
   return { deleted, cutoff, batches };
+}
+
+/** While a drift episode lasts unchanged, it is reported again every this long. */
+export const DRIFT_REMINDER_MS = 2 * 60 * 60_000;
+const STREAK_LOOKBACK = 200; // scheduled runs: 50 hours at one run every 15 minutes
+
+/**
+ * Should this scheduled run report its drift? "new" when a drifted service was in sync (or never
+ * observed) at its previous scheduled observation; "changed" when its reasons changed; "reminder"
+ * when the unchanged episode has just passed another DRIFT_REMINDER_MS since it started; null
+ * otherwise. Only scheduled observations count: deploy-time (manual) runs see versions in flux.
+ */
+export async function driftEpisode(env: Env, drifted: ServiceDrift[], observedAt: string): Promise<"new" | "changed" | "reminder" | null> {
+  let change: "new" | "changed" | null = null;
+  let remind = false;
+  const now = Date.parse(observedAt);
+  for (const s of drifted) {
+    const rows = await env.DB.prepare(
+      `SELECT drifted, observed_at, json_extract(evidence_json, '$.reasons') AS reasons FROM drift_observations
+       WHERE service_id = ? AND observation_id != ? AND observed_at <= ? AND json_extract(evidence_json, '$.trigger') = 'scheduled'
+       ORDER BY observed_at DESC, rowid DESC LIMIT ?`,
+    ).bind(s.service_id, s.observation_id, observedAt, STREAK_LOOKBACK).all<{ drifted: number; observed_at: string; reasons: string | null }>();
+    const history = rows.results ?? [];
+    const key = (reasons: string | null) => { try { return (JSON.parse(reasons ?? "[]") as string[]).join(","); } catch { return ""; } };
+    const current = s.reasons.join(",");
+    const prev = history[0];
+    if (!prev || prev.drifted !== 1) return "new";
+    if (key(prev.reasons) !== current) { change = "changed"; continue; }
+    // The episode started at the oldest consecutive observation with the same drift.
+    let startedAt = Date.parse(prev.observed_at);
+    for (const r of history) {
+      if (r.drifted !== 1 || key(r.reasons) !== current) break;
+      startedAt = Date.parse(r.observed_at);
+    }
+    const bucket = (t: number) => Math.floor((t - startedAt) / DRIFT_REMINDER_MS);
+    if (bucket(now) > bucket(Date.parse(prev.observed_at))) remind = true;
+  }
+  return change ?? (remind ? "reminder" : null);
 }
 
 /** Plain-English report title (2026-11-07): which services, not just how many. */
