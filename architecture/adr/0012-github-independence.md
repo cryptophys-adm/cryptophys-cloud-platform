@@ -151,6 +151,21 @@ The owner creates every credential. None is created by an agent or stored in the
 
 Every phase keeps all tests green, keeps Access as is, and leaves the brake (mode `shadow`, kill switch) working throughout.
 
+### 5b. Phase 1 progress (2026-11-08)
+
+- **1a (this change).** The new `cryptophys-forge` Worker (`workers/forge`) uses the Artifacts binding (namespace `cryptophys`, repo `platform`). It provides:
+  - a one-time import of the public GitHub repository;
+  - read-only status and history of `main`;
+  - a 10-minute write token that only the CI service token can get.
+
+  `mirror-to-forge.yml` pushes `main` to the Forge after every push, so GitHub and the Forge hold the same SHAs while GitHub remains the source of truth. Deployment is by `deploy-forge.yml`, after Provision Access has added the Worker to the platform Access application.
+- **1b (next).**
+  - Register the Forge in the Platform Registry and Drift Detector.
+  - Add it as an Orchestrator deploy unit.
+  - Add the Console `#/code` page.
+  - Back up the repository with a daily `git bundle` to R2.
+  - Spike the Forge-side merge (ADR §2.5).
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):

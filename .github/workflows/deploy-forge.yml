@@ -1,0 +1,152 @@
+name: Deploy Forge
+
+# Deploys cryptophys-forge (ADR-0012 phase 1): the platform source on Cloudflare Artifacts.
+# It is deployed only after Provision Access has put it in the platform Access application. After the
+# deploy it imports the GitHub repository once (idempotent) and checks that main is readable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: "Type DEPLOY to confirm production deployment"
+        required: true
+        type: string
+      commit_sha:
+        description: "Exact full commit SHA to deploy (must be the dispatch ref on main)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cryptophys-forge-production
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exact production confirmation
+        shell: bash
+        env:
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Production deployment must be dispatched against main."; exit 1; }
+          [[ "$CONFIRM_PRODUCTION" == "DEPLOY" ]] || { echo "::error::Production deployment requires the exact input DEPLOY."; exit 1; }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::A full lowercase 40-character commit SHA is required."; exit 1; }
+          [[ "$COMMIT_SHA" == "$GITHUB_SHA" ]] || { echo "::error::Requested commit SHA does not match the workflow dispatch ref."; exit 1; }
+
+  deploy:
+    needs: validate-confirmation
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+        working-directory: workers/control-plane-shared
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Install the locked control-plane toolchain
+        run: npm ci
+      - name: Type-check and test (includes the ADR-0012 Forge tests)
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm test
+      - name: Build the Access identity allow-lists
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_ALLOWED_EMAILS: ${{ vars.ACCESS_ALLOWED_EMAILS }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/access-identities.sh" "$GITHUB_ENV"'
+      - name: Resolve Cloudflare Access configuration (fails closed if the Forge is not protected)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+          ACCESS_APP_NAME: cryptophys-cloud-platform
+          EXPECTED_WORKERS: cryptophys-forge
+        run: '"$GITHUB_WORKSPACE/.github/scripts/resolve-access.sh"'
+      - name: Render the D1 database ID into the deploy config
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}  # D1 Edit (owner decision); Workers deploy keeps CLOUDFLARE_API_TOKEN
+          D1_DATABASE_NAME: cryptophys-control-plane
+        run: '"$GITHUB_WORKSPACE/.github/scripts/render-d1-config.sh" ../forge'
+      - name: Wait for a deploy window outside the drift and kernel cron minutes
+        run: '"$GITHUB_WORKSPACE/.github/scripts/wait-cron-window.sh"'
+      - name: Capture the active Worker versions for automatic rollback (ADR-0009 §3.3)
+        id: capture
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: '"$GITHUB_WORKSPACE/.github/scripts/worker-rollback.sh" capture "$RUNNER_TEMP/rollback.json" cryptophys-forge'
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config ../forge/wrangler.deploy.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" \
+            --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" \
+            --var "OPERATOR_IDENTITIES:${OPERATOR_IDENTITIES}" --var "APPROVER_IDENTITIES:${APPROVER_IDENTITIES}"
+      - name: Verify live health, readiness and active version
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          tag="${COMMIT_SHA:0:12}"
+          "$GITHUB_WORKSPACE/.github/scripts/verify-worker-live.sh" \
+            --script cryptophys-forge \
+            --commit "$COMMIT_SHA" \
+            --require-access \
+            --health-filter ".status == \"ok\" and .service == \"cryptophys-forge\" and .environment == \"production\" and .contract_version == \"v1\" and .version.tag == \"${tag}\"" \
+            --ready-filter '.status == "ready" and .service == "cryptophys-forge" and .production_ready == true and ([.checks[]] | all)'
+      - name: Import the repository once and check that main is readable
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          access_headers="$(mktemp)"; out="$(mktemp)"; trap 'rm -f "$access_headers" "$out"' EXIT
+          "$GITHUB_WORKSPACE/.github/scripts/access-headers.sh" "$access_headers"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          base="https://cryptophys-forge.${subdomain}.workers.dev"
+          status="$(curl --silent --show-error --proto '=https' --max-time 120 --request POST "${base}/v1/forge/import" \
+            --header "@${access_headers}" --header 'content-type: application/json' --data '{"confirm":"IMPORT"}' --output "$out" --write-out '%{http_code}')"
+          [[ "$status" == "200" ]] || { echo "::error::import returned HTTP ${status}: $(head -c 300 "$out")"; exit 1; }
+          echo "import: $(jq -c . "$out")"
+          for _ in $(seq 1 30); do
+            status="$(curl --silent --show-error --proto '=https' --max-time 30 "${base}/v1/forge/status" --header "@${access_headers}" --output "$out" --write-out '%{http_code}')"
+            if [[ "$status" == "200" ]] && jq -e '.repo != null and (.head.sha | test("^[0-9a-f]{40}$"))' "$out" >/dev/null; then
+              echo "Forge main head: $(jq -r '.head.sha + " " + .head.title' "$out")"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::the Forge repository did not become readable: HTTP ${status} $(head -c 300 "$out")"; exit 1
+      - name: Automatic rollback to the captured versions after a failure or cancellation
+        if: always() && (failure() || cancelled()) && steps.capture.outcome == 'success'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ROLLBACK_MESSAGE: "automatic rollback: run ${{ github.run_id }} failed verification"
+        run: '"$GITHUB_WORKSPACE/.github/scripts/worker-rollback.sh" restore "$RUNNER_TEMP/rollback.json"'
