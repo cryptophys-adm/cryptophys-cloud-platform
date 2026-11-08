@@ -77,7 +77,10 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     try { ev = JSON.parse(o.evidence_json || "{}"); } catch { ev = {}; }
     const reasons = Array.isArray(ev.reasons) ? ev.reasons.filter((r): r is string => typeof r === "string") : [];
     if (reasons.includes("disabled")) continue;
-    if (now - Date.parse(o.observed_at) > STALE_MS) {
+    const observedAt = Date.parse(o.observed_at);
+    if (!Number.isFinite(observedAt) || observedAt > now) {
+      problems.push({ service: s.service_id, code: "invalid_observation_time", line: `${serviceName(s.service_id)}: invalid observation timestamp ${o.observed_at}` });
+    } else if (now - observedAt > STALE_MS) {
       problems.push({ service: s.service_id, code: "stale_observation", line: `${serviceName(s.service_id)}: not observed since ${o.observed_at} (check the Drift Detector cron)` });
     } else if (o.drifted) {
       const running = typeof ev.probe?.version_tag === "string" ? ev.probe.version_tag : "unknown";
@@ -87,7 +90,7 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
   }
   return {
     topic: "drift", active: problems.length > 0,
-    fingerprint: await fp(problems.map((p) => `${p.service}:${p.code}`)),
+    fingerprint: await fp(problems.map((p) => `${p.service}:${p.code}:${p.line}`)),
     title: problems.length ? `Drift in production: ${problems.length} service(s)` : "All services are healthy and at their expected versions",
     lines: problems.map((p) => p.line), link: `${CONSOLE_URL}#/infrastructure`,
   };
@@ -95,8 +98,8 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
 
 async function criticalReports(db: D1Database, now: number): Promise<Notice> {
   const since = iso(now - 24 * 3_600_000);
-  const rows = await db.prepare("SELECT report_id, agent_id, kind, subject, created_at FROM agent_reports WHERE severity = 'critical' AND created_at >= ? ORDER BY created_at DESC LIMIT 200")
-    .bind(since).all<{ report_id: string; agent_id: string; kind: string; subject: string; created_at: string }>();
+  const rows = await db.prepare("SELECT report_id, agent_id, kind, subject, created_at FROM agent_reports WHERE severity = 'critical' AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT 200")
+    .bind(since, iso(now)).all<{ report_id: string; agent_id: string; kind: string; subject: string; created_at: string }>();
   const n = rows.results.length;
   return {
     topic: "critical_reports", active: n > 0,
@@ -139,13 +142,19 @@ async function deliver(env: NoticeEnv, change: "opened" | "changed" | "closed", 
 }
 
 /** The last notice event per topic: open with its fingerprint, or closed. */
-async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean; fingerprint: string }> {
-  const row = await db.prepare("SELECT event_type, payload_json FROM audit_events WHERE event_type IN ('owner.notice_opened','owner.notice_changed','owner.notice_closed') AND subject = ? ORDER BY rowid DESC LIMIT 1")
+async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean; fingerprint: string; delivery: string; eventType: string }> {
+  const row = await db.prepare("SELECT event_type, payload_json FROM audit_events WHERE event_type IN ('owner.notice_opened','owner.notice_changed','owner.notice_closed','owner.notice_delivery_retry') AND subject = ? ORDER BY rowid DESC LIMIT 1")
     .bind(topic).first<{ event_type: string; payload_json: string }>();
-  if (!row || row.event_type === "owner.notice_closed") return { open: false, fingerprint: "" };
-  let p: { fingerprint?: unknown } = {};
+  if (!row) return { open: false, fingerprint: "", delivery: "unknown", eventType: "" };
+  let p: { fingerprint?: unknown; delivery?: unknown; state?: unknown } = {};
   try { p = JSON.parse(row.payload_json); } catch { p = {}; }
-  return { open: true, fingerprint: typeof p.fingerprint === "string" ? p.fingerprint : "" };
+  const open = row.event_type === "owner.notice_closed" ? false : row.event_type === "owner.notice_delivery_retry" ? p.state !== "closed" : true;
+  return {
+    open,
+    fingerprint: typeof p.fingerprint === "string" ? p.fingerprint : "",
+    delivery: typeof p.delivery === "string" ? p.delivery : "unknown",
+    eventType: row.event_type,
+  };
 }
 
 /** Open, update or close each topic's notice (idempotent; at most one event per topic per run). */
@@ -154,7 +163,19 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
   for (const n of await collectNotices(env.DB, now)) {
     const last = await lastState(env.DB, n.topic);
     const change = n.active && !last.open ? "opened" : n.active && last.fingerprint !== n.fingerprint ? "changed" : !n.active && last.open ? "closed" : null;
-    if (!change) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
+    if (!change) {
+      const retryChange = emailConfigured(env) && last.delivery !== "sent"
+        && ((n.active && last.open && last.fingerprint === n.fingerprint) || (!n.active && !last.open && last.eventType === "owner.notice_closed"))
+        ? (n.active ? "opened" : "closed") : null;
+      if (!retryChange) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
+      const delivery = await deliver(env, retryChange, n);
+      await appendAuditEvent(env.DB, {
+        event_type: "owner.notice_delivery_retry", actor: "agent:supervisor", subject: n.topic, outcome: "delivery_retry",
+        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.lines.length, title: n.title, delivery },
+      });
+      out.push({ topic: n.topic, change: "delivery_retry", delivery });
+      continue;
+    }
     const delivery = await deliver(env, change, n);
     await appendAuditEvent(env.DB, {
       event_type: `owner.notice_${change}`, actor: "agent:supervisor", subject: n.topic, outcome: change,
