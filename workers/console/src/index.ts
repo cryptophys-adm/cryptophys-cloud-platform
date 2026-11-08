@@ -7,6 +7,7 @@
  * verifies it and enforces the operator rule, approver rule and separation of duties.
  */
 import { accessConfigured, accessGate, actorOf, authenticate, identityAllowed, listConfigured, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
+import { CONSOLE_ACCESS_HEADER, deniedPage, wantsHtml } from "./denied.ts";
 import { MAX_BODY_BYTES, healthBody } from "../../control-plane-shared/src/http.ts";
 
 export interface ServiceBinding { fetch(request: Request): Promise<Response> }
@@ -161,7 +162,8 @@ function matchRule(service: string, method: string, segments: string[]): AllowRu
  * the Platform Registry (/v1/accounts/me) with the caller's own Access JWT. A failed lookup refuses.
  */
 export interface ConsoleRole { role: "approver" | "operator" | "viewer"; owner: boolean; source: "config" | "account" }
-type Gate = { ok: true; identity: AccessIdentity; role: ConsoleRole } | { ok: false; response: Response };
+/** `deniedActor` is set when the caller is signed in but has no Console access (the fallback page). */
+type Gate = { ok: true; identity: AccessIdentity; role: ConsoleRole } | { ok: false; response: Response; deniedActor?: string };
 
 async function consoleGate(request: Request, env: Env): Promise<Gate> {
   const auth = await authenticate(request, env);
@@ -187,7 +189,11 @@ async function consoleGate(request: Request, env: Env): Promise<Gate> {
       // fall through: refuse
     }
   }
-  return { ok: false, response: json({ error: "forbidden", detail: "the Cerebrum Console is for admin accounts" }, 403) };
+  // The header tells the UI that this is the Console's own gate (downstream Workers also answer
+  // "forbidden", for role checks); forwarded responses never carry it.
+  const denied = json({ error: "forbidden", detail: "the Cerebrum Console is for admin accounts" }, 403);
+  denied.headers.set(CONSOLE_ACCESS_HEADER, "denied");
+  return { ok: false, deniedActor: actorOf(auth.identity), response: denied };
 }
 
 async function forward(request: Request, env: Env, url: URL, innerPath: string, jwt: string, rule: AllowRule): Promise<Response> {
@@ -264,7 +270,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
 
   const operator = await consoleGate(request, env);
-  if (!operator.ok) return operator.response;
+  if (!operator.ok) {
+    // A signed-in person without Console access who opens a page gets a page, not JSON: who they
+    // are, and a way to switch to an account that has access. API calls keep the JSON 403.
+    if (operator.deniedActor && !path.startsWith("/api/") && (method === "GET" || method === "HEAD") && wantsHtml(request)) {
+      return deniedPage(operator.deniedActor, env.NEXUS_ORIGIN, method);
+    }
+    return operator.response;
+  }
 
   if (!path.startsWith("/api/")) {
     if (method !== "GET" && method !== "HEAD") return json({ error: "method_not_allowed" }, 405);
