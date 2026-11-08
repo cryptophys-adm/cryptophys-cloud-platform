@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Render runner-only wrangler.deploy.toml files with the control-plane D1 database ID.
+# Render runner-only wrangler.deploy.toml files with the control-plane D1 database ID
+# and any owner-email recipient allowlist supplied by the protected Environment.
 #
 # The account-specific ID is never committed (ADR-0001). It is resolved from the
 # Cloudflare API by exact database name, must match exactly one database, is
@@ -7,10 +8,11 @@
 # placeholder, which must appear exactly once in each source config.
 #
 # Usage: render-d1-config.sh <worker-dir>...   (directories containing wrangler.toml)
-# Env:   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, D1_DATABASE_NAME
+# Env:   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, D1_DATABASE_NAME; optional APPROVER_IDENTITIES
 set -euo pipefail
 
 placeholder="__CONTROL_PLANE_D1_DATABASE_ID__"
+email_placeholder="owner-notify-placeholder@example.invalid"
 : "${D1_DATABASE_NAME:?D1_DATABASE_NAME is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
@@ -36,7 +38,38 @@ if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::add-mask::${database_id}"; fi
 for dir in "$@"; do
   src="${dir%/}/wrangler.toml"
   [[ "$(grep -c "$placeholder" "$src")" == "1" ]] || { echo "::error::$src must contain $placeholder exactly once" >&2; exit 1; }
-  sed "s/${placeholder}/${database_id}/" "$src" > "${dir%/}/wrangler.deploy.toml"
-  if grep -q "$placeholder" "${dir%/}/wrangler.deploy.toml"; then echo "::error::placeholder not replaced in $dir" >&2; exit 1; fi
+  rendered="$(sed "s/${placeholder}/${database_id}/" "$src")"
+
+  # Cloudflare's send_email binding is restricted to the human approver list at the binding
+  # boundary, not only in application code. access-identities.sh writes this comma-separated,
+  # email-only value to GITHUB_ENV before this renderer runs.
+  if grep -Fq "$email_placeholder" "$src"; then
+    matches="$(grep -F -o "$email_placeholder" "$src" | wc -l | tr -d '[:space:]')"
+    [[ "$matches" == "1" ]] || { echo "::error::$src must contain $email_placeholder exactly once" >&2; exit 1; }
+    : "${APPROVER_IDENTITIES:?APPROVER_IDENTITIES is required to render the owner-email allowlist}"
+    IFS=',' read -r -a approvers <<< "$APPROVER_IDENTITIES"
+    email_values=""
+    seen="|"
+    count=0
+    for raw_email in "${approvers[@]}"; do
+      email="$(printf '%s' "$raw_email" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+      [[ "$email" =~ ^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$ ]] || { echo "::error::APPROVER_IDENTITIES contains an invalid email address" >&2; exit 1; }
+      if [[ "$seen" == *"|${email}|"* ]]; then continue; fi
+      seen+="${email}|"
+      if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::add-mask::${email}"; fi
+      if (( count > 0 )); then email_values+="\", \""; fi
+      email_values+="${email}"
+      count=$((count + 1))
+    done
+    (( count > 0 )) || { echo "::error::APPROVER_IDENTITIES must contain at least one human approver email" >&2; exit 1; }
+    escaped_email_placeholder="${email_placeholder//./\\.}"
+    rendered="$(printf '%s\\n' "$rendered" | sed "s|${escaped_email_placeholder}|${email_values}|")"
+  fi
+
+  printf '%s\\n' "$rendered" > "${dir%/}/wrangler.deploy.toml"
+  if grep -q "$placeholder" "${dir%/}/wrangler.deploy.toml" || grep -Fq "$email_placeholder" "${dir%/}/wrangler.deploy.toml"; then
+    echo "::error::a deploy-config placeholder was not replaced in $dir" >&2
+    exit 1
+  fi
 done
 echo "Resolved ${D1_DATABASE_NAME} and rendered wrangler.deploy.toml for: $*"
