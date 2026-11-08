@@ -379,3 +379,16 @@ test("FC17. a run records its steps; a bundle failure fails it, a secret finding
   assert.deepEqual(listed.body.checks[0].bundles, { workers: 2, failed: 1 });
   assert.equal(listed.body.checks[0].guard_status, "findings");
 });
+
+test("FC18. the Forge is not ready before its own migrations are applied; other Workers do not wait for them", async () => {
+  const { FORGE_MIGRATIONS } = await import("../../forge/src/index.ts");
+  const { schemaReady } = await import("../src/readiness.ts");
+  const db = migratedDb();
+  const e = baseEnv("cryptophys-forge", db, { ARTIFACTS: {} });
+  assert.equal((await call(forge, e, req("GET", "/ready", undefined, OPERATOR_JWT))).body.checks.database_schema, true);
+  db.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(FORGE_MIGRATIONS[2]);
+  const r = await call(forge, e, req("GET", "/ready", undefined, OPERATOR_JWT));
+  assert.equal(r.status, 503);
+  assert.equal(r.body.checks.database_schema, false);
+  assert.equal(await schemaReady(e as never), true, "the shared requirement is unchanged");
+});

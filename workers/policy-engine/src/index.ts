@@ -126,6 +126,22 @@ export function parsePolicyRequest(b: JsonObject): PolicyRequest | Error {
   return { subject: subject as string, action: action as string, resource: resource as string, context };
 }
 
+/** An identical denial (action, resource, reason) is reported at most once per this window. */
+export const DENY_REPORT_WINDOW_MS = 60 * 60_000;
+
+/**
+ * Was the same denial already decided within DENY_REPORT_WINDOW_MS? Agents retry a vetoed deploy
+ * (2026-11-07: sixteen identical "Policy denied consensus.execute" warnings for one rate limit), and
+ * each retry is decided and audited, but only the first of them is reported.
+ */
+async function sameDenyRecently(env: Env, decisionId: string, action: string, resource: string, reason: string): Promise<boolean> {
+  const since = new Date(Date.now() - DENY_REPORT_WINDOW_MS).toISOString();
+  const row = await env.DB.prepare(
+    `SELECT 1 AS hit FROM policy_decisions WHERE decision = 'deny' AND action = ? AND resource = ? AND reason = ? AND decision_id != ? AND created_at >= ? LIMIT 1`,
+  ).bind(action, resource, reason, decisionId, since).first<{ hit: number }>();
+  return row !== null;
+}
+
 /** Evaluate, persist the decision with its evidence, and append it to the audit chain. */
 export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecision> {
   // The subject is passed to the agent rules out of band; it is never read from caller context.
@@ -143,7 +159,8 @@ export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecisi
     outcome: result.decision,
     payload: { decision_id: decisionId, action: req.action, reason: result.reason },
   });
-  if (result.decision === "deny" && req.action !== "agent.syscall" && req.context.deploy_verification !== true) {
+  if (result.decision === "deny" && req.action !== "agent.syscall" && req.context.deploy_verification !== true
+      && !(await sameDenyRecently(env, decisionId, req.action, req.resource, result.reason))) {
     await publishAgentReport(env.AGENTS, "policy-engine", {
       kind: "platform_digest", severity: "warning",
       // Plain English for operators (2026-11-07); the codes stay in the body for the record.

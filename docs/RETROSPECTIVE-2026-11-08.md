@@ -115,10 +115,10 @@ Angka diambil dari D1 produksi dan repositori pada 2026-11-08 ±13:00 UTC.
 | # | Pekerjaan | Pemilik | Fase |
 |---|---|---|---|
 | 1 | Merge dan deploy dedup notifikasi drift | agent (siap) | sekarang |
-| 2 | Terapkan pola "sekali per episode" ke auditor dan veto Policy Engine | agent | sekarang |
-| 3 | Retensi untuk `forge_check_runs`, `forge_ci_reports` dan `drift_observations` (ringkas data lama per jam) | agent | sekarang |
-| 4 | Readiness per Worker berdasarkan migrasi yang dibutuhkan | agent | sekarang |
-| 5 | Halaman topologi tunggal `docs/SSOT.md` (dirujuk `CLAUDE.md`) | agent | sekarang |
+| 2 | Terapkan pola "sekali per episode" ke auditor dan veto Policy Engine | agent | **selesai**: auditor hanya melapor jika alasan baru, hitungan naik, atau setelah 6 jam; Policy Engine melapor penolakan identik sekali per jam |
+| 3 | Retensi | — | **dicek**: `drift_observations` sudah 90 hari (owner, 2026-11-05). Tabel Forge kecil (satu baris per commit). Retensi baru berarti menghapus data, jadi butuh keputusan owner. |
+| 4 | Readiness per Worker berdasarkan migrasi yang dibutuhkan | agent | **selesai**: Forge menuntut 0031–0033 |
+| 5 | Halaman topologi tunggal `docs/SSOT.md` (dirujuk `CLAUDE.md`) | agent | **selesai** |
 | 6 | Perbaikan wording producer Aether (`paramCandidates`) | validator/owner repo Aether | segera |
 | 7 | Type-check dan build Console di Forge (R2 package cache), lalu AI review | agent | fase 3 |
 | 8 | Paritas 20/20, lalu deploy dari Forge dalam shadow 10 deploy | agent | fase 4 |
