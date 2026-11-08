@@ -7,7 +7,7 @@
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { MAX_FILE_BYTES, SKIP_DIRS, runSuite, snapshotPathAllowed, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
+import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
 export const RUNNER_ID = "forge-runner/1";
@@ -83,21 +83,49 @@ export function cachedSnapshot(commit: string): Snapshot | null {
   return lastSnapshot?.commit === commit ? lastSnapshot.snapshot : null;
 }
 
-export interface CheckRun extends SuiteResult { commit: string; status: "passed" | "failed"; duration_ms: number; snapshot_files: number; snapshot_bytes: number }
+/**
+ * One commit's checks. `status` covers what GitHub CI also runs (the tests and the Worker bundles), so
+ * the two can be compared. The guards (secret scan) are reported apart, in `guard_status`; the merge
+ * gate of phase 4 requires both.
+ */
+export interface CheckSteps {
+  tests: { files: number; pass: number; fail: number; skip: number };
+  bundles: { workers: number; failed: BundleStep["failed"]; bundles: BundleStep["bundles"] };
+  secrets: { files: number; findings: SecretFinding[] };
+}
+export interface CheckRun extends SuiteResult {
+  commit: string; status: "passed" | "failed"; guard_status: "clean" | "findings"; steps: CheckSteps;
+  duration_ms: number; snapshot_files: number; snapshot_bytes: number;
+}
 
 /** Snapshot, bundle and run one commit. Test failures are a result; only infrastructure errors throw. */
 export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<SuiteDeps>, now = () => Date.now(), only?: string[]): Promise<CheckRun> {
   const started = now();
   const snap = await snapshotFromArtifacts(repo, commit);
   lastSnapshot = { commit, snapshot: snap.snapshot };
-  const result = await runSuite(await deps(commit), snap.snapshot, only);
+  const suite = await deps(commit);
+  const result = await runSuite(suite, snap.snapshot, only);
   if (result.files === 0) throw new Error("no_test_files");
-  return { ...result, commit, status: result.fail === 0 ? "passed" : "failed", duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes };
+  const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot);
+  const secrets = scanSecrets(snap.snapshot);
+  const failures = [...result.failures, ...bundles.failed.map((b) => `bundle ${b.dir}: ${b.error}`), ...secrets.findings.map((f) => `secret ${f.rule} at ${f.path}:${f.line}`)];
+  return {
+    ...result, failures, commit,
+    status: result.fail === 0 && bundles.failed.length === 0 ? "passed" : "failed",
+    guard_status: secrets.findings.length === 0 ? "clean" : "findings",
+    steps: {
+      tests: { files: result.files, pass: result.pass, fail: result.fail, skip: result.skip },
+      bundles: { workers: bundles.workers, failed: bundles.failed, bundles: bundles.bundles },
+      secrets,
+    },
+    duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes,
+  };
 }
 
 export interface CheckRow {
   commit_sha: string; status: string; runner: string; files: number | null; pass: number | null; fail: number | null; skip: number | null;
   failures: string | null; started_at: string; finished_at: string | null; duration_ms: number | null;
+  steps: string | null; guard_status: string | null;
 }
 
 /**
@@ -126,7 +154,7 @@ export async function claim(db: D1Database, commit: string, nowMs: number): Prom
   const r = await db.prepare(
     `INSERT INTO forge_check_runs (commit_sha, status, runner, started_at) VALUES (?, 'running', ?, ?)
      ON CONFLICT(commit_sha) DO UPDATE SET status = 'running', runner = excluded.runner, started_at = excluded.started_at,
-       files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL
+       files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL, steps = NULL, guard_status = NULL
      WHERE forge_check_runs.status = 'running' AND forge_check_runs.started_at < ?`,
   ).bind(commit, RUNNER_ID, startedAt, staleBefore).run();
   return (r.meta?.changes ?? 0) > 0;
@@ -143,8 +171,8 @@ export async function record(db: D1Database, run: CheckRun | { commit: string; s
       .bind(storedFailures([run.error]), finishedAt, run.duration_ms, run.commit).run();
     return;
   }
-  await db.prepare("UPDATE forge_check_runs SET status = ?, files = ?, pass = ?, fail = ?, skip = ?, failures = ?, finished_at = ?, duration_ms = ? WHERE commit_sha = ?")
-    .bind(run.status, run.files, run.pass, run.fail, run.skip, storedFailures(run.failures), finishedAt, run.duration_ms, run.commit).run();
+  await db.prepare("UPDATE forge_check_runs SET status = ?, files = ?, pass = ?, fail = ?, skip = ?, failures = ?, finished_at = ?, duration_ms = ?, steps = ?, guard_status = ? WHERE commit_sha = ?")
+    .bind(run.status, run.files, run.pass, run.fail, run.skip, storedFailures(run.failures), finishedAt, run.duration_ms, JSON.stringify(run.steps), run.guard_status, run.commit).run();
 }
 
 export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> } }
@@ -180,6 +208,8 @@ export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((co
 export interface CheckSummary {
   commit: string; status: string; runner: string; files: number | null; pass: number | null; fail: number | null; skip: number | null;
   failures: string[]; started_at: string; finished_at: string | null; duration_ms: number | null;
+  /** Bundles and guards: Worker count and failures, secret-scan outcome (null for runs before 0033). */
+  bundles: { workers: number; failed: number } | null; guard_status: string | null;
   /** The GitHub CI conclusion for the same commit, and whether the two agree (null while either is missing). */
   github: "success" | "failure" | null; agrees: boolean | null;
 }
@@ -214,12 +244,21 @@ export function parity(rows: Array<{ commit: string; agrees: boolean | null }>):
 
 type JoinedRow = CheckRow & { github: "success" | "failure" | null };
 
+function stepsBundles(steps: string | null): { workers: number; failed: number } | null {
+  try {
+    const parsed = JSON.parse(steps ?? "null") as { bundles?: { workers?: number; failed?: unknown[] } } | null;
+    return parsed?.bundles ? { workers: Number(parsed.bundles.workers ?? 0), failed: (parsed.bundles.failed ?? []).length } : null;
+  } catch { return null; }
+}
+
 function summary(r: JoinedRow): CheckSummary {
   let failures: string[] = [];
   try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
   return {
     commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures,
-    started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms, github: r.github ?? null, agrees: agreement(r.status, r.github ?? null),
+    started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms,
+    bundles: stepsBundles(r.steps), guard_status: r.guard_status ?? null,
+    github: r.github ?? null, agrees: agreement(r.status, r.github ?? null),
   };
 }
 

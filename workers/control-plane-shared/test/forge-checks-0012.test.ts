@@ -17,8 +17,9 @@ const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
 const h = (c: string) => c.repeat(40);
 
 /** A fake Artifacts repo: a commit whose tree has every kind of entry the snapshot must handle. */
-function fakeRepo(opts: { commits?: string[] } = {}) {
+function fakeRepo(opts: { commits?: string[]; blobs?: Record<string, string> } = {}) {
   const blobs: Record<string, string> = {
+    ...opts.blobs,
     [h("1")]: "export const a = 1;\n",
     [h("2")]: "# readme\n",
     [h("3")]: "binary-ish",
@@ -294,4 +295,87 @@ test("FC14. the CI report workflow: main pushes only, read-only permissions, val
   assert.match(wf, /\/v1\/forge\/ci-report/);
   assert.match(read(".github/workflows/ops-dispatch.yml"), /forge-ci-report\.yml\) ref=main ;;/);
   assert.equal(read("workers/control-plane-shared/test/../../control-plane-migrations/0032_forge_ci_reports.sql").includes("CHECK (conclusion IN ('success', 'failure'))"), true);
+});
+
+test("FC15. Worker bundles honour Wrangler's module rules and keep wasm and node_modules imports external", async () => {
+  const { globToRegExp, moduleRules, snapshotPlugin } = await import("../../forge/src/runner/core.ts");
+  assert.ok(globToRegExp("**/shims/node-*.js").test("./shims/node-test.js"), "matched against the specifier, as Wrangler does");
+  assert.ok(!globToRegExp("**/shims/node-*.js").test("./shims/other.js"));
+  assert.ok(globToRegExp("**/sql.js/dist/sql-wasm.js").test("../../../control-plane-shared/node_modules/sql.js/dist/sql-wasm.js"));
+  const rules = moduleRules(read("workers/forge/wrangler.toml"));
+  assert.deepEqual(rules.map((r) => r.type), ["Text", "Text"]);
+  // Drive the plugin's resolver directly, as esbuild would.
+  const external = new Set<string>();
+  const resolvers: Array<{ filter: RegExp; f: (a: any) => any }> = [];
+  const loaders: Array<{ filter: RegExp; namespace?: string; f: (a: any) => any }> = [];
+  snapshotPlugin({ "w/src/shims/node-test.js": "export default 1;", "w/src/a.ts": "x" }, { worker: { rules, external } })
+    .setup({ onResolve: (o, f) => resolvers.push({ filter: o.filter, f }), onLoad: (o, f) => loaders.push({ ...o, f }) });
+  const resolve = (path: string, importer = "w/src/assets.js") => resolvers.find((r) => r.filter.test(path))!.f({ path, importer, kind: "import-statement" });
+  assert.deepEqual(resolve("cloudflare:workers"), { path: "cloudflare:workers", external: true });
+  assert.deepEqual(resolve("../../../cps/node_modules/esbuild-wasm/esbuild.wasm", "w/src/runner/assets.js"), { path: "../../../cps/node_modules/esbuild-wasm/esbuild.wasm", external: true });
+  assert.deepEqual(resolve("./shims/node-test.js"), { path: "w/src/shims/node-test.js", namespace: "forge-snapshot", pluginData: "text" });
+  assert.deepEqual(resolve("./a.ts"), { path: "w/src/a.ts", namespace: "forge-snapshot", pluginData: undefined });
+  assert.deepEqual([...external], ["cps/node_modules/esbuild-wasm/esbuild.wasm"]);
+  const load = loaders.find((l) => l.namespace === "forge-snapshot")!.f;
+  assert.equal(load({ path: "w/src/shims/node-test.js", pluginData: "text" }).loader, "text");
+  assert.equal(load({ path: "w/src/a.ts" }).loader, "ts");
+});
+
+test("FC16. the secret scan finds well-known credential formats and records only rule, path and line", async () => {
+  const { scanSecrets, MAX_SECRET_FINDINGS } = await import("../../forge/src/runner/core.ts");
+  // Built at run time, so this file never contains a credential-shaped string itself.
+  const gh = "gh" + "p_" + "A1b2".repeat(9);
+  const key = "-----BEGIN " + "PRIVATE KEY-----";
+  const aws = "AK" + "IA" + "ABCDEFGHIJKLMNOP";
+  const snap = { "a.ts": `const t = "${gh}";\nok\n`, "keys/id": `x\n${key}\n`, "cfg.env": `id=${aws}`, "clean.md": "nothing to see" };
+  const r = scanSecrets(snap);
+  assert.equal(r.files, 4);
+  assert.deepEqual(r.findings, [
+    { rule: "github_token", path: "a.ts", line: 1 },
+    { rule: "private_key", path: "keys/id", line: 2 },
+    { rule: "aws_access_key", path: "cfg.env", line: 1 },
+  ]);
+  assert.ok(!JSON.stringify(r).includes(gh) && !JSON.stringify(r).includes(aws), "the matched text is never kept");
+  const many: Record<string, string> = {};
+  for (let i = 0; i < 80; i++) many[`f${i}`] = key;
+  assert.equal(scanSecrets(many).findings.length, MAX_SECRET_FINDINGS);
+  // The repository itself is clean.
+  assert.deepEqual(scanSecrets({ "core.ts": read("workers/forge/src/runner/core.ts"), "this.ts": read("workers/control-plane-shared/test/forge-checks-0012.test.ts") }).findings, []);
+});
+
+test("FC17. a run records its steps; a bundle failure fails it, a secret finding flags the guard", async () => {
+  const h2 = (c: string) => c.repeat(20);
+  const db = migratedDb();
+  const secret = "gh" + "p_" + "Z9y8".repeat(9);
+  const { repo, trees } = fakeRepo({ commits: [h("1")], blobs: { [h2("b1")]: 'main = "src/index.ts"\n', [h2("b2")]: "name = \"no-main\"\n", [h2("b3")]: "export default {};\n", [h2("b4")]: `token = "${secret}"\n` } });
+  const e = (name: string, type: ArtifactsTreeEntry["type"], hash: string): ArtifactsTreeEntry => ({ name, type, hash, mode: type === "tree" ? "40000" : "100644" });
+  trees[h("b")].push(e("good", "tree", h2("c1")), e("bad", "tree", h2("c2")));
+  trees[h2("c1")] = [e("wrangler.toml", "blob", h2("b1")), e("src", "tree", h2("c3"))];
+  trees[h2("c3")] = [e("index.ts", "blob", h2("b3"))];
+  trees[h2("c2")] = [e("wrangler.toml", "blob", h2("b2"))];
+  trees[h("a")].push(e("leak.env", "blob", h2("b4")));
+  const built: string[] = [];
+  const deps = async (): Promise<SuiteDeps> => ({
+    esbuild: { async build(o) { built.push(String((o.entryPoints as string[] | undefined)?.[0] ?? "stdin")); return { outputFiles: [{ text: "x", contents: new Uint8Array(10) }], errors: [], warnings: [] }; } },
+    shims: {} as ShimSources, sqlJs: "", sqlWasm: null,
+    async runWorker(code) {
+      return { files: (code.modules["files.json"] as { json: string[] }).json.map((file) => ({ file, results: [{ name: "t", status: "pass" }] })) };
+    },
+  });
+  await checksTick({ DB: db, ARTIFACTS: { get: async () => repo } }, REPO, deps, () => Date.parse("2026-11-08T12:04:00Z"));
+  const row = db.raw.prepare("SELECT status, guard_status, steps, failures FROM forge_check_runs").get() as any;
+  const steps = JSON.parse(row.steps);
+  assert.deepEqual(steps.tests, { files: 1, pass: 1, fail: 0, skip: 0 });
+  assert.equal(steps.bundles.workers, 2, "every workers/<name>/wrangler.toml in the commit");
+  assert.deepEqual(steps.bundles.bundles, [{ dir: "workers/good", bytes: 10, external: [] }]);
+  assert.deepEqual(steps.bundles.failed, [{ dir: "workers/bad", error: "wrangler.toml in workers/bad has no main" }]);
+  assert.ok(built.includes("workers/good/src/index.ts"));
+  assert.equal(row.status, "failed", "a Worker that does not bundle fails the run");
+  assert.deepEqual(steps.secrets.findings, [{ rule: "github_token", path: "leak.env", line: 1 }]);
+  assert.equal(row.guard_status, "findings");
+  assert.ok(!row.steps.includes(secret) && !row.failures.includes(secret), "the credential itself is never stored");
+  assert.ok(JSON.parse(row.failures).includes("secret github_token at leak.env:1"));
+  const listed = await call(forge, baseEnv("cryptophys-forge", db, { ARTIFACTS: {} }), req("GET", "/v1/forge/checks", undefined, OPERATOR_JWT));
+  assert.deepEqual(listed.body.checks[0].bundles, { workers: 2, failed: 1 });
+  assert.equal(listed.body.checks[0].guard_status, "findings");
 });

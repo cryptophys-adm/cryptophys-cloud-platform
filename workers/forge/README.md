@@ -24,7 +24,9 @@ It needs no GitHub at any step.
 1. **Snapshot.** The commit's text files are read from Artifacts (`src/checks.ts`).
 2. **Bundle.** Each test file is bundled by esbuild-wasm in this isolate (`src/runner/core.ts`). `node:test`, `node:sqlite`, `node:fs`, `node:os` and `node:child_process` are replaced by `src/runner/shims/`.
 3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 8 files per Worker, with no network access.
-4. **Record.** The result goes to D1 `forge_check_runs` and the audit chain.
+4. **Bundles.** Every Worker in the commit is bundled, as CI's dry run does. The Worker's `[[rules]]` apply, and `.wasm` and `node_modules` imports stay external.
+5. **Secret scan.** Well-known credential formats are scanned for. A finding records the rule, path and line, never the text.
+6. **Record.** The result goes to D1 `forge_check_runs` (with `steps` and `guard_status`) and the audit chain.
 
 - **Shim imports.** `src/runner/assets.js` holds the wasm toolchain. Only `src/worker.ts` imports it, so the Node tests never load it. Wrangler imports the shims as Text (`[[rules]]`). The globs match the import specifiers as written there, so keep those import paths.
 - **Local run.** `node tools/forge-runner/run.mjs` runs the same checks code in local workerd.

@@ -192,9 +192,18 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
     - Reports land in D1 `forge_ci_reports` (migration 0032).
     - `GET /v1/forge/checks` puts GitHub's conclusion next to each Forge check. It also counts consecutive agreements, newest first. A Forge `error` is never an agreement.
     - The Console Code page shows the checks and the `parity N/20` count.
+- **Bundles and the secret scan (2026-11-08).** Each Forge check now has three steps (migration 0033).
+  - **Tests.** As above.
+  - **Bundles.** Every `workers/<name>/wrangler.toml` in the commit is bundled with esbuild-wasm. This is CI's `wrangler deploy --dry-run` loop: today 11 of 11.
+    - The Worker's `[[rules]]` apply as Wrangler applies them: the glob is matched against the import specifier, and Text or Data imports load as text or bytes.
+    - `.wasm` and `node_modules` imports stay external and are recorded. A snapshot has no `node_modules`, and Wrangler keeps them as separate modules.
+  - **Secret scan (Forge guard, §2.2).** Well-known credential formats: private keys, GitHub, AWS, Slack, Google, OpenAI, Anthropic, Stripe live and Artifacts tokens, and JWTs. A finding records the rule, path and line, never the matched text.
+  - **How the result reads.** `status` covers tests and bundles, which GitHub CI also runs, so the two stay comparable. The scan is reported apart as `guard_status`.
+  - **Phase 4.** The merge gate requires both `status` and `guard_status`.
 - **Parity CI.** `forge-runner-parity.yml` runs `tools/forge-runner` next to the Node suite on every PR and push.
 - **Next.**
-  - Use the Forge bundler for the deploy bundles, then the Console build (Vite/React).
+  - Type-check in the isolate. It needs the TypeScript compiler and `@types/node` from an R2 package cache (§2.1.2).
+  - Use the Forge bundles for deploys, then the Console build (Vite/React).
   - Run checks for branches and proposals (phase 4).
 
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)

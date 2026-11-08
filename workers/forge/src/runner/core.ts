@@ -72,7 +72,32 @@ function loaderFor(path: string): string {
 interface ResolveArgs { path: string; importer: string; kind: string }
 interface PluginBuild {
   onResolve(o: { filter: RegExp; namespace?: string }, f: (a: ResolveArgs) => unknown): void;
-  onLoad(o: { filter: RegExp; namespace?: string }, f: (a: { path: string }) => unknown): void;
+  onLoad(o: { filter: RegExp; namespace?: string }, f: (a: { path: string; pluginData?: unknown }) => unknown): void;
+}
+
+/** A Wrangler module rule ([[rules]] type Text or Data), matched like Wrangler: against the import specifier. */
+export interface ModuleRule { type: "Text" | "Data"; re: RegExp }
+
+export function globToRegExp(glob: string): RegExp {
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*" && glob[i + 1] === "*") {
+      if (glob[i + 2] === "/") { out += "(?:.*/)?"; i += 2; } else { out += ".*"; i += 1; }
+    } else if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp("^" + out + "$");
+}
+
+/** The Text and Data rules of a wrangler.toml. */
+export function moduleRules(toml: string): ModuleRule[] {
+  const rules: ModuleRule[] = [];
+  for (const m of toml.matchAll(/\[\[rules\]\]\s*\ntype\s*=\s*"(Text|Data)"\s*\nglobs\s*=\s*\[([^\]]*)\]/g)) {
+    for (const g of m[2].matchAll(/"([^"]+)"/g)) rules.push({ type: m[1] as "Text" | "Data", re: globToRegExp(g[1]) });
+  }
+  return rules;
 }
 
 /**
@@ -80,7 +105,12 @@ interface PluginBuild {
  * they are shimmed. Bare package imports are refused: the platform's Workers and tests have none,
  * and a snapshot has no node_modules.
  */
-export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; importMetaUrl?: boolean } = {}) {
+/**
+ * Worker bundles (`worker`): .wasm modules and imports into node_modules stay external, as Wrangler
+ * keeps them as separate modules, and a snapshot has no node_modules. They are recorded in
+ * `external`. Imports matching the Worker's Text or Data rules load as text or bytes.
+ */
+export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; importMetaUrl?: boolean; worker?: { rules: ModuleRule[]; external: Set<string> } } = {}) {
   return {
     name: "forge-snapshot",
     setup(build: PluginBuild) {
@@ -91,8 +121,19 @@ export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; 
         const base = a.importer ? a.importer.split("/").slice(0, -1).join("/") : "";
         const relative = a.path.startsWith("./") || a.path.startsWith("../");
         if (!relative && a.kind !== "entry-point") return { errors: [{ text: `"${a.path}" is not in the snapshot (package imports are not available)` }] };
-        const found = resolveIn(snapshot, normalizePath(relative ? base + "/" + a.path : a.path));
-        return found ? { path: found, namespace: "forge-snapshot" } : { errors: [{ text: `cannot resolve ${a.path} from ${a.importer || "the entry point"}` }] };
+        const target = normalizePath(relative ? base + "/" + a.path : a.path);
+        const worker = opts.worker;
+        let loader: string | undefined;
+        if (worker) {
+          const rule = worker.rules.find((r) => r.re.test(a.path));
+          if (rule) loader = rule.type === "Text" ? "text" : "binary";
+          if (target.endsWith(".wasm") || target.startsWith("node_modules/") || target.includes("/node_modules/")) {
+            worker.external.add(target);
+            return { path: a.path, external: true };
+          }
+        }
+        const found = resolveIn(snapshot, target);
+        return found ? { path: found, namespace: "forge-snapshot", pluginData: loader } : { errors: [{ text: `cannot resolve ${a.path} from ${a.importer || "the entry point"}` }] };
       });
       if (shims) build.onLoad({ filter: /.*/, namespace: "forge-shim" }, (a) => ({ contents: shims[a.path as ShimName], loader: "js" }));
       build.onLoad({ filter: /.*/, namespace: "forge-snapshot" }, (a) => {
@@ -100,7 +141,7 @@ export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; 
         // Each test reads files relative to its own module, so the module URL becomes its repository
         // path. (The token is assembled so that this file survives its own rewrite when bundled.)
         if (opts.importMetaUrl && a.path.endsWith(".ts")) contents = contents.replaceAll(IMPORT_META_URL, JSON.stringify("file:///repo/" + a.path));
-        return { contents, loader: loaderFor(a.path) };
+        return { contents, loader: typeof a.pluginData === "string" ? a.pluginData : loaderFor(a.path) };
       });
     },
   };
@@ -141,7 +182,7 @@ export async function bundleSqlJs(esbuild: EsbuildLike, sqlWasmJs: string): Prom
   return text;
 }
 
-export interface WorkerBundle { bytes: number; errors: number; warnings: number }
+export interface WorkerBundle { bytes: number; errors: number; warnings: number; external?: string[] }
 
 /** Bundle a Worker as Wrangler would: the `main` from its wrangler.toml, ESM, runtime imports external. */
 export async function bundleWorkerDir(esbuild: EsbuildLike, snapshot: Snapshot, dir: string): Promise<WorkerBundle> {
@@ -149,8 +190,65 @@ export async function bundleWorkerDir(esbuild: EsbuildLike, snapshot: Snapshot, 
   if (toml === undefined) throw new Error("no wrangler.toml in " + dir);
   const main = /^main\s*=\s*"([^"]+)"/m.exec(toml)?.[1];
   if (!main) throw new Error("wrangler.toml in " + dir + " has no main");
-  const r = await esbuild.build({ ...COMMON, entryPoints: [normalizePath(dir + "/" + main)], conditions: ["workerd", "worker", "browser"], plugins: [snapshotPlugin(snapshot)] });
-  return { bytes: r.outputFiles?.[0]?.contents.length ?? 0, errors: r.errors.length, warnings: r.warnings.length };
+  const external = new Set<string>();
+  const r = await esbuild.build({ ...COMMON, entryPoints: [normalizePath(dir + "/" + main)], conditions: ["workerd", "worker", "browser"], plugins: [snapshotPlugin(snapshot, { worker: { rules: moduleRules(toml), external } })] });
+  return { bytes: r.outputFiles?.[0]?.contents.length ?? 0, errors: r.errors.length, warnings: r.warnings.length, external: [...external].sort() };
+}
+
+/** Every Worker in the snapshot: workers/<name>/wrangler.toml. */
+export function workerDirs(snapshot: Snapshot): string[] {
+  return Object.keys(snapshot).filter((p) => /^workers\/[^/]+\/wrangler\.toml$/.test(p)).map((p) => p.slice(0, -"/wrangler.toml".length)).sort();
+}
+
+export interface BundleStep { workers: number; failed: Array<{ dir: string; error: string }>; bundles: Array<{ dir: string; bytes: number; external: string[] }> }
+
+/** The dry-run bundle of every Worker, as CI's "wrangler deploy --dry-run" loop. */
+export async function bundleAllWorkers(esbuild: EsbuildLike, snapshot: Snapshot): Promise<BundleStep> {
+  const step: BundleStep = { workers: 0, failed: [], bundles: [] };
+  for (const dir of workerDirs(snapshot)) {
+    step.workers++;
+    try {
+      const b = await bundleWorkerDir(esbuild, snapshot, dir);
+      if (b.errors > 0 || b.bytes === 0) step.failed.push({ dir, error: `${b.errors} errors, ${b.bytes} bytes` });
+      else step.bundles.push({ dir, bytes: b.bytes, external: b.external ?? [] });
+    } catch (e) {
+      step.failed.push({ dir, error: String((e as Error)?.message ?? e).split("\n").slice(0, 3).join(" | ").slice(0, 300) });
+    }
+  }
+  return step;
+}
+
+/**
+ * Forge guard: credentials that must never be committed. Each rule matches a well-known token or key
+ * format. A finding records the rule, the path and the line, never the matched text.
+ */
+export const SECRET_RULES: ReadonlyArray<[string, RegExp]> = [
+  ["private_key", /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/],
+  ["github_token", /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{60,}\b/],
+  ["aws_access_key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["slack_token", /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/],
+  ["google_api_key", /\bAIza[0-9A-Za-z_-]{35}\b/],
+  ["openai_key", /\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}\b/],
+  ["anthropic_key", /\bsk-ant-[A-Za-z0-9_-]{32,}\b/],
+  ["stripe_live_key", /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/],
+  ["artifacts_token", /\bart_v1_[A-Za-z0-9]{20,}\b/],
+  ["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}\b/],
+];
+export const MAX_SECRET_FINDINGS = 50;
+
+export interface SecretFinding { rule: string; path: string; line: number }
+
+export function scanSecrets(snapshot: Snapshot): { files: number; findings: SecretFinding[] } {
+  const findings: SecretFinding[] = [];
+  let files = 0;
+  for (const [path, text] of Object.entries(snapshot)) {
+    files++;
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length && findings.length < MAX_SECRET_FINDINGS; i++) {
+      for (const [rule, re] of SECRET_RULES) if (re.test(lines[i])) findings.push({ rule, path, line: i + 1 });
+    }
+  }
+  return { files, findings: findings.slice(0, MAX_SECRET_FINDINGS) };
 }
 
 /**
