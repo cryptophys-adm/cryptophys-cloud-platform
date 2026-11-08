@@ -101,6 +101,42 @@ test("O4. critical reports of the last 24 hours open critical_reports; older one
   assert.deepEqual(r[2], { topic: "critical_reports", change: "opened", delivery: "not_configured" }, "without email the notice is still recorded for the Console");
 });
 
+test("O6. a failed email delivery is retried until it succeeds, then stops", async () => {
+  const db = migratedDb();
+  healthy(db);
+  const now = at(0);
+  db.raw.prepare(`INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, approved_by, last_execution_json, created_by, created_at, updated_at)
+    VALUES ('plan_retry', 'cryptophys-console', 'aaaaaaaaaaaa', 'draft', '{}', NULL, NULL, 'agent:supervisor', ?, ?)`).run(now, now);
+  let attempts = 0;
+  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", NOTIFY_FROM: "alerts@notify.example.com", OWNER_EMAIL: { send: async () => { attempts++; if (attempts === 1) throw new Error("temporary provider failure"); return { messageId: "m" }; } } };
+  const first = await reconcileNotices(env as never, NOW);
+  assert.equal(first[0].delivery, "failed: temporary provider failure");
+  const second = await reconcileNotices(env as never, NOW);
+  assert.deepEqual(second[0], { topic: "owner_attention", change: "delivery_retry", delivery: "sent" });
+  assert.equal(attempts, 2);
+  const third = await reconcileNotices(env as never, NOW);
+  assert.equal(third[0].change, "unchanged");
+  assert.equal(attempts, 2, "a successful retry is not sent again");
+});
+
+test("O7. invalid or future observation timestamps fail closed as drift notices", async () => {
+  const db = migratedDb();
+  const services = healthy(db);
+  const [invalid, future] = services;
+  db.raw.prepare('UPDATE drift_observations SET observed_at = ? WHERE service_id = ?').run('not-a-date', invalid);
+  db.raw.prepare('UPDATE drift_observations SET observed_at = ? WHERE service_id = ?').run('2099-01-01T00:00:00.000Z', future);
+  const d = (await collectNotices(db as never, NOW))[1];
+  assert.equal(d.active, true);
+  assert.equal(d.lines.filter((line) => /invalid observation timestamp/.test(line)).length, 2);
+});
+
+test("O8. critical reports with future timestamps are not treated as current", async () => {
+  const db = migratedDb();
+  healthy(db);
+  db.raw.prepare(`INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, created_at) VALUES ('rpt_future', 'supervisor', 'platform_digest', 'critical', 'future', '{}', 'deterministic', ?)`).run(new Date(NOW + 60 * 60_000).toISOString());
+  const c = (await collectNotices(db as never, NOW))[2];
+  assert.equal(c.active, false);
+});
 test("O5. wiring: kernel schedule, kernel route, Console route and panel", () => {
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
   assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(reconcileNotices\(env, event\.scheduledTime\)/);
