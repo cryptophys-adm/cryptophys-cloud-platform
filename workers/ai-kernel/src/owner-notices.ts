@@ -165,7 +165,7 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
     const change = n.active && !last.open ? "opened" : n.active && last.fingerprint !== n.fingerprint ? "changed" : !n.active && last.open ? "closed" : null;
     if (!change) {
       const retryChange = emailConfigured(env) && last.delivery !== "sent"
-        && ((n.active && last.open && last.fingerprint === n.fingerprint) || (!n.active && !last.open && last.eventType === "owner.notice_closed"))
+        && ((n.active && last.open && last.fingerprint === n.fingerprint) || (!n.active && !last.open && last.eventType !== ""))
         ? (n.active ? "opened" : "closed") : null;
       if (!retryChange) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
       const delivery = await deliver(env, retryChange, n);
