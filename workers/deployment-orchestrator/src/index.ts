@@ -439,11 +439,6 @@ async function dispatchRollback(env: Env, actor: string, serviceId: string, tag:
   return { dispatched: true, request_id: requestId, workflow: ROLLBACK_WORKFLOW, commit_sha: sha, version_tag: tag };
 }
 
-/**
- * ADR-0012 phase 2: queue a rollback for the Orchestrator's own executor (no GitHub). The same
- * idempotency lock as the workflow path makes a replay a no-op. The cron runs it at the next
- * minute outside the drift and kernel cron windows.
- */
 const NATIVE_ROLLBACK_MAX_AGE_MS = 3 * 3_600_000;
 
 type NativeRollbackSignedRow = {
@@ -468,7 +463,7 @@ function canonicalRollbackJson(value: unknown): string {
 }
 
 function nativeRollbackPayload(row: NativeRollbackSignedRow, details: Record<string, unknown>): string {
-  return "cryptophys.native-rollback.queue.v1\\n" + canonicalRollbackJson({ ...row, details });
+  return "cryptophys.native-rollback.queue.v1|" + canonicalRollbackJson({ ...row, details });
 }
 
 async function signNativeRollbackRequest(secret: string, row: NativeRollbackSignedRow, details: Record<string, unknown>): Promise<string> {
@@ -492,6 +487,11 @@ async function failNativeRollbackRequest(env: Env, row: NativeRollbackSignedRow,
     payload: { request_id: row.request_id, executor: NATIVE_EXECUTOR, version_tag: row.requested_version, reason },
   });
 }
+/**
+ * ADR-0012 phase 2: queue a rollback for the Orchestrator's own executor (no GitHub). The same
+ * idempotency lock as the workflow path makes a replay a no-op. The cron runs it at the next
+ * minute outside the drift and kernel cron windows.
+ */
 async function queueNativeRollback(env: Env, actor: string, serviceId: string, tag: string, link: Record<string, string>): Promise<Record<string, unknown>> {
   if (!env.DEPLOYMENT_LOCK) throw new Error("not_configured");
   const key = "rollback:" + serviceId + ":" + tag + ":" + Object.values(link).join(":");
@@ -521,13 +521,13 @@ async function queueNativeRollback(env: Env, actor: string, serviceId: string, t
 
 /**
  * ADR-0012 phase 2: run queued native rollbacks (oldest first, at most 3 per run). Only at a
- * SAFE minute. Without the deploy credentials, queued requests older than 3 hours fail as stale.
+ * SAFE minute. Every request expires after three hours, including when credentials are restored later.
  */
 export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: typeof fetch = fetch, opts: { delayMs?: number } = {}): Promise<{ executed: number; succeeded: number }> {
   if (!env.DB || !SAFE_MINUTES.includes(new Date(now).getUTCMinutes())) return { executed: 0, succeeded: 0 };
   const rows = await env.DB.prepare(
     "SELECT request_id, service_id, requested_version, requested_by, approval_id, idempotency_key, details_json, created_at FROM deployment_requests WHERE status = 'approved' AND details_json LIKE ? ORDER BY created_at LIMIT 3",
-  ).bind("%\\\"executor\\\":\\\"" + NATIVE_EXECUTOR + "\\\"%").all<NativeRollbackSignedRow & { details_json: string }>();
+  ).bind('%"executor":"' + NATIVE_EXECUTOR + '"%').all<NativeRollbackSignedRow & { details_json: string }>();
   let executed = 0;
   let succeeded = 0;
   for (const r of rows.results) {
