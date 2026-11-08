@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { baseEnv, migratedDb } from "./harness.ts";
 import { appendAuditEvent } from "../src/audit.ts";
-import worker, { DeploymentLock, rollbackForRecovery, runNativeRollbacks } from "../../deployment-orchestrator/src/index.ts";
+import worker, { DeploymentLock, NATIVE_ROLLBACK_EXECUTION_LEASE_MS, rollbackForRecovery, runNativeRollbacks } from "../../deployment-orchestrator/src/index.ts";
 import { CloudflareWorkers, executeRollback, nativeRollbackConfigured, SAFE_MINUTES } from "../../deployment-orchestrator/src/native-rollback.ts";
 import { recordRollback } from "../../platform-registry/src/index.ts";
 import { probeService } from "../../drift-detector/src/index.ts";
@@ -17,7 +17,14 @@ const V_NOW = "11111111-1111-4111-8111-111111111111";
 const V_OLD = "22222222-2222-4222-8222-222222222222";
 const PLAN = "plan_11111111-1111-1111-1111-111111111111";
 const DEC = "dec_22222222-2222-2222-2222-222222222222";
-/** 2026-11-08T03:10:00Z: minute 10 is SAFE. */
+const nextSafeMinute = (after: number): number => {
+  const first = Math.ceil(after / 60_000) * 60_000;
+  for (let i = 0; i < 60; i++) {
+    const candidate = first + i * 60_000;
+    if (SAFE_MINUTES.includes(new Date(candidate).getUTCMinutes())) return candidate;
+  }
+  throw new Error("no safe minute found");
+};
 const SAFE_AT = Date.parse("2026-11-08T03:10:00Z");
 
 function lockNs() {
@@ -109,7 +116,7 @@ test("N2. the executor deploys the tagged version at 100%, verifies it live, rec
   const cf = fakeCloudflare();
   assert.deepEqual(await runNativeRollbacks(env as never, Date.parse("2026-11-08T03:07:00Z"), cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 }, ":07 is a kernel cron minute");
   assert.equal(cf.posted.length, 0);
-  assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+  assert.deepEqual(await runNativeRollbacks(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
   assert.deepEqual(cf.posted.map((p) => p.versions), [[{ version_id: V_OLD, percentage: 100 }]]);
   assert.equal(cf.posted[0].strategy, "percentage");
   assert.deepEqual(probes, [SVC, SVC], "verification waits until the old tag is live");
@@ -121,7 +128,7 @@ test("N2. the executor deploys the tagged version at 100%, verifies it live, rec
   assert.match(set.actor, /^rollback:dep_/);
   assert.deepEqual(JSON.parse(set.payload_json), { previous: "bbbbbbbbbbbb", desired_version: "aaaaaaaaaaaa" });
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'deployment.rollback_succeeded'").get() as any).n, 1);
-  assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 }, "a finished request is not run again");
+  assert.deepEqual(await runNativeRollbacks(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 }, "a finished request is not run again");
 });
 
 test("N3. if the version never reports live, the captured deployment is restored and the request fails", async () => {
@@ -129,7 +136,7 @@ test("N3. if the version never reports live, the captured deployment is restored
   const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "bbbbbbbbbbbb", error: null }));
   await rollbackForRecovery(env as never, PLAN, DEC, SVC);
   const cf = fakeCloudflare();
-  assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 0 });
+  assert.deepEqual(await runNativeRollbacks(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 0 });
   assert.deepEqual(cf.posted.map((p) => p.versions[0].version_id), [V_OLD, V_NOW], "deployed, then restored");
   assert.deepEqual(cf.active(), [{ version_id: V_NOW, percentage: 100 }]);
   const row = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
@@ -164,6 +171,142 @@ test("N5. without the deploy credentials the GitHub workflow stays the path; que
     VALUES ('dep_stale', ?, 'aaaaaaaaaaaa', 'x', 'approved', NULL, 'k', ?, ?, ?)`).run(SVC, JSON.stringify({ executor: "native:rollback" }), old, old);
   assert.deepEqual(await runNativeRollbacks(env as never, SAFE_AT), { executed: 0, succeeded: 0 });
   assert.equal((db.raw.prepare("SELECT status FROM deployment_requests WHERE request_id = 'dep_stale'").get() as any).status, "failed");
+});
+
+test("N9. a queued rollback expires after three hours even when credentials are configured", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const cf = fakeCloudflare();
+  const expiredAt = nextSafeMinute(Date.now() + 4 * 3_600_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, expiredAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0, "an expired request never reaches the Workers Deployments API");
+  const row = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(row.status, "failed");
+  assert.equal(JSON.parse(row.details_json).outcome.reason, "stale: native rollback request expired");
+});
+
+test("N10. the executor refuses a forged non-platform target before calling Cloudflare", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  db.raw.prepare("UPDATE deployment_requests SET service_id = 'xauusd-ai-trading-assistant'").run();
+  const cf = fakeCloudflare();
+  const at = nextSafeMinute(Date.now() + 1_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, at, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0);
+  const row = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(row.status, "failed");
+  assert.equal(JSON.parse(row.details_json).outcome.reason, "invalid_native_rollback_request");
+});
+
+test("N11. a D1-tampered rollback row fails its Orchestrator-only signature", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const row = db.raw.prepare("SELECT request_id, details_json FROM deployment_requests").get() as any;
+  const details = JSON.parse(row.details_json);
+  details.signature = "0".repeat(64);
+  db.raw.prepare("UPDATE deployment_requests SET details_json = ? WHERE request_id = ?").run(JSON.stringify(details), row.request_id);
+  const cf = fakeCloudflare();
+  const at = nextSafeMinute(Date.now() + 1_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, at, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0);
+  const updated = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(updated.status, "failed");
+  assert.equal(JSON.parse(updated.details_json).outcome.reason, "invalid_native_rollback_signature");
+});
+test("N12. restoring a completed signed D1 row to approved cannot replay its rollback", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const original = db.raw.prepare("SELECT request_id, details_json FROM deployment_requests").get() as any;
+  const cf = fakeCloudflare();
+  const firstAt = nextSafeMinute(Date.now() + 1_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, firstAt, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+  assert.equal(cf.posted.length, 1);
+
+  // Simulate a different D1-bound Worker restoring the exact old signed payload and queue state.
+  db.raw.prepare("UPDATE deployment_requests SET status = 'approved', details_json = ?, updated_at = ? WHERE request_id = ?")
+    .run(original.details_json, new Date(firstAt + 1_000).toISOString(), original.request_id);
+  const secondAt = nextSafeMinute(firstAt + 60_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, secondAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 1, "the request-scoped Durable Object claim prevents a second Workers Deployments API call");
+});
+
+test("N13. a D1 transition failure does not consume the one-time claim; the next pass safely retries", async () => {
+  const db = await setup();
+  let failTransition = true;
+  const wrappedDb = new Proxy(db as any, {
+    get(target, property) {
+      if (property === "prepare") return (sql: string) => {
+        const statement = target.prepare(sql);
+        if (sql.startsWith("UPDATE deployment_requests SET status = 'running'")) {
+          return {
+            bind: (...values: unknown[]) => {
+              const bound = statement.bind(...values);
+              return {
+                run: async () => {
+                  if (failTransition) {
+                    failTransition = false;
+                    throw new Error("injected_d1_transition_failure");
+                  }
+                  return bound.run();
+                },
+              };
+            },
+          };
+        }
+        return statement;
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const env = nativeEnv(wrappedDb, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const cf = fakeCloudflare();
+  const firstAt = nextSafeMinute(Date.now() + 1_000);
+  await assert.rejects(runNativeRollbacks(env as never, firstAt, cf.fetcher, { delayMs: 0 }), /injected_d1_transition_failure/);
+  assert.equal(cf.posted.length, 0);
+  assert.equal((db.raw.prepare("SELECT status FROM deployment_requests").get() as any).status, "approved");
+
+  const retryAt = nextSafeMinute(firstAt + 60_000);
+  assert.deepEqual(await runNativeRollbacks(env as never, retryAt, cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+  assert.equal(cf.posted.length, 1, "the failed D1 transition left the DO execution claim available for the retry");
+});
+
+test("N14. a one-time claim abandoned before deployment is terminally audited after its lease", async () => {
+  const db = await setup();
+  const env = nativeEnv(db, async () => ({ reachable: true, healthy: true, version_tag: "aaaaaaaaaaaa", error: null }));
+  await rollbackForRecovery(env as never, PLAN, DEC, SVC);
+  const row = db.raw.prepare("SELECT request_id, idempotency_key FROM deployment_requests").get() as any;
+  const claimedAt = Date.now();
+  db.raw.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ?")
+    .run(new Date(claimedAt).toISOString(), row.request_id);
+
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + row.request_id),
+  );
+  const sha = Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const deploymentLock = (env as any).DEPLOYMENT_LOCK;
+  const lock = deploymentLock.get(deploymentLock.idFromName(row.idempotency_key));
+  const claimResponse = await lock.fetch("https://lock.internal/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sha }),
+  });
+  assert.equal(claimResponse.status, 201);
+
+  const expiredAt = nextSafeMinute(claimedAt + NATIVE_ROLLBACK_EXECUTION_LEASE_MS + 60_000);
+  const cf = fakeCloudflare();
+  assert.deepEqual(await runNativeRollbacks(env as never, expiredAt, cf.fetcher, { delayMs: 0 }), { executed: 0, succeeded: 0 });
+  assert.equal(cf.posted.length, 0, "an abandoned claim is never replayed");
+  const updated = db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any;
+  assert.equal(updated.status, "failed");
+  assert.equal(JSON.parse(updated.details_json).outcome.reason, "native_rollback_execution_claim_expired");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'deployment.rollback_failed'").get() as any).n, 1);
 });
 
 test("N6. the Registry records a rollback version only for a running native rollback request of the last hour", async () => {
