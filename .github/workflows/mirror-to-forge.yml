@@ -53,7 +53,9 @@ jobs:
             fi
             echo "::error::mirror-token returned HTTP ${status}"; exit 1
           fi
-          token="$(jq -er '.token' "$out")"; remote="$(jq -er '.remote | select(startswith("https://"))' "$out")"
+          token="$(jq -er '.token' "$out")"
+          remote="$(jq -er '.remote' "$out")"
+          [[ "$remote" =~ ^https://[0-9a-f]{32}\.artifacts\.cloudflare\.net/git/cryptophys/platform\.git$ ]] || { echo "::error::Forge returned an untrusted Artifacts remote"; exit 1; }
           echo "::add-mask::${token}"; echo "::add-mask::${remote}"
           git -c http.extraHeader="Authorization: Bearer ${token}" push --force "$remote" "HEAD:refs/heads/main"
           echo "Mirrored main $(git rev-parse HEAD) to the Forge."
