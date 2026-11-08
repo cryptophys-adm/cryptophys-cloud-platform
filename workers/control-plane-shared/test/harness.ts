@@ -48,7 +48,15 @@ export class FakeD1 implements D1Database {
   prepare(sql: string): D1PreparedStatement {
     return new Statement(this.raw, sql);
   }
-  async batch(statements: D1PreparedStatement[]): Promise<D1Result[]> {
+  // D1 runs each batch atomically and one at a time. Queue them so concurrent batches never
+  // interleave, whatever the runtime's microtask timing (Node or workerd, ADR-0012 phase 3).
+  private queue: Promise<unknown> = Promise.resolve();
+  batch(statements: D1PreparedStatement[]): Promise<D1Result[]> {
+    const run = this.queue.then(() => this.runBatch(statements));
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+  private async runBatch(statements: D1PreparedStatement[]): Promise<D1Result[]> {
     this.raw.exec("BEGIN");
     try {
       const out: D1Result[] = [];

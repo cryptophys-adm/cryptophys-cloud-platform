@@ -51,6 +51,8 @@ async function run(env: unknown, r: Request) {
 // PROMPT.md §4, row by row: id, service, method, path, approverOnly, confirm.
 const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][] = [
   ["platform.overview", "platform", "GET", "/v1/overview", false, null],
+  ["forge.status", "forge", "GET", "/v1/forge/status", false, null],
+  ["forge.commits", "forge", "GET", "/v1/forge/commits", false, null],
   ["kernel.kernel", "kernel", "GET", "/v1/kernel", false, null],
   ["kernel.status", "kernel", "GET", "/v1/status", false, null],
   ["kernel.notices", "kernel", "GET", "/v1/notices", false, null],
@@ -102,8 +104,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 49 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 49);
+test("1. route table: exactly the 51 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 51);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -112,7 +114,7 @@ test("1. route table: exactly the 49 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 49);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 51);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -198,7 +200,7 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  assert.equal(CONSOLE_ALLOW_LIST.length, 47);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 49);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

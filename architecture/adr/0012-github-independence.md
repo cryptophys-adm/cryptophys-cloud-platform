@@ -166,6 +166,18 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   - Back up the repository with a daily `git bundle` to R2.
   - Spike the Forge-side merge (ADR §2.5).
 
+### 5c. Phase 3 progress (2026-11-08)
+
+- **Spike passed.** The unchanged control-plane suite runs in **workerd**, with **321 of 322 tests passing** and the same per-file counts as Node, through `tools/forge-runner`.
+  - The shims replace `node:test`, `node:sqlite` (sql.js), `node:fs` (a snapshot of the repository) and `node:os`/`node:child_process`.
+  - Test modules are deferred to request time, because workerd's clock reads 0 at module evaluation.
+- **Known gap.** The Wrangler dry-run test needs an in-isolate bundler (`@cloudflare/worker-bundler`). That is the next step.
+- **Harness change.** `FakeD1.batch` now runs batches one at a time, as D1 does. Under workerd's faster `crypto.subtle`, concurrent batches had interleaved.
+- **Parity CI.** `forge-runner-parity.yml` runs the workerd suite next to the Node suite on every PR and push. It is informational and not in the deploy gate, until the two agree on 20 consecutive commits.
+- **Next.**
+  - Bundler in the isolate: the Wrangler dry-run test, the Worker bundles, and the Console build.
+  - Move the runner into the Forge, with Dynamic Workers loading these bundles and the snapshot read from Artifacts.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):
