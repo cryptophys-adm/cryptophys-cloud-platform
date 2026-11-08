@@ -19,7 +19,8 @@ export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-pl
 export const MIRROR_TOKEN_TTL_S = 600;
 
 /** The subset of the Artifacts Workers binding the Forge uses (Artifacts docs, 2026-10). */
-export interface ArtifactsCommit { id?: string; sha?: string; message?: string; author?: { name?: string; email?: string; date?: string } | string; timestamp?: string; date?: string }
+/** Commit metadata from log(): field names vary by binding version, so they are read defensively. */
+export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
   info(): Promise<{ name: string; remote: string; defaultBranch?: string; default_branch?: string; lastPushAt?: string | null; last_push_at?: string | null } | null>;
   createToken(scope?: "read" | "write", ttl?: number): Promise<{ plaintext: string; expiresAt: string | number }>;
@@ -44,11 +45,27 @@ export interface Env {
   ARTIFACTS?: ArtifactsBinding;
 }
 
-const sha = (c: ArtifactsCommit) => String(c.sha ?? c.id ?? "");
-const when = (c: ArtifactsCommit) => String(typeof c.author === "object" ? c.author?.date ?? c.timestamp ?? c.date ?? "" : c.timestamp ?? c.date ?? "");
-const who = (c: ArtifactsCommit) => String(typeof c.author === "object" ? c.author?.name ?? "" : c.author ?? "");
+const HEX40 = /^[0-9a-f]{40}$/;
+const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? v as Record<string, unknown> : {});
+const str = (v: unknown) => (typeof v === "string" ? v : "");
+/** Seconds or milliseconds since the epoch, or an ISO string, as ISO; anything else as "". */
+function isoTime(v: unknown): string {
+  if (typeof v === "number" && Number.isFinite(v)) return new Date(v < 1e12 ? v * 1000 : v).toISOString();
+  if (typeof v === "string" && !Number.isNaN(Date.parse(v))) return new Date(v).toISOString();
+  return "";
+}
 export function presentCommit(c: ArtifactsCommit) {
-  return { sha: sha(c), title: String(c.message ?? "").split("\n")[0].slice(0, 200), author: who(c).slice(0, 100), date: when(c) };
+  const author = obj(c.author);
+  const named = [c.hash, c.oid, c.sha, c.id, c.commit].map(str).find((v) => HEX40.test(v));
+  const sha = named ?? Object.values(c).map(str).find((v) => HEX40.test(v)) ?? "";
+  const date = [author.date, author.timestamp, author.time, author.when, c.timestamp, c.date, c.authorDate, c.author_date, obj(c.committer).timestamp, obj(c.committer).date]
+    .map(isoTime).find(Boolean) ?? "";
+  return {
+    sha,
+    title: str(c.message).split("\n")[0].slice(0, 200),
+    author: (str(author.name) || str(c.author)).slice(0, 100),
+    date,
+  };
 }
 
 async function openRepo(env: Env): Promise<ArtifactsRepo | null> {
