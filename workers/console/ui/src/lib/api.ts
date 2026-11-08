@@ -8,10 +8,12 @@ const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 
 /** ADR-0010: on the Nexus host the Console is mounted at /console/; elsewhere (workers.dev) at /. */
 export const MOUNT = typeof location !== "undefined" && location.pathname.startsWith("/console") ? "/console" : "";
+/** Switch account: the Console Worker's page that signs out, then brings the person back to sign in. */
+export const SWITCH_ACCOUNT = `${MOUNT}/switch-account`;
 
 /**
- * Cloudflare Access logout on this host. It ends the Access session for every platform application,
- * so the next visit asks for a sign-in: this is both "Sign out" and "Switch account".
+ * Sign out: Cloudflare Access logout on this host. It ends the Access session for every platform
+ * application and stops on Access's "logged out" page.
  */
 export const ACCESS_LOGOUT = "/cdn-cgi/access/logout";
 export const NEXUS_HOME = "https://nexus.cryptophys.work/";

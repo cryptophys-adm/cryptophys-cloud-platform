@@ -46,10 +46,14 @@
 "tambahkan menu logout dan juga fallback ketika user view only nexus akan mengakses cerebrum diminta user/change user yang punya privilege akses ke cerebrum."
 
 - **Sign out.** The Console header has an account menu (on phones it is in the navigation menu). It shows who is signed in and their role (Owner, Approver, Operator or Viewer), with **Switch account** and **Sign out**.
-  - Both items go to Cloudflare Access's logout on the same host, `/cdn-cgi/access/logout`. It revokes the Access session for every platform application, so the next visit asks for a sign-in.
-  - Access has no per-application logout.
+  - **Sign out** goes to Cloudflare Access's logout on the same host, `/cdn-cgi/access/logout`. It revokes the Access session for every platform application and stops on Access's "logged out" page. Access has no per-application logout.
+  - **Switch account** goes to the Console's `/console/switch-account` page (owner, 2026-11-08: "kenapa tidak langsung redirect ke cerebrum console"), because Access's logout page has no redirect back.
+    - The page loads the logout URL in the background, on this host and on the team domain.
+    - After 3 seconds it reloads the Console (`<meta http-equiv="refresh">`, no script). Access then shows its sign-in page and returns the person to the Console after sign-in.
+    - Any signed-in person may open it, including people the Console refuses. It grants nothing.
+    - If the identity provider signs the person in automatically, they choose another account there. If Access briefly still accepts the old session (up to 30 seconds), "Continue to sign in" retries.
 - **Fallback for Nexus-only accounts.** This covers a person whom Access let in but whom the Console refuses: kind `user`, a disabled account, or no account.
-  - When they open a Console page in a browser, they get a 403 **page**, not JSON. It shows the account they are signed in as, explains that the Console needs an admin account, and offers **Switch account** (Access logout) and **Back to Nexus**.
+  - When they open a Console page in a browser, they get a 403 **page**, not JSON. It shows the account they are signed in as, explains that the Console needs an admin account, and offers **Switch account** (the switch page above) and **Back to Nexus**.
   - The page has no script. Its only style is allowed by a hash in its CSP, and it is not cached.
   - API calls, non-browser clients and requests without an identity keep their JSON answers.
 - **Mid-session loss of access.** The Console's own 403 carries `x-cryptophys-console-access: denied`. Forwarded responses never carry it, so a downstream role check cannot trigger it.
