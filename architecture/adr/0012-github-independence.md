@@ -168,14 +168,18 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
 
 ### 5c. Phase 3 progress (2026-11-08)
 
-- **Spike passed.** The unchanged control-plane suite runs in **workerd**, with **321 of 322 tests passing** and the same per-file counts as Node, through `tools/forge-runner`.
+- **Spike passed.** The control-plane suite runs in **workerd** through `tools/forge-runner`, with **all 329 tests passing** and the same per-file counts as Node.
   - The shims replace `node:test`, `node:sqlite` (sql.js), `node:fs` (a snapshot of the repository) and `node:os`/`node:child_process`.
   - Test modules are deferred to request time, because workerd's clock reads 0 at module evaluation.
-- **Known gap.** The Wrangler dry-run test needs an in-isolate bundler (`@cloudflare/worker-bundler`). That is the next step.
+- **Forge bundler (closes the last gap).** `shims/forge-bundle.js` runs **esbuild-wasm 0.28.2 inside the isolate** and reads the repository snapshot.
+  - It bundles the `main` named in a Worker's `wrangler.toml`, as ESM with `node:` and `cloudflare:` imports external.
+  - In workerd, the TP-025 dry-run test bundles `workers/home` through `globalThis.__FORGE_BUNDLE`. In Node CI it still runs `wrangler deploy --dry-run`, unchanged.
+  - Measured in workerd: initialization 0.18 s; Home 22 KB in 0.35 s; Forge 22 KB in 0.11 s; AI Kernel 179 KB in 0.44 s.
+  - The 14 MB `esbuild.wasm` is loaded only for tests that bundle.
 - **Harness change.** `FakeD1.batch` now runs batches one at a time, as D1 does. Under workerd's faster `crypto.subtle`, concurrent batches had interleaved.
 - **Parity CI.** `forge-runner-parity.yml` runs the workerd suite next to the Node suite on every PR and push. It is informational and not in the deploy gate, until the two agree on 20 consecutive commits.
 - **Next.**
-  - Bundler in the isolate: the Wrangler dry-run test, the Worker bundles, and the Console build.
+  - Use the Forge bundler for the deploy bundles, then the Console build (Vite/React).
   - Move the runner into the Forge, with Dynamic Workers loading these bundles and the snapshot read from Artifacts.
 
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)

@@ -6,8 +6,8 @@
 //
 //   node tools/forge-runner/run.mjs [file.test.ts]   (from the repository root, after npm ci in
 //                                                     workers/control-plane-shared)
-// Exit code 0 only if every test passes except the KNOWN_GAPS below, which need an in-isolate
-// bundler (next step). Node CI still runs every test.
+// Exit code 0 only if every test passes (KNOWN_GAPS below is empty). Tests that reference
+// __FORGE_BUNDLE also get the Forge bundler (esbuild-wasm in the isolate, shims/forge-bundle.js).
 import { createRequire } from "node:module";
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,8 +32,8 @@ const vfs = {};
 })(REPO);
 const vfsText = JSON.stringify(vfs);
 const TMP = mkdtempSync(join(tmpdir(), "forge-runner-"));
-/** Tests that need an in-isolate bundler (Wrangler dry-run); they still run in Node CI. */
-const KNOWN_GAPS = ["home-tp025.test.ts :: TP-025 Home Worker Wrangler dry-run bundle:"];
+/** Tests that cannot run in the isolate yet (none since the Forge bundler, 2026-11-08). */
+const KNOWN_GAPS = [];
 
 // 2. Bundle one test file per module, with node:* shims and per-file import.meta.url.
 const alias = { "node:test": "node-test.js", "node:sqlite": "node-sqlite.js", "node:fs": "node-fs.js", "node:os": "node-os.js", "node:child_process": "node-child_process.js" };
@@ -63,14 +63,20 @@ const sqlJs = await esbuild.build({ entryPoints: [req.resolve("sql.js/dist/sql-w
   plugins: [{ name: "empty-node", setup(b) { b.onResolve({ filter: /^(fs|path|crypto)$/ }, () => ({ path: "empty", namespace: "empty" })); b.onLoad({ filter: /.*/, namespace: "empty" }, () => ({ contents: "module.exports = {};", loader: "js" })); } }] });
 const sqlJsText = sqlJs.outputFiles[0].text;
 const sqlWasm = readFileSync(req.resolve("sql.js/dist/sql-wasm.wasm"));
+// The Forge bundler (esbuild-wasm), loaded only for tests that bundle Workers.
+const esbuildJs = readFileSync(req.resolve("esbuild-wasm/esm/browser.js"));
+const esbuildWasm = readFileSync(req.resolve("esbuild-wasm/esbuild.wasm"));
+const forgeBundleJs = readFileSync(join(HERE, "shims/forge-bundle.js"));
 
 const entry = `
 import wasm from "./sql-wasm.wasm";
 import vfsText from "./vfs.json.txt";
 import initSqlJs from "./sql.js";
+import * as forge from "./forge.js";
 export default { async fetch() {
   globalThis.__VFS = JSON.parse(vfsText);
   if (!globalThis.location) globalThis.location = { href: "http://runner/" };
+  if (forge.bundleWorker) globalThis.__FORGE_BUNDLE = forge.bundleWorker;
   globalThis.__SQL = await initSqlJs({ instantiateWasm(imports, done) { WebAssembly.instantiate(wasm, imports).then((i) => done(i)); return {}; } });
   const out = [];
   await new Promise((r) => setTimeout(r, 5)); // advance the workerd clock (it only moves on I/O)
@@ -93,6 +99,9 @@ for (const f of files) {
   const dir = join(TMP, f.replace(/\W/g, "_")); mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "entry.js"), entry); writeFileSync(join(dir, "test.js"), code);
   writeFileSync(join(dir, "sql.js"), sqlJsText); writeFileSync(join(dir, "sql-wasm.wasm"), sqlWasm); writeFileSync(join(dir, "vfs.json.txt"), vfsText);
+  const bundles = code.includes("__FORGE_BUNDLE");
+  writeFileSync(join(dir, "forge.js"), bundles ? forgeBundleJs : "export const bundleWorker = undefined;\n");
+  if (bundles) { writeFileSync(join(dir, "esbuild.js"), esbuildJs); writeFileSync(join(dir, "esbuild.wasm"), esbuildWasm); }
   const port = 18000 + Math.floor(Math.random() * 2000);
   writeFileSync(join(dir, "config.capnp"), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
@@ -106,6 +115,9 @@ const w :Workerd.Worker = (
     (name = "sql.js", esModule = embed "sql.js"),
     (name = "sql-wasm.wasm", wasm = embed "sql-wasm.wasm"),
     (name = "vfs.json.txt", text = embed "vfs.json.txt"),
+    (name = "forge.js", esModule = embed "forge.js"),${bundles ? `
+    (name = "esbuild.js", esModule = embed "esbuild.js"),
+    (name = "esbuild.wasm", wasm = embed "esbuild.wasm"),` : ""}
   ],
   compatibilityDate = "2026-11-01",
   compatibilityFlags = ["nodejs_compat"],

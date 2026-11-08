@@ -9,6 +9,7 @@ shims are what the Forge loads into Dynamic Workers when the checks move off Git
 | `node:sqlite` | `shims/node-sqlite.js`: `DatabaseSync` over sql.js (SQLite in WebAssembly) |
 | `node:fs` | `shims/node-fs.js`: a read-only snapshot of the repository's text files, plus an in-memory scratch area |
 | `node:os`, `node:child_process` | small stubs; `spawnSync` is not available |
+| Wrangler bundling | `shims/forge-bundle.js`: esbuild-wasm in the isolate, exposed to tests as `globalThis.__FORGE_BUNDLE(dir)` |
 
 How it works:
 
@@ -23,4 +24,8 @@ node tools/forge-runner/run.mjs              # whole suite
 node tools/forge-runner/run.mjs plain-english.test.ts
 ```
 
-Status (2026-11-08): **321 of 322 tests pass in workerd**, with the same per-file counts as Node. The one known gap is the Wrangler dry-run bundle test (TP-025). It needs an in-isolate bundler, and it still runs in Node CI.
+Status (2026-11-08): **all 329 tests pass in workerd**, with the same per-file counts as Node. There are no known gaps.
+
+- The Wrangler dry-run test (TP-025) uses the Forge bundler when the runner provides it.
+- In Node it still runs `wrangler deploy --dry-run`.
+- The 14 MB `esbuild.wasm` is embedded only in test files that reference `__FORGE_BUNDLE`.

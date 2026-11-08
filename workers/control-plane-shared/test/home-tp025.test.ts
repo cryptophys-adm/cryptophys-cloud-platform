@@ -247,7 +247,17 @@ test("TP-025 no regressions", async () => {
   assert.deepEqual(denied.body, { error: "not_allowed" });
 });
 
-test("TP-025 Home Worker Wrangler dry-run bundle", () => {
+test("TP-025 Home Worker Wrangler dry-run bundle", async () => {
+  // ADR-0012 phase 3: in the Forge runner (workerd) there is no Wrangler process; the Forge
+  // bundler (esbuild-wasm in the isolate) bundles the same wrangler.toml `main` instead.
+  const forgeBundle = (globalThis as { __FORGE_BUNDLE?: (dir: string) => Promise<{ bytes: number; errors: number }> }).__FORGE_BUNDLE;
+  if (forgeBundle) {
+    const r = await forgeBundle("workers/home");
+    assert.equal(r.errors, 0);
+    assert.ok(r.bytes > 1000, `Home bundle is ${r.bytes} bytes`);
+    console.log(`Forge bundle: ${r.bytes} bytes`);
+    return;
+  }
   const outDir = mkdtempSync(join(tmpdir(), "dry-home-tp025-"));
   try {
     const result = spawnSync("npx", [
