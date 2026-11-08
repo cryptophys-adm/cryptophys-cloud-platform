@@ -11,6 +11,8 @@
 //     next to GitHub CI's conclusion, and the parity count towards phase 4.
 //   - POST /v1/forge/ci-report {confirm: "REPORT"}: GitHub CI's conclusion for a commit of main, from
 //     the CI service token only (forge-ci-report.yml), while GitHub is still the source of truth.
+//   - POST /v1/forge/typecheck-report {confirm: "REPORT"}: the type-check result of a commit from
+//     Workers Builds (workers/forge-typecheck), CI service token only (ADR-0012 §5c).
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { accessConfigured, accessGate, actorOf, listConfigured, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
@@ -18,13 +20,14 @@ import { errorResponse, healthBody, json, readJsonObject } from "../../control-p
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import { listChecks, recordCiReport, type ArtifactsReader } from "./checks.ts";
+import { recordTypecheckReport } from "./typecheck.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -198,13 +201,18 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
-      if (request.method === "POST" && (url.pathname === "/v1/forge/import" || url.pathname === "/v1/forge/mirror-token" || url.pathname === "/v1/forge/ci-report")) {
+      if (request.method === "POST" && (url.pathname === "/v1/forge/import" || url.pathname === "/v1/forge/mirror-token" || url.pathname === "/v1/forge/ci-report" || url.pathname === "/v1/forge/typecheck-report")) {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         if (url.pathname === "/v1/forge/ci-report") {
           if (operator.identity.type !== "service_token") return errorResponse(403, "service_token_required");
           if (body.value.confirm !== "REPORT") return errorResponse(400, "confirmation_required", 'type "REPORT" to record a CI result');
           return json(await recordCiReport(env.DB, body.value as never, actorOf(operator.identity)));
+        }
+        if (url.pathname === "/v1/forge/typecheck-report") {
+          if (operator.identity.type !== "service_token") return errorResponse(403, "service_token_required");
+          if (body.value.confirm !== "REPORT") return errorResponse(400, "confirmation_required", 'type "REPORT" to record a type-check result');
+          return json(await recordTypecheckReport(env.DB, body.value as never, actorOf(operator.identity)));
         }
         if (url.pathname === "/v1/forge/import") {
           if (body.value.confirm !== "IMPORT") return errorResponse(400, "confirmation_required", 'type "IMPORT" to import the repository');

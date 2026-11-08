@@ -1,0 +1,14 @@
+# ADR-0012 §5c (owner decision 2026-11-08): the control-plane type-check runs on Workers Builds,
+# straight from the Artifacts repository cryptophys/platform, because the TypeScript compiler needs
+# more memory than a Workers isolate has. This directory is the Builds project's root: Builds runs
+# `node typecheck-and-report.mjs` here (the build command), which type-checks ../ and reports to the
+# Forge, then deploys this stub (the deploy command). The stub serves nothing: no route, no
+# workers.dev, no bindings. It exists only because Workers Builds deploys a Worker.
+name = "cryptophys-forge-typecheck"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = false
+preview_urls = false
+
+[observability]
+enabled = false

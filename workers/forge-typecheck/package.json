@@ -1,0 +1,15 @@
+{
+  "name": "cryptophys-forge-typecheck",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Workers Builds project for the control-plane type-check (ADR-0012 §5c). Build: type-check and report to the Forge. Deploy: a stub Worker that serves nothing.",
+  "type": "module",
+  "scripts": {
+    "build": "node typecheck-and-report.mjs",
+    "deploy": "wrangler deploy",
+    "preview": "node typecheck-and-report.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  }
+}

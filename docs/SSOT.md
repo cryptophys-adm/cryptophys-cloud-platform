@@ -9,7 +9,7 @@ Last reviewed: 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 These hold everywhere:
 
 - **Advisory only.** No trading, no funds, no orders, no price levels (ADR-0009, the knowledge validator).
-- **No containers, with one exception.** Production runs on Workers and their bindings only. The exception, chosen by the owner on 2026-11-08, is the Forge type-check, which runs in a Cloudflare Container with no internet (ADR-0005 decision 1, ADR-0012 §5c).
+- **No containers.** Production runs on Workers and their bindings only (ADR-0005 decision 1). The Forge type-check, which does not fit in an isolate, runs on Workers Builds from the Artifacts repository (ADR-0012 §5c, owner 2026-11-08).
 - **Never weaken Access, auth or tests.** No test is skipped. A test that cannot run somewhere keeps running where it can.
 - **The owner creates every secret and credential.** None is created by an agent or stored in the repository.
 - **Data deletion and irreversible actions are critical.** The owner decides them.
@@ -44,7 +44,8 @@ These hold everywhere:
 | `cryptophys-drift-detector` | Desired-versus-observed versions and health; reports once per episode | every 15 min |
 | `cryptophys-deployment-orchestrator` | Deploy requests, the deployments list (Console Pipelines), native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
-| `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check in a Container (`TypecheckContainer`) | :04/:19/:34/:49 |
+| `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check reported by Workers Builds | :04/:19/:34/:49 |
+| `cryptophys-forge-typecheck` | Workers Builds stub for the type-check (`workers/forge-typecheck`): no route, no bindings, not in the registry | — |
 | `cryptophys-home` | Retired (redirects to Nexus); scheduled for removal | — |
 | `cryptophys-signal-engine` | Disabled (TP-018) | — |
 
@@ -54,9 +55,9 @@ These hold everywhere:
 
 ## Data
 
-- **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/` (0001–0034).
+- **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/` (0001–0035).
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
-  - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033.
+  - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
 - **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). Other tables are kept.
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).
 

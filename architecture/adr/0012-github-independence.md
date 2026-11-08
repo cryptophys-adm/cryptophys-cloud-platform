@@ -8,7 +8,7 @@
   - BASELINE rule 3 and the deployment line ("GitHub Actions `workflow_dispatch` … protected `production` environment").
   - ADR-0005 decision table rows "Tekton/Harbor/Gitea/Argo CD → GitHub + GitHub Actions + Wrangler" and "Vault/ESO → Worker secrets from the GitHub `production` Environment".
 - **Unchanged:**
-  - Cloudflare only. No containers that we run (ADR-0005 decision 1), with one exception the owner made on 2026-11-08: the Forge type-check runs in a Cloudflare Container (§5c).
+  - Cloudflare only. No containers that we run (ADR-0005 decision 1).
   - Advisory only. Trading stays prohibited.
   - ADR-0009 consensus. Agents still decide routine deploys and rollbacks. The owner still decides critical actions. Nothing deploys merely because code was pushed.
 
@@ -231,21 +231,20 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   - Dropping `DOM` (157 MB, 29 errors) or `@types/node` (143 MB, 176 errors) neither fits nor keeps the same check.
   - TypeScript 7.0.2 (the native compiler) checks the project clean in 0.34 s, using 116 MB heap and 145 MB RSS. It ships only native binaries per platform, with no WebAssembly build.
   - **Consequence.** The type-check cannot be a Forge check today without weakening it. It stays on GitHub Actions until a compiler fits in an isolate, or the owner chooses another runner. Phase 5 (archiving GitHub) waits for that decision.
-- **Type-check in a Cloudflare Container (owner decision 2026-11-08).** Asked where the type-check should run, the owner chose "Izinkan Containers" (allow Containers). The exception covers the type-check only.
-  - **Image.** `workers/forge/typecheck/` holds the image: Node 22 slim pinned by digest, plus the compiler and `@types/node` at the exact versions locked in `workers/control-plane-shared/package-lock.json`. The install is locked (`npm ci --ignore-scripts`) and the server runs as a non-root user. A test checks that both lockfiles carry the same versions and integrity hashes.
-  - **Runtime.** The Forge's Durable Object `TypecheckContainer` (`basic`: 1/4 vCPU, 1 GiB, at most one instance) works one check at a time:
-    1. It starts the Container with **internet disabled**.
-    2. It sends the commit's files under `workers/`.
-    3. The Container runs `tsc --noEmit -p workers/control-plane-tsconfig.json`.
-    4. The Durable Object stops the Container.
-    
-    Measured: 276 files, 0 errors, 36 s at 1/4 vCPU, 269 MiB.
-  - **Result.** It is the step `typecheck` of each Forge check.
-    - A type error fails the check, as it fails GitHub CI.
-    - Any of the following is recorded as `error` and never counted as a pass: a Container that does not answer, a compiler that is not the locked one, or a missing lockfile or tsconfig.
-    - The Console Code page shows "types ok", "N type errors" or "type-check error".
-  - **CI.** The `Forge type-check Container` job builds the image and type-checks the repository in it with `--network none --memory 1g` (`.github/scripts/typecheck-container-smoke.sh`).
+- **Type-check on Workers Builds (owner decision 2026-11-08, evening).** Asked where the type-check should run, the owner first chose a Cloudflare Container (#236). Its deploy failed on the Containers API (the deploy token has no Containers permission) and Cloudflare refused the rollback across the Durable Object migration, so the Worker ran at `66a4859` with no Container and the step recorded `error`, never a pass. Asked again with the measurements of two alternatives, the owner chose **Workers Builds from the Artifacts repository**; the Container was withdrawn (#237). The alternatives, measured:
+
+  | Option | Evidence | Verdict |
+  |---|---|---|
+  | Browser Run (the compiler in headless Chromium) | 279 files, 0 errors, 2.3 s, 167 MB heap; an injected error reported | Works; kept as the fallback |
+  | Workers Builds from Artifacts | Supported by Cloudflare (Oct 2026); 4 vCPU, 8 GB, 6,000 min/month included | **Chosen** |
+  | Cloudflare Container | Worked in CI; needs a token permission and an ADR-0005 exception | Withdrawn |
+
+  - **Project.** `workers/forge-typecheck/` is the Builds project (root directory). Its build command `node typecheck-and-report.mjs` installs the locked toolchain in `control-plane-shared` and runs `tsc --noEmit -p workers/control-plane-tsconfig.json`; its deploy command deploys a stub Worker with no route, no `workers.dev` URL and no bindings, because Workers Builds deploys a Worker.
+  - **Report.** The build reports `{commit, conclusion, build_id, branch, files, errors, diagnostics, toolchain}` to `POST /v1/forge/typecheck-report` with the CI service token. Diagnostics are text only. The Forge stores one row per commit (`forge_typecheck_reports`, migration 0035), audits `forge.typecheck_reported`, and folds the result into its check of that commit: the `typecheck` step, and a failure fails the check. Until a report arrives the step reads `pending`.
+  - **Setup (owner, dashboard).** Connect the Artifacts repository `cryptophys/platform` to a Worker `cryptophys-forge-typecheck`, root `workers/forge-typecheck`, with `FORGE_URL` and the existing CI service token as build secrets. `workers/forge-typecheck/README.md` has the steps. Preview builds on other branches give phase 4 its branch checks.
+  - **Consequence.** The type-check leaves GitHub without a Container. The stub deploy is the one deploy that is not governed by consensus; it is not a production service and is not in the registry.
 - **Next.**
+  - The owner connects the Builds project; the first report proves the loop. Then the Console build on Workers Builds the same way.
   - Phase 4: the merge gate requires `typecheck: passed` as well as `status` and `guard_status`.
   - Use the Forge bundles for deploys, then the Console build (Vite/React).
   - Run checks for branches and proposals (phase 4).

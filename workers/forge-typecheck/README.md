@@ -1,0 +1,37 @@
+# Forge type-check on Workers Builds (ADR-0012 §5c)
+
+The TypeScript compiler needs about 190 MB for this repository; a Workers isolate has 128 MB. The
+owner decided on 2026-11-08 that the type-check runs on **Workers Builds** from the Artifacts
+repository `cryptophys/platform`. No GitHub, no Container.
+
+## How it works
+
+1. Every push to the Artifacts repository (the mirror of `main`, and later every branch) starts a
+   build of this project, with this directory as its root.
+2. The **build command** `node typecheck-and-report.mjs` installs the locked toolchain in
+   `../control-plane-shared` (`npm ci --ignore-scripts`), runs `npm run typecheck`
+   (`tsc --noEmit -p ../control-plane-tsconfig.json`), and reports the result for the commit to the
+   Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics are text only
+   (file, line, code, message); no file content and no secret is sent.
+3. The Forge records the report (`forge_typecheck_reports`, migration 0035) and folds it into its
+   check of the same commit as the `typecheck` step. A type error fails that check. Until the report
+   arrives the step reads `pending`.
+4. The **deploy command** `npx wrangler deploy` deploys this stub Worker. It has no route, no
+   `workers.dev` URL and no bindings; it exists because Workers Builds deploys a Worker.
+
+## One-time setup (owner, Cloudflare dashboard)
+
+1. **Workers & Pages → Create application → Continue with Artifacts.** Namespace `cryptophys`,
+   repository `platform`.
+2. Project name `cryptophys-forge-typecheck` (it must match `name` in `wrangler.toml`).
+3. **Advanced settings → Root directory:** `workers/forge-typecheck`.
+4. **Build command:** `node typecheck-and-report.mjs`. **Deploy command:** `npx wrangler deploy`.
+5. **Build variables and secrets:**
+   - `FORGE_URL` = the Forge's URL (`https://cryptophys-forge.<subdomain>.workers.dev`), plain;
+   - `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` = the existing CI service token, both as
+     **secrets** (the same values the GitHub `production` environment holds; no new credential).
+6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
+7. Optional, for phase 4: **Settings → Build → Branch control → Enable Preview Builds**, Preview
+   command `node typecheck-and-report.mjs` (the report carries the branch).
+
+The Console Code page then shows `types ok` / `N type errors` / `types pending` per commit.

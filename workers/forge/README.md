@@ -26,11 +26,10 @@ It needs no GitHub at any step.
 3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 8 files per Worker, with no network access.
 4. **Bundles.** Every Worker in the commit is bundled, as CI's dry run does. The Worker's `[[rules]]` apply, and `.wasm` and `node_modules` imports stay external.
 5. **Secret scan.** Well-known credential formats are scanned for. A finding records the rule, path and line, never the text.
-6. **Type-check.** `tsc --noEmit -p workers/control-plane-tsconfig.json` runs in a Cloudflare Container (`typecheck/`, `src/typecheck.ts`), because the compiler needs about 190 MB and an isolate has 128 MB. The owner allowed this one Container on 2026-11-08.
-   - The Durable Object `TypecheckContainer` starts it with internet disabled, sends the files under `workers/` and stops it after the check.
-   - The compiler must be the version the lockfile pins, or the step is an `error`.
-   - A type error fails the check.
+6. **Type-check.** `tsc --noEmit -p workers/control-plane-tsconfig.json` runs on Workers Builds from the Artifacts repository (`../forge-typecheck`), because the compiler needs about 190 MB and an isolate has 128 MB (owner, 2026-11-08). The build reports to `POST /v1/forge/typecheck-report` (`src/typecheck.ts`, migration 0035).
+   - The check of the same commit takes the report as its `typecheck` step; until it arrives the step is `pending`.
+   - A type error fails the check, also when the report arrives after the check ran.
 7. **Record.** The result goes to D1 `forge_check_runs` (with `steps` and `guard_status`) and the audit chain.
 
 - **Shim imports.** `src/runner/assets.js` holds the wasm toolchain. Only `src/worker.ts` imports it, so the Node tests never load it. Wrangler imports the shims as Text (`[[rules]]`). The globs match the import specifiers as written there, so keep those import paths.
-- **Local run.** `node tools/forge-runner/run.mjs` runs the same checks code in local workerd. There the type-check step reads `not_configured`. `.github/scripts/typecheck-container-smoke.sh` builds the Container image and runs the type-check in it (Docker).
+- **Local run.** `node tools/forge-runner/run.mjs` runs the same checks code in local workerd. There the type-check step reads `not_configured`.

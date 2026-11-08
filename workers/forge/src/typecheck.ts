@@ -1,103 +1,103 @@
-// ADR-0012 §5c: the type-check. The compiler needs about 190 MB for this repository and a Workers
-// isolate has 128 MB, so it runs in a Cloudflare Container (owner decision 2026-11-08: Containers
-// for the type-check only). The Container (../typecheck) has no internet; the Forge sends it the
-// commit's files under workers/ and it runs `tsc --noEmit -p workers/control-plane-tsconfig.json`
-// with the compiler versions locked in workers/control-plane-shared/package-lock.json.
-import type { Snapshot } from "./runner/core.ts";
+// ADR-0012 §5c: the type-check. The compiler needs ~190 MB for this repository and a Workers isolate
+// has 128 MB, so it cannot run in the Forge itself. Owner decision 2026-11-08 (after a Container was
+// tried and withdrawn the same day): it runs on **Workers Builds**, Cloudflare's build service,
+// straight from the Artifacts repository (workers/forge-typecheck). Each build runs
+// `tsc --noEmit -p workers/control-plane-tsconfig.json` and reports to POST /v1/forge/typecheck-report
+// with the CI service token. The Forge check of the same commit takes that report as its typecheck step.
+import type { D1Database } from "../../control-plane-shared/src/types.ts";
+import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 
-export const TYPECHECK_CONFIG = "workers/control-plane-tsconfig.json";
-/** The tsconfig's typeRoots parent: the Container links its locked packages here. */
-export const TYPECHECK_MODULES = "workers/control-plane-shared/node_modules";
-export const TYPECHECK_LOCKFILE = "workers/control-plane-shared/package-lock.json";
-export const TYPECHECK_PORT = 8080;
-const TOOLCHAIN_PACKAGES = ["typescript", "@types/node"] as const;
+const HEX40 = /^[0-9a-f]{40}$/;
 const MAX_DIAGNOSTICS_STORED = 50;
-const START_ATTEMPTS = 120;
-const START_WAIT_MS = 500;
+const MAX_DIAGNOSTIC_CHARS = 600;
+const TOOLCHAIN_PACKAGES = ["typescript", "@types/node"] as const;
 
 export type Toolchain = Record<(typeof TOOLCHAIN_PACKAGES)[number], string>;
 export interface TypecheckStep {
-  status: "passed" | "failed" | "error" | "not_configured";
-  files?: number; errors?: number; diagnostics?: string[]; ms?: number;
-  toolchain?: Toolchain; locked?: Toolchain; reason?: string;
+  /** `pending`: no build has reported this commit yet (the build runs after the mirror push). */
+  status: "passed" | "failed" | "pending" | "not_configured";
+  errors?: number; files?: number; diagnostics?: string[]; build_id?: string; toolchain?: Toolchain; reported_at?: string;
 }
-/** Sends one type-check request to the Container (worker.ts) or a stand-in (tests). */
-export type TypecheckCall = (body: { files: Snapshot; config: string; modules: string }) => Promise<Response>;
+export type TypecheckLookup = (commit: string) => Promise<TypecheckStep>;
 
-/** The compiler versions the commit's lockfile pins, the ones GitHub CI's `npm ci` installs. */
-export function lockedToolchain(snapshot: Snapshot): Toolchain | null {
-  try {
-    const lock = JSON.parse(snapshot[TYPECHECK_LOCKFILE] ?? "null") as { packages?: Record<string, { version?: string }> } | null;
-    const out: Partial<Toolchain> = {};
-    for (const name of TOOLCHAIN_PACKAGES) {
-      const v = lock?.packages?.[`node_modules/${name}`]?.version;
-      if (typeof v !== "string" || !v) return null;
-      out[name] = v;
-    }
-    return out as Toolchain;
-  } catch { return null; }
+export interface TypecheckReportRow {
+  commit_sha: string; conclusion: "success" | "failure"; build_id: string; branch: string | null; files: number | null;
+  errors: number; diagnostics: string | null; toolchain: string | null; reported_at: string;
 }
 
-/** The files the compiler may read: everything of the commit under workers/. */
-export function typecheckFiles(snapshot: Snapshot): Snapshot {
-  return Object.fromEntries(Object.entries(snapshot).filter(([p]) => p.startsWith("workers/")));
+function stepFromRow(row: TypecheckReportRow | null | undefined): TypecheckStep {
+  if (!row) return { status: "pending" };
+  let diagnostics: string[] = [];
+  let toolchain: Toolchain | undefined;
+  try { const d = JSON.parse(row.diagnostics ?? "[]"); if (Array.isArray(d)) diagnostics = d.map(String); } catch { /* stored by recordTypecheckReport */ }
+  try { const t = JSON.parse(row.toolchain ?? "null"); if (t && typeof t === "object") toolchain = t as Toolchain; } catch { /* same */ }
+  return {
+    status: row.conclusion === "success" ? "passed" : "failed", errors: row.errors, files: row.files ?? undefined,
+    diagnostics, build_id: row.build_id, toolchain, reported_at: row.reported_at,
+  };
 }
 
-/**
- * Type-check one commit. A type error is a result ("failed"). A Container that cannot answer, or a
- * compiler that is not the locked one, is "error": recorded, never counted as a pass.
- */
-export async function runTypecheck(call: TypecheckCall | undefined, snapshot: Snapshot): Promise<TypecheckStep> {
-  if (!call) return { status: "not_configured" };
-  const locked = lockedToolchain(snapshot);
-  if (!locked) return { status: "error", reason: "lockfile_missing" };
-  if (!snapshot[TYPECHECK_CONFIG]) return { status: "error", reason: "tsconfig_missing" };
-  try {
-    const res = await call({ files: typecheckFiles(snapshot), config: TYPECHECK_CONFIG, modules: TYPECHECK_MODULES });
-    const body = await res.json().catch(() => null) as { toolchain?: Toolchain; files?: number; errors?: number; diagnostics?: string[]; ms?: number; error?: string } | null;
-    if (!res.ok || !body) return { status: "error", reason: `container_${res.status}${body?.error ? `: ${String(body.error).slice(0, 200)}` : ""}`, locked };
-    const toolchain = body.toolchain;
-    if (!toolchain || TOOLCHAIN_PACKAGES.some((n) => toolchain[n] !== locked[n])) return { status: "error", reason: "toolchain_mismatch", toolchain, locked };
-    const errors = Number(body.errors);
-    if (!Number.isInteger(errors) || errors < 0) return { status: "error", reason: "invalid_response", locked };
-    return {
-      status: errors === 0 ? "passed" : "failed", files: Number(body.files) || 0, errors,
-      diagnostics: (Array.isArray(body.diagnostics) ? body.diagnostics : []).slice(0, MAX_DIAGNOSTICS_STORED).map((d) => String(d).slice(0, 600)),
-      ms: Number(body.ms) || 0, toolchain, locked,
-    };
-  } catch (e) {
-    return { status: "error", reason: String((e as Error)?.message ?? e).slice(0, 200), locked };
-  }
+/** The typecheck step of a commit: its Workers Builds report, or `pending` until one arrives. */
+export async function typecheckStep(db: D1Database, commit: string): Promise<TypecheckStep> {
+  const row = await db.prepare("SELECT * FROM forge_typecheck_reports WHERE commit_sha = ?").bind(commit).first<TypecheckReportRow>();
+  return stepFromRow(row);
 }
 
-/** The part of `ctx.container` the type-check uses (Containers runtime API). */
-export interface ContainerApi {
-  running: boolean;
-  start(opts?: { enableInternet?: boolean }): void;
-  getTcpPort(port: number): { fetch(input: string, init?: RequestInit): Promise<Response> };
-  destroy(reason?: unknown): Promise<void>;
+export interface TypecheckReportInput {
+  commit?: unknown; conclusion?: unknown; build_id?: unknown; branch?: unknown; files?: unknown; errors?: unknown; diagnostics?: unknown; toolchain?: unknown;
 }
+
+function bad(code: string): Error & { status: number } { return Object.assign(new Error(code), { status: 400 }); }
 
 /**
- * Behind the Durable Object (typecheck-container.ts): start the Container without internet, wait for
- * it, forward one check, and stop it, so an instance only runs for the length of a check.
+ * Record a Workers Builds type-check result (CI service token only). Validates every field, stores
+ * at most 50 diagnostics of 600 characters, audits, and — when the Forge check of that commit has
+ * already been recorded — folds the result into that run: its typecheck step, and a failure fails it.
  */
-export async function forwardTypecheck(container: ContainerApi | undefined, request: Request, wait = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<Response> {
-  if (!container) return Response.json({ error: "container_unavailable" }, { status: 503 });
-  if (request.method !== "POST" || new URL(request.url).pathname !== "/typecheck") return Response.json({ error: "not_found" }, { status: 404 });
-  const body = await request.text();
-  if (!container.running) container.start({ enableInternet: false });
-  try {
-    const port = container.getTcpPort(TYPECHECK_PORT);
-    let up = false;
-    for (let i = 0; i < START_ATTEMPTS && !up; i++) {
-      try { up = (await port.fetch("http://container/health")).ok; } catch { /* not listening yet */ }
-      if (!up) await wait(START_WAIT_MS);
-    }
-    if (!up) return Response.json({ error: "container_not_ready" }, { status: 503 });
-    const res = await port.fetch("http://container/typecheck", { method: "POST", headers: { "content-type": "application/json" }, body });
-    return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
-  } finally {
-    await container.destroy().catch(() => undefined);
+export async function recordTypecheckReport(db: D1Database, input: TypecheckReportInput, actor: string, nowMs = Date.now()): Promise<{ commit: string; conclusion: string; applied_to_run: boolean }> {
+  const commit = typeof input.commit === "string" ? input.commit : "";
+  if (!HEX40.test(commit)) throw bad("invalid_commit");
+  const conclusion = input.conclusion;
+  if (conclusion !== "success" && conclusion !== "failure") throw bad("invalid_conclusion");
+  const buildId = typeof input.build_id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(input.build_id) ? input.build_id : "";
+  if (!buildId) throw bad("invalid_build_id");
+  const branch = typeof input.branch === "string" && input.branch.length <= 200 ? input.branch : null;
+  const errors = Number(input.errors ?? 0);
+  if (!Number.isInteger(errors) || errors < 0 || errors > 1_000_000) throw bad("invalid_errors");
+  if (conclusion === "success" && errors !== 0) throw bad("success_with_errors");
+  if (conclusion === "failure" && errors === 0) throw bad("failure_without_errors");
+  const files = input.files === undefined ? null : Number(input.files);
+  if (files !== null && (!Number.isInteger(files) || files < 0)) throw bad("invalid_files");
+  const diagnostics = Array.isArray(input.diagnostics) ? input.diagnostics.slice(0, MAX_DIAGNOSTICS_STORED).map((d) => String(d).slice(0, MAX_DIAGNOSTIC_CHARS)) : [];
+  let toolchain: Toolchain | null = null;
+  if (input.toolchain !== undefined) {
+    const t = input.toolchain as Record<string, unknown> | null;
+    if (!t || typeof t !== "object" || TOOLCHAIN_PACKAGES.some((n) => typeof t[n] !== "string" || !/^\d+\.\d+\.\d+$/.test(t[n] as string))) throw bad("invalid_toolchain");
+    toolchain = { typescript: t.typescript as string, "@types/node": t["@types/node"] as string };
   }
+  const reportedAt = new Date(nowMs).toISOString();
+  await db.prepare(
+    `INSERT INTO forge_typecheck_reports (commit_sha, conclusion, build_id, branch, files, errors, diagnostics, toolchain, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(commit_sha) DO UPDATE SET conclusion = excluded.conclusion, build_id = excluded.build_id, branch = excluded.branch, files = excluded.files,
+       errors = excluded.errors, diagnostics = excluded.diagnostics, toolchain = excluded.toolchain, reported_at = excluded.reported_at`,
+  ).bind(commit, conclusion, buildId, branch, files, errors, JSON.stringify(diagnostics), toolchain ? JSON.stringify(toolchain) : null, reportedAt).run();
+  const applied = await applyToRun(db, commit, stepFromRow({ commit_sha: commit, conclusion, build_id: buildId, branch, files, errors, diagnostics: JSON.stringify(diagnostics), toolchain: toolchain ? JSON.stringify(toolchain) : null, reported_at: reportedAt }));
+  await appendAuditEvent(db, { event_type: "forge.typecheck_reported", actor, subject: commit, outcome: conclusion, payload: { build_id: buildId, errors, files, applied_to_run: applied } });
+  return { commit, conclusion, applied_to_run: applied };
+}
+
+/** Fold a report into an already recorded Forge check: set steps.typecheck; a failure fails the run. */
+async function applyToRun(db: D1Database, commit: string, step: TypecheckStep): Promise<boolean> {
+  const run = await db.prepare("SELECT status, steps, failures FROM forge_check_runs WHERE commit_sha = ?").bind(commit).first<{ status: string; steps: string | null; failures: string | null }>();
+  if (!run || run.status === "running") return false;
+  let steps: Record<string, unknown> = {};
+  let failures: string[] = [];
+  try { steps = JSON.parse(run.steps ?? "{}") ?? {}; } catch { steps = {}; }
+  try { const f = JSON.parse(run.failures ?? "[]"); if (Array.isArray(f)) failures = f.map(String); } catch { failures = []; }
+  failures = failures.filter((f) => !f.startsWith("typecheck "));
+  if (step.status === "failed") failures.push(...(step.diagnostics ?? []).map((d) => `typecheck ${d}`));
+  const status = step.status === "failed" ? "failed" : run.status;
+  await db.prepare("UPDATE forge_check_runs SET steps = ?, failures = ?, status = ? WHERE commit_sha = ?")
+    .bind(JSON.stringify({ ...steps, typecheck: step }), JSON.stringify(failures.slice(0, 50)), status, commit).run();
+  return true;
 }
