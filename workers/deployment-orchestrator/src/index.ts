@@ -440,6 +440,8 @@ async function dispatchRollback(env: Env, actor: string, serviceId: string, tag:
 }
 
 const NATIVE_ROLLBACK_MAX_AGE_MS = 3 * 3_600_000;
+/** A claimed executor that has not completed after this window is terminally failed, never replayed. */
+export const NATIVE_ROLLBACK_EXECUTION_LEASE_MS = 30 * 60_000;
 
 type NativeRollbackSignedRow = {
   request_id: string;
@@ -479,30 +481,57 @@ async function verifyNativeRollbackRequest(secret: string, row: NativeRollbackSi
   return crypto.subtle.verify("HMAC", key, bytes, new TextEncoder().encode(nativeRollbackPayload(row, details)));
 }
 
-/**
- * Claim execution outside shared D1. The HMAC authenticates the immutable request, but a
- * D1 writer could restore an old signed row to status='approved'. A second claim in the same
- * idempotency-key Durable Object makes each signed request executable at most once without
- * creating a second Durable Object for the rollback intent.
- */
-async function claimNativeRollbackExecution(env: Env, requestId: string, idempotencyKey: string): Promise<boolean> {
+type NativeRollbackClaimState = { claimed: boolean; claimedAt: number | null };
+
+async function nativeRollbackExecutionSha(requestId: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + requestId),
   );
-  const sha = Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function presentNativeRollbackClaim(result: { claimed?: unknown; claimed_at?: unknown }, claimResponse: boolean): NativeRollbackClaimState {
+  const claimedAt = typeof result.claimed_at === "string" ? Date.parse(result.claimed_at) : Number.NaN;
+  return {
+    claimed: claimResponse && result.claimed === true,
+    claimedAt: Number.isFinite(claimedAt) ? claimedAt : null,
+  };
+}
+
+/** Read the one-time claim without consuming it; used to distinguish an active executor from an abandoned one. */
+async function readNativeRollbackExecutionClaim(env: Env, requestId: string, idempotencyKey: string): Promise<NativeRollbackClaimState> {
+  const sha = await nativeRollbackExecutionSha(requestId);
+  const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(idempotencyKey))
+    .fetch("https://lock.internal/status", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sha }),
+    });
+  if (!response.ok) throw new Error("native_rollback_claim_status_http_" + response.status);
+  const result = await response.json() as { claimed?: unknown; claimed_at?: unknown };
+  return presentNativeRollbackClaim(result, true);
+}
+
+/**
+ * Claim execution outside shared D1. The HMAC authenticates the immutable request; this
+ * request-scoped Durable Object claim prevents a restored signed D1 row from executing twice.
+ */
+async function claimNativeRollbackExecution(env: Env, requestId: string, idempotencyKey: string): Promise<NativeRollbackClaimState> {
+  const sha = await nativeRollbackExecutionSha(requestId);
   const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(idempotencyKey))
     .fetch("https://lock.internal/claim", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sha }),
     });
-  const result = await response.json() as { claimed?: boolean };
-  return response.ok && result.claimed === true;
+  const result = await response.json() as { claimed?: unknown; claimed_at?: unknown };
+  if (!response.ok && response.status !== 409) throw new Error("native_rollback_claim_http_" + response.status);
+  return presentNativeRollbackClaim(result, response.ok);
 }
 
 async function failNativeRollbackRequest(env: Env, row: NativeRollbackSignedRow, details: Record<string, unknown>, reason: string, now: number): Promise<void> {
-  await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'approved'")
+  await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status IN ('approved', 'running')")
     .bind(JSON.stringify({ ...details, outcome: { reason } }), new Date(now).toISOString(), row.request_id).run();
   await auditQuietly(env, {
     event_type: "deployment.rollback_failed", actor: "agent:deployment-orchestrator", subject: row.service_id, outcome: "failed",
@@ -547,12 +576,39 @@ async function queueNativeRollback(env: Env, actor: string, serviceId: string, t
  */
 export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: typeof fetch = fetch, opts: { delayMs?: number } = {}): Promise<{ executed: number; succeeded: number }> {
   if (!env.DB || !SAFE_MINUTES.includes(new Date(now).getUTCMinutes())) return { executed: 0, succeeded: 0 };
-  const rows = await env.DB.prepare(
-    "SELECT request_id, service_id, requested_version, requested_by, approval_id, idempotency_key, details_json, created_at FROM deployment_requests WHERE status = 'approved' AND details_json LIKE ? ORDER BY created_at LIMIT 3",
-  ).bind('%"executor":"' + NATIVE_EXECUTOR + '"%').all<NativeRollbackSignedRow & { details_json: string }>();
+  const pattern = '%"executor":"' + NATIVE_EXECUTOR + '"%';
+  const recoveryCutoff = new Date(now - NATIVE_ROLLBACK_EXECUTION_LEASE_MS).toISOString();
+  const [approvedRows, abandonedRows] = await Promise.all([
+    env.DB.prepare(
+      "SELECT request_id, service_id, requested_version, requested_by, approval_id, idempotency_key, details_json, created_at, updated_at, status FROM deployment_requests WHERE status = 'approved' AND details_json LIKE ? ORDER BY created_at LIMIT 3",
+    ).bind(pattern).all<NativeRollbackSignedRow & { details_json: string; updated_at: string; status: "approved" }>(),
+    env.DB.prepare(
+      "SELECT request_id, service_id, requested_version, requested_by, approval_id, idempotency_key, details_json, created_at, updated_at, status FROM deployment_requests WHERE status = 'running' AND COALESCE(updated_at, created_at) <= ? AND details_json LIKE ? ORDER BY COALESCE(updated_at, created_at) LIMIT 3",
+    ).bind(recoveryCutoff, pattern).all<NativeRollbackSignedRow & { details_json: string; updated_at: string; status: "running" }>(),
+  ]);
+  const rows = [...approvedRows.results, ...abandonedRows.results]
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+    .slice(0, 3);
   let executed = 0;
   let succeeded = 0;
-  for (const r of rows.results) {
+  for (const r of rows) {
+    // A running row is considered only after the execution lease. A recent durable claim means
+    // another invocation is still within its execution window; do not interfere with it.
+    if (r.status === "running") {
+      let prior: NativeRollbackClaimState;
+      try {
+        prior = await readNativeRollbackExecutionClaim(env, r.request_id, r.idempotency_key);
+      } catch {
+        await failNativeRollbackRequest(env, r, {}, "native_rollback_claim_state_unavailable", now);
+        continue;
+      }
+      if (prior.claimed) {
+        if (prior.claimedAt !== null && now - prior.claimedAt <= NATIVE_ROLLBACK_EXECUTION_LEASE_MS) continue;
+        await failNativeRollbackRequest(env, r, {}, "native_rollback_execution_claim_expired", now);
+        continue;
+      }
+    }
+
     let details: Record<string, unknown>;
     try { details = JSON.parse(r.details_json || "{}"); } catch {
       await failNativeRollbackRequest(env, r, {}, "invalid_queue_details", now);
@@ -601,13 +657,32 @@ export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: ty
       continue;
     }
     if (!nativeRollbackConfigured(env)) continue;
-    // HMAC alone is not a one-time token: a shared-D1 writer could restore the original signed
-    // details and reset status to approved. Claim a request-scoped DO key before the D1 transition.
-    if (!(await claimNativeRollbackExecution(env, r.request_id, r.idempotency_key))) continue;
 
-    const claim = await env.DB.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ? AND status = 'approved'")
-      .bind(new Date(now).toISOString(), r.request_id).run();
-    if ((claim.meta.changes ?? 0) !== 1) continue;
+    // Persist approved -> running before consuming the one-time DO claim. If D1 fails, no claim
+    // is burned and the next scheduled pass can retry. If the response is ambiguous after a
+    // successful write, the running-row recovery path checks the DO state before proceeding.
+    if (r.status === "approved") {
+      const transition = await env.DB.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ? AND status = 'approved'")
+        .bind(new Date(now).toISOString(), r.request_id).run();
+      if ((transition.meta.changes ?? 0) !== 1) continue;
+    }
+
+    let claimState: NativeRollbackClaimState;
+    try {
+      claimState = await claimNativeRollbackExecution(env, r.request_id, r.idempotency_key);
+    } catch {
+      await failNativeRollbackRequest(env, r, details, "native_rollback_execution_claim_unavailable", now);
+      continue;
+    }
+    if (!claimState.claimed) {
+      if (claimState.claimedAt === null) {
+        await failNativeRollbackRequest(env, r, details, "native_rollback_execution_claim_state_unknown", now);
+      } else if (now - claimState.claimedAt > NATIVE_ROLLBACK_EXECUTION_LEASE_MS) {
+        await failNativeRollbackRequest(env, r, details, "native_rollback_execution_claim_expired", now);
+      }
+      continue;
+    }
+
     executed++;
     const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
     const run = await executeRollback(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY! }, r.request_id, r.service_id, r.requested_version, opts);
@@ -949,7 +1024,8 @@ export class DeploymentLock {
   }
 
   async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST" || new URL(request.url).pathname !== "/claim") {
+    const path = new URL(request.url).pathname;
+    if (request.method !== "POST" || (path !== "/claim" && path !== "/status")) {
       return json({ error: "not_found" }, 404);
     }
     let body: { sha?: unknown };
@@ -963,9 +1039,14 @@ export class DeploymentLock {
 
     return this.state.blockConcurrencyWhile(async () => {
       const key = "claimed:" + sha;
-      if (await this.state.storage.get(key)) return json({ claimed: false }, 409);
-      await this.state.storage.put(key, { sha, claimed_at: new Date().toISOString() });
-      return json({ claimed: true }, 201);
+      const existing = await this.state.storage.get(key) as { claimed_at?: unknown } | undefined;
+      if (path === "/status") {
+        return json({ claimed: !!existing, claimed_at: typeof existing?.claimed_at === "string" ? existing.claimed_at : null });
+      }
+      if (existing) return json({ claimed: false, claimed_at: typeof existing.claimed_at === "string" ? existing.claimed_at : null }, 409);
+      const claimedAt = new Date().toISOString();
+      await this.state.storage.put(key, { sha, claimed_at: claimedAt });
+      return json({ claimed: true, claimed_at: claimedAt }, 201);
     });
   }
 }
