@@ -163,5 +163,9 @@ test("O5. wiring: kernel schedule, kernel route, Console route and panel", () =>
   assert.match(command, /call\("kernel\.notices"\)/);
   assert.match(command, /Email enabled/);
   assert.doesNotMatch(command, /emailed to the owner/, "configuration is not proof of delivery");
-  assert.doesNotMatch(readFileSync(new URL("workers/ai-kernel/wrangler.toml", ROOT), "utf8"), /send_email/, "the email binding is added only after the owner onboards the sending domain");
+  const toml = readFileSync(new URL("workers/ai-kernel/wrangler.toml", ROOT), "utf8");
+  assert.match(toml, /\[\[send_email\]\]\nname = "OWNER_EMAIL"\n/, "owner notices are emailed through the send_email binding");
+  assert.match(toml, /^NOTIFY_FROM = "alerts@notify\.cryptophys\.work"$/m, "the sender is on the onboarded subdomain");
+  assert.ok(toml.includes('allowed_destination_addresses = ["owner-notify-placeholder@example.invalid"]'), "source config fails closed; deploy rendering injects protected approver identities");
+  assert.ok(toml.includes('allowed_sender_addresses = ["alerts@notify.cryptophys.work"]'), "binding restricts the sender as well as recipients");
 });

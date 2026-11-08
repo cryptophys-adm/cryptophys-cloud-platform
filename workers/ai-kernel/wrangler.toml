@@ -29,6 +29,8 @@ AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 AI_DAILY_REQUEST_LIMIT = "80"
 # 250 keeps the worst case (6k-char input, 600 output tokens, ~34 neurons) under the free 10k neurons/day (2026-11-07).
 AI_ACCOUNT_DAILY_REQUEST_LIMIT = "250"
+# ADR-0012 phase 2: sender of owner notices (Email Service, sending subdomain notify.cryptophys.work).
+NOTIFY_FROM = "alerts@notify.cryptophys.work"
 
 [[d1_databases]]
 binding = "DB"
@@ -136,3 +138,12 @@ new_sqlite_classes = ["AuditorAgent"]
 
 # No shared secrets: /v1 and /mcp are authorized by the verified Cloudflare Access identity.
 # The deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.
+
+# ADR-0012 phase 2: owner notices by email (Cloudflare Email Service). Recipients are only the
+# people in APPROVER_IDENTITIES (owner-notices.ts); the sender must be on the onboarded domain.
+[[send_email]]
+name = "OWNER_EMAIL"
+# The deploy renderer replaces this reserved .invalid destination from the protected Environment's APPROVER_IDENTITIES.
+# Owner addresses are not committed; the source config is fail-closed if rendered deployment config is not used.
+allowed_destination_addresses = ["owner-notify-placeholder@example.invalid"]
+allowed_sender_addresses = ["alerts@notify.cryptophys.work"]
