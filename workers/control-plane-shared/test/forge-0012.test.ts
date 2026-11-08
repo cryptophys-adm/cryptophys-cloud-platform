@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_JWT, CI_JWT, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
-import forge, { MIRROR_TOKEN_TTL_S, REPO, SOURCE_URL } from "../../forge/src/index.ts";
+import forge, { MIRROR_TOKEN_TTL_S, REPO, SOURCE_URL, presentCommit } from "../../forge/src/index.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const SHA = "a".repeat(40);
@@ -17,7 +17,16 @@ function fakeArtifacts(opts: { exists?: boolean; status?: "ready" | "importing" 
   const repo = {
     info: async () => ({ name: REPO, remote, defaultBranch: "main", lastPushAt: "2026-11-08T05:00:00Z" }),
     createToken: async (scope: string, ttl: number) => { calls.tokens.push({ scope, ttl }); return { plaintext: "art_v1_secret", expiresAt: "2026-11-08T05:10:00Z" }; },
-    log: async (o: any) => Array.from({ length: Math.min(o?.limit ?? 50, 3) }, (_, i) => ({ sha: i === 0 ? SHA : String(i).repeat(40), message: "commit " + i + "\nbody", author: { name: "Claude", date: "2026-11-08T04:00:00Z" } })),
+    log: async (o: any) => Array.from({ length: Math.min(o?.limit ?? 50, 3) }, (_, i) => ({
+      hash: i === 0 ? SHA : String(i).repeat(40),
+      treeHash: "f".repeat(40),
+      message: "commit " + i + "\nbody",
+      author: { name: "Claude", email: "claude@example.invalid" },
+      committer: { name: "Claude", email: "claude@example.invalid" },
+      parents: [],
+      authoredAt: Date.parse("2026-11-08T04:00:00Z") / 1000,
+      committedAt: Date.parse("2026-11-08T04:00:00Z") / 1000,
+    })),
     [Symbol.dispose]: () => { calls.disposals++; },
   };
   return {
@@ -78,7 +87,7 @@ test("F3. status and commits read main, dispose repo handles; viewers and operat
   const e = env(migratedDb(), a.binding);
   const s = await call(forge, e, req("GET", "/v1/forge/status", undefined, OPERATOR_JWT));
   assert.equal(s.status, 200);
-  assert.deepEqual(s.body.head, { sha: SHA, title: "commit 0", author: "Claude", date: "2026-11-08T04:00:00Z" });
+  assert.deepEqual(s.body.head, { sha: SHA, title: "commit 0", author: "Claude", date: "2026-11-08T04:00:00.000Z" });
   assert.equal(s.body.repo.default_branch, "main");
   const c = await call(forge, e, req("GET", "/v1/forge/commits?limit=2", undefined, OPERATOR_JWT));
   assert.equal(c.body.commits.length, 2);
@@ -128,4 +137,8 @@ test("F5. wiring: binding, Access destination, deploy and mirror workflows, ops-
   const ops = readFileSync(new URL(".github/workflows/ops-dispatch.yml", ROOT), "utf8");
   assert.match(ops, /\|deploy-forge\.yml\) ref=main ;;/);
   assert.match(ops, /mirror-to-forge\.yml\) ref=main ;;/);
+});
+
+test("F7. Artifacts commit metadata without a 40-character hash fails closed", () => {
+  assert.throws(() => presentCommit({ message: "missing hash", author: { name: "unknown" } }), /artifacts_commit_hash_invalid/);
 });

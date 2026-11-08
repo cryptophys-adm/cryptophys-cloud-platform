@@ -19,7 +19,20 @@ export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 
-export interface ArtifactsCommit { id?: string; sha?: string; message?: string; author?: { name?: string; email?: string; date?: string } | string; timestamp?: string; date?: string }
+export interface ArtifactsCommit {
+  hash?: string;
+  treeHash?: string;
+  id?: string;
+  sha?: string;
+  message?: string;
+  author?: { name?: string; email?: string; date?: string } | string;
+  committer?: { name?: string; email?: string; date?: string } | string;
+  parents?: string[];
+  authoredAt?: number;
+  committedAt?: number;
+  timestamp?: string;
+  date?: string;
+}
 export interface ArtifactsRepo {
   info(): Promise<{ name: string; remote: string; defaultBranch?: string; default_branch?: string; lastPushAt?: string | null; last_push_at?: string | null } | null>;
   createToken(scope?: "read" | "write", ttl?: number): Promise<{ plaintext: string; expiresAt: string | number }>;
@@ -45,11 +58,17 @@ export interface Env {
   ARTIFACTS?: ArtifactsBinding;
 }
 
-const sha = (c: ArtifactsCommit) => String(c.sha ?? c.id ?? "");
-const when = (c: ArtifactsCommit) => String(typeof c.author === "object" ? c.author?.date ?? c.timestamp ?? c.date ?? "" : c.timestamp ?? c.date ?? "");
+const sha = (c: ArtifactsCommit) => String(c.hash ?? c.sha ?? c.id ?? "");
+const when = (c: ArtifactsCommit) => {
+  const unixSeconds = c.authoredAt ?? c.committedAt;
+  if (typeof unixSeconds === "number" && Number.isFinite(unixSeconds)) return new Date(unixSeconds * 1000).toISOString();
+  return String(typeof c.author === "object" ? c.author?.date ?? c.timestamp ?? c.date ?? "" : c.timestamp ?? c.date ?? "");
+};
 const who = (c: ArtifactsCommit) => String(typeof c.author === "object" ? c.author?.name ?? "" : c.author ?? "");
 export function presentCommit(c: ArtifactsCommit) {
-  return { sha: sha(c), title: String(c.message ?? "").split("\n")[0].slice(0, 200), author: who(c).slice(0, 100), date: when(c) };
+  const commitSha = sha(c);
+  if (!/^[0-9a-f]{40}$/.test(commitSha)) throw new Error("artifacts_commit_hash_invalid");
+  return { sha: commitSha, title: String(c.message ?? "").split("\n")[0].slice(0, 200), author: who(c).slice(0, 100), date: when(c) };
 }
 
 type RepoState = "missing" | "ready" | "importing" | "forking";
