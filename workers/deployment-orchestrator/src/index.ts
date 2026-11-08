@@ -569,7 +569,11 @@ export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: ty
     if (!env.CF_DEPLOY_TOKEN) continue;
     const unsignedDetails = { ...details };
     delete unsignedDetails.signature;
-    const signatureValid = await verifyNativeRollbackRequest(env.CF_DEPLOY_TOKEN, r, unsignedDetails, details.signature);
+    const signedRow: NativeRollbackSignedRow = {
+      request_id: r.request_id, service_id: r.service_id, requested_version: r.requested_version,
+      requested_by: r.requested_by, approval_id: r.approval_id, idempotency_key: r.idempotency_key, created_at: r.created_at,
+    };
+    const signatureValid = await verifyNativeRollbackRequest(env.CF_DEPLOY_TOKEN, signedRow, unsignedDetails, details.signature);
     if (!signatureValid) {
       await failNativeRollbackRequest(env, r, details, "invalid_native_rollback_signature", now);
       continue;
