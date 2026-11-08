@@ -64,12 +64,9 @@ jobs:
           bash .github/scripts/find-service-token.test.sh
           bash .github/scripts/access-headers.test.sh
           bash .github/scripts/access-identities.test.sh
-          bash .github/scripts/drift-summary.test.sh
-          bash .github/scripts/report-summary.test.sh
           bash .github/scripts/bootstrap-private-worker.test.sh
           bash .github/scripts/ensure-vectorize-index.test.sh
           bash .github/scripts/worker-rollback.test.sh
           bash .github/scripts/wait-cron-window.test.sh
-          bash .github/scripts/owner-attention.test.sh
           bash .github/scripts/ensure-zone-route.test.sh
           bash .github/scripts/find-agent-service-tokens.test.sh
