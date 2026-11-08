@@ -26,6 +26,7 @@
     "ai-kernel/src/**/*.ts",
     "console/src/**/*.ts",
     "home/src/**/*.ts",
-    "forge/src/**/*.ts"
+    "forge/src/**/*.ts",
+    "forge-typecheck/src/**/*.ts"
   ]
 }

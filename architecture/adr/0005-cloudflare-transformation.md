@@ -13,7 +13,7 @@
 
 ## Decision
 
-1. **Cloudflare only.** Production runs on Workers, D1, KV, R2, Queues, Durable Objects, Workflows, Vectorize, Workers AI and Cloudflare Access. There are no containers (no Cloudflare Containers, no Kubernetes) and no self-hosted runtime. One exception (owner, 2026-11-08): the Forge type-check runs in a Cloudflare Container, because the TypeScript compiler needs more memory than a Workers isolate has (ADR-0012 §5c). It has no internet and runs only for the length of a check.
+1. **Cloudflare only.** Production runs on Workers, D1, KV, R2, Queues, Durable Objects, Workflows, Vectorize, Workers AI and Cloudflare Access. There are no containers (no Cloudflare Containers, no Kubernetes) and no self-hosted runtime. On 2026-11-08 a Container for the Forge type-check was deployed and withdrawn the same day; the type-check runs on Workers Builds, Cloudflare's build service (ADR-0012 §5c). This decision stands.
 2. **Workers Paid plan, included usage only.**
    - No paid add-on product is introduced.
    - Every design states its usage against the included quotas. Workers AI keeps the per-service and account daily budgets set in `AI-ENGINE-REQUIREMENT.md`.

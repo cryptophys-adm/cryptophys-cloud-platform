@@ -43,8 +43,8 @@ export default function Code() {
                   <span className="text-[12px] text-slate-200">{r.pass ?? "—"} passed · {r.fail ?? "—"} failed</span>
                   {r.bundles ? <span className="text-[11px] text-slate-400">bundles {r.bundles.workers - r.bundles.failed}/{r.bundles.workers}</span> : null}
                   {r.typecheck && r.typecheck.status !== "not_configured" ? (
-                    <Badge tone={r.typecheck.status === "passed" ? "green" : r.typecheck.status === "failed" ? "red" : "amber"}>
-                      {r.typecheck.status === "passed" ? "types ok" : r.typecheck.status === "failed" ? `${r.typecheck.errors ?? "?"} type errors` : "type-check error"}
+                    <Badge tone={r.typecheck.status === "passed" ? "green" : r.typecheck.status === "failed" ? "red" : "slate"}>
+                      {r.typecheck.status === "passed" ? "types ok" : r.typecheck.status === "failed" ? `${r.typecheck.errors ?? "?"} type errors` : "types pending"}
                     </Badge>
                   ) : null}
                   {r.guard_status ? <Badge tone={r.guard_status === "clean" ? "green" : "red"}>{r.guard_status === "clean" ? "no secrets" : "secret found"}</Badge> : null}
@@ -60,7 +60,7 @@ export default function Code() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">The Forge runs the control-plane tests, bundles every Worker, type-checks in a Container and scans for committed credentials, on Cloudflare, for each new commit of main, from the Artifacts copy. These checks become a deploy gate after they agree with GitHub CI on {parity?.target ?? 20} commits in a row (ADR-0012).</p>
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">The Forge runs the control-plane tests, bundles every Worker, type-checks on Workers Builds and scans for committed credentials, on Cloudflare, for each new commit of main, from the Artifacts copy. These checks become a deploy gate after they agree with GitHub CI on {parity?.target ?? 20} commits in a row (ADR-0012).</p>
       </Panel>
       <Panel title="History of main" icon={<GitCommitHorizontal className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone="slate">{rows.length} commits</Badge>}>
         {commits.loading && !commits.data ? <Skeleton /> : rows.length === 0 ? <Empty>No commits to show.</Empty> : (

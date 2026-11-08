@@ -3,16 +3,16 @@
 //   1. snapshot: the commit's tree read through the Artifacts binding (readCommit/readTree/readBlob);
 //   2. bundle: esbuild-wasm in the Forge isolate (runner/core.ts);
 //   3. run: Dynamic Workers (Worker Loader), with no network access;
-//   4. type-check: the compiler in a Cloudflare Container (typecheck.ts; it does not fit in an isolate);
+//   4. type-check: reported by Workers Builds (typecheck.ts; the compiler does not fit in an isolate);
 //   5. record: one row per commit in D1 (forge_check_runs), plus an audit event.
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
-import { runTypecheck, type TypecheckCall, type TypecheckStep } from "./typecheck.ts";
+import type { TypecheckLookup, TypecheckStep } from "./typecheck.ts";
 
-/** What one check needs: the test-suite toolchain and, when the Container is bound, the type-check. */
-export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckCall }
+/** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
+export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckLookup }
 
 const HEX40 = /^[0-9a-f]{40}$/;
 export const RUNNER_ID = "forge-runner/1";
@@ -97,7 +97,7 @@ export interface CheckSteps {
   tests: { files: number; pass: number; fail: number; skip: number };
   bundles: { workers: number; failed: BundleStep["failed"]; bundles: BundleStep["bundles"] };
   secrets: { files: number; findings: SecretFinding[] };
-  /** Absent in runs recorded before the type-check Container. */
+  /** Absent in runs recorded before the type-check step; `pending` until the build of the commit reports. */
   typecheck?: TypecheckStep;
 }
 export interface CheckRun extends SuiteResult {
@@ -115,12 +115,12 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
   if (result.files === 0) throw new Error("no_test_files");
   const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot);
   const secrets = scanSecrets(snap.snapshot);
-  // A type error fails the check, as it fails GitHub CI. A Container error is recorded in the step
-  // and does not decide the status (it is not a pass either: phase 4's gate requires "passed").
-  const typecheck = await runTypecheck(suite.typecheck, snap.snapshot);
+  // A type error fails the check, as it fails GitHub CI. A report that has not arrived yet leaves the
+  // step `pending`; recordTypecheckReport folds it into this run when it comes (phase 4's gate requires "passed").
+  const typecheck: TypecheckStep = suite.typecheck ? await suite.typecheck(commit) : { status: "not_configured" };
   const failures = [
     ...result.failures, ...bundles.failed.map((b) => `bundle ${b.dir}: ${b.error}`),
-    ...(typecheck.diagnostics ?? []).map((d) => `typecheck ${d}`), ...(typecheck.status === "error" ? [`typecheck error: ${typecheck.reason}`] : []),
+    ...(typecheck.diagnostics ?? []).map((d) => `typecheck ${d}`),
     ...secrets.findings.map((f) => `secret ${f.rule} at ${f.path}:${f.line}`),
   ];
   return {
@@ -225,8 +225,8 @@ export interface CheckSummary {
   failures: string[]; started_at: string; finished_at: string | null; duration_ms: number | null;
   /** Bundles and guards: Worker count and failures, secret-scan outcome (null for runs before 0033). */
   bundles: { workers: number; failed: number } | null; guard_status: string | null;
-  /** The type-check step (null for runs before the Container). */
-  typecheck: { status: string; errors: number | null; reason: string | null } | null;
+  /** The type-check step (null for runs before it existed). */
+  typecheck: { status: string; errors: number | null; build_id: string | null } | null;
   /** The GitHub CI conclusion for the same commit, and whether the two agree (null while either is missing). */
   github: "success" | "failure" | null; agrees: boolean | null;
 }
@@ -271,7 +271,7 @@ function stepsBundles(steps: string | null): { workers: number; failed: number }
 function stepsTypecheck(steps: string | null): CheckSummary["typecheck"] {
   try {
     const t = (JSON.parse(steps ?? "null") as { typecheck?: TypecheckStep } | null)?.typecheck;
-    return t ? { status: String(t.status), errors: typeof t.errors === "number" ? t.errors : null, reason: t.reason ?? null } : null;
+    return t ? { status: String(t.status), errors: typeof t.errors === "number" ? t.errors : null, build_id: t.build_id ?? null } : null;
   } catch { return null; }
 }
 

@@ -49,19 +49,13 @@ type = "Text"
 globs = ["**/shims/node-*.js", "**/sql.js/dist/sql-wasm.js"]
 fallthrough = true
 
-# ADR-0012 §5c, owner decision 2026-11-08: the type-check runs in a Cloudflare Container (the
-# compiler needs ~190 MB; an isolate has 128 MB). Containers are used for the type-check only.
-# The Durable Object starts the Container without internet for one check, then stops it.
-[[containers]]
-class_name = "TypecheckContainer"
-image = "./typecheck/Dockerfile"
-instance_type = "basic"
-max_instances = 1
-
-[[durable_objects.bindings]]
-name = "TYPECHECK"
-class_name = "TypecheckContainer"
-
+# ADR-0012 §5c: the type-check does not fit in an isolate. A Container for it was deployed and
+# withdrawn on 2026-11-08 (owner decision: Workers Builds instead, see workers/forge-typecheck).
+# The v1 migration created its Durable Object class; v2 deletes it. Both stay for the migration history.
 [[migrations]]
 tag = "v1-typecheck-container"
 new_sqlite_classes = ["TypecheckContainer"]
+
+[[migrations]]
+tag = "v2-drop-typecheck-container"
+deleted_classes = ["TypecheckContainer"]
