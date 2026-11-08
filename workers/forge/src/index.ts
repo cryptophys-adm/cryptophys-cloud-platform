@@ -49,15 +49,21 @@ const HEX40 = /^[0-9a-f]{40}$/;
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? v as Record<string, unknown> : {});
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 function isoTime(v: unknown): string {
-  if (typeof v === "number" && Number.isFinite(v)) return new Date(v < 1e12 ? v * 1000 : v).toISOString();
-  if (typeof v === "string" && !Number.isNaN(Date.parse(v))) return new Date(v).toISOString();
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const date = new Date(v < 1e12 ? v * 1000 : v);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  }
+  if (typeof v === "string") {
+    const millis = Date.parse(v);
+    return Number.isNaN(millis) ? "" : new Date(millis).toISOString();
+  }
   return "";
 }
 export function presentCommit(c: ArtifactsCommit) {
   const author = obj(c.author);
-  const named = [c.hash, c.oid, c.sha, c.id, c.commit].map(str).find((v) => HEX40.test(v));
-  const commitSha = named ?? Object.values(c).map(str).find((v) => HEX40.test(v)) ?? "";
-  const date = [author.date, author.timestamp, author.time, author.when, c.timestamp, c.date, c.authorDate, c.author_date, obj(c.committer).timestamp, obj(c.committer).date]
+  // Only documented commit-id fields are accepted. An arbitrary 40-hex value may be a tree or parent hash.
+  const commitSha = [c.hash, c.oid, c.sha, c.id, c.commit].map(str).find((v) => HEX40.test(v)) ?? "";
+  const date = [author.date, author.timestamp, author.time, author.when, c.timestamp, c.date, c.authorDate, c.author_date, c.authoredAt, c.authored_at, c.committedAt, c.committed_at, obj(c.committer).timestamp, obj(c.committer).date]
     .map(isoTime).find(Boolean) ?? "";
   return {
     sha: commitSha,
