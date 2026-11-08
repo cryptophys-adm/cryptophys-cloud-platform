@@ -3,8 +3,9 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2,
+  FolderGit2, LogOut, UserRound, ArrowLeftRight,
 } from "lucide-react";
+import { ACCESS_LOGOUT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
 import { Dot } from "./ui";
@@ -76,6 +77,37 @@ function Doctrine() {
   );
 }
 
+/** The signed-in person's role, as /api/whoami reports it. */
+export function roleLabel(who: { owner?: boolean; approver: boolean; role?: string; viewer?: boolean }): string {
+  if (who.owner) return "Owner";
+  if (who.approver) return "Approver";
+  if (who.viewer || who.role === "viewer") return "Viewer";
+  return "Operator";
+}
+
+/** Account menu: who is signed in, and Cloudflare Access logout (sign out, or switch account). */
+function AccountMenu() {
+  const { who } = useSession();
+  return (
+    <details className="group relative">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[12px] text-slate-300 hover:text-white [&::-webkit-details-marker]:hidden"
+        aria-label="Account menu">
+        <UserRound className="h-4 w-4 text-cyan-300" />
+        <span className="hidden max-w-[180px] truncate lg:inline">{who.actor}</span>
+      </summary>
+      <div className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-white/10 bg-obsidian-panel/95 p-2 shadow-xl backdrop-blur" role="menu">
+        <div className="px-3 py-2">
+          <div className="text-[10px] uppercase tracking-widest text-slate-500">Signed in as</div>
+          <div className="mono break-all text-[12px] text-slate-200">{who.actor}</div>
+          <div className="mt-1 text-[11px] text-cyan-200">{roleLabel(who)}</div>
+        </div>
+        <a role="menuitem" href={ACCESS_LOGOUT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
+        <a role="menuitem" href={ACCESS_LOGOUT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-rose-200 hover:bg-rose-500/10"><LogOut className="h-4 w-4" />Sign out</a>
+      </div>
+    </details>
+  );
+}
+
 export default function AppShell({ current, children }: { current: string; children: ReactNode }) {
   const { who } = useSession();
   const { ov } = useOverview();
@@ -94,7 +126,7 @@ export default function AppShell({ current, children }: { current: string; child
 
   return (
     <div className="min-h-screen text-slate-100">
-      <header className="border-b border-white/10 bg-obsidian-panel/90 backdrop-blur">
+      <header className="relative z-30 border-b border-white/10 bg-obsidian-panel/90 backdrop-blur">
         <div className="mx-auto flex max-w-[1680px] items-center gap-3 px-3 py-3 sm:px-6 sm:py-4">
           <a href="https://nexus.cryptophys.work/" className="flex items-center gap-3" aria-label="Nexus home">
             <motion.div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-400/10 sm:h-11 sm:w-11"
@@ -109,10 +141,11 @@ export default function AppShell({ current, children }: { current: string; child
           </a>
           <div className="ml-auto hidden items-center gap-2 sm:flex">
             <span className="chip border-emerald-400/20 bg-emerald-400/10 text-emerald-300"><ShieldCheck className="h-3 w-3" />Access Verified</span>
-            <span className={`chip ${who.approver ? "border-violet-400/20 bg-violet-400/10 text-violet-200" : "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"}`}>{who.approver ? "Approver" : "Operator"}</span>
+            <span className={`chip ${who.approver ? "border-violet-400/20 bg-violet-400/10 text-violet-200" : "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"}`}>{roleLabel(who)}</span>
             <span className={`chip ${agentsOn === false ? "border-rose-400/20 bg-rose-400/10 text-rose-300" : "border-amber-400/20 bg-amber-400/10 text-amber-200"}`}>
               <Dot tone={agentsOn === false ? "red" : "green"} pulse={agentsOn !== false} />{agentsOn === false ? "Mesh halted" : "Mesh live"}
             </span>
+            <AccountMenu />
           </div>
           <button type="button" className="ml-auto rounded-md border border-white/10 bg-white/[0.04] p-2 text-slate-400 hover:text-white md:hidden"
             onClick={() => setOpen((o) => !o)} aria-label="Toggle navigation" aria-expanded={open}>
@@ -135,6 +168,9 @@ export default function AppShell({ current, children }: { current: string; child
           <div className="mx-auto flex max-w-[1680px] flex-col gap-1 px-3 pb-3 md:hidden">
             {navLinks(true)}
             <a href="https://nexus.cryptophys.work/" className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><Home className="h-4 w-4 text-slate-500" />Nexus</a>
+            <div className="mt-1 border-t border-white/10 px-4 pt-3 text-[11px] text-slate-500">Signed in as <span className="mono break-all text-slate-300">{who.actor}</span> · {roleLabel(who)}</div>
+            <a href={ACCESS_LOGOUT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
+            <a href={ACCESS_LOGOUT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-rose-200 hover:text-rose-100"><LogOut className="h-4 w-4" />Sign out</a>
           </div>
         )}
       </nav>

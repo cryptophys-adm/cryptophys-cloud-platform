@@ -41,6 +41,21 @@
   - *First rollout (owner, 2026-11-07: "Merge and race it").* The Orchestrator running in production predates this guard and still deploys itself first. Migration 0026 is therefore applied by a manual Control Plane deploy (ops-dispatch) right after the merge, inside the same kernel-cycle window. Its readiness then holds before the agents propose the Orchestrator. If the race is lost, the Orchestrator deploy fails verification and rolls back automatically.
 - **Access edge scope (owner, 2026-11-07: "Accept, Workers are the gate").** The platform has one Access application, so `user` accounts pass the Access edge for every platform Worker destination, not only Nexus. The security boundary for them is the role check in each Worker. Every `/v1` route requires a role. Without one, only `/health`, `/ready` and service metadata answer. Splitting Nexus into its own Access application stays a possible later change.
 
+## Sign out and the access fallback (owner request, 2026-11-08)
+
+"tambahkan menu logout dan juga fallback ketika user view only nexus akan mengakses cerebrum diminta user/change user yang punya privilege akses ke cerebrum."
+
+- **Sign out.** The Console header has an account menu (on phones it is in the navigation menu). It shows who is signed in and their role (Owner, Approver, Operator or Viewer), with **Switch account** and **Sign out**.
+  - Both items go to Cloudflare Access's logout on the same host, `/cdn-cgi/access/logout`. It revokes the Access session for every platform application, so the next visit asks for a sign-in.
+  - Access has no per-application logout.
+- **Fallback for Nexus-only accounts.** This covers a person whom Access let in but whom the Console refuses: kind `user`, a disabled account, or no account.
+  - When they open a Console page in a browser, they get a 403 **page**, not JSON. It shows the account they are signed in as, explains that the Console needs an admin account, and offers **Switch account** (Access logout) and **Back to Nexus**.
+  - The page has no script. Its only style is allowed by a hash in its CSP, and it is not cached.
+  - API calls, non-browser clients and requests without an identity keep their JSON answers.
+- **Mid-session loss of access.** The Console's own 403 carries `x-cryptophys-console-access: denied`. Forwarded responses never carry it, so a downstream role check cannot trigger it.
+  - The UI reloads on that 403, and the reload lands on the fallback page.
+  - If `/api/whoami` is refused, the UI shows the same choice.
+
 ## Owner steps (one time)
 
 1. **Create a GitHub Actions provisioning token** in Cloudflare (My Profile → API Tokens → Create Token → Custom), scoped to account `cryptophys`, with:

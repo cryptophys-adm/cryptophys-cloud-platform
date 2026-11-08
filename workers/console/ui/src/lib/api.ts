@@ -9,6 +9,13 @@ const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 /** ADR-0010: on the Nexus host the Console is mounted at /console/; elsewhere (workers.dev) at /. */
 export const MOUNT = typeof location !== "undefined" && location.pathname.startsWith("/console") ? "/console" : "";
 
+/**
+ * Cloudflare Access logout on this host. It ends the Access session for every platform application,
+ * so the next visit asks for a sign-in: this is both "Sign out" and "Switch account".
+ */
+export const ACCESS_LOGOUT = "/cdn-cgi/access/logout";
+export const NEXUS_HOME = "https://nexus.cryptophys.work/";
+
 export class ApiError extends Error {
   constructor(message: string, public status: number, public data: Json) { super(message); }
 }
@@ -21,6 +28,9 @@ async function api(method: string, path: string, body?: unknown): Promise<Json> 
   let data: Json = null;
   try { data = await res.json(); } catch { data = null; }
   if (!res.ok) {
+    // The account lost Console access mid-session (disabled, or changed to a Nexus-only user):
+    // reload, so the Console Worker shows its access-needed page with "Switch account".
+    if (res.status === 403 && res.headers.get("x-cryptophys-console-access") === "denied" && typeof location !== "undefined") location.reload();
     let message = `${method} ${path}: ${res.status} ${data?.error ?? "error"}`;
     if (typeof data?.message === "string" && data.message) message += ` (${data.message})`;
     throw new ApiError(message, res.status, data);
