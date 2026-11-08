@@ -15,11 +15,10 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 
 export const REPO = "platform";
+export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 
-/** The subset of the Artifacts Workers binding the Forge uses (Artifacts docs, 2026-10). */
-/** Commit metadata from log(): field names vary by binding version, so they are read defensively. */
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
   info(): Promise<{ name: string; remote: string; defaultBranch?: string; default_branch?: string; lastPushAt?: string | null; last_push_at?: string | null } | null>;
@@ -28,6 +27,7 @@ export interface ArtifactsRepo {
   [Symbol.dispose]?(): void;
 }
 export interface ArtifactsBinding {
+  list(opts?: { limit?: number; cursor?: string }): Promise<{ repos: Array<{ name: string; status: "ready" | "importing" | "forking" }>; cursor?: string | null }>;
   get(name: string): Promise<ArtifactsRepo>;
   import(params: { source: { url: string; branch?: string }; target: { name: string; opts?: { description?: string } } }): Promise<{ name: string; remote: string }>;
 }
@@ -48,68 +48,119 @@ export interface Env {
 const HEX40 = /^[0-9a-f]{40}$/;
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? v as Record<string, unknown> : {});
 const str = (v: unknown) => (typeof v === "string" ? v : "");
-/** Seconds or milliseconds since the epoch, or an ISO string, as ISO; anything else as "". */
 function isoTime(v: unknown): string {
-  if (typeof v === "number" && Number.isFinite(v)) return new Date(v < 1e12 ? v * 1000 : v).toISOString();
-  if (typeof v === "string" && !Number.isNaN(Date.parse(v))) return new Date(v).toISOString();
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const date = new Date(v < 1e12 ? v * 1000 : v);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  }
+  if (typeof v === "string") {
+    const millis = Date.parse(v);
+    return Number.isNaN(millis) ? "" : new Date(millis).toISOString();
+  }
   return "";
 }
 export function presentCommit(c: ArtifactsCommit) {
   const author = obj(c.author);
-  const named = [c.hash, c.oid, c.sha, c.id, c.commit].map(str).find((v) => HEX40.test(v));
-  const sha = named ?? Object.values(c).map(str).find((v) => HEX40.test(v)) ?? "";
-  const date = [author.date, author.timestamp, author.time, author.when, c.timestamp, c.date, c.authorDate, c.author_date, obj(c.committer).timestamp, obj(c.committer).date]
+  // Only documented commit-id fields are accepted. An arbitrary 40-hex value may be a tree or parent hash.
+  const commitSha = [c.hash, c.oid, c.sha, c.id, c.commit].map(str).find((v) => HEX40.test(v)) ?? "";
+  const date = [author.date, author.timestamp, author.time, author.when, c.timestamp, c.date, c.authorDate, c.author_date, c.authoredAt, c.authored_at, c.committedAt, c.committed_at, obj(c.committer).timestamp, obj(c.committer).date]
     .map(isoTime).find(Boolean) ?? "";
   return {
-    sha,
+    sha: commitSha,
     title: str(c.message).split("\n")[0].slice(0, 200),
     author: (str(author.name) || str(c.author)).slice(0, 100),
     date,
   };
 }
 
-async function openRepo(env: Env): Promise<ArtifactsRepo | null> {
+type RepoState = "missing" | "ready" | "importing" | "forking";
+
+async function repoState(env: Env): Promise<RepoState> {
+  if (!env.ARTIFACTS) return "missing";
+  let cursor: string | undefined;
+  do {
+    const page = await env.ARTIFACTS.list(cursor ? { limit: 100, cursor } : { limit: 100 });
+    const found = page.repos.find((item) => item.name === REPO);
+    if (found) return found.status;
+    cursor = page.cursor ?? undefined;
+  } while (cursor);
+  return "missing";
+}
+
+async function withRepo<T>(env: Env, fn: (repo: ArtifactsRepo) => Promise<T>): Promise<T | null> {
   if (!env.ARTIFACTS) return null;
-  try { return await env.ARTIFACTS.get(REPO); } catch { return null; }
+  const repo = await env.ARTIFACTS.get(REPO);
+  try {
+    return await fn(repo);
+  } finally {
+    repo[Symbol.dispose]?.();
+  }
+}
+
+export function trustedArtifactsRemote(remote: string): boolean {
+  try {
+    const url = new URL(remote);
+    return url.protocol === "https:"
+      && /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/.test(url.hostname)
+      && url.username === ""
+      && url.password === ""
+      && url.port === ""
+      && url.pathname === "/git/" + ARTIFACTS_NAMESPACE + "/" + REPO + ".git"
+      && url.search === ""
+      && url.hash === "";
+  } catch {
+    return false;
+  }
 }
 
 export async function status(env: Env) {
-  const repo = await openRepo(env);
-  if (!repo) return { repo: null, configured: Boolean(env.ARTIFACTS), source: SOURCE_URL };
-  const info = await repo.info();
-  const head = (await repo.log({ ref: "main", limit: 1 }))[0];
+  const state = await repoState(env);
+  if (state === "missing") return { repo: null, head: null, configured: Boolean(env.ARTIFACTS), source: SOURCE_URL, status: "not_imported" };
+  if (state !== "ready") return { repo: { name: REPO, status: state }, head: null, configured: true, source: SOURCE_URL, status: state };
+  const result = await withRepo(env, async (repo) => ({
+    info: await repo.info(),
+    head: (await repo.log({ ref: "main", limit: 1 }))[0] ?? null,
+  }));
+  if (!result) return { repo: null, head: null, configured: false, source: SOURCE_URL, status: "not_imported" };
   return {
-    repo: info ? { name: info.name, default_branch: info.defaultBranch ?? info.default_branch ?? "main", last_push_at: info.lastPushAt ?? info.last_push_at ?? null } : null,
-    head: head ? presentCommit(head) : null,
-    configured: true, source: SOURCE_URL,
+    repo: result.info ? { name: result.info.name, default_branch: result.info.defaultBranch ?? result.info.default_branch ?? "main", last_push_at: result.info.lastPushAt ?? result.info.last_push_at ?? null } : null,
+    head: result.head ? presentCommit(result.head) : null,
+    configured: true,
+    source: SOURCE_URL,
+    status: "ready",
   };
 }
 
 export async function commits(env: Env, limit: number) {
-  const repo = await openRepo(env);
-  if (!repo) return { commits: [] };
-  return { commits: (await repo.log({ ref: "main", limit: Math.min(Math.max(limit, 1), 100) })).map(presentCommit) };
+  const state = await repoState(env);
+  if (state !== "ready") return { commits: [], status: state };
+  const rows = await withRepo(env, (repo) => repo.log({ ref: "main", limit: Math.min(Math.max(limit, 1), 100) }));
+  return { commits: (rows ?? []).map(presentCommit), status: "ready" };
 }
 
-/** One-time import of the GitHub repository. An existing repo is never replaced. */
-export async function importRepo(env: Env, identity: AccessIdentity): Promise<{ imported: boolean; repo: string }> {
+export async function importRepo(env: Env, identity: AccessIdentity): Promise<{ imported: boolean; repo: string; status?: RepoState }> {
   if (!env.ARTIFACTS) throw new Error("artifacts_not_configured");
-  if (await openRepo(env)) return { imported: false, repo: REPO };
+  const state = await repoState(env);
+  if (state !== "missing") return state === "ready" ? { imported: false, repo: REPO } : { imported: false, repo: REPO, status: state };
   await env.ARTIFACTS.import({ source: { url: SOURCE_URL, branch: "main" }, target: { name: REPO, opts: { description: "Cryptophys cloud platform (ADR-0012 Forge)" } } });
   await appendAuditEvent(env.DB, { event_type: "forge.imported", actor: actorOf(identity), subject: REPO, outcome: "succeeded", payload: { source: SOURCE_URL, branch: "main" } });
   return { imported: true, repo: REPO };
 }
 
-/** A short-lived write token for the mirror workflow. Only a service token (the CI identity) gets one. */
 export async function mirrorToken(env: Env, identity: AccessIdentity): Promise<{ remote: string; token: string; expires_at: string | number }> {
   if (identity.type !== "service_token") throw Object.assign(new Error("service_token_required"), { status: 403 });
-  const repo = await openRepo(env);
-  if (!repo) throw Object.assign(new Error("repo_not_imported"), { status: 409 });
-  const info = await repo.info();
-  if (!info?.remote) throw new Error("repo_remote_unavailable");
-  const t = await repo.createToken("write", MIRROR_TOKEN_TTL_S);
-  await appendAuditEvent(env.DB, { event_type: "forge.mirror_token_issued", actor: actorOf(identity), subject: REPO, outcome: "issued", payload: { ttl_s: MIRROR_TOKEN_TTL_S } });
-  return { remote: info.remote, token: t.plaintext, expires_at: t.expiresAt };
+  const state = await repoState(env);
+  if (state !== "ready") throw Object.assign(new Error(state === "missing" ? "repo_not_imported" : "repo_not_ready"), { status: 409 });
+  const result = await withRepo(env, async (repo) => {
+    const info = await repo.info();
+    const remote = info?.remote ?? "";
+    if (!trustedArtifactsRemote(remote)) throw Object.assign(new Error("untrusted_artifacts_remote"), { status: 502 });
+    const token = await repo.createToken("write", MIRROR_TOKEN_TTL_S);
+    await appendAuditEvent(env.DB, { event_type: "forge.mirror_token_issued", actor: actorOf(identity), subject: REPO, outcome: "issued", payload: { ttl_s: MIRROR_TOKEN_TTL_S } });
+    return { remote, token: token.plaintext, expires_at: token.expiresAt };
+  });
+  if (!result) throw Object.assign(new Error("artifacts_not_configured"), { status: 503 });
+  return result;
 }
 
 async function readiness(env: Env): Promise<Response> {
