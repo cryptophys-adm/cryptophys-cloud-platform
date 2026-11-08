@@ -131,7 +131,8 @@ jobs:
           set -euo pipefail
           npx wrangler deploy --config wrangler.deploy.toml --tag "${COMMIT_SHA:0:12}" --message "commit ${COMMIT_SHA}" \
             --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}" \
-            --var "DEPLOY_ALLOWED_IDENTITIES:${DEPLOY_ALLOWED_IDENTITIES}"
+            --var "DEPLOY_ALLOWED_IDENTITIES:${DEPLOY_ALLOWED_IDENTITIES}" \
+            --var "CF_ACCOUNT_ID:${CLOUDFLARE_ACCOUNT_ID}"
       - name: Verify production bindings without exposing secrets
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

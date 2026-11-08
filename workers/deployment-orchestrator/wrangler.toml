@@ -7,9 +7,11 @@ routes = [{ pattern = "deploy-orchestrator.cryptophys.work", custom_domain = tru
 [observability]
 enabled = true
 
-# Wave A: reconcile the deployment ledger (running -> succeeded/failed) twice an hour.
+# Wave A: reconcile the deployment ledger (running -> succeeded/failed) at :10 and :40.
+# ADR-0012 phase 2: run queued native rollbacks at every minute outside the drift and kernel
+# cron windows (a subset of SAFE in .github/scripts/wait-cron-window.sh).
 [triggers]
-crons = ["11,41 * * * *"]
+crons = ["2,10,17,25,32,40,47,55 * * * *"]
 
 [version_metadata]
 binding = "CF_VERSION_METADATA"
@@ -53,3 +55,15 @@ binding = "AGENTS"
 service = "cryptophys-ai-kernel"
 entrypoint = "AgentRpc"
 props = { host_worker = "cryptophys-deployment-orchestrator" }
+
+# ADR-0012 phase 2: native rollback verifies through the Drift Detector (read-only probe) and
+# records the desired version through the Registry (only for a running native rollback request).
+[[services]]
+binding = "DRIFT"
+service = "cryptophys-drift-detector"
+entrypoint = "DriftRpc"
+
+[[services]]
+binding = "REGISTRY"
+service = "cryptophys-platform-registry"
+entrypoint = "RegistryRpc"

@@ -137,5 +137,7 @@ test("A2/A3. Access API calls retry transient errors; every deploy waits for a c
     const wait = s.indexOf("wait-cron-window.sh");
     assert.ok(wait > 0 && wait < s.indexOf("npx wrangler deploy"), `${wf}: the cron guard runs before the deploy`);
   }
-  assert.match(readFileSync(new URL("workers/deployment-orchestrator/wrangler.toml", ROOT), "utf8"), /crons = \["11,41 \* \* \* \*"\]/);
+  // ADR-0012 phase 2: the Orchestrator cron fires at every SAFE minute (native rollbacks); the
+  // ledger reconcile still runs twice an hour, at :10 and :40 (asserted in native-rollback-0012).
+  assert.match(readFileSync(new URL("workers/deployment-orchestrator/wrangler.toml", ROOT), "utf8"), /crons = \["2,10,17,25,32,40,47,55 \* \* \* \*"\]/);
 });
