@@ -3,7 +3,7 @@
 // platform Workers reach this one only through the RPC entrypoint below (service binding
 // with entrypoint = "HealthRpc"), which is not reachable over HTTP.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { applyConsensus, type Env } from "./index.ts";
+import worker, { applyConsensus, recordRollback, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import type { Evidence, Proposal, Vote } from "../../control-plane-shared/src/consensus-rules.ts";
@@ -20,6 +20,10 @@ export class HealthRpc extends WorkerEntrypoint<Env> {
 export class RegistryRpc extends WorkerEntrypoint<Env> {
   async applyConsensus(proposalId: string, decisionId: string, action: string, target: string, params: Record<string, unknown>) {
     return applyConsensus(this.env, proposalId, decisionId, action, target, params);
+  }
+  /** ADR-0012 phase 2: the Orchestrator's native rollback records the version it verified live. */
+  async recordRollback(requestId: string) {
+    return recordRollback(this.env, requestId);
   }
 }
 

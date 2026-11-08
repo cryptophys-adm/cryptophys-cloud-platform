@@ -148,6 +148,16 @@ function healthPath(row: RegistryRow): string {
   }
 }
 
+/**
+ * ADR-0012 phase 2: read-only probe of one platform Worker, for the Orchestrator's rollback
+ * verification (health and reported version tag). Writes nothing.
+ */
+export async function probeService(env: Env, serviceId: string): Promise<Probe> {
+  const binding = targets(env)[serviceId];
+  if (!binding) throw new Error("unknown_service");
+  return probe(binding);
+}
+
 /** ADR-0009 phase 2: a passed observe_drift consensus action, re-verified here before it runs. */
 export async function observeForConsensus(env: Env, proposalId: string, decisionId: string): Promise<{ run_id: string; drifted: number; services: number }> {
   await verifyConsensusExecution(env.DB, proposalId, decisionId, "observe_drift", "platform");

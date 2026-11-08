@@ -3,7 +3,7 @@
 // platform Workers reach this one only through the RPC entrypoint below (service binding
 // with entrypoint = "HealthRpc"), which is not reachable over HTTP.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { observeForConsensus, type Env } from "./index.ts";
+import worker, { observeForConsensus, probeService, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import type { Evidence, Proposal, Vote } from "../../control-plane-shared/src/consensus-rules.ts";
@@ -20,6 +20,10 @@ export class HealthRpc extends WorkerEntrypoint<Env> {
 export class DriftRpc extends WorkerEntrypoint<Env> {
   async observeForConsensus(proposalId: string, decisionId: string) {
     return observeForConsensus(this.env, proposalId, decisionId);
+  }
+  /** ADR-0012 phase 2: read-only health and version of one platform Worker (rollback verification). */
+  async probeService(serviceId: string) {
+    return probeService(this.env, serviceId);
   }
 }
 

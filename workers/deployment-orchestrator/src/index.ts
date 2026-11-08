@@ -7,6 +7,7 @@ import { accessConfigured, actorOf, authenticate, identityAllowed } from "../../
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
+import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -20,7 +21,7 @@ interface DurableObjectNamespaceLike {
   idFromName(name: string): unknown;
   get(id: unknown): { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
 }
-export interface Env {
+export interface Env extends NativeRollbackEnv {
   SERVICE_NAME: string;
   SERVICE_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;
@@ -411,6 +412,7 @@ export async function previousVersion(env: Env, serviceId: string): Promise<stri
 async function dispatchRollback(env: Env, actor: string, serviceId: string, tag: string, link: Record<string, string>): Promise<Record<string, unknown>> {
   if (!unitForService(serviceId)) throw new Error("no_deploy_unit_for_service");
   if (!/^[0-9a-f]{12}$/.test(tag)) throw new Error("invalid_version_tag");
+  if (nativeRollbackConfigured(env)) return queueNativeRollback(env, actor, serviceId, tag, link);
   if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
   const sha = await mainSha(env.GH_ACTIONS_TOKEN);
   if (!sha) throw new Error("main_lookup_failed");
@@ -435,6 +437,78 @@ async function dispatchRollback(env: Env, actor: string, serviceId: string, tag:
   });
   if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
   return { dispatched: true, request_id: requestId, workflow: ROLLBACK_WORKFLOW, commit_sha: sha, version_tag: tag };
+}
+
+/**
+ * ADR-0012 phase 2: queue a rollback for the Orchestrator's own executor (no GitHub). The same
+ * idempotency lock as the workflow path makes a replay a no-op. The cron runs it at the next
+ * minute outside the drift and kernel cron windows.
+ */
+async function queueNativeRollback(env: Env, actor: string, serviceId: string, tag: string, link: Record<string, string>): Promise<Record<string, unknown>> {
+  if (!env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const key = `rollback:${serviceId}:${tag}:${Object.values(link).join(":")}`;
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(key))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: "0".repeat(40) }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { dispatched: false, reason: "already_dispatched", executor: NATIVE_EXECUTOR, version_tag: tag };
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
+  ).bind(requestId, serviceId, tag, actor, Object.values(link)[0] ?? null, key, JSON.stringify({ executor: NATIVE_EXECUTOR, version_tag: tag, ...link }), at, at).run();
+  await appendAuditEvent(env.DB, {
+    event_type: "deployment.rollback_queued", actor, subject: serviceId, outcome: "approved",
+    payload: { request_id: requestId, executor: NATIVE_EXECUTOR, version_tag: tag, ...link },
+  });
+  return { dispatched: true, request_id: requestId, executor: NATIVE_EXECUTOR, version_tag: tag };
+}
+
+/**
+ * ADR-0012 phase 2: run queued native rollbacks (oldest first, at most 3 per run). Only at a
+ * SAFE minute. Without the deploy credentials, queued requests older than 3 hours fail as stale.
+ */
+export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: typeof fetch = fetch, opts: { delayMs?: number } = {}): Promise<{ executed: number; succeeded: number }> {
+  if (!env.DB || !SAFE_MINUTES.includes(new Date(now).getUTCMinutes())) return { executed: 0, succeeded: 0 };
+  const rows = await env.DB.prepare(
+    "SELECT request_id, service_id, requested_version, details_json, created_at FROM deployment_requests WHERE status = 'approved' AND details_json LIKE ? ORDER BY created_at LIMIT 3",
+  ).bind(`%"executor":"${NATIVE_EXECUTOR}"%`).all<{ request_id: string; service_id: string; requested_version: string; details_json: string; created_at: string }>();
+  let executed = 0;
+  let succeeded = 0;
+  for (const r of rows.results) {
+    let details: Record<string, unknown> = {};
+    try { details = JSON.parse(r.details_json || "{}"); } catch { details = {}; }
+    if (details.executor !== NATIVE_EXECUTOR) continue;
+    if (!nativeRollbackConfigured(env)) {
+      if (now - Date.parse(r.created_at) > 3 * 3_600_000) {
+        await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'approved'")
+          .bind(JSON.stringify({ ...details, outcome: { reason: "stale: native rollback not configured" } }), new Date(now).toISOString(), r.request_id).run();
+      }
+      continue;
+    }
+    const claim = await env.DB.prepare("UPDATE deployment_requests SET status = 'running', updated_at = ? WHERE request_id = ? AND status = 'approved'")
+      .bind(new Date(now).toISOString(), r.request_id).run();
+    if ((claim.meta.changes ?? 0) !== 1) continue;
+    executed++;
+    const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
+    const run = await executeRollback(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY! }, r.request_id, r.service_id, r.requested_version, opts);
+    if (run.ok) succeeded++;
+    const status = run.ok ? "succeeded" : "failed";
+    await env.DB.prepare("UPDATE deployment_requests SET status = ?, details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'running'")
+      .bind(status, JSON.stringify({ ...details, outcome: run }), new Date().toISOString(), r.request_id).run();
+    await auditQuietly(env, {
+      event_type: run.ok ? "deployment.rollback_succeeded" : "deployment.rollback_failed", actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
+      payload: { request_id: r.request_id, executor: NATIVE_EXECUTOR, version_tag: r.requested_version, ...run },
+    });
+    if (!run.ok) {
+      await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
+        kind: "platform_digest", severity: "critical",
+        subject: `Rollback of ${serviceName(r.service_id)} to ${r.requested_version} failed`,
+        body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps },
+      });
+    }
+  }
+  return { executed, succeeded };
 }
 
 /** Recovery step rollback_worker_version of an approved, executing plan (same checks as deployForRecovery). */
@@ -558,6 +632,8 @@ export default {
         status: ready ? "ready" : "not_configured",
         service: env.SERVICE_NAME,
         production_dispatch_enabled: ready,
+        // ADR-0012 phase 2 (informational; not a readiness gate): rollback without GitHub.
+        native_rollback: nativeRollbackConfigured(env) ? "configured" : "not_configured",
         checks
       }, ready ? 200 : 503);
     }
@@ -734,10 +810,15 @@ export default {
     }, 202);
   },
 
-  async scheduled(_event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
-    ctx.waitUntil(reconcileDeployments(env).then(() => undefined, (err) => {
-      console.error(JSON.stringify({ service: SERVICE, event: "reconcile_failed", message: String((err as Error)?.message ?? err) }));
-    }));
+  async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    const at = Number(event.scheduledTime) || Date.now();
+    const minute = new Date(at).getUTCMinutes();
+    const log = (name: string) => (err: unknown) => {
+      console.error(JSON.stringify({ service: SERVICE, event: name, message: String((err as Error)?.message ?? err) }));
+    };
+    // The GitHub ledger reconcile keeps its twice-an-hour cadence; native rollbacks run at every SAFE minute.
+    if (minute === 10 || minute === 40) ctx.waitUntil(reconcileDeployments(env).then(() => undefined, log("reconcile_failed")));
+    ctx.waitUntil(runNativeRollbacks(env, at).then(() => undefined, log("native_rollback_failed")));
   },
 };
 

@@ -147,6 +147,34 @@ async function setDesiredVersion(request: Request, env: Env, id: string, actor: 
 }
 
 /**
+ * ADR-0012 phase 2: record the version a native rollback verified live as the desired version.
+ * Accepted only for a native rollback request that the Orchestrator queued and is executing now
+ * (status running, executor native:rollback, created within the hour). So this RPC cannot set an
+ * arbitrary version.
+ */
+export async function recordRollback(env: Env, requestId: string): Promise<{ desired_version: string }> {
+  if (!/^dep_[0-9a-f-]{36}$/.test(requestId)) throw new Error("invalid_request_id");
+  const row = await env.DB.prepare("SELECT service_id, requested_version, status, details_json, created_at FROM deployment_requests WHERE request_id = ?")
+    .bind(requestId).first<{ service_id: string; requested_version: string; status: string; details_json: string; created_at: string }>();
+  if (!row) throw new Error("rollback_request_not_found");
+  let details: { executor?: unknown } = {};
+  try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
+  if (details.executor !== "native:rollback") throw new Error("not_a_native_rollback");
+  if (row.status !== "running") throw new Error("rollback_not_running");
+  if (Date.now() - Date.parse(row.created_at) > 3_600_000) throw new Error("rollback_request_expired");
+  const version = row.requested_version;
+  if (!/^[0-9a-f]{12}$/.test(version)) throw new Error("invalid_version");
+  const existing = await getService(env, row.service_id);
+  if (!existing) throw new Error("service_not_registered");
+  await env.DB.prepare("UPDATE service_registry SET desired_version = ?, updated_at = ? WHERE service_id = ?").bind(version, nowIso(), row.service_id).run();
+  await appendAuditEvent(env.DB, {
+    event_type: "registry.desired_version_set", actor: `rollback:${requestId}`, subject: row.service_id, outcome: "success",
+    payload: { previous: existing.desired_version, desired_version: version },
+  });
+  return { desired_version: version };
+}
+
+/**
  * ADR-0009 phase 2: apply a passed consensus action. The Registry re-verifies the proposal and
  * its Policy Engine decision itself (verifyConsensusExecution) before it writes anything.
  */

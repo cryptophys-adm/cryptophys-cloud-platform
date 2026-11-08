@@ -113,7 +113,15 @@ The Console gets a **Code** section (`#/code`): change requests, diff, checks, r
   - `ci_green` means the Forge's checks for that SHA passed;
   - `commit_sha_valid` and "current `main`" are read from Artifacts;
   - **the SHA was merged by the Forge.**
-- **Rollback** = Deployments API to the previous recorded version. There is no build and no GitHub, and it works even when Builds is down. *This is phase 2 and the first thing that leaves GitHub.*
+- **Rollback** = Deployments API to the previous recorded version. There is no build and no GitHub. *This is phase 2 and the first thing that leaves GitHub.*
+  - **Implemented 2026-11-08** (`deployment-orchestrator/src/native-rollback.ts`). Consensus and recovery rollbacks are queued in `deployment_requests` and executed by the Orchestrator's cron, only at SAFE minutes.
+  - Each execution:
+    1. captures the active deployment;
+    2. deploys the tagged version at 100%;
+    3. verifies it live through the Drift Detector's read-only `probeService`;
+    4. records the desired version through the Registry's `recordRollback`, which accepts only a running native rollback request of the last hour;
+    5. restores the captured deployment on any failure, and raises a critical report.
+  - The path is active once the owner sets the Worker secret `CF_DEPLOY_TOKEN`. Until then, `rollback-worker.yml` stays the path, and it is retired after the native path has run.
 - **D1 migrations.** The Orchestrator applies the new migrations of an approved SHA through the D1 binding, before the control-plane units. It reads the files from Artifacts by path at that SHA and checks them against `d1_migrations`. The rule "new migration deploys the control plane first and alone" stays.
 - **Retire a Worker** = Workers Scripts API from the Orchestrator. This stays a critical action.
 - **Smoke checks** move from GitHub scripts to the Orchestrator and Drift Detector, through Service Bindings.
