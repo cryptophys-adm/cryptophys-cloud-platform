@@ -1,13 +1,14 @@
 # Forge type-check on Workers Builds (ADR-0012 §5c)
 
 The TypeScript compiler needs about 190 MB for this repository; a Workers isolate has 128 MB. The
-owner decided on 2026-11-08 that the type-check runs on **Workers Builds** from the Artifacts
-repository `cryptophys/platform`. No GitHub, no Container.
+owner decided on 2026-11-08 that the trusted Artifacts `main` build runs the type-check and Console UI
+build on **Workers Builds**. GitHub Actions continues to type-check pull requests; no Container is used.
 
 ## How it works
 
-1. Every push to the Artifacts repository (the mirror of `main`, and later every branch) starts a
-   build of this project, with this directory as its root.
+1. Every push to the Artifacts repository's canonical `main` branch (the mirror of GitHub `main`)
+   starts a build of this project, with this directory as its root. Pull-request/change-request
+   branches are not built by this project while it contains the CI service token.
 2. The **build command** `node typecheck-and-report.mjs` installs the locked toolchain in
    `../control-plane-shared` (`npm ci --ignore-scripts`), runs `npm run typecheck`
    (`tsc --noEmit -p ../control-plane-tsconfig.json`), and reports the result for the commit to the
@@ -42,7 +43,8 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
      If the build log says `Cloudflare Access refused the CI service token (HTTP 302 ...)`, the
      build secret differs from the token's current secret; paste it again (or rotate the token and
      update GitHub `production` and these build secrets together).
-6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
+6. **Deploy.** The first build runs on the current Artifacts `main`; later pushes to `main` trigger
+   builds. Do not connect pull-request branches to this secret-bearing project.
 7. **Do not enable preview builds with the CI service token (security, 2026-11-09).** A build
    runs the checked-out branch's own code: `typecheck-and-report.mjs`, the Vite config and the npm
    scripts all come from that branch. A preview build of a change request would therefore run
