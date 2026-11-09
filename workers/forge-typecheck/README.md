@@ -13,9 +13,14 @@ repository `cryptophys/platform`. No GitHub, no Container.
    (`tsc --noEmit -p ../control-plane-tsconfig.json`), and reports the result for the commit to the
    Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics are text only
    (file, line, code, message); no file content and no secret is sent.
+   The same build then installs `../console/ui` and runs its `npm run build` (the UI's own
+   `tsc --noEmit` and the Vite build, as GitHub CI's "Build the Console UI" step) and reports it in
+   the same request as `console_build` (conclusion, errors, diagnostics, output size).
 3. The Forge records the report (`forge_typecheck_reports`, migration 0035) and folds it into its
-   check of the same commit as the `typecheck` step. A type error fails that check. Until the report
-   arrives the step reads `pending`.
+   check of the same commit as the `typecheck` step. A type error or a failed Console build fails that
+   check. Until the report arrives the step reads `pending`. A check is **ready** when its tests and
+   bundles passed, no secret was found, the types passed and the Console built (migration 0036
+   stores the Console build).
 4. The **deploy command** `npx wrangler deploy` deploys this stub Worker. It has no route, no
    `workers.dev` URL and no bindings; it exists because Workers Builds deploys a Worker.
 

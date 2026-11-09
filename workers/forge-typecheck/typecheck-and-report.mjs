@@ -1,10 +1,12 @@
 // Workers Builds build command (ADR-0012 §5c). Runs the control-plane type-check with the locked
-// toolchain and reports the result for this commit to the Forge, then exits with the compiler's
-// status so the build shows the same outcome. Reads Workers Builds' default variables
+// toolchain, then the Console UI build (its own type-check and the Vite build, as GitHub CI's
+// "Build the Console UI" step), reports both for this commit to the Forge, then exits non-zero if
+// either failed so the build shows the same outcome. Reads Workers Builds' default variables
 // (WORKERS_CI_COMMIT_SHA, WORKERS_CI_BUILD_UUID, WORKERS_CI_BRANCH) and the build secrets
 // CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (the CI service token) plus FORGE_URL.
 // Nothing here prints a secret. Without FORGE_URL or the token it still type-checks, and says so.
 import { spawnSync } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +33,29 @@ export function summarize(status, output, toolchain) {
   const diagnostics = parseDiagnostics(output);
   const errors = status === 0 ? 0 : Math.max(diagnostics.length, 1);
   return { conclusion: status === 0 ? "success" : "failure", errors, diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), toolchain };
+}
+
+/**
+ * The Console UI build: `npm run build` (tsc --noEmit, then vite build). Its diagnostics are the
+ * TypeScript errors, or, when Vite fails without one, the last lines of its output.
+ */
+export function summarizeConsoleBuild(status, output, bytes) {
+  let diagnostics = parseDiagnostics(output);
+  if (status !== 0 && diagnostics.length === 0) {
+    diagnostics = output.split("\n").map((l) => l.trim()).filter(Boolean).slice(-5).map((l) => l.slice(0, 600));
+  }
+  const errors = status === 0 ? 0 : Math.max(diagnostics.length, 1);
+  const result = { conclusion: status === 0 ? "success" : "failure", errors, diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS) };
+  return status === 0 && Number.isInteger(bytes) ? { ...result, bytes } : result;
+}
+
+function dirBytes(dir) {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    total += entry.isDirectory() ? dirBytes(p) : statSync(p).size;
+  }
+  return total;
 }
 
 function run(cmd, args, cwd) {
@@ -101,11 +126,19 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
   const tc = run("npm", ["run", "typecheck", "--silent"], shared);
   console.log(tc.output.trim().slice(-20000));
   const summary = summarize(tc.status, tc.output, toolchain);
+  const ui = path.join(here, "..", "console", "ui");
+  const uiInstall = run("npm", ["ci", "--no-audit", "--no-fund", "--ignore-scripts"], ui);
+  const uiBuild = uiInstall.status === 0 ? run("npm", ["run", "build", "--silent"], ui) : uiInstall;
+  console.log(uiBuild.output.trim().slice(-8000));
+  let bytes;
+  try { bytes = uiBuild.status === 0 ? dirBytes(path.join(ui, "dist")) : undefined; } catch { bytes = undefined; }
+  const consoleBuild = summarizeConsoleBuild(uiBuild.status, uiBuild.output, bytes);
+  console.log(`typecheck-and-report: control plane ${summary.conclusion} (${summary.errors} errors); Console UI build ${consoleBuild.conclusion}${bytes ? ` (${bytes} bytes)` : ""}`);
   try {
-    await report({ commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary }, env);
+    await report({ commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary, console_build: consoleBuild }, env);
   } catch (e) {
     console.error(String(e?.message ?? e));
     process.exit(3);
   }
-  process.exit(tc.status === 0 ? 0 : 1);
+  process.exit(tc.status === 0 && uiBuild.status === 0 ? 0 : 1);
 }
