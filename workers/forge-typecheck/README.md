@@ -19,6 +19,9 @@ repository `cryptophys/platform`. No GitHub, no Container.
 4. The **deploy command** `npx wrangler deploy` deploys this stub Worker. It has no route, no
    `workers.dev` URL and no bindings; it exists because Workers Builds deploys a Worker.
 
+The build finds its commit from `WORKERS_CI_COMMIT_SHA` when Workers Builds sets a full SHA, and
+otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may not set it).
+
 ## One-time setup (owner, Cloudflare dashboard)
 
 1. **Workers & Pages → Create application → Continue with Artifacts.** Namespace `cryptophys`,
