@@ -64,13 +64,17 @@ These hold everywhere:
 ## The living platform (ADR-0013)
 
 - **DNA.** Every Worker declares itself in `workers/<dir>/organism.json`: service, deploy unit, Access, rollback, drift probe, hosted agents (voter or not), AI engines. CI fails when a static list (deploy units, drift probes, Access, rollback, council, kernel agents, vote bindings, engines, names) disagrees with the DNA.
-- **Census (phase 2).** The Forge compares the DNA of each main commit with `service_registry` and `agents` (`forge_organism_census`); differences become the owner notice `organism` and appear on the Console Agents page.
-- **Next (phase 3).** New agents and engines register through consensus; council seats and privileged capabilities need the owner's click.
+- **Census (phase 2).** The Forge compares the DNA of each main commit with `service_registry`, `agents` (and their seats) and `engines` (`forge_organism_census`, retaken every 30 min). Differences become the owner notice `organism` and appear on the Console Agents page.
+- **Self-registration (phase 3).** The Supervisor turns census findings into consensus proposals, one per cycle:
+  - `register_agent` and `register_engine` are routine: consensus only.
+  - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `critical` only.
+  - The kernel takes the gene from the census, never from the proposal, so only merged DNA can register. Tier 3, unknown and trading capabilities are never registered.
+  - A new seat must vote through a reviewed vote binding; without one it is refused. A seat the DNA no longer asks for is reported, never removed by an agent.
 
 ## Autonomy (ADR-0007, ADR-0009)
 
 - **Current state.** Consensus mode is `deploy` (owner, 2026-11-07). The kill switch is on.
-- **Routine actions.** Agents propose. The council votes: the voters each Worker's DNA declares (`workers/*/organism.json`, ADR-0013; nine today). The Policy Engine has a veto.
+- **Routine actions.** Agents propose. The council votes: the enabled agents holding a seat (`agents.voter`, ADR-0013). Migration 0041 seeded the nine founding seats; new ones come only through `admit_voter`. The Policy Engine has a veto.
 - **Limits.** One deploy per target per hour and six per 24 hours. Deploys run only at SAFE minutes.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.

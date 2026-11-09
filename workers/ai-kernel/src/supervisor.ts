@@ -15,6 +15,7 @@ import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-pl
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
+import { latestCensusRow, proposalFor } from "./organism.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -26,6 +27,8 @@ export const SUSPEND_AFTER_FAILURES_PER_HOUR = 5;
 export const AGENT_ID = "supervisor";
 const SERVICE = "cryptophys-ai-kernel";
 const PROPOSAL_COOLDOWN_MS = 24 * 3_600_000;
+/** ADR-0013: one registration proposal per action and target per day. */
+export const REGISTRATION_COOLDOWN_MS = 24 * 3_600_000;
 
 /** Serializes overlapping invocations of one Durable Object agent cycle, including awaits. */
 export class SerialCycleQueue {
@@ -210,6 +213,21 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         report.actions.push(r);
         report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
       }
+    }
+    // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
+    // an engine, a council seat) is proposed for registration, one per cycle, each action and
+    // target at most once a day. Seats and privileged agents are critical: they reach the owner.
+    const census = await latestCensusRow(env);
+    for (const f of census?.findings ?? []) {
+      const prop = census ? proposalFor(census, f) : null;
+      if (!prop) continue;
+      const recent = await env.DB.prepare("SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ? LIMIT 1")
+        .bind(prop.action, prop.target, new Date(now - REGISTRATION_COOLDOWN_MS).toISOString()).first();
+      if (recent) continue;
+      const r = await syscall(env, AGENT_ID, "consensus.propose", prop);
+      report.actions.push(r);
+      report.findings.push({ kind: "organism", service_id: prop.target, action: "consensus.propose", outcome: r.outcome, why: `${prop.action}: ${f.detail}`.slice(0, 300) });
+      break;
     }
   }
   if (env.DEPLOY && trigger === "operator") {

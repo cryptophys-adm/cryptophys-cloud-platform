@@ -52,7 +52,7 @@ const agentStatus = (db: Db, id: string) => ({ ...(db.raw.prepare("SELECT status
 const service = (db: Db, id: string) => (db.raw.prepare("SELECT status, desired_version FROM service_registry WHERE service_id = ?").get(id) as any);
 
 test("1. the phase 2 executable set is routine, reversible, and has no deploy", () => {
-  assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["observe_drift", "registry_disable_service", "registry_enable_service", "resume_agent", "set_desired_version", "suspend_agent"]);
+  assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["observe_drift", "register_agent", "register_engine", "registry_disable_service", "registry_enable_service", "resume_agent", "set_desired_version", "suspend_agent"]);
   for (const a of PHASE2_EXECUTABLE) assert.doesNotMatch(a, /deploy|rollback|restore|secret|retire|access/);
 });
 

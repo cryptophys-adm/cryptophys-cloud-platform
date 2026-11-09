@@ -2,8 +2,10 @@
 // (workers/<dir>/organism.json, from the Artifacts repository) and compares it with the live
 // registries. What is declared but unknown, known but no longer declared, or changed, is a finding.
 // Findings are recorded per main commit (forge_organism_census, migration 0040), audited when they
-// change, raised to the owner by the AI Kernel's notices (topic "organism"), and in phase 3 turned
-// into registration proposals by the Supervisor. The census reads only; it registers nothing.
+// change, raised to the owner by the AI Kernel's notices (topic "organism"), and (phase 3) turned
+// into registration proposals by the Supervisor (ai-kernel/src/organism.ts). The census reads only;
+// it registers nothing. The genome summary keeps each agent's full gene, because the registration
+// executors take the gene from here, never from a proposal's params.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { DNA_FILE, genomeFrom, type Genome } from "../../control-plane-shared/src/organism.ts";
@@ -11,7 +13,8 @@ import type { ArtifactsReader } from "./checks.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
-export type FindingKind = "invalid_dna" | "unregistered_service" | "disabled_service" | "unregistered_agent" | "undeclared_agent" | "agent_host_changed" | "agent_capabilities_changed";
+export type FindingKind = "invalid_dna" | "unregistered_service" | "disabled_service" | "unregistered_agent" | "undeclared_agent" | "agent_host_changed" | "agent_capabilities_changed"
+  | "unregistered_engine" | "undeclared_engine" | "voter_seat_requested" | "voter_seat_vacated";
 export interface Finding { kind: FindingKind; subject: string; detail: string }
 
 /** Read every workers/<dir>/organism.json at a commit. */
@@ -34,11 +37,23 @@ export async function readGenome(repo: ArtifactsReader, commit: string): Promise
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
 
-/** Compare the DNA with service_registry and agents. Read-only. */
+/** Compare the DNA with service_registry, agents (and their seats) and engines. Read-only. */
 export async function compare(db: D1Database, genome: Genome): Promise<Finding[]> {
   const findings: Finding[] = [];
   const services = new Map(((await db.prepare("SELECT service_id, status FROM service_registry").all<{ service_id: string; status: string }>()).results ?? []).map((r) => [r.service_id, r.status]));
-  const agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string }>()).results ?? [];
+  // Seats and engines arrive with migration 0041; before it the census compares what exists.
+  let phase3 = true;
+  let agents: Array<{ agent_id: string; host_worker: string; capabilities_json: string; voter?: number }>;
+  try {
+    agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json, voter FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string; voter: number }>()).results ?? [];
+  } catch {
+    phase3 = false;
+    agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string }>()).results ?? [];
+  }
+  let engines: Array<{ service_id: string; task: string }> = [];
+  if (phase3) {
+    try { engines = (await db.prepare("SELECT service_id, task FROM engines WHERE status = 'enabled'").all<{ service_id: string; task: string }>()).results ?? []; } catch { phase3 = false; }
+  }
   const byId = new Map(agents.map((a) => [a.agent_id, a]));
   const declared = new Set<string>();
   for (const dna of genome.values()) {
@@ -55,6 +70,14 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
       let caps: string[] = [];
       try { const c = JSON.parse(row.capabilities_json ?? "[]"); if (Array.isArray(c)) caps = c.map(String); } catch { caps = []; }
       if (!sameSet(caps, gene.capabilities)) findings.push({ kind: "agent_capabilities_changed", subject: gene.id, detail: `agent ${gene.id}: registered [${[...caps].sort().join(", ")}], DNA [${[...gene.capabilities].sort().join(", ")}]` });
+      if (phase3 && gene.voter && row.voter !== 1 && row.host_worker === dna.service) findings.push({ kind: "voter_seat_requested", subject: gene.id, detail: `agent ${gene.id} on ${dna.service} asks for a council seat (consensus and the owner's click)` });
+      if (phase3 && !gene.voter && row.voter === 1) findings.push({ kind: "voter_seat_vacated", subject: gene.id, detail: `agent ${gene.id} holds a council seat its DNA no longer asks for` });
+    }
+    if (phase3) {
+      const live = new Set(engines.filter((e) => e.service_id === dna.service).map((e) => e.task));
+      for (const e of dna.engines) if (!live.has(e.task)) findings.push({ kind: "unregistered_engine", subject: `${dna.service}:${e.task}`, detail: `AI engine ${e.task} on ${dna.service} is in the DNA but not registered` });
+      const tasks = new Set(dna.engines.map((e) => e.task));
+      for (const t of live) if (!tasks.has(t)) findings.push({ kind: "undeclared_engine", subject: `${dna.service}:${t}`, detail: `AI engine ${t} is registered on ${dna.service}, but its DNA does not declare it` });
     }
   }
   for (const a of agents) {
@@ -63,11 +86,15 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
   return findings.sort((x, y) => (x.kind + x.subject).localeCompare(y.kind + y.subject));
 }
 
-/** One census per main head: read the DNA, compare, record, and audit when the findings changed. */
-export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now()): Promise<{ outcome: "recorded" | "up_to_date" | "no_main"; main_sha?: string; status?: string; findings?: number }> {
+/** A census of an unchanged head is retaken this often, so registrations by consensus show up in it. */
+export const CENSUS_REFRESH_MS = 30 * 60_000;
+
+/** One census per main head (retaken every CENSUS_REFRESH_MS): read the DNA, compare, record, and audit when the findings changed. */
+export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now()): Promise<{ outcome: "recorded" | "refreshed" | "up_to_date" | "no_main"; main_sha?: string; status?: string; findings?: number }> {
   const head = (await repo.log({ ref: "main", limit: 1 })).map((c) => (typeof c.hash === "string" ? c.hash : "")).find((h) => HEX40.test(h));
   if (!head) return { outcome: "no_main" };
-  if (await db.prepare("SELECT 1 AS ok FROM forge_organism_census WHERE main_sha = ?").bind(head).first()) return { outcome: "up_to_date", main_sha: head };
+  const existing = await db.prepare("SELECT taken_at FROM forge_organism_census WHERE main_sha = ?").bind(head).first<{ taken_at: string }>();
+  if (existing && nowMs - Date.parse(existing.taken_at) < CENSUS_REFRESH_MS) return { outcome: "up_to_date", main_sha: head };
   let status: "consistent" | "changes" | "invalid";
   let findings: Finding[] = [];
   let genome: Genome = new Map();
@@ -80,17 +107,23 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
     findings = [{ kind: "invalid_dna", subject: head.slice(0, 12), detail: `the DNA could not be read: ${String((e as Error)?.message ?? e).slice(0, 300)}` }];
   }
   const dnas = [...genome.values()];
-  const summary = dnas.map((d) => ({ service: d.service, kind: d.kind, agents: d.agents.map((a) => ({ id: a.id, voter: a.voter })), engines: d.engines.map((e) => e.task) }));
+  const summary = dnas.map((d) => ({
+    service: d.service, kind: d.kind,
+    agents: d.agents.map((a) => ({ id: a.id, display_name: a.display_name, capabilities: [...a.capabilities].sort(), tier_max: a.tier_max, voter: a.voter, ...(a.vote_binding ? { vote_binding: a.vote_binding } : {}) })),
+    engines: d.engines.map((e) => e.task),
+  }));
   const counts = { organs: dnas.length, agents: dnas.reduce((n, d) => n + d.agents.length, 0), engines: dnas.reduce((n, d) => n + d.engines.length, 0), voters: dnas.reduce((n, d) => n + d.agents.filter((a) => a.voter).length, 0) };
   const previous = await db.prepare("SELECT findings FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first<{ findings: string }>();
   const findingsJson = JSON.stringify(findings);
   await db.prepare(
-    "INSERT INTO forge_organism_census (main_sha, status, organs, agents, engines, voters, findings, genome, taken_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    `INSERT INTO forge_organism_census (main_sha, status, organs, agents, engines, voters, findings, genome, taken_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (main_sha) DO UPDATE SET status = excluded.status, organs = excluded.organs, agents = excluded.agents, engines = excluded.engines,
+       voters = excluded.voters, findings = excluded.findings, genome = excluded.genome, taken_at = excluded.taken_at`,
   ).bind(head, status, counts.organs, counts.agents, counts.engines, counts.voters, findingsJson, JSON.stringify(summary), new Date(nowMs).toISOString()).run();
   if (previous?.findings !== findingsJson) {
     await appendAuditEvent(db, { event_type: "forge.organism_census", actor: "system:forge-census", subject: head, outcome: status, payload: { ...counts, findings: findings.slice(0, 20) } });
   }
-  return { outcome: "recorded", main_sha: head, status, findings: findings.length };
+  return { outcome: existing ? "refreshed" : "recorded", main_sha: head, status, findings: findings.length };
 }
 
 export async function latestCensus(db: D1Database, limit = 5) {
