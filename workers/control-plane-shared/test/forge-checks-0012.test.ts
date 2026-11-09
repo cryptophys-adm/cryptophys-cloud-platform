@@ -80,6 +80,9 @@ test("FC3. the runner core: paths, test files, groups and the deferred module bo
   const groups = groupFiles(Array.from({ length: 43 }, (_, i) => String(i)));
   assert.equal(groups.length, 6, "43 files in 6 test Workers, under the 32 Worker invocations one request may make");
   assert.ok(groups.every((g) => g.length <= FILES_PER_WORKER));
+  const entry = runnerEntry(["x/a.test.ts"]);
+  assert.match(entry, /cleanupSqlite/);
+  assert.match(entry, /sqlite_open_after/);
   const deferred = deferTopLevel('import assert from "node:assert/strict";\nconst k = Date.now();\ntest("x", () => {});\nexport {\n  k\n};\n');
   assert.match(deferred, /^import assert from "node:assert\/strict";\nexport async function __load\(\) \{\nconst k = Date\.now\(\);/);
   assert.doesNotMatch(deferred, /export \{/);
@@ -120,6 +123,16 @@ test("FC4. one test Worker per group, without network access, with the bundler c
   assert.ok(r.failures.some((f) => f.startsWith("t03.test.ts: BUNDLE")));
   assert.ok(r.failures.some((f) => f.startsWith("t09.test.ts: RUN Worker exceeded CPU limit")));
   assert.ok(r.failures.some((f) => f === "t00.test.ts :: b: boom"));
+});
+
+test("FC5b. a SQL.js database left open by a file fails the suite", () => {
+  const r = tally({ files: 0, pass: 0, fail: 0, skip: 0, failures: [] }, ["x/a.test.ts"], {
+    files: [{ file: "x/a.test.ts", results: [{ name: "ok", status: "pass" }], sqlite_open_after: 1, sqlite_close_errors: 0 }],
+  });
+  assert.deepEqual(r, {
+    files: 1, pass: 1, fail: 1, skip: 0,
+    failures: ["a.test.ts: SQLITE cleanup left 1 database(s) open (0 close errors)"],
+  });
 });
 
 test("FC5. a file the test Worker did not report, or could not load, fails", () => {
@@ -378,6 +391,13 @@ test("FC17. a run records its steps; a bundle failure fails it, a secret finding
   const listed = await call(forge, baseEnv("cryptophys-forge", db, { ARTIFACTS: {} }), req("GET", "/v1/forge/checks", undefined, OPERATOR_JWT));
   assert.deepEqual(listed.body.checks[0].bundles, { workers: 2, failed: 1 });
   assert.equal(listed.body.checks[0].guard_status, "findings");
+});
+
+test("FC19. the SQL.js shim tracks database instances for per-file cleanup", () => {
+  const shim = read("workers/forge/src/runner/shims/node-sqlite.js");
+  assert.match(shim, /__SQL_DATABASES/);
+  assert.match(shim, /databases\.add\(this\)/);
+  assert.match(shim, /databases\.delete\(this\)/);
 });
 
 test("FC18. the Forge is not ready before its own migrations are applied; other Workers do not wait for them", async () => {

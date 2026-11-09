@@ -268,18 +268,37 @@ export default { async fetch(request, env) {
   if (env && env.BUNDLER) globalThis.__FORGE_BUNDLE = (dir) => env.BUNDLER.bundleWorker(dir);
   globalThis.__SQL = await initSqlJs({ instantiateWasm(imports, done) { WebAssembly.instantiate(wasm, imports).then((i) => done(i)); return {}; } });
   await new Promise((r) => setTimeout(r, 5)); // advance the clock (it only moves on I/O)
+  const cleanupSqlite = () => {
+    const databases = globalThis.__SQL_DATABASES;
+    let closeErrors = 0;
+    if (databases && typeof databases[Symbol.iterator] === "function") {
+      for (const db of Array.from(databases)) {
+        try { db.close(); } catch { closeErrors++; }
+      }
+    }
+    return { open: databases && typeof databases.size === "number" ? databases.size : 0, closeErrors };
+  };
   const report = [];
   for (const file of files) {
     globalThis.__TESTS = undefined; globalThis.__MEMFS = undefined; globalThis.__T0 = Date.now();
     const out = { file, results: [] };
     report.push(out);
-    try { await (await loaders[file]()).__load(); } catch (e) { out.load_error = String(e && e.stack || e).slice(0, 800); continue; }
+    try { await (await loaders[file]()).__load(); } catch (e) {
+      out.load_error = String(e && e.stack || e).slice(0, 800);
+      const cleanup = cleanupSqlite();
+      out.sqlite_open_after = cleanup.open;
+      out.sqlite_close_errors = cleanup.closeErrors;
+      continue;
+    }
     const reg = globalThis.__TESTS || { tests: [], before: [], after: [] };
     for (const t of reg.tests) {
       if (t.skip || t.todo) { out.results.push({ name: t.name, status: "skip" }); continue; }
       try { for (const h of reg.before) await h(); await t.fn({}); for (const h of reg.after) await h(); out.results.push({ name: t.name, status: "pass" }); }
       catch (e) { out.results.push({ name: t.name, status: "fail", error: (String(e && e.message || e) + " | actual=" + JSON.stringify(e && e.actual)?.slice(0, 300) + " expected=" + JSON.stringify(e && e.expected)?.slice(0, 200) + " | " + String(e && e.stack || "").split("\\n").slice(1, 3).join(" ")).slice(0, 900) }); }
     }
+    const cleanup = cleanupSqlite();
+    out.sqlite_open_after = cleanup.open;
+    out.sqlite_close_errors = cleanup.closeErrors;
   }
   return Response.json({ files: report });
 } };`;
@@ -293,7 +312,13 @@ export function runnerEntry(files: string[]): string {
   return RUNNER_ENTRY.replace("/*LOADERS*/", loaders);
 }
 
-export interface FileReport { file: string; load_error?: string; results?: Array<{ name: string; status: string; error?: string }> }
+export interface FileReport {
+  file: string;
+  load_error?: string;
+  results?: Array<{ name: string; status: string; error?: string }>;
+  sqlite_open_after?: number;
+  sqlite_close_errors?: number;
+}
 export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[] }
 
 export function emptyResult(): SuiteResult {
@@ -313,6 +338,12 @@ export function tally(into: SuiteResult, expected: string[], report: { files?: F
       if (r.status === "pass") into.pass++;
       else if (r.status === "skip") into.skip++;
       else { into.fail++; into.failures.push(`${name} :: ${r.name}: ${r.error ?? "failed"}`); }
+    }
+    const open = f.sqlite_open_after ?? 0;
+    const closeErrors = f.sqlite_close_errors ?? 0;
+    if (open > 0 || closeErrors > 0) {
+      into.fail++;
+      into.failures.push(name + ": SQLITE cleanup left " + open + " database(s) open (" + closeErrors + " close errors)");
     }
   }
   return into;
