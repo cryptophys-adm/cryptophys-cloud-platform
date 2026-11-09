@@ -1,0 +1,15 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-forge",
+  "display_name": "Forge",
+  "kind": "service",
+  "deploy_unit": "forge",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_FORGE"
+  },
+  "agents": [],
+  "engines": []
+}

@@ -1,0 +1,34 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-recovery-manager",
+  "display_name": "Recovery Manager",
+  "kind": "service",
+  "deploy_unit": "control-plane",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_RECOVERY_MANAGER"
+  },
+  "agents": [
+    {
+      "id": "recovery-manager",
+      "display_name": "Recovery Manager AI Agent",
+      "capabilities": [
+        "platform.observe",
+        "recovery.propose",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true,
+      "vote_binding": "VOTE_RECOVERY_MANAGER"
+    }
+  ],
+  "engines": [
+    {
+      "task": "draft_recovery_options"
+    }
+  ]
+}

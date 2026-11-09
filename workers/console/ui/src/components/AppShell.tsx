@@ -12,6 +12,7 @@ import { Dot } from "./ui";
 import CognitionPanel from "./CognitionPanel";
 import LiveEventBus from "./LiveEventBus";
 import { ago } from "../lib/format";
+import { serviceName } from "../lib/plain";
 
 export const NAV = [
   { label: "Command", href: "#/", key: "", icon: Terminal },
@@ -55,6 +56,25 @@ function PriorityQueue() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The footer lists the organs the Drift Detector observes right now (ADR-0013: no fixed list of
+ * components), each with its drift state, then the platform's shared substrate.
+ */
+function OrganStrip() {
+  const { ov } = useOverview();
+  const organs = [...(ov?.services ?? [])].sort((a, b) => serviceName(a.service_id).localeCompare(serviceName(b.service_id)));
+  return (
+    <>
+      {organs.map((s) => (
+        <span key={s.service_id} className="inline-flex items-center gap-1.5 whitespace-nowrap" title={s.drifted ? "drifted" : "in sync"}>
+          <Dot tone={s.drifted ? "amber" : "green"} />{serviceName(s.service_id)}
+        </span>
+      ))}
+      {["Workers AI", "D1", "Vectorize", "Artifacts"].map((s) => <span key={s} className="whitespace-nowrap text-slate-600">{s}</span>)}
+    </>
   );
 }
 
@@ -199,7 +219,7 @@ export default function AppShell({ current, children }: { current: string; child
 
       <footer className="sticky bottom-0 z-20 border-t border-white/10 bg-obsidian-foot/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1680px] items-center gap-4 overflow-x-auto px-3 py-3 text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500 sm:px-6">
-          {["AI Kernel", "Policy Engine", "Audit Ledger", "Drift Detector", "Recovery", "Registry", "Workers AI", "D1", "Vectorize"].map((s) => <span key={s} className="whitespace-nowrap">{s}</span>)}
+          <OrganStrip />
           <a href="https://nexus.cryptophys.work/" className="ml-auto inline-flex items-center gap-1 whitespace-nowrap text-cyan-300/80 hover:text-cyan-200">Nexus <ExternalLink className="h-3 w-3" /></a>
         </div>
       </footer>

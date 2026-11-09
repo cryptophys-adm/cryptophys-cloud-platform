@@ -1,0 +1,34 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-policy-engine",
+  "display_name": "Policy Engine",
+  "kind": "service",
+  "deploy_unit": "control-plane",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_POLICY_ENGINE"
+  },
+  "agents": [
+    {
+      "id": "policy-engine",
+      "display_name": "Policy Engine AI Agent",
+      "capabilities": [
+        "platform.observe",
+        "audit.verify",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true,
+      "vote_binding": "VOTE_POLICY_ENGINE"
+    }
+  ],
+  "engines": [
+    {
+      "task": "explain_decision"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-ai-kernel",
+  "display_name": "AI Kernel",
+  "kind": "service",
+  "deploy_unit": "control-plane",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_AI_KERNEL"
+  },
+  "agents": [
+    {
+      "id": "auditor",
+      "display_name": "Platform Auditor",
+      "capabilities": [
+        "audit.verify",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true
+    },
+    {
+      "id": "signal-analyst",
+      "display_name": "Signal Analyst",
+      "capabilities": [
+        "signals.observe",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": false
+    },
+    {
+      "id": "supervisor",
+      "display_name": "Platform Supervisor",
+      "capabilities": [
+        "platform.observe",
+        "recovery.propose",
+        "memory.recall",
+        "memory.remember",
+        "consensus.propose"
+      ],
+      "tier_max": 1,
+      "voter": true
+    }
+  ],
+  "engines": [
+    {
+      "task": "draft_audit_digest"
+    },
+    {
+      "task": "draft_recovery_proposal"
+    }
+  ]
+}

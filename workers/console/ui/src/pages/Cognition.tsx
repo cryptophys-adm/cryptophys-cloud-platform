@@ -7,7 +7,7 @@ import { ago, listOf } from "../lib/format";
 import { explainCode } from "../lib/plain";
 import CognitionPanel from "../components/CognitionPanel";
 
-const KINDS = ["", "signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest"];
+const KINDS = ["", "signal_digest", "audit_digest", "platform_digest", "xauusd_digest", "hud_digest", "knowledge_audit"];
 
 export default function Cognition() {
   const [agent, setAgent] = useState("");

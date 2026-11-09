@@ -1,0 +1,35 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-platform-api",
+  "display_name": "Platform API",
+  "kind": "service",
+  "deploy_unit": "platform-api",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_PLATFORM_API"
+  },
+  "agents": [
+    {
+      "id": "platform-api",
+      "display_name": "Platform API AI Agent",
+      "capabilities": [
+        "platform.observe",
+        "signals.observe",
+        "audit.verify",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true,
+      "vote_binding": "VOTE_PLATFORM_API"
+    }
+  ],
+  "engines": [
+    {
+      "task": "summarize_platform_overview"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-forge-typecheck",
+  "display_name": "Forge type-check (Workers Builds stub)",
+  "kind": "build-stub",
+  "deploy_unit": null,
+  "access": false,
+  "rollback": false,
+  "drift": null,
+  "agents": [],
+  "engines": []
+}

@@ -1,0 +1,15 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-console",
+  "display_name": "Cerebrum Console",
+  "kind": "portal",
+  "deploy_unit": "console",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_CONSOLE"
+  },
+  "agents": [],
+  "engines": []
+}
