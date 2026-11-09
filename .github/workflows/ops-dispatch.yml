@@ -77,6 +77,7 @@ jobs:
             retire-worker.yml) ref=main ;;
             rollback-worker.yml) ref=main ;;
             d1-backup.yml) ref=main ;; # no inputs; reads D1, writes the private backup bucket
+            access-diagnose.yml) ref=main ;; # no inputs; read-only Access service-token diagnosis
             *) echo "::error::Workflow ${workflow} is not allow-listed"; exit 1 ;;
           esac
 
