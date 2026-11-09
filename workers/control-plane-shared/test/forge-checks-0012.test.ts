@@ -106,11 +106,11 @@ test("FC4. one test Worker per group, without network access, with the bundler c
       loaded.push(code);
       const files = code.modules["files.json"] as { json: string[] };
       if (files.json.includes("workers/control-plane-shared/test/t09.test.ts")) throw new Error("Worker exceeded CPU limit");
-      return { files: files.json.map((file, i) => ({ file, results: i === 0 ? [{ name: "a", status: "pass" }, { name: "b", status: "fail", error: "boom" }] : [{ name: "a", status: "pass" }, { name: "s", status: "skip" }] })) };
+      return { files: files.json.map((file) => ({ file, results: file.endsWith("/t00.test.ts") ? [{ name: "a", status: "pass" }, { name: "b", status: "fail", error: "boom" }] : [{ name: "a", status: "pass" }, { name: "s", status: "skip" }] })) };
     },
   };
   const r = await runSuite(deps, snapshot);
-  assert.equal(loaded.length, 2, "10 files: one Worker of 7 (one did not bundle), one of 2");
+  assert.equal(loaded.length, 3, "10 files: three Workers (3, 4, 2); one file did not bundle");
   for (const code of loaded) {
     assert.equal(code.globalOutbound, null, "tests have no network access");
     assert.deepEqual(code.env, { BUNDLER: "BUNDLER-STUB" });
