@@ -38,7 +38,7 @@ The original Cryptophys estate (ADR-0005 inventory) had its own forge: Gitea (so
   - push/clone/fetch events to Queues.
 
   Limits are 1 GB per repository, and this repository is about 14 MB. Pricing is the first 10,000 operations and 1 GB per month, then $0.15 per 1,000 operations and $0.50 per GB-month.
-- **Workers Builds** can build and deploy a Worker from an Artifacts repository. It is a managed Cloudflare build environment. **The owner chose not to use it** (§6.1).
+- **Workers Builds** can build and deploy a Worker from an Artifacts repository. It is used only for the owner-approved TypeScript type-check and Console UI build (§5c); Forge tests, migration tests and bundles remain on Dynamic Workers.
 - **Dynamic Workers (Worker Loader)** run code in an isolate, with outbound network blocked if wanted. They also offer:
   - **Durable Object Facets**, which give that isolate its own SQLite database;
   - `@cloudflare/worker-bundler`, which bundles TypeScript and npm dependencies at runtime.
@@ -66,7 +66,7 @@ Build **the Forge**: a Cloudflare-native replacement for Gitea + Tekton + Argo, 
 
 The new Worker `cryptophys-forge` keeps change requests in D1. Each change request records the work branch, head SHA, base SHA, status, checks, reviews, the owner decision and audit events. A change request moves through these steps:
 
-1. **Checks: the Forge runner, Dynamic Workers only** (owner, §6.1). On every branch push, a Workflow in the Forge does the following:
+1. **Checks: Forge tests, migrations and bundles run in Dynamic Workers; type-check and Console UI build use the scoped Workers Builds exception** (§5c, §6.1). On every branch push, a Workflow in the Forge does the following:
    1. It reads the tree at the head SHA from Artifacts.
    2. It installs dependencies from an R2 package cache. The cache is keyed by the lockfile hash and filled from the npm registry only by the Forge.
    3. It runs each step in a fresh Dynamic Worker with outbound network blocked:
@@ -283,7 +283,7 @@ The owner said "lanjutkan semua" (continue everything) on 2026-11-09. Phase 4 st
   - **Merge parity:** a GitHub merge agrees when the Forge would have merged it or asked the owner. It disagrees when the Forge had blocked it. A `pending` verdict counts as "Forge late" and is not compared. The bar for the Forge to merge by itself is 10 consecutive agreements.
   - The Console Code page shows the change requests (route `forge.changes`, read-only).
   - **Deviation from §1.** During the shadow phase the `cr/` branches live in `platform`, not in `platform-work`, so that the existing Workers Builds project type-checks them as preview builds. They move to `platform-work` at cut-over.
-  - **Owner step (done 2026-11-09).** In `cryptophys-forge-typecheck`, under **Settings → Builds**, turn on **Builds for Preview branches**. The build command `node typecheck-and-report.mjs` is used for preview branches too. The **Preview command**, which is the deploy step of a preview build, is `npx wrangler versions upload`: it uploads a stub version with no traffic. The report is sent during the build step, so the deploy step does not affect it.
+  - **Owner step (partially verified 2026-11-09).** The owner enabled **Builds for Preview branches**; Artifacts preview records now exist for `cr/245` and `cr/250`. The build command `node typecheck-and-report.mjs` runs for those branches. The preview-only deploy command is `npx wrangler preview`, which creates a branch-isolated Worker Preview; production build/deploy settings are unchanged. Current preview builds fail during the report step because Cloudflare Access returns HTTP 302 for the preview-specific CI service-token variables, so no type-check report is recorded. The preview credentials must be refreshed. Cloudflare also documents a one-time, irreversible switch for existing Workers Builds projects that still use the legacy preview model; the API read available here does not expose whether that switch has been completed, so the owner must confirm it in the dashboard before relying on branch previews. The report is sent during the build step, before the preview command.
 - **4.2 Deploy plan (shadow).**
   - The deploy units and their ordering rules move to `control-plane-shared/src/deploy-units.ts`. The rules are: a new migration deploys the Control Plane first and alone; the orchestrator deploys before the others; the plan fails closed when the Control Plane is unavailable. The Orchestrator's behaviour is unchanged.
   - Each Forge cron tick computes the plan for main's head from the Artifacts repository, using a tree diff from each unit's desired version. It records the plan under the registry fingerprint, which is every unit's desired versions.
@@ -310,7 +310,7 @@ How notices are kept and shown:
 
 ### 6. Owner decisions (2026-11-08)
 
-1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).
+1. **Build runner: Dynamic Workers for Forge tests, migrations and bundles; scoped Workers Builds exception for type-check and Console UI build.** The 2026-11-08 decision to use Dynamic Workers only applied to Forge test/build execution and rejected Containers or a managed test runner. The owner later chose Workers Builds from Artifacts for the TypeScript type-check and Console UI build (§5c), and enabled branch previews for phase 4 (§5d). This exception does not move Forge test execution or application deployments into Workers Builds.
 2. **Merges: agent consensus.** `merge_change` is a routine ADR-0009 action, except for the critical paths listed in §2.4.
 3. **GitHub after cut-over: archive.** It is not mirrored and not deleted.
 4. **Artifacts data location: unrestricted.**
@@ -332,7 +332,7 @@ How notices are kept and shown:
 
 - **Keep GitHub, harden it** (the narrower options of 2026-11-08). Rejected by the owner.
 - **`@cloudflare/ci` SDK.** It requires a Container binding, so ADR-0005 rejects it.
-- **Workers Builds.** It is managed and the fastest path, but the owner chose isolates only (§6.1).
+- **Workers Builds for all checks.** Initially rejected in favor of Dynamic Workers for Forge tests, migrations and bundles (§6.1); later approved as a scoped exception for TypeScript type-check and Console UI build (§5c).
 - **Owner-approved merges.** The owner chose agent consensus. Critical paths stay with the owner (§2.4).
 - **A Git server implemented in our own Worker** (objects in R2, refs in a Durable Object). This is possible, but Artifacts already provides Git storage on Cloudflare. Writing our own adds risk with no benefit; it could be reconsidered if Artifacts is withdrawn.
 - **GitLab or another external forge.** It only moves the dependency to another vendor.
