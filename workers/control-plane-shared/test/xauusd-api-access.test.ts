@@ -11,7 +11,7 @@ const envList = (name: string) => (prov.match(new RegExp(`^  ${name}: (.+)$`, "m
 
 test("only the xauusd /api/* path joins the Access application, never its whole host", () => {
   assert.deepEqual(envList("PUBLIC_PATHS"), ["ai.cryptophys.work/api/*"]);
-  assert.deepEqual(envList("PUBLIC_HOSTNAMES"), ["nexus.cryptophys.work"], "ai.cryptophys.work is not a whole-host destination");
+  assert.deepEqual(envList("PUBLIC_HOSTNAMES"), ["nexus.cryptophys.work", "omega.cryptophys.work"], "ai.cryptophys.work is not a whole-host destination; Omega is (ADR-0010 amendment 2026-11-09)");
   assert.match(prov, /\{type: "public", uri: \$p\}/);
   // The destination count check includes the paths, so a dropped destination fails the run.
   assert.match(prov, /\$\(wc -w <<< "\$PUBLIC_HOSTNAMES"\) \+ \$\(wc -w <<< "\$PUBLIC_PATHS"\)/);

@@ -18,7 +18,7 @@ These hold everywhere:
 
 ## Entry point and sign-in (ADR-0008, ADR-0010, ADR-0011)
 
-- **Hosts.** `https://nexus.cryptophys.work` is the only public origin. The Cerebrum Console is mounted at `/console/`, through the Workers route `nexus.cryptophys.work/console*`. `console.` and `home.` redirect there.
+- **Hosts.** `https://nexus.cryptophys.work` is the hub. Since 2026-11-09, `https://omega.cryptophys.work`, the XAUUSD Omega Execution Engine (ADR-0010 amendment), is the one other origin in the same Access application. The Cerebrum Console is mounted at `/console/`, through the Workers route `nexus.cryptophys.work/console*`. `console.` and `home.` redirect there.
 - **Sign-in.** Cloudflare Access is the only login. The identity providers are Google, Microsoft (OIDC) and one-time PIN (kept for now by owner decision, 2026-11-08). There is one Access application, `cryptophys-cloud-platform`, so there is one AUD and one 8-hour session.
 - **Roles.** Configured identities come from `OPERATOR_IDENTITIES` and `APPROVER_IDENTITIES` (the owners). Accounts live in D1 `platform_accounts`:
   - `admin`: viewer, operator or approver;

@@ -113,7 +113,7 @@ test("6. wiring: Workers route on the Nexus host, the UI is mount-relative, Acce
   const shell = readFileSync(new URL("workers/console/ui/src/components/AppShell.tsx", ROOT), "utf8");
   assert.doesNotMatch(shell, /home\.cryptophys\.work|console\.cryptophys\.work/, "no links to retired hosts");
   const prov = readFileSync(new URL(".github/workflows/provision-access.yml", ROOT), "utf8");
-  assert.match(prov, /PUBLIC_HOSTNAMES: nexus\.cryptophys\.work/);
+  assert.match(prov, /PUBLIC_HOSTNAMES: nexus\.cryptophys\.work omega\.cryptophys\.work$/m, "Nexus stays the hub; Omega is the one added subdomain (amendment 2026-11-09)");
   assert.match(prov, /\{type: "public", uri: \$h\}/);
   assert.match(prov, /\.type == "google" or \.type == "azureAD" or \.type == "oidc" or \.type == "onetimepin"/);
   assert.match(prov, /allowed_idps: \[\$idps\[\]\.id\]/);

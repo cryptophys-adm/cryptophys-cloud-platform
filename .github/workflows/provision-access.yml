@@ -32,7 +32,10 @@ env:
   # ADR-0010 (single subdomain): Nexus, with the Console mounted at /console, is the one public
   # origin. Its hostname joins this same Access application, so one sign-in (and one AUD) covers the
   # XAUUSD room and the Console. Service bindings (drift checks) do not pass through Access.
-  PUBLIC_HOSTNAMES: nexus.cryptophys.work
+  # ADR-0010 amendment (owner decision 2026-11-09): omega.cryptophys.work, the XAUUSD Omega Execution
+  # Engine (xauusd-omega), joins the same application on its own subdomain. Its Worker also verifies
+  # the JWT itself, and only a person (never a service token) may change the EA control there.
+  PUBLIC_HOSTNAMES: nexus.cryptophys.work omega.cryptophys.work
   # xauusd read API (owner 2026-11-08, option a): only the /api/* path of the AI Worker's custom
   # domain joins this application. The rest of that host stays public: TradingView posts to /webhook
   # (secret-protected) and deploys probe /health and /ready. Nexus and the AI Kernel read /api/* over

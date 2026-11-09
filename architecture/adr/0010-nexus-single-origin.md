@@ -7,6 +7,7 @@
   - **Identity providers:** Google and Microsoft, with the one-time PIN as fallback.
   - **`home.cryptophys.work` (Cerebrum):** redirect to Nexus now, and retire the Worker after a week with no issues.
   - **Nexus:** the whole of Nexus requires sign-in.
+- **Amended 2026-11-09:** `omega.cryptophys.work` is a second origin (see the amendment at the end).
 - **Supersedes:** ADR-0008 §1 (hosts) and §5 phase 2. There, Cerebrum at `home.` was to be the hub and Nexus was to merge into it. Nexus is now the hub. ADR-0008 §2–§4 stay in force: Access is the only login; the Console is a backend-for-frontend with no authority of its own; and the AI-engine exemption.
 
 ## Decision
@@ -89,3 +90,14 @@ Nexus is now the single origin.
 **Remaining:**
 - ~~The owner adds the Google and Microsoft identity providers, then Provision Access runs again.~~ **Closed 2026-11-07 (owner):** setting up Google and Microsoft sign-in failed because of the providers' own policies, so Nexus keeps the Cloudflare Access **one-time PIN** by email as its sign-in. Nothing else changes: Access still guards all of Nexus, `ACCESS_ALLOWED_EMAILS` still decides who may enter, and `provision-access.yml` still binds whichever Google, Microsoft or one-time-PIN providers exist, so OIDC can be added later without a code change (`docs/OWNER-OIDC-SETUP.md`).
 - After a week with no issues, remove the `console.` and `home.` custom domains and retire `cryptophys-home`.
+
+## Amendment, 2026-11-09: `omega.cryptophys.work`
+
+**Owner decisions (2026-11-09):** "buat Omega Execution Engine pada page terpisah dari Nexus dan Aether"; monitor + control; its own subdomain (`omega.cryptophys.work`); per-position data from the EA. For this change, the owner allowed an agent to open the PR that edits `provision-access.yml`; the owner merges it.
+
+- **What it is.** The `xauusd-omega` Worker (repository `xauusd-ai-trading-assistant`, `workers/xauusd-omega`) shows the owner's MetaTrader 5 Expert Advisor: its signal, heartbeat, open positions, closed deals and statistics. It sets the EA control (active, paused or killed) through the AI Worker's `OmegaGateway` RPC entrypoint. It never places an order, never sizes a position and holds no broker credential. It is unrelated to the legacy `omega` execution swarm, which stays prohibited (`docs/TRANSFORMATION-INVENTORY.md`).
+- **Access.** `omega.cryptophys.work` joins `PUBLIC_HOSTNAMES` of the same application `cryptophys-cloud-platform`, so the AUD, the policies (`ACCESS_ALLOWED_EMAILS`, the CI token, the external agents) and the one-time-PIN sign-in are the same as for Nexus. Provision Access verifies the new host like Nexus: refused without credentials, and the CI token admitted with HTTP 200.
+- **Defence in depth.** Unlike the Nexus Worker, the Omega Worker verifies the Access JWT itself on every request except `/health`: RS256 against the team keys, issuer and expiry, plus the audience when its deploy can resolve it. It refuses everything before Access covers the host. A change of the EA control needs a person (never a service token), a same-origin JSON request and a reason; a kill also needs `KILL` typed. Each change is recorded with the person's email.
+- **Order.** Omega is deployed first, by merging in the xauusd repository; until Access covers it, it answers 403 to everyone. This PR then merges, and the owner runs **Provision Cloudflare Access** (`PROVISION`).
+- Nexus stays the hub, and the Console stays its menu. This amendment adds one origin and changes nothing else in this ADR.
+
