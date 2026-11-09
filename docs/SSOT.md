@@ -9,7 +9,7 @@ Last reviewed: 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 These hold everywhere:
 
 - **Advisory only.** No trading, no funds, no orders, no price levels (ADR-0009, the knowledge validator).
-- **No containers.** Production runs on Workers and their bindings only (ADR-0005 decision 1). The Forge type-check, which does not fit in an isolate, runs on Workers Builds from the Artifacts repository (ADR-0012 §5c, owner 2026-11-08).
+- **No containers.** Production runs on Workers and their bindings only (ADR-0005 decision 1). The Forge type-check, which does not fit in an isolate, runs on Workers Builds from the Artifacts repository (ADR-0012 §5c, owner 2026-11-08; first report passed 2026-11-09).
 - **Never weaken Access, auth or tests.** No test is skipped. A test that cannot run somewhere keeps running where it can.
 - **The owner creates every secret and credential.** None is created by an agent or stored in the repository.
 - **Data deletion and irreversible actions are critical.** The owner decides them.
