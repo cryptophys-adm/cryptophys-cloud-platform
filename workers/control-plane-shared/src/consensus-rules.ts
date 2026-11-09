@@ -89,9 +89,9 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     const a = e.agents[p.target];
     if (!a) return { vote: "reject", reason: "agent is not registered" };
     if (a.status !== "enabled") return { vote: "reject", reason: `agent is ${a.status}` };
+    if (a.voter) return { vote: "reject", reason: "agent already holds a seat" };
     const host = e.registry[a.host_worker];
     if (!host || host.status === "disabled" || host.status === "unavailable") return { vote: "reject", reason: `host Worker ${a.host_worker} is not an active registered service` };
-    if (a.voter) return { vote: "reject", reason: "agent already holds a seat" };
     const sameHost = Object.entries(e.agents).find(([id, o]) => id !== p.target && o.voter && o.host_worker === a.host_worker);
     if (sameHost) return { vote: "reject", reason: `one seat per Worker: ${sameHost[0]} already holds ${a.host_worker}'s seat` };
     return { vote: "approve", reason: "agent is registered, enabled and its Worker has no seat" };
