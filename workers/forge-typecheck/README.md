@@ -43,9 +43,13 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
      build secret differs from the token's current secret; paste it again (or rotate the token and
      update GitHub `production` and these build secrets together).
 6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
-7. **Phase 4 (needed for change requests):** in **Settings → Builds**, turn on **Builds for Preview
-   branches**. The Build command above also runs for preview branches. Set the **Preview command**
-   (the deploy step of a preview build) to `npx wrangler versions upload`. Change request heads are
-   pushed to `cr/<number>` branches; without preview builds their verdict stays `pending` on the type-check.
+7. **Phase 4 (needed for change requests):** this project was connected to Workers Builds
+   before Worker Previews. Setting `previews_enabled=true` alone does not switch an existing project
+   from the legacy preview model. The project currently has no branch preview records. In the
+   Cloudflare dashboard, use **Set up Worker Previews** and complete the one-time switch only after
+   reviewing preview-specific variables, secrets and bindings. The switch cannot be reversed.
+   Set the Preview command to `npx wrangler preview` (or `npx cf previews deploy`), not
+   `npx wrangler versions upload`. After the switch, pushes to `cr/<number>` branches create
+   preview builds and allow the type-check report to reach the Forge.
 
 The Console Code page then shows `types ok` / `N type errors` / `types pending` per commit.
