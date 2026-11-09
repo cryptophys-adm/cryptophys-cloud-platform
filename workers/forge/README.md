@@ -55,3 +55,12 @@ Forge merges nothing yet.
 Artifacts tree diffs against each unit's desired version, with the Orchestrator's shared rules
 (`control-plane-shared/src/deploy-units.ts`). The Orchestrator records its GitHub-based plan for the
 same commit and registry inputs; `GET /v1/forge/deploy-plans` lists both and the plan parity (target 10).
+
+## The cron tick
+
+`src/tick.ts` runs three independent steps at :04/:19/:34/:49:
+1. the deploy plan;
+2. one change request head;
+3. one commit of `main`, deferred when step 2 used more than two minutes.
+
+A failing step never stops the others, and its error is audited as `forge.tick_failed`.

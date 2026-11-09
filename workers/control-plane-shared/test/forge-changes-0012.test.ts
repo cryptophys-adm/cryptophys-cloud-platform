@@ -175,10 +175,14 @@ test("CR5. outcome: GitHub's merge is frozen next to the Forge verdict; parity c
   assert.deepEqual([c2.body.change.status, c2.body.change.agrees], ["closed", null]);
   // A failing check: GitHub merged what the Forge blocked -> disagreement.
   recordCheck(db, HEAD, "failed", "failed");
-  assert.deepEqual([(await out(3, true)).body.change.verdict_at_outcome, (await recordOutcome(db as never, { number: 3, merged: true, merge_sha: "e".repeat(40) }, CI_CLIENT_ID)).agrees], ["blocked", 0]);
+  // Explicit, increasing outcome times: in workerd Date.now() does not advance within a request.
+  const later = Date.now() + 60_000;
+  const m3 = await recordOutcome(db as never, { number: 3, merged: true, merge_sha: "e".repeat(40) }, CI_CLIENT_ID, later);
+  assert.deepEqual([m3.verdict_at_outcome, m3.agrees], ["blocked", 0]);
   // No check at all: the Forge was late; not compared.
   db.raw.prepare("DELETE FROM forge_check_runs").run();
-  assert.deepEqual([(await out(4, true)).body.change.verdict_at_outcome, (await out(4, true)).body.change.agrees], ["pending", null]);
+  const m4 = await recordOutcome(db as never, { number: 4, merged: true, merge_sha: "e".repeat(40) }, CI_CLIENT_ID, later + 1_000);
+  assert.deepEqual([m4.verdict_at_outcome, m4.agrees, (await out(4, true)).body.change.agrees], ["pending", null, null]);
   assert.equal((await registerChange(db as never, repo, { ...REG, number: 1 }, CI_CLIENT_ID).catch((e) => e.message)), "change_already_merged");
   const { parity } = await listChanges(db as never, 10);
   assert.deepEqual(parity, { target: 10, consecutive: 0, compared: 2, late: 1, disagreements: ["gh-3"] });

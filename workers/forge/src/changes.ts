@@ -255,7 +255,7 @@ const parseList = (v: string | null): string[] | null => { try { const a = JSON.
 
 export async function listChanges(db: D1Database, limit: number, nowMs = Date.now()) {
   const n = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
-  const rows = (await db.prepare("SELECT * FROM forge_change_requests ORDER BY updated_at DESC LIMIT 200").all<ChangeRow>()).results ?? [];
+  const rows = (await db.prepare("SELECT * FROM forge_change_requests ORDER BY updated_at DESC, rowid DESC LIMIT 200").all<ChangeRow>()).results ?? [];
   const changes = [];
   for (const r of rows.slice(0, n)) {
     const critical = parseList(r.critical);
@@ -271,6 +271,7 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
       created_at: r.created_at, updated_at: r.updated_at, outcome_at: r.outcome_at,
     });
   }
+  // Newest outcome first; equal times (one request) keep the newest-updated-first order above.
   const ordered = [...rows].sort((a, b) => (b.outcome_at ?? "").localeCompare(a.outcome_at ?? ""));
   return { changes, parity: mergeParity(ordered) };
 }
