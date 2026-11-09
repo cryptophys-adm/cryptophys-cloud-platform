@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 export function Panel({ title, icon, right, children, className }: { title?: ReactNode; icon?: ReactNode; right?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <motion.section initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease: "easeOut" }}
-      className={clsx("glass p-4", className)}>
+      className={clsx("glass min-w-0 p-4", className)}>
       {(title || right) && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="eyebrow flex items-center gap-2">{icon}{title}</h2>

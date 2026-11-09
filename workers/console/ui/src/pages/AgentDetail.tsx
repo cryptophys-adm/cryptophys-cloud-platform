@@ -5,6 +5,13 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, fmt, listOf } from "../lib/format";
+import { ActivityChart, BarList, DataTable, STATUS, bucketize } from "../components/viz";
+
+const OUTCOMES = [
+  { key: "succeeded", label: "succeeded", color: STATUS.good },
+  { key: "denied", label: "denied", color: STATUS.warning },
+  { key: "failed", label: "failed", color: STATUS.critical },
+];
 
 const KERNEL_AGENTS = ["supervisor", "signal-analyst", "auditor"];
 
@@ -15,11 +22,17 @@ export default function AgentDetail({ id }: { id: string }) {
   const [reason, setReason] = useState("");
   const [principal, setPrincipal] = useState("");
   const [revoke, setRevoke] = useState("");
-  const [open, setOpen] = useState<string | null>(null);
   const [showPrincipals, setShowPrincipals] = useState(false);
   const a = agent.data?.agent ?? agent.data ?? {};
   const kernelHosted = a.host_worker === "cryptophys-ai-kernel";
   const reload = () => { void agent.refresh(); void actions.refresh(); };
+  const acts = listOf(actions.data, "actions");
+  const { buckets, bin } = bucketize(acts, (x: any) => x.created_at, (x: any) => (OUTCOMES.some((o) => o.key === x.outcome) ? x.outcome : "failed"));
+  const byCap = Object.values(acts.reduce((m: Record<string, any>, x: any) => {
+    const e = (m[x.capability] ??= { label: String(x.capability), value: 0, c: { succeeded: 0, denied: 0, failed: 0 } });
+    e.value += 1; e.c[OUTCOMES.some((o) => o.key === x.outcome) ? x.outcome : "failed"] += 1;
+    return m;
+  }, {})).map((e: any) => ({ label: e.label, value: e.value, parts: OUTCOMES.map((o) => ({ ...o, value: e.c[o.key] })) }));
 
   return (
     <div className="flex flex-col gap-3">
@@ -72,24 +85,21 @@ export default function AgentDetail({ id }: { id: string }) {
         )}
       </div>
 
+      {acts.length > 0 && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <Panel title={`Syscalls over time · last ${acts.length}`}><ActivityChart buckets={buckets} bin={bin} series={OUTCOMES} caption="syscalls over time by outcome" /></Panel>
+          <Panel title="By capability"><BarList items={byCap} series={OUTCOMES} /></Panel>
+        </div>
+      )}
       <Panel title="Syscall history · last 50" icon={<Dot tone="cyan" />}>
-        {actions.loading && !actions.data ? <Skeleton rows={4} /> : listOf(actions.data, "actions").length === 0 ? <Empty>No actions recorded.</Empty> : (
-          <div className="space-y-1.5">
-            {listOf(actions.data, "actions").map((x: any, i: number) => {
-              const key = String(x.action_id ?? i);
-              return (
-                <div key={key} className="glass-inner px-3 py-2">
-                  <button type="button" className="flex w-full items-center gap-2 text-left text-[12px]" onClick={() => setOpen(open === key ? null : key)} aria-expanded={open === key}>
-                    <Dot tone={x.outcome === "succeeded" ? "green" : x.outcome === "denied" ? "amber" : "red"} />
-                    <span className="mono text-cyan-200">{fmt(x.capability)}</span>
-                    <span className="text-slate-500">{fmt(x.outcome)}</span>
-                    <span className="ml-auto text-[10px] text-slate-600">{ago(x.created_at)}</span>
-                  </button>
-                  {open === key && <div className="mt-2"><JsonView value={x} /></div>}
-                </div>
-              );
-            })}
-          </div>
+        {actions.loading && !actions.data ? <Skeleton rows={4} /> : (
+          <DataTable rows={acts} rowKey={(x, i) => String(x.action_id ?? i)} initialSort={{ key: "when", dir: "desc" }} empty="No actions recorded." expand={(x) => <JsonView value={x} />} columns={[
+            { key: "outcome", header: "outcome", sort: (x) => x.outcome, cell: (x) => <span className="inline-flex items-center gap-1.5"><Dot tone={x.outcome === "succeeded" ? "green" : x.outcome === "denied" ? "amber" : "red"} />{fmt(x.outcome)}</span> },
+            { key: "capability", header: "capability", sort: (x) => x.capability, cell: (x) => <span className="mono text-cyan-200">{fmt(x.capability)}</span> },
+            { key: "tier", header: "tier", sort: (x) => x.tier, align: "right", cell: (x) => <span className="mono">{fmt(x.tier)}</span> },
+            { key: "decision", header: "policy decision", cell: (x) => <span className="mono text-[10px] text-slate-500">{x.decision_id ? String(x.decision_id).slice(0, 16) : "—"}</span> },
+            { key: "when", header: "when", sort: (x) => Date.parse(x.created_at) || 0, cell: (x) => <span className="text-slate-500" title={x.created_at}>{ago(x.created_at)}</span> },
+          ]} />
         )}
       </Panel>
     </div>

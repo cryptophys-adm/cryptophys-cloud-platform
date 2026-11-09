@@ -38,4 +38,13 @@ body {
   .tbl th { @apply border-b border-white/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500; }
   .tbl td { @apply border-b border-white/5 px-3 py-2 text-slate-300; }
   .tbl tr:hover td { @apply bg-white/[0.02]; }
+  /* Visual hardening 2026-11-09: tables scroll inside their panel, header stays visible. */
+  .table-scroll { @apply max-w-full overflow-auto rounded-xl border border-white/5 bg-black/20; overscroll-behavior: contain; }
+  .table-scroll .tbl { min-width: 100%; width: max-content; }
+  .table-scroll .tbl th { position: sticky; top: 0; z-index: 1; background: #0b0e14; white-space: nowrap; }
+  .table-scroll .tbl td { white-space: nowrap; vertical-align: top; }
+  .table-scroll .tbl td.wrap { white-space: normal; min-width: 220px; max-width: 520px; overflow-wrap: anywhere; }
+  .tbl-dense td { @apply py-1.5; }
+  .tbl tr.is-open td { @apply bg-white/[0.03]; }
+  .tbl tr.is-detail td { @apply bg-black/30; white-space: normal; }
 }

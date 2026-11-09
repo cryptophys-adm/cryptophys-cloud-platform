@@ -5,14 +5,27 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
+import { ActivityChart, BarList, DataTable, STATUS, StatusBar, bucketize } from "../components/viz";
+
+const DECISIONS = [{ key: "allow", label: "allow", color: STATUS.good }, { key: "deny", label: "deny", color: STATUS.critical }];
 
 export default function Policy() {
   const { act, notify } = useSession();
-  const { data, loading, refresh } = usePoll(() => call("policy.decisions", undefined, undefined, { limit: "40" }), 60_000);
+  const { data, loading, refresh } = usePoll(() => call("policy.decisions", undefined, undefined, { limit: "100" }), 60_000);
   const [detail, setDetail] = useState<any>(null);
   const [f, setF] = useState({ action: "", resource: "", context: "{}" });
   const [result, setResult] = useState<any>(null);
   const rows = listOf(data, "decisions");
+  const { buckets, bin } = bucketize(rows, (r: any) => r.created_at, (r: any) => (r.decision === "allow" ? "allow" : "deny"));
+  const byAction = Object.values(rows.reduce((m: Record<string, any>, r: any) => {
+    const e = (m[r.action] ??= { label: r.action, value: 0, a: 0, d: 0 });
+    e.value += 1; if (r.decision === "allow") e.a += 1; else e.d += 1;
+    return m;
+  }, {})).map((e: any) => ({ label: e.label, value: e.value, parts: [{ key: "allow", label: "allow", value: e.a, color: STATUS.good }, { key: "deny", label: "deny", value: e.d, color: STATUS.critical }] }));
+  const denyReasons = Object.entries(rows.filter((r: any) => r.decision !== "allow").reduce((m: Record<string, number>, r: any) => {
+    for (const id of String(r.reason ?? "").replace(/^failed:\s*/, "").split(/,\s*/).filter(Boolean)) m[id] = (m[id] ?? 0) + 1;
+    return m;
+  }, {})).map(([label, value]) => ({ label, value: Number(value) }));
 
   return (
     <div className="flex flex-col gap-3">
@@ -31,17 +44,29 @@ export default function Policy() {
         }}>Evaluate</button>
         {result && <div className="mt-3"><JsonView value={result} /></div>}
       </Panel>
+      {rows.length > 0 && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <Panel title={`Decisions over time · last ${rows.length}`}>
+            <StatusBar className="mb-3" segments={DECISIONS.map((d) => ({ ...d, value: rows.filter((r: any) => (r.decision === "allow") === (d.key === "allow")).length }))} legend={false} />
+            <ActivityChart buckets={buckets} bin={bin} series={DECISIONS} caption="policy decisions over time" />
+          </Panel>
+          <Panel title="By action · failed checks">
+            <BarList items={byAction} series={DECISIONS} />
+            {denyReasons.length > 0 && <><div className="mb-1.5 mt-4 text-[10px] uppercase tracking-widest text-slate-500">Checks that denied</div><BarList items={denyReasons} color={STATUS.critical} /></>}
+          </Panel>
+        </div>
+      )}
       <Panel title="Decisions" right={<Badge tone="purple">{rows.length}</Badge>}>
-        {loading && !data ? <Skeleton rows={5} /> : rows.length === 0 ? <Empty>No decisions.</Empty> : (
-          <div className="table-wrap"><table className="tbl">
-            <thead><tr><th>decision</th><th>subject</th><th>action</th><th>resource</th><th>reason</th><th>when</th></tr></thead>
-            <tbody>{rows.map((r: any) => (
-              <tr key={r.decision_id} className="cursor-pointer" onClick={() => call("policy.decision", r.decision_id).then(setDetail).catch((e) => notify("err", e.message))}>
-                <td><Badge tone={r.decision === "allow" ? "green" : "red"}>{r.decision}</Badge></td>
-                <td className="mono text-[11px]">{r.subject}</td><td className="mono text-[11px] text-cyan-200">{r.action}</td>
-                <td className="mono max-w-[200px] truncate text-[11px]">{r.resource}</td><td className="max-w-[260px] truncate text-slate-400">{r.reason}</td><td className="text-slate-500">{ago(r.created_at)}</td>
-              </tr>))}</tbody>
-          </table></div>
+        {loading && !data ? <Skeleton rows={5} /> : (
+          <DataTable rows={rows} rowKey={(r) => r.decision_id} initialSort={{ key: "when", dir: "desc" }} empty="No decisions." footer={<span>click a row for its evidence</span>}
+            onRowClick={(r) => call("policy.decision", r.decision_id).then(setDetail).catch((e) => notify("err", e.message))} columns={[
+              { key: "decision", header: "decision", sort: (r) => r.decision, cell: (r) => <Badge tone={r.decision === "allow" ? "green" : "red"}>{r.decision}</Badge> },
+              { key: "action", header: "action", sort: (r) => r.action, cell: (r) => <span className="mono text-[11px] text-cyan-200">{r.action}</span> },
+              { key: "resource", header: "resource", sort: (r) => r.resource, cell: (r) => <span className="mono text-[11px]">{r.resource}</span> },
+              { key: "subject", header: "subject", sort: (r) => r.subject, cell: (r) => <span className="mono text-[11px] text-slate-400">{r.subject}</span> },
+              { key: "reason", header: "reason", className: "wrap", cell: (r) => <span className="text-slate-400">{r.reason}</span> },
+              { key: "when", header: "when", sort: (r) => Date.parse(r.created_at) || 0, cell: (r) => <span className="text-slate-500" title={r.created_at}>{ago(r.created_at)}</span> },
+            ]} />
         )}
       </Panel>
       {detail && <Panel title="Decision evidence"><JsonView value={detail} /></Panel>}
