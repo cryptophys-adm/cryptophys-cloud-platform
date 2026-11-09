@@ -56,7 +56,7 @@ Build **the Forge**: a Cloudflare-native replacement for Gitea + Tekton + Argo, 
 - The namespace is `cryptophys`.
   - Canonical repository: `cryptophys/platform`, branch `main`.
   - Work repository: `cryptophys/platform-work`, holding all branches by people and agents.
-- **Only the Forge Worker writes `main` of the canonical repository.** People and agents get repo-scoped write tokens for the work repository only, with a short TTL, minted by the Forge after an Access-authenticated request.
+- **Canonical-main writer by phase.** During GitHub-source phases 1–3, `.github/workflows/mirror-to-forge.yml` is the temporary migration exception: after a push to GitHub `main`, GitHub Actions mirrors that exact SHA to Artifacts `main` using a short-lived write token minted by the Forge. The workflow force-updates the Artifacts ref to keep it identical to GitHub `main`; this is source synchronization, not a Worker deployment. The exception ends at cut-over, when the Forge becomes the sole writer to canonical `main`. People and agents get repo-scoped write tokens for the work repository only, with a short TTL, minted by the Forge after an Access-authenticated request.
 - The Forge subscribes to push events on both repositories.
   - A push to canonical `main` that the Forge did not make is an **incident**. The Forge records it, alerts, refuses to deploy that SHA, and asks the owner to restore (critical).
   - Production is protected by the deploy gate (§3) even if the repository is not.
