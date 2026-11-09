@@ -4,7 +4,7 @@
  * functions and constants only: no bindings, no I/O.
  */
 import type { JsonObject } from "./http.ts";
-import { PROHIBITED_CAPABILITY } from "./capabilities.ts";
+import { CAPABILITIES, PROHIBITED_CAPABILITY } from "./capabilities.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -26,19 +26,74 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   change_access: { class: "critical", target: "platform", description: "Change Cloudflare Access" },
   agents_enable: { class: "critical", target: "platform", description: "Turn agents back on after a kill-switch stop" },
   register_principal: { class: "critical", target: "agent", description: "Register an external agent principal" },
+  // ADR-0013 phase 3: self-registration from the DNA census (owner decisions 2026-11-09).
+  register_agent: { class: "routine", target: "agent", description: "Register an agent its Worker's DNA declares (no privileged capability)" },
+  register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
+  register_privileged_agent: { class: "critical", target: "agent", description: "Register a DNA-declared agent that asks for a privileged capability" },
+  admit_voter: { class: "critical", target: "agent", description: "Give a registered agent a council seat (one per Worker)" },
 };
 
-/** Control-plane voters (ADR-0009 §2). XAUUSD agents never vote on platform actions. */
+/**
+ * The founding council (ADR-0009 §2). Since ADR-0013 phase 3 the council is data: the agents with
+ * agents.voter = 1 (migration 0041 seeds exactly these nine). This list keeps each founder's domain
+ * rule below and the identity check of the voting Workers' RPC. XAUUSD agents never vote.
+ */
 export const VOTERS = [
   "platform-api", "deployment-orchestrator", "platform-registry", "policy-engine", "drift-detector",
   "audit-ledger", "recovery-manager", "supervisor", "auditor",
 ] as const;
-export type Voter = (typeof VOTERS)[number];
+export type Voter = string;
 
 export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor"]);
 export const HEX_VERSION = /^[0-9a-f]{7,40}$/;
 export const COMMIT = /^[0-9a-f]{40}$/;
 export const TARGET = /^[a-z0-9][a-z0-9-]{1,62}$/;
+
+/** A capability is privileged when it is above tier 1, or lets an agent drive the platform (consensus.propose). */
+export function privilegedCapabilities(caps: string[]): string[] {
+  return caps.filter((c) => !Object.hasOwn(CAPABILITIES, c) || CAPABILITIES[c].tier >= 2 || c === "consensus.propose");
+}
+/** Capabilities that can never be registered: unknown, prohibited (trading, funds) or tier 3 (human only, ADR-0007). */
+export function forbiddenCapabilities(caps: string[]): string[] {
+  return caps.filter((c) => !Object.hasOwn(CAPABILITIES, c) || PROHIBITED_CAPABILITY.test(c) || CAPABILITIES[c].tier >= 3);
+}
+/** The current council: enabled agents holding a seat. */
+export function councilSeats(e: Pick<Evidence, "agents">): string[] {
+  return Object.entries(e.agents).filter(([, a]) => a.voter && a.status === "enabled").map(([id]) => id).sort();
+}
+const REGISTRATION = new Set(["register_agent", "register_privileged_agent"]);
+const ENGINE_TASK = /^[a-z][a-z0-9_]{2,62}$/;
+
+/** Votes on ADR-0013 registrations, shared by every voter: the facts each one can check. */
+function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote["vote"]; reason: string } | null {
+  if (REGISTRATION.has(p.action)) {
+    if (e.agents[p.target]) return { vote: "reject", reason: "agent is already registered" };
+    const host = String(p.params.service ?? "");
+    const reg = e.registry[host];
+    if (!reg || reg.status === "disabled") return { vote: "reject", reason: `host Worker ${host || "(none)"} is not an active registered service` };
+    const caps = Array.isArray(p.params.capabilities) ? p.params.capabilities.map(String) : null;
+    if (!caps) return { vote: "reject", reason: "capabilities must be a list" };
+    const forbidden = forbiddenCapabilities(caps);
+    if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
+    const privileged = privilegedCapabilities(caps);
+    if (p.action === "register_agent" && privileged.length) return { vote: "reject", reason: `privileged capabilities need register_privileged_agent: ${privileged.join(", ")}` };
+    return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
+  }
+  if (p.action === "register_engine") {
+    if (!ENGINE_TASK.test(String(p.params.task ?? ""))) return { vote: "reject", reason: "task must be a lowercase identifier" };
+    return null; // the registry rule (target service registered and active) and the others apply
+  }
+  if (p.action === "admit_voter") {
+    const a = e.agents[p.target];
+    if (!a) return { vote: "reject", reason: "agent is not registered" };
+    if (a.status !== "enabled") return { vote: "reject", reason: `agent is ${a.status}` };
+    if (a.voter) return { vote: "reject", reason: "agent already holds a seat" };
+    const sameHost = Object.entries(e.agents).find(([id, o]) => id !== p.target && o.voter && o.host_worker === a.host_worker);
+    if (sameHost) return { vote: "reject", reason: `one seat per Worker: ${sameHost[0]} already holds ${a.host_worker}'s seat` };
+    return { vote: "approve", reason: "agent is registered, enabled and its Worker has no seat" };
+  }
+  return null;
+}
 
 export function classify(action: string): ConsensusClass | null {
   if (PROHIBITED_CAPABILITY.test(action)) return "prohibited";
@@ -51,7 +106,7 @@ export interface Evidence {
   audit_valid: boolean;
   services: Record<string, ServiceState>;
   registry: Record<string, { status: string; desired_version: string | null }>;
-  agents: Record<string, { status: string; host_worker: string }>;
+  agents: Record<string, { status: string; host_worker: string; voter?: boolean }>;
   critical_reports_24h: number;
   executing_plan_targets: string[];
   recent_same: number;
@@ -76,6 +131,8 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   if (p.class === "prohibited") return v("reject", "prohibited action");
   const base = baseline(e);
   if (base && p.action !== "agents_enable") return v("reject", base);
+  const registration = registrationVote(voter, p, e);
+  if (registration) return v(registration.vote, registration.reason);
   const svc = e.services[p.target];
   const reg = e.registry[p.target];
   const version = String(p.params.version ?? "");
@@ -125,5 +182,8 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
       return v("approve", "no critical evidence open");
     case "platform-api":
       return v("approve", "platform overview nominal");
+    default:
+      // A seat admitted after the founders (ADR-0013): it applies the shared baseline and rules above.
+      return v("approve", "no objection");
   }
 }

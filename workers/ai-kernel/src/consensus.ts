@@ -15,13 +15,18 @@ import { appendAuditEvent, appendAuditEventWithMutation, AuditMutationConflictEr
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
 import {
-  CONSENSUS_ACTIONS, KERNEL_AGENTS, TARGET, VOTERS, castVote, classify,
+  CONSENSUS_ACTIONS, KERNEL_AGENTS, TARGET, VOTERS, castVote, classify, councilSeats,
   type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type ServiceState, type Vote, type Voter,
 } from "../../control-plane-shared/src/consensus-rules.ts";
 export { CONSENSUS_ACTIONS, VOTERS, castVote, classify, type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type Vote, type Voter };
 import { observe } from "./syscall.ts";
 import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
+import { executeRegistration } from "./organism.ts";
+
+/** ADR-0013 phase 3 registrations: routine ones run in phase 2's set, seats and privileged agents after an owner click. */
+const ROUTINE_REGISTRATIONS = ["register_agent", "register_engine"];
+const CRITICAL_REGISTRATIONS = ["register_privileged_agent", "admit_voter"];
 
 
 export async function consensusMode(env: SyscallEnv): Promise<ConsensusMode> {
@@ -36,7 +41,15 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
   };
   const chain = await verifyAuditChainIncremental(env.DB);
   const reg = await env.DB.prepare("SELECT service_id, status, desired_version FROM service_registry").all<{ service_id: string; status: string; desired_version: string | null }>();
-  const ag = await env.DB.prepare("SELECT agent_id, status, host_worker FROM agents").all<{ agent_id: string; status: string; host_worker: string }>();
+  // ADR-0013: the council is data (agents.voter, migration 0041). Before 0041 is applied the founding
+  // seats stand in, so a deploy that ships this code ahead of its migration keeps voting.
+  let ag: { results: Array<{ agent_id: string; status: string; host_worker: string; voter: number }> };
+  try {
+    ag = await env.DB.prepare("SELECT agent_id, status, host_worker, voter FROM agents").all<{ agent_id: string; status: string; host_worker: string; voter: number }>();
+  } catch {
+    const legacy = await env.DB.prepare("SELECT agent_id, status, host_worker FROM agents").all<{ agent_id: string; status: string; host_worker: string }>();
+    ag = { results: legacy.results.map((a) => ({ ...a, voter: (VOTERS as readonly string[]).includes(a.agent_id) ? 1 : 0 })) };
+  }
   const plans = await env.DB.prepare("SELECT service_id FROM recovery_plans WHERE status = 'executing'").all<{ service_id: string }>();
   const same = await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ?",
@@ -46,7 +59,7 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
     audit_valid: chain.valid,
     services: Object.fromEntries(ov.services.map((s) => [s.service_id, s])),
     registry: Object.fromEntries(reg.results.map((r) => [r.service_id, { status: r.status, desired_version: r.desired_version }])),
-    agents: Object.fromEntries(ag.results.map((a) => [a.agent_id, { status: a.status, host_worker: a.host_worker }])),
+    agents: Object.fromEntries(ag.results.map((a) => [a.agent_id, { status: a.status, host_worker: a.host_worker, voter: a.voter === 1 }])),
     critical_reports_24h: ov.agent_reports_24h?.counts?.critical ?? 0,
     executing_plan_targets: plans.results.map((p) => p.service_id),
     recent_same: same?.n ?? 0,
@@ -55,7 +68,7 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
 
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
-export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent"]);
+export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", ...ROUTINE_REGISTRATIONS]);
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
 export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
 
@@ -92,6 +105,9 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
     case "observe_drift":
       if (!env.DRIFT) throw new Error("drift_binding_missing");
       return await env.DRIFT.observeForConsensus(proposalId, decisionId);
+    case "register_agent":
+    case "register_engine":
+      return await executeRegistration(env, proposalId, decisionId, p, actor, (id) => canVote(env, id));
     default:
       throw new Error("no_executor");
   }
@@ -115,7 +131,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   const p: Proposal = { action, target, params, class: cls };
 
   const evidence = await gatherEvidence(env, action, target, now);
-  const eligible = VOTERS.filter((id) => id !== proposer && evidence.agents[id]?.status === "enabled");
+  const eligible = councilSeats(evidence).filter((id) => id !== proposer);
   const votes = await collectVotes(env, eligible, p, evidence);
   const approvals = votes.filter((x) => x.vote === "approve").length;
   const rejections = votes.filter((x) => x.vote === "reject").length;
@@ -222,7 +238,7 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker"]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -240,6 +256,9 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "retire_worker") {
     if (!env.DEPLOY) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.retireForConsensus(proposalId, decisionId, p.target);
+  }
+  if (CRITICAL_REGISTRATIONS.includes(p.action)) {
+    return await executeRegistration(env, proposalId, decisionId, p, `owner:${approver} via consensus:${proposalId}`, (id) => canVote(env, id));
   }
   throw new Error("manual_only");
 }
@@ -407,10 +426,24 @@ const VOTE_BINDINGS: Record<string, keyof SyscallEnv> = {
 };
 export const VOTE_TIMEOUT_MS = 8_000;
 
+/**
+ * Whether a seat can vote through reviewed code: its Worker's VoteRpc is bound in this deployment, or
+ * it is a founding seat with its own rule in castVote (the kernel-hosted supervisor and auditor).
+ */
+export function canVote(env: SyscallEnv, agentId: string): boolean {
+  const name = VOTE_BINDINGS[agentId];
+  return name ? Boolean(env[name]) : (VOTERS as readonly string[]).includes(agentId);
+}
+
 export async function collectVotes(env: SyscallEnv, eligible: Voter[], p: Proposal, evidence: Evidence): Promise<(Vote & { via: "rpc" | "kernel" | "unreachable" })[]> {
   return Promise.all(eligible.map(async (voter) => {
     const name = VOTE_BINDINGS[voter];
     const binding = name ? (env[name] as { vote(v: string, p: JsonObject, e: JsonObject): Promise<JsonObject> } | undefined) : undefined;
+    // ADR-0013: a seat admitted after the founders votes only through its own Worker. Without a
+    // binding it abstains and is reported; the kernel never casts a vote on its behalf.
+    if (!binding && !(VOTERS as readonly string[]).includes(voter)) {
+      return { voter, vote: "abstain" as const, reason: "seat has no vote binding in this deployment", via: "unreachable" as const };
+    }
     if (!binding) return { ...castVote(voter, p, evidence), via: "kernel" as const };
     try {
       const out = await Promise.race([

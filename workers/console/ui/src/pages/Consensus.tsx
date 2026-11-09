@@ -34,7 +34,7 @@ function Votes({ id }: { id: string }) {
 }
 
 /** ADR-0009 phase 4: the actions the platform can execute after an owner click. Others are done by runbook. */
-const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker"]);
+const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "register_privileged_agent", "admit_voter"]);
 
 function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload: () => void }) {
   const { who, act } = useSession();
