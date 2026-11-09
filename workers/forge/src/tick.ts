@@ -28,7 +28,7 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     });
   }
   const started = nowMs();
-  await step("change_checks", () => tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs())));
+  await step("change_checks", () => tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs()), "change"));
   const change = steps.change_checks as { outcome?: string } | undefined;
   if (change?.outcome === "checked" && nowMs() - started > CHECK_BUDGET_MS) steps.main_checks = { outcome: "deferred" };
   else await step("main_checks", () => checksTick(env, repoName, deps, nowMs));

@@ -223,3 +223,30 @@ test("CR7. wiring: workflows from the default branch only, forks ignored, outcom
   assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0037_forge_change_requests.sql"));
   assert.match(read("workers/console/src/index.ts"), /"\/v1\/forge\/changes"/);
 });
+
+test("CR8. checks record their source; earlier change request heads never appear among main's checks (migration 0039 backfill)", async () => {
+  const db = migratedDb();
+  const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "workers/forge/src/b.ts": "x" }, [HEAD2]: { ...BASE_FILES, "workers/forge/src/c.ts": "y" } });
+  await registerChange(db as never, repo, REG, CI_CLIENT_ID);
+  const deps = async (): Promise<CheckDeps> => ({
+    esbuild: { async build() { return { outputFiles: [{ text: "x", contents: new Uint8Array() }], errors: [], warnings: [] }; } },
+    shims: {} as never, sqlJs: "", sqlWasm: null,
+    async runWorker(code) { return { files: (code.modules["files.json"] as { json: string[] }).json.map((file) => ({ file, results: [{ name: "t", status: "pass" }] })) }; },
+  });
+  const env = { DB: db as never, ARTIFACTS: { get: async () => repo } };
+  await tickWith(env, "platform", deps, () => Date.now(), (r) => nextChangeHead(db as never, r, Date.now()), "change");
+  assert.equal((db.raw.prepare("SELECT source FROM forge_check_runs WHERE commit_sha = ?").get(HEAD) as any).source, "change");
+  // The change request moves to a new head: the earlier head is no longer open, and still not a commit of main.
+  await registerChange(db as never, repo, { ...REG, head_sha: HEAD2 }, CI_CLIENT_ID);
+  assert.deepEqual((await listChecks(db as never, 10)).checks, []);
+  // Backfill of rows recorded before 0039: GitHub CI or a main type-check report means main; otherwise a change request head since 06:30.
+  const ins = db.raw.prepare("INSERT INTO forge_check_runs (commit_sha, status, runner, started_at) VALUES (?, 'passed', 'r', ?)");
+  ins.run("1".repeat(40), "2026-11-09T07:00:00.000Z"); ins.run("2".repeat(40), "2026-11-09T07:00:00.000Z"); ins.run("3".repeat(40), "2026-11-09T07:00:00.000Z"); ins.run("4".repeat(40), "2026-11-08T07:00:00.000Z");
+  db.raw.prepare("INSERT INTO forge_ci_reports (commit_sha, conclusion, workflow_run_id, reported_at) VALUES (?, 'success', '1', ?)").run("1".repeat(40), "2026-11-09T07:01:00.000Z");
+  db.raw.prepare("INSERT INTO forge_typecheck_reports (commit_sha, conclusion, build_id, branch, errors, reported_at) VALUES (?, 'success', 'b', 'main', 0, ?)").run("2".repeat(40), "2026-11-09T07:01:00.000Z");
+  const migration = read("workers/control-plane-migrations/0039_forge_check_source.sql");
+  db.raw.exec(migration.slice(migration.indexOf("UPDATE forge_check_runs")));
+  const sources = Object.fromEntries((db.raw.prepare("SELECT substr(commit_sha, 1, 1) c, source FROM forge_check_runs WHERE commit_sha IN (?, ?, ?, ?)").all("1".repeat(40), "2".repeat(40), "3".repeat(40), "4".repeat(40)) as any[]).map((r) => [r.c, r.source]));
+  assert.deepEqual(sources, { 1: "main", 2: "main", 3: "change", 4: "main" });
+  assert.deepEqual((await listChecks(db as never, 10)).checks.map((c) => c.commit[0]).sort(), ["1", "2", "4"]);
+});
