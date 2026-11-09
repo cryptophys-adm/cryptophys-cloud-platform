@@ -2,12 +2,12 @@
 // deploy workflows. Production stays in shadow mode; these tests switch the mode in a local D1.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, fakeWorkflow, migratedDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
-import { ciGreen, DEPLOY_UNITS, DeploymentLock, deployForConsensus, pendingDeploys, unitChanged, unitForService } from "../../deployment-orchestrator/src/index.ts";
+import { ciGreen, REQUIRED_PUSH_VALIDATIONS, DEPLOY_UNITS, DeploymentLock, deployForConsensus, pendingDeploys, unitChanged, unitForService } from "../../deployment-orchestrator/src/index.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { PHASE2_EXECUTABLE, executableIn } from "../../ai-kernel/src/consensus.ts";
@@ -265,10 +265,10 @@ test("8. wiring: kernel binds DeployRpc; every consensus-deployable workflow cap
 });
 
 
-test("9. CI gate fails closed unless both main push validations and combined commit status are green", async () => {
+test("9. CI gate fails closed unless the main push validation and combined commit status are green; every required name is a real workflow", async () => {
+  const names = readdirSync(new URL("../../../.github/workflows/", import.meta.url)).map((f) => /^name: (.+)$/m.exec(readFileSync(new URL(`../../../.github/workflows/${f}`, import.meta.url), "utf8"))?.[1]?.trim());
+  for (const required of REQUIRED_PUSH_VALIDATIONS) assert.ok(names.includes(required), `required validation "${required}" is not the name of any workflow`);
   try {
-    github({ omitWorkflow: "Validate" });
-    assert.equal((await ciGreen("gh-token", MAIN)).green, false, "missing Validate must block");
     github({ omitWorkflow: "Validate Control Plane Workers" });
     assert.equal((await ciGreen("gh-token", MAIN)).green, false, "missing Control Plane validation must block");
     github({ statusState: "pending", statusCount: 1 });

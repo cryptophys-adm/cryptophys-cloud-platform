@@ -78,7 +78,8 @@ test("FC3. the runner core: paths, test files, groups and the deferred module bo
   const snap = { "workers/control-plane-shared/test/b.test.ts": "", "workers/control-plane-shared/test/a.test.ts": "", "workers/control-plane-shared/test/harness.ts": "", "workers/control-plane-shared/test/fixtures/x.test.ts": "" };
   assert.deepEqual(testFiles(snap), ["workers/control-plane-shared/test/a.test.ts", "workers/control-plane-shared/test/b.test.ts"]);
   const groups = groupFiles(Array.from({ length: 43 }, (_, i) => String(i)));
-  assert.equal(groups.length, 6, "43 files in 6 test Workers, under the 32 Worker invocations one request may make");
+  assert.equal(groups.length, 11, "43 files in 11 test Workers of at most 4, under the 32 Worker invocations one request may make");
+  assert.equal(FILES_PER_WORKER, 4, "groups of 8 ran sql.js out of memory (2026-11-09)");
   assert.ok(groups.every((g) => g.length <= FILES_PER_WORKER));
   const entry = runnerEntry(["x/a.test.ts"]);
   assert.match(entry, /cleanupSqlite/);

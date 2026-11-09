@@ -19,8 +19,10 @@ export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".wrangler"]);
 export const BINARY_FILE = /\.(png|jpg|gz|wasm|ico|woff2?)$/;
 export const MAX_FILE_BYTES = 2_000_000;
 export const TEST_DIR = "workers/control-plane-shared/test";
-/** Test files per Dynamic Worker. 43 files today, so 6 Workers per run. */
-export const FILES_PER_WORKER = 8;
+/** Test files per Dynamic Worker. 43 files today, so 11 Workers per run. */
+// 2026-11-09: groups of 8 exhausted sql.js memory in one Dynamic Worker (F4/F6).
+// Groups of 4 bound per-isolate memory; per-test cleanup also releases test-owned handles.
+export const FILES_PER_WORKER = 4;
 export const COMPATIBILITY_DATE = "2026-11-01";
 const SHIMMED = /^node:(test|sqlite|fs|os|child_process)$/;
 const IMPORT_META_URL = ["import", "meta", "url"].join(".");
