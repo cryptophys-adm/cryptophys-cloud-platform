@@ -12,7 +12,7 @@
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
-import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEventWithMutation, AuditMutationConflictError } from "../../control-plane-shared/src/audit.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { forbiddenCapabilities, privilegedCapabilities } from "../../control-plane-shared/src/consensus-rules.ts";
 import type { SyscallEnv } from "./syscall.ts";
@@ -48,42 +48,77 @@ export function findAgentGene(census: CensusRow | null, agentId: string): { serv
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
+async function currentCensus(env: SyscallEnv, mainSha: unknown): Promise<CensusRow> {
+  const census = await latestCensusRow(env);
+  if (!census) throw new Error("census_unavailable");
+  if (String(mainSha ?? "") !== census.main_sha) throw new Error("census_head_changed");
+  return census;
+}
+
+/** Recheck the live registry at execution time; the consensus evidence may be older than this write. */
+async function requireActiveHost(env: SyscallEnv, service: string): Promise<void> {
+  const row = await env.DB.prepare("SELECT status FROM service_registry WHERE service_id = ?").bind(service).first<{ status: string }>();
+  if (!row || row.status === "disabled") throw new Error("host_not_active");
+}
+
 async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: string; target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
-  const declared = findAgentGene(await latestCensusRow(env), p.target);
+  const census = await currentCensus(env, p.params.main_sha);
+  const declared = findAgentGene(census, p.target);
   if (!declared || !declared.gene.capabilities || declared.gene.tier_max === undefined || !declared.gene.display_name) throw new Error("agent_not_in_dna");
   const { service, gene } = declared;
   const caps = gene.capabilities!;
   if (String(p.params.service ?? "") !== service) throw new Error("host_differs_from_dna");
   if (!Array.isArray(p.params.capabilities) || !sameSet(p.params.capabilities.map(String), caps)) throw new Error("capabilities_differ_from_dna");
+  if (Number(p.params.tier_max) !== gene.tier_max) throw new Error("tier_max_differs_from_dna");
   if (forbiddenCapabilities(caps).length) throw new Error("forbidden_capability");
   const privileged = privilegedCapabilities(caps).length > 0;
   if (privileged !== (p.action === "register_privileged_agent")) throw new Error(privileged ? "privileged_needs_owner" : "not_privileged");
+  await requireActiveHost(env, service);
   const at = nowIso();
-  const res = await env.DB.prepare(
-    `INSERT OR IGNORE INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at, voter)
-     VALUES (?, ?, ?, ?, ?, ?, 'enabled', NULL, ?, ?, ?, 0)`,
-  ).bind(p.target, gene.display_name!.slice(0, 80), service,
-    `Declared in ${service}'s DNA (organism.json at ${String(p.params.main_sha ?? "main").slice(0, 12)}); registered by consensus ${proposalId}.`,
-    gene.tier_max, JSON.stringify(caps), actor, at, at).run();
-  if ((res.meta.changes ?? 0) !== 1) throw new Error("agent_already_registered");
-  await appendAuditEvent(env.DB, {
-    event_type: "agent.registered", actor, subject: `agent:${p.target}`, outcome: "enabled",
-    payload: { proposal_id: proposalId, host_worker: service, capabilities: caps, tier_max: gene.tier_max!, privileged, asks_for_seat: gene.voter },
-  });
-  return { agent_id: p.target, host_worker: service, capabilities: caps, tier_max: gene.tier_max!, privileged, seat: gene.voter ? "asks for a seat: admit_voter follows" : "none" };
+  try {
+    await appendAuditEventWithMutation(env.DB, {
+      event_type: "agent.registered", actor, subject: `agent:${p.target}`, outcome: "enabled",
+      payload: { proposal_id: proposalId, host_worker: service, capabilities: caps, tier_max: gene.tier_max, privileged, asks_for_seat: gene.voter },
+    }, () => env.DB.prepare(
+      `INSERT OR IGNORE INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at, voter)
+       SELECT ?, ?, ?, ?, ?, ?, 'enabled', NULL, ?, ?, ?, 0
+       WHERE EXISTS (SELECT 1 FROM service_registry WHERE service_id = ? AND status <> 'disabled')`,
+    ).bind(p.target, gene.display_name!.slice(0, 80), service,
+      `Declared in ${service}'s DNA (organism.json at ${census.main_sha.slice(0, 12)}); registered by consensus ${proposalId}.`,
+      gene.tier_max, JSON.stringify(caps), actor, at, at, service));
+  } catch (err) {
+    if (err instanceof AuditMutationConflictError) {
+      await requireActiveHost(env, service);
+      throw new Error("agent_already_registered");
+    }
+    throw err;
+  }
+  return { agent_id: p.target, host_worker: service, capabilities: caps, tier_max: gene.tier_max, privileged, seat: gene.voter ? "asks for a seat: admit_voter follows" : "none" };
 }
 
 async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
+  const census = await currentCensus(env, p.params.main_sha);
   const task = String(p.params.task ?? "");
-  const organ = (await latestCensusRow(env))?.genome.find((o) => o.service === p.target);
+  const organ = census.genome.find((o) => o.service === p.target);
   if (!organ || !organ.engines.includes(task)) throw new Error("engine_not_in_dna");
+  await requireActiveHost(env, p.target);
   const at = nowIso();
-  const res = await env.DB.prepare(
-    `INSERT INTO engines (service_id, task, status, registered_by, created_at, updated_at) VALUES (?, ?, 'enabled', ?, ?, ?)
-     ON CONFLICT (service_id, task) DO UPDATE SET status = 'enabled', registered_by = excluded.registered_by, updated_at = excluded.updated_at WHERE engines.status <> 'enabled'`,
-  ).bind(p.target, task, actor, at, at).run();
-  if ((res.meta.changes ?? 0) !== 1) throw new Error("engine_already_registered");
-  await appendAuditEvent(env.DB, { event_type: "engine.registered", actor, subject: `${p.target}:${task}`, outcome: "enabled", payload: { proposal_id: proposalId } });
+  try {
+    await appendAuditEventWithMutation(env.DB, {
+      event_type: "engine.registered", actor, subject: `${p.target}:${task}`, outcome: "enabled", payload: { proposal_id: proposalId },
+    }, () => env.DB.prepare(
+      `INSERT INTO engines (service_id, task, status, registered_by, created_at, updated_at)
+       SELECT ?, ?, 'enabled', ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM service_registry WHERE service_id = ? AND status <> 'disabled')
+       ON CONFLICT (service_id, task) DO UPDATE SET status = 'enabled', registered_by = excluded.registered_by, updated_at = excluded.updated_at WHERE engines.status <> 'enabled'`,
+    ).bind(p.target, task, actor, at, at, p.target));
+  } catch (err) {
+    if (err instanceof AuditMutationConflictError) {
+      await requireActiveHost(env, p.target);
+      throw new Error("engine_already_registered");
+    }
+    throw err;
+  }
   return { service_id: p.target, task, status: "enabled" };
 }
 
@@ -92,20 +127,31 @@ async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: 
  * seat, and the seat must be able to vote through reviewed code: a vote binding the kernel knows
  * (VOTE_BINDINGS) that is bound in this deployment, or a founding seat's own rule.
  */
-async function admitVoter(env: SyscallEnv, proposalId: string, p: { target: string }, actor: string, canVote: (agentId: string) => boolean): Promise<JsonObject> {
-  const declared = findAgentGene(await latestCensusRow(env), p.target);
+async function admitVoter(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string, canVote: (agentId: string) => boolean): Promise<JsonObject> {
+  const census = await currentCensus(env, p.params.main_sha);
+  const declared = findAgentGene(census, p.target);
   if (!declared?.gene.voter) throw new Error("seat_not_in_dna");
   const agent = await env.DB.prepare("SELECT status, host_worker, voter FROM agents WHERE agent_id = ?").bind(p.target).first<{ status: string; host_worker: string; voter: number }>();
   if (!agent) throw new Error("agent_not_registered");
   if (agent.status !== "enabled") throw new Error("agent_not_enabled");
   if (agent.host_worker !== declared.service) throw new Error("host_differs_from_dna");
+  await requireActiveHost(env, agent.host_worker);
   if (!canVote(p.target)) throw new Error("no_vote_binding");
-  const res = await env.DB.prepare(
-    `UPDATE agents SET voter = 1, updated_by = ?, updated_at = ? WHERE agent_id = ? AND voter = 0 AND status = 'enabled'
-       AND NOT EXISTS (SELECT 1 FROM agents o WHERE o.host_worker = agents.host_worker AND o.voter = 1 AND o.agent_id <> agents.agent_id)`,
-  ).bind(actor, nowIso(), p.target).run();
-  if ((res.meta.changes ?? 0) !== 1) throw new Error("seat_unavailable");
-  await appendAuditEvent(env.DB, { event_type: "consensus.voter_admitted", actor, subject: `agent:${p.target}`, outcome: "admitted", payload: { proposal_id: proposalId, host_worker: agent.host_worker } });
+  try {
+    await appendAuditEventWithMutation(env.DB, {
+      event_type: "consensus.voter_admitted", actor, subject: `agent:${p.target}`, outcome: "admitted", payload: { proposal_id: proposalId, host_worker: agent.host_worker },
+    }, () => env.DB.prepare(
+      `UPDATE agents SET voter = 1, updated_by = ?, updated_at = ? WHERE agent_id = ? AND voter = 0 AND status = 'enabled'
+         AND EXISTS (SELECT 1 FROM service_registry WHERE service_id = agents.host_worker AND status <> 'disabled')
+         AND NOT EXISTS (SELECT 1 FROM agents o WHERE o.host_worker = agents.host_worker AND o.voter = 1 AND o.agent_id <> agents.agent_id)`,
+    ).bind(actor, nowIso(), p.target));
+  } catch (err) {
+    if (err instanceof AuditMutationConflictError) {
+      await requireActiveHost(env, agent.host_worker);
+      throw new Error("seat_unavailable");
+    }
+    throw err;
+  }
   return { agent_id: p.target, host_worker: agent.host_worker, voter: true };
 }
 

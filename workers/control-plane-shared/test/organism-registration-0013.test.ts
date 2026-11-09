@@ -179,14 +179,14 @@ test("R5. the executor takes the gene from the census: a proposal that differs f
   setMode(db, "deploy");
   await censusTick(db as never, repoWith(grownDna()));
   const r = await syscall(env as never, "supervisor", "consensus.propose", {
-    action: "register_agent", target: "forge-steward", params: { service: "cryptophys-forge", capabilities: ["platform.observe", "memory.recall"], tier_max: 1 },
+    action: "register_agent", target: "forge-steward", params: { service: "cryptophys-forge", capabilities: ["platform.observe", "memory.recall"], tier_max: 1, main_sha: MAIN },
   });
   assert.equal(r.outcome, "succeeded");
   const p = last(db);
   assert.equal(p.status, "failed");
   assert.match(p.outcome_json, /capabilities_differ_from_dna/);
   assert.equal(agentRow(db, "forge-steward"), undefined);
-  const ghost = await syscall(env as never, "supervisor", "consensus.propose", { action: "register_agent", target: "ghost-agent", params: { service: "cryptophys-forge", capabilities: ["platform.observe"], tier_max: 0 } });
+  const ghost = await syscall(env as never, "supervisor", "consensus.propose", { action: "register_agent", target: "ghost-agent", params: { service: "cryptophys-forge", capabilities: ["platform.observe"], tier_max: 0, main_sha: MAIN } });
   assert.equal(ghost.outcome, "succeeded");
   assert.match(last(db).outcome_json, /agent_not_in_dna/);
 });
@@ -227,4 +227,72 @@ test("R7. the council is read from admitted seats; a seat without a vote binding
   assert.equal(sa.vote, "abstain");
   assert.match(sa.reason, /no vote binding/);
   assert.equal(p.eligible, 8);
+});
+
+test("R8. a registration cannot execute against a newer census head than the one voted on", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "deploy");
+  const dna = grownDna();
+  await censusTick(db as never, repoWith(dna, MAIN));
+  const policy = env.POLICY as { evaluate: (input: Record<string, unknown>) => Promise<any> };
+  const original = policy.evaluate.bind(env.POLICY);
+  let refreshed = false;
+  policy.evaluate = async (input) => {
+    const decision = await original(input);
+    if (!refreshed && input.action === "consensus.execute" && input.resource === "register_agent:forge-steward") {
+      await censusTick(db as never, repoWith(dna, "b".repeat(40)), Date.now() + CENSUS_REFRESH_MS + 1);
+      refreshed = true;
+    }
+    return decision;
+  };
+  const r = await syscall(env as never, "supervisor", "consensus.propose", {
+    action: "register_agent", target: "forge-steward",
+    params: { service: "cryptophys-forge", capabilities: ["platform.observe", "reports.publish"], tier_max: 1, main_sha: MAIN },
+  });
+  assert.equal(r.outcome, "succeeded");
+  assert.equal(last(db).status, "failed");
+  assert.match(last(db).outcome_json, /census_head_changed/);
+  assert.equal(agentRow(db, "forge-steward"), undefined);
+});
+
+test("R9. an engine registration rechecks its host after consensus and policy approval", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "deploy");
+  await censusTick(db as never, repoWith(grownDna()));
+  const policy = env.POLICY as { evaluate: (input: Record<string, unknown>) => Promise<any> };
+  const original = policy.evaluate.bind(env.POLICY);
+  let disabled = false;
+  policy.evaluate = async (input) => {
+    const decision = await original(input);
+    if (!disabled && input.action === "consensus.execute" && input.resource === "register_engine:cryptophys-forge") {
+      db.raw.prepare("UPDATE service_registry SET status = 'disabled' WHERE service_id = 'cryptophys-forge'").run();
+      disabled = true;
+    }
+    return decision;
+  };
+  const r = await syscall(env as never, "supervisor", "consensus.propose", {
+    action: "register_engine", target: "cryptophys-forge", params: { task: "summarize_census", main_sha: MAIN },
+  });
+  assert.equal(r.outcome, "succeeded");
+  assert.equal(last(db).status, "failed");
+  assert.match(last(db).outcome_json, /host_not_active/);
+  assert.equal(db.raw.prepare("SELECT 1 FROM engines WHERE service_id = 'cryptophys-forge' AND task = 'summarize_census' AND status = 'enabled'").get(), undefined);
+});
+
+test("R10. a failed registration audit rolls back the agent insert", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "deploy");
+  await censusTick(db as never, repoWith(grownDna()));
+  db.raw.prepare(`CREATE TRIGGER fail_agent_registration_audit BEFORE INSERT ON audit_events
+    WHEN NEW.event_type = 'agent.registered'
+    BEGIN SELECT RAISE(ABORT, 'simulated audit failure'); END`).run();
+  const r = await syscall(env as never, "supervisor", "consensus.propose", {
+    action: "register_agent", target: "forge-steward",
+    params: { service: "cryptophys-forge", capabilities: ["platform.observe", "reports.publish"], tier_max: 1, main_sha: MAIN },
+  });
+  assert.equal(r.outcome, "succeeded");
+  assert.equal(last(db).status, "failed");
+  assert.match(last(db).outcome_json, /simulated audit failure/);
+  assert.equal(agentRow(db, "forge-steward"), undefined);
+  assert.equal(db.raw.prepare("SELECT 1 FROM audit_events WHERE event_type = 'agent.registered' AND subject = 'agent:forge-steward'").get(), undefined);
 });

@@ -100,3 +100,41 @@ test("C4. GET /v1/forge/census for operators; migration 0040 required; the tick 
   assert.match(read("workers/forge/src/tick.ts"), /step\("census"/);
   assert.match(read("workers/console/src/index.ts"), /"\/v1\/forge\/census"/);
 });
+
+test("C5. tier_max drift is reported rather than silently accepted", async () => {
+  const db = migratedDb();
+  db.raw.prepare("UPDATE agents SET tier_max = 0 WHERE agent_id = 'supervisor'").run();
+  const findings = await compare(db as never, (await readGenome(repoWith(realDna(), "3".repeat(40)), "3".repeat(40))).genome);
+  assert.deepEqual(findings.map((f) => `${f.kind}:${f.subject}`), ["agent_tier_changed:supervisor"]);
+  const r = await censusTick(db as never, repoWith(realDna(), "3".repeat(40)));
+  assert.deepEqual([r.status, r.findings], ["changes", 1]);
+});
+
+test("C6. a partially applied phase-3 schema fails closed when engines is missing", async () => {
+  const db = migratedDb();
+  db.raw.prepare("DROP TABLE engines").run();
+  const r = await censusTick(db as never, repoWith(realDna()));
+  assert.equal(r.status, "invalid");
+  const row = (await latestCensus(db as never)).census[0];
+  assert.equal(row.findings[0].kind, "invalid_dna");
+  assert.match(row.findings[0].detail, /no such table: engines/i);
+});
+
+test("C7. unexpected registry query errors do not fall back to the legacy schema", async () => {
+  const db = migratedDb();
+  const broken = new Proxy(db as never, {
+    get(target: any, property: string | symbol) {
+      if (property === "prepare") return (sql: string) => {
+        if (String(sql).includes("SELECT agent_id, host_worker, capabilities_json, tier_max, voter FROM agents")) throw new Error("database is locked");
+        return target.prepare(sql);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const r = await censusTick(broken as never, repoWith(realDna()));
+  assert.equal(r.status, "invalid");
+  const row = (await latestCensus(db as never)).census[0];
+  assert.equal(row.findings[0].kind, "invalid_dna");
+  assert.match(row.findings[0].detail, /database is locked/);
+});
