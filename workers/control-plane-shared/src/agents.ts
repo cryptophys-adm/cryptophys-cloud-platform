@@ -15,7 +15,7 @@ export interface AgentRpcBinding {
   syscall(agentId: string, capability: string, input?: JsonObject): Promise<JsonObject>;
 }
 
-export type ReportKind = "platform_digest" | "signal_digest" | "audit_digest" | "xauusd_digest" | "hud_digest";
+export type ReportKind = "platform_digest" | "signal_digest" | "audit_digest" | "xauusd_digest" | "hud_digest" | "knowledge_audit";
 export interface AgentReport {
   kind: ReportKind;
   severity: "info" | "warning" | "critical";

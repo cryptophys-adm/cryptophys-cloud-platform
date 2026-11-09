@@ -185,8 +185,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
 
   // ADR-0009 phase 3: a CI-green main commit that production does not run yet is proposed for
   // deployment, once per deploy unit and commit. Executed only in the 'deploy' consensus mode.
-  // Only scheduled cycles propose deploys: a proposal takes 15-25 s (evidence, audit chain, nine
-  // votes, policy), and an operator wake is a synchronous request (deploy verification probes it).
+  // Only scheduled cycles propose deploys: a proposal takes 15-25 s (evidence, audit chain, one
+  // vote per council seat, policy), and an operator wake is a synchronous request (deploy verification probes it).
   if (trigger === "scheduled") {
     const expired = await expireOwnerProposals(env, now);
     if (expired > 0) report.findings.push({ kind: "consensus", action: "expire", why: `${expired} owner decision(s) lapsed after 24 h` });
@@ -196,7 +196,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     const noisy = await env.DB.prepare(
       `SELECT a.agent_id, COUNT(*) AS n FROM agent_actions a JOIN agents g ON g.agent_id = a.agent_id
        WHERE a.outcome IN ('denied', 'failed') AND a.created_at >= ? AND g.status = 'enabled'
-         AND a.agent_id NOT IN ('supervisor', 'signal-analyst', 'auditor')
+         AND g.host_worker != 'cryptophys-ai-kernel'
        GROUP BY a.agent_id HAVING COUNT(*) >= ? ORDER BY n DESC LIMIT 1`,
     ).bind(new Date(now - 3_600_000).toISOString(), SUSPEND_AFTER_FAILURES_PER_HOUR).first<{ agent_id: string; n: number }>();
     if (noisy) {
@@ -218,7 +218,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     try {
       const pending = await env.DEPLOY.pendingDeploys();
       // At most one deploy proposal per cycle: each proposal gathers evidence, verifies the audit
-      // chain and runs nine votes, and deploys go one at a time anyway. The rest follow next cycle.
+      // chain and runs one vote per council seat, and deploys go one at a time anyway. The rest follow next cycle.
       let proposed = 0;
       // Do not propose what the Policy Engine is certain to veto (owner 2026-11-07: repeated
       // "Blocked" reports drowned the useful ones). Same counting as the Policy Engine: executions

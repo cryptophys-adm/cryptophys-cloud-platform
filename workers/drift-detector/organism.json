@@ -1,0 +1,33 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-drift-detector",
+  "display_name": "Drift Detector",
+  "kind": "service",
+  "deploy_unit": "control-plane",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "self"
+  },
+  "agents": [
+    {
+      "id": "drift-detector",
+      "display_name": "Drift Detector AI Agent",
+      "capabilities": [
+        "platform.observe",
+        "recovery.propose",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true,
+      "vote_binding": "VOTE_DRIFT_DETECTOR"
+    }
+  ],
+  "engines": [
+    {
+      "task": "summarize_drift"
+    }
+  ]
+}

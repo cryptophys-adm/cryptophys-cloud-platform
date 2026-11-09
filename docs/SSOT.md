@@ -1,6 +1,6 @@
 # Single source of truth: current topology
 
-`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0012). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
+`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0013). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
 Last reviewed: 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
@@ -55,16 +55,21 @@ These hold everywhere:
 
 ## Data
 
-- **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/` (0001–0035).
+- **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/`, numbered from 0001; each Worker's readiness lists the ones it needs.
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
 - **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). Other tables are kept.
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).
 
+## The living platform (ADR-0013)
+
+- **DNA.** Every Worker declares itself in `workers/<dir>/organism.json`: service, deploy unit, Access, rollback, drift probe, hosted agents (voter or not), AI engines. CI fails when a static list (deploy units, drift probes, Access, rollback, council, kernel agents, vote bindings, engines, names) disagrees with the DNA.
+- **Next.** The Forge takes a census of the DNA on each main commit (phase 2); new agents and engines register through consensus, council seats and privileged capabilities with the owner's click (phase 3).
+
 ## Autonomy (ADR-0007, ADR-0009)
 
 - **Current state.** Consensus mode is `deploy` (owner, 2026-11-07). The kill switch is on.
-- **Routine actions.** Agents propose. Nine control-plane voters vote. The Policy Engine has a veto.
+- **Routine actions.** Agents propose. The council votes: the voters each Worker's DNA declares (`workers/*/organism.json`, ADR-0013; nine today). The Policy Engine has a veto.
 - **Limits.** One deploy per target per hour and six per 24 hours. Deploys run only at SAFE minutes.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.

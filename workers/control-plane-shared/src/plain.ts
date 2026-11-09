@@ -9,6 +9,7 @@ const SERVICE_NAMES: Record<string, string> = {
   "cryptophys-console": "Cerebrum Console",
   "cryptophys-deployment-orchestrator": "Deployment Orchestrator",
   "cryptophys-drift-detector": "Drift Detector",
+  "cryptophys-forge": "Forge",
   "cryptophys-home": "Home (retired)",
   "cryptophys-platform-api": "Platform API",
   "cryptophys-platform-registry": "Platform Registry",

@@ -1,0 +1,33 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-platform-registry",
+  "display_name": "Platform Registry",
+  "kind": "service",
+  "deploy_unit": "control-plane",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_PLATFORM_REGISTRY"
+  },
+  "agents": [
+    {
+      "id": "platform-registry",
+      "display_name": "Platform Registry AI Agent",
+      "capabilities": [
+        "platform.observe",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true,
+      "vote_binding": "VOTE_PLATFORM_REGISTRY"
+    }
+  ],
+  "engines": [
+    {
+      "task": "suggest_tags"
+    }
+  ]
+}

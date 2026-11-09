@@ -1,0 +1,15 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-home",
+  "display_name": "Home (retired)",
+  "kind": "portal",
+  "deploy_unit": "home",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_HOME"
+  },
+  "agents": [],
+  "engines": []
+}

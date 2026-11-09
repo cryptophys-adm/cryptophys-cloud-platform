@@ -1,0 +1,34 @@
+{
+  "$schema_version": 1,
+  "service": "cryptophys-deployment-orchestrator",
+  "display_name": "Deployment Orchestrator",
+  "kind": "service",
+  "deploy_unit": "deployment-orchestrator",
+  "access": true,
+  "rollback": true,
+  "drift": {
+    "via": "rpc",
+    "binding": "SVC_DEPLOYMENT_ORCHESTRATOR"
+  },
+  "agents": [
+    {
+      "id": "deployment-orchestrator",
+      "display_name": "Deployment Orchestrator AI Agent",
+      "capabilities": [
+        "platform.observe",
+        "audit.verify",
+        "reports.publish",
+        "memory.recall",
+        "memory.remember"
+      ],
+      "tier_max": 1,
+      "voter": true,
+      "vote_binding": "VOTE_DEPLOYMENT_ORCHESTRATOR"
+    }
+  ],
+  "engines": [
+    {
+      "task": "summarize_deployment_risk"
+    }
+  ]
+}
