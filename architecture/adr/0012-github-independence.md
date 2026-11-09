@@ -143,7 +143,10 @@ The owner creates every credential. None is created by an agent or stored in the
   - `CF_DEPLOY_TOKEN` and `GH_ACTIONS_TOKEN` on the Orchestrator;
   - `ACCESS_GROUPS_TOKEN` on the Platform Registry.
 - **Why.** The secrets are kept in one place and scoped to Workers. Their values cannot be read back by the API or the dashboard. Secrets Store has its own admin and deployer roles, and an audit log.
-- **Code.** It accepts both forms during the move (a plain Worker secret, or a Secrets Store binding). The binding is enabled once the store exists.
+- **Code (done 2026-11-09, `control-plane-shared/src/secrets.ts`).** The code accepts both forms during the move: a plain Worker secret `NAME`, or a Secrets Store binding `NAME_STORE`.
+  - The Orchestrator and Platform Registry entry points (`fetch`, `scheduled` and every RPC method) resolve `NAME_STORE` into `env.NAME` once per invocation, so the code that reads `env.NAME` is unchanged.
+  - The store binding wins when it answers. A failing or empty store falls back to the Worker secret, so the switch can be reversed until the old secrets are deleted.
+  - The bindings are added to `wrangler.toml` once the store ID is known, as `[[secrets_store_secrets]] binding = "GH_ACTIONS_TOKEN_STORE", store_id = "<id>", secret_name = "GH_ACTIONS_TOKEN"`. Do the same for `CF_DEPLOY_TOKEN_STORE` and `ACCESS_GROUPS_TOKEN_STORE`.
 - **Owner steps.**
   1. Create the store.
   2. Enter the three secrets with the `workers` scope.

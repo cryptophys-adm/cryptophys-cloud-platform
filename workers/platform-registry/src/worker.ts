@@ -6,9 +6,18 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { applyConsensus, recordRollback, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
+import { resolveSecrets } from "../../control-plane-shared/src/secrets.ts";
 import type { Evidence, Proposal, Vote } from "../../control-plane-shared/src/consensus-rules.ts";
 
-export default worker;
+/** Secrets that may come from Cloudflare Secrets Store (ADR-0012 §4): binding ACCESS_GROUPS_TOKEN_STORE. */
+export const STORE_SECRETS = ["ACCESS_GROUPS_TOKEN"] as const;
+const resolved = (env: Env) => resolveSecrets(env, STORE_SECRETS);
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return worker.fetch(request, await resolved(env));
+  },
+};
 
 export class HealthRpc extends WorkerEntrypoint<Env> {
   async health(): Promise<HealthBody> {
@@ -19,7 +28,7 @@ export class HealthRpc extends WorkerEntrypoint<Env> {
 /** ADR-0009 phase 2: the AI Kernel applies passed consensus actions here; applyConsensus re-verifies them. */
 export class RegistryRpc extends WorkerEntrypoint<Env> {
   async applyConsensus(proposalId: string, decisionId: string, action: string, target: string, params: Record<string, unknown>) {
-    return applyConsensus(this.env, proposalId, decisionId, action, target, params);
+    return applyConsensus(await resolved(this.env), proposalId, decisionId, action, target, params);
   }
   /** ADR-0012 phase 2: the Orchestrator's native rollback records the version it verified live. */
   async recordRollback(requestId: string) {
