@@ -81,6 +81,9 @@ test("FC3. the runner core: paths, test files, groups and the deferred module bo
   assert.equal(groups.length, 11, "43 files in 11 test Workers of at most 4, under the 32 Worker invocations one request may make");
   assert.equal(FILES_PER_WORKER, 4, "groups of 8 ran sql.js out of memory (2026-11-09)");
   assert.ok(groups.every((g) => g.length <= FILES_PER_WORKER));
+  const entry = runnerEntry(["x/a.test.ts"]);
+  assert.match(entry, /cleanupSqlite/);
+  assert.match(entry, /sqlite_open_after/);
   const deferred = deferTopLevel('import assert from "node:assert/strict";\nconst k = Date.now();\ntest("x", () => {});\nexport {\n  k\n};\n');
   assert.match(deferred, /^import assert from "node:assert\/strict";\nexport async function __load\(\) \{\nconst k = Date\.now\(\);/);
   assert.doesNotMatch(deferred, /export \{/);
@@ -103,11 +106,11 @@ test("FC4. one test Worker per group, without network access, with the bundler c
       loaded.push(code);
       const files = code.modules["files.json"] as { json: string[] };
       if (files.json.includes("workers/control-plane-shared/test/t09.test.ts")) throw new Error("Worker exceeded CPU limit");
-      return { files: files.json.map((file, i) => ({ file, results: i === 0 ? [{ name: "a", status: "pass" }, { name: "b", status: "fail", error: "boom" }] : [{ name: "a", status: "pass" }, { name: "s", status: "skip" }] })) };
+      return { files: files.json.map((file) => ({ file, results: file.endsWith("/t00.test.ts") ? [{ name: "a", status: "pass" }, { name: "b", status: "fail", error: "boom" }] : [{ name: "a", status: "pass" }, { name: "s", status: "skip" }] })) };
     },
   };
   const r = await runSuite(deps, snapshot);
-  assert.equal(loaded.length, 3, "10 files: Workers of 3 (one did not bundle), 4 and 2");
+  assert.equal(loaded.length, 3, "10 files: three Workers (3, 4, 2); one file did not bundle");
   for (const code of loaded) {
     assert.equal(code.globalOutbound, null, "tests have no network access");
     assert.deepEqual(code.env, { BUNDLER: "BUNDLER-STUB" });
@@ -116,12 +119,21 @@ test("FC4. one test Worker per group, without network access, with the bundler c
   }
   assert.equal(r.files, 10);
   assert.equal(r.pass, 7);
-  assert.equal(r.skip, 5);
-  assert.equal(r.fail, 1 + 1 + 1 + 2, "a failed test in each of two Workers, one bundle error, two files of a Worker that crashed");
-  assert.ok(r.failures.some((f) => f === "t04.test.ts :: b: boom"));
+  assert.equal(r.skip, 6);
+  assert.equal(r.fail, 1 + 1 + 2, "one failed test, one bundle error, two files of a Worker that crashed");
   assert.ok(r.failures.some((f) => f.startsWith("t03.test.ts: BUNDLE")));
   assert.ok(r.failures.some((f) => f.startsWith("t09.test.ts: RUN Worker exceeded CPU limit")));
   assert.ok(r.failures.some((f) => f === "t00.test.ts :: b: boom"));
+});
+
+test("FC5b. a SQL.js database left open by a file fails the suite", () => {
+  const r = tally({ files: 0, pass: 0, fail: 0, skip: 0, failures: [] }, ["x/a.test.ts"], {
+    files: [{ file: "x/a.test.ts", results: [{ name: "ok", status: "pass" }], sqlite_open_after: 1, sqlite_close_errors: 0 }],
+  });
+  assert.deepEqual(r, {
+    files: 1, pass: 1, fail: 1, skip: 0,
+    failures: ["a.test.ts: SQLITE cleanup left 1 database(s) open (0 close errors)"],
+  });
 });
 
 test("FC5. a file the test Worker did not report, or could not load, fails", () => {
@@ -380,6 +392,16 @@ test("FC17. a run records its steps; a bundle failure fails it, a secret finding
   const listed = await call(forge, baseEnv("cryptophys-forge", db, { ARTIFACTS: {} }), req("GET", "/v1/forge/checks", undefined, OPERATOR_JWT));
   assert.deepEqual(listed.body.checks[0].bundles, { workers: 2, failed: 1 });
   assert.equal(listed.body.checks[0].guard_status, "findings");
+});
+
+test("FC19. the SQL.js shim tracks databases and the runner releases test-owned handles after each test", () => {
+  const shim = read("workers/forge/src/runner/shims/node-sqlite.js");
+  const core = read("workers/forge/src/runner/core.ts");
+  assert.match(shim, /__SQL_DATABASES/);
+  assert.match(shim, /databases\.add\(this\)/);
+  assert.match(shim, /databases\.delete\(this\)/);
+  assert.match(core, /const keepSqlite = new Set\(globalThis\.__SQL_DATABASES \?\? \[\]\)/);
+  assert.match(core, /cleanupSqlite\(keepSqlite\)/);
 });
 
 test("FC18. the Forge is not ready before its own migrations are applied; other Workers do not wait for them", async () => {

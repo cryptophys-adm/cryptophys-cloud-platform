@@ -151,3 +151,18 @@ test("F5. wiring: binding, Access destination, deploy and mirror workflows, ops-
   assert.match(ops, /\|deploy-forge\.yml\) ref=main ;;/);
   assert.match(ops, /mirror-to-forge\.yml\) ref=main ;;/);
 });
+
+test("F8. the runner releases test-owned SQL.js databases after each test", () => {
+  const databases = (globalThis as unknown as { __SQL_DATABASES?: Set<unknown> }).__SQL_DATABASES;
+  if (!databases) return; // Native node:test uses node:sqlite, not the Forge shim.
+  assert.equal(databases.size, 0, "previous tests must not leave SQLite databases open");
+  const db = migratedDb();
+  assert.ok(db.raw);
+  assert.equal(databases.size, 1);
+});
+
+test("F9. a SQL.js database left by the previous test is closed before the next test starts", () => {
+  const databases = (globalThis as unknown as { __SQL_DATABASES?: Set<unknown> }).__SQL_DATABASES;
+  if (!databases) return;
+  assert.equal(databases.size, 0, "the runner must clean up after every test, not only after the file");
+});
