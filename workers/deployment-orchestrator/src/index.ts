@@ -13,6 +13,7 @@ import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConf
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  delete?(key: string): Promise<boolean | void>;
 }
 interface DurableObjectStateLike {
   storage: DurableObjectStorageLike;
@@ -106,6 +107,34 @@ async function gh(token: string, path: string, init: RequestInit = {}): Promise<
       ...init.headers
     }
   });
+}
+
+/**
+ * Dispatch a workflow on main. GitHub answered one consensus deploy with HTTP 500 (2026-11-09
+ * 10:38 UTC). A 5xx or 429 is retried once after a pause, unless a dispatched run of that workflow
+ * appeared meanwhile (an ambiguous failure that did start a run). Returns the final status.
+ */
+export const DISPATCH_RETRY_MS = 3_000;
+export async function dispatchWorkflow(token: string, workflow: string, inputs: Record<string, string>, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<{ status: number; attempts: number }> {
+  const send = () => gh(token, "/repos/" + REPOSITORY + "/actions/workflows/" + workflow + "/dispatches", { method: "POST", body: JSON.stringify({ ref: "main", inputs }) });
+  const started = Date.now();
+  const first = await send();
+  if (first.status < 500 && first.status !== 429) return { status: first.status, attempts: 1 };
+  await sleep(DISPATCH_RETRY_MS);
+  const runs = await gh(token, "/repos/" + REPOSITORY + "/actions/workflows/" + workflow + "/runs?event=workflow_dispatch&per_page=5");
+  if (runs.ok) {
+    const recent = ((await runs.json()) as { workflow_runs?: Array<{ created_at?: string }> }).workflow_runs ?? [];
+    if (recent.some((r) => Date.parse(r.created_at ?? "") >= started - 10_000)) return { status: 204, attempts: 1 };
+  }
+  return { status: (await send()).status, attempts: 2 };
+}
+
+/** Release a dispatch lock when nothing was dispatched, so a later proposal or plan can try again. */
+async function releaseLock(env: Env, name: string, sha: string): Promise<void> {
+  try {
+    await env.DEPLOYMENT_LOCK!.get(env.DEPLOYMENT_LOCK!.idFromName(name))
+      .fetch("https://lock.internal/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+  } catch { /* the lock stays claimed: the next main commit uses a new lock */ }
 }
 
 type CommitStatus = { state?: string; total_count?: number };
@@ -246,15 +275,14 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
      VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
   ).bind(requestId, target, sha, actor, proposalId, `consensus:${unit.workflow}:${sha}`,
     JSON.stringify({ workflow: unit.workflow, unit: unit.unit, ref: "main", workflows: ci.workflows, proposal_id: proposalId, policy_decision_id: decisionId }), at, at).run();
-  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + unit.workflow + "/dispatches",
-    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) });
+  const dispatch = await dispatchWorkflow(env.GH_ACTIONS_TOKEN, unit.workflow, { confirm_production: "DEPLOY", commit_sha: sha });
   const status = dispatch.status === 204 ? "running" : "failed";
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: target, outcome: status,
-    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, proposal_id: proposalId },
+    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, proposal_id: proposalId },
   });
-  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  if (dispatch.status !== 204) { await releaseLock(env, `consensus:${unit.workflow}:${sha}`, sha); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
 }
 
@@ -309,15 +337,14 @@ export async function deployForRecovery(env: Env, planId: string, decisionId: st
      VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
   ).bind(requestId, serviceId, sha, actor, planId, `recovery:${planId}`,
     JSON.stringify({ workflow: unit.workflow, unit: unit.unit, ref: "main", workflows: ci.workflows, plan_id: planId, policy_decision_id: decisionId }), at, at).run();
-  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + unit.workflow + "/dispatches",
-    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) });
+  const dispatch = await dispatchWorkflow(env.GH_ACTIONS_TOKEN, unit.workflow, { confirm_production: "DEPLOY", commit_sha: sha });
   const status = dispatch.status === 204 ? "running" : "failed";
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: serviceId, outcome: status,
-    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, plan_id: planId },
+    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, plan_id: planId },
   });
-  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  if (dispatch.status !== 204) { await releaseLock(env, `recovery:${unit.workflow}:${sha}`, sha); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
 }
 
@@ -374,15 +401,14 @@ async function dispatchRollback(env: Env, actor: string, serviceId: string, tag:
     `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
   ).bind(requestId, serviceId, tag, actor, Object.values(link)[0] ?? null, key, JSON.stringify({ workflow: ROLLBACK_WORKFLOW, version_tag: tag, ...link }), at, at).run();
-  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/" + ROLLBACK_WORKFLOW + "/dispatches",
-    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { worker: serviceId, version_tag: tag, confirm_production: "ROLLBACK" } }) });
+  const dispatch = await dispatchWorkflow(env.GH_ACTIONS_TOKEN, ROLLBACK_WORKFLOW, { worker: serviceId, version_tag: tag, confirm_production: "ROLLBACK" });
   const status = dispatch.status === 204 ? "running" : "failed";
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.rollback_dispatched" : "deployment.dispatch_failed", actor, subject: serviceId, outcome: status,
-    payload: { request_id: requestId, workflow: ROLLBACK_WORKFLOW, version_tag: tag, github_status: dispatch.status, ...link },
+    payload: { request_id: requestId, workflow: ROLLBACK_WORKFLOW, version_tag: tag, github_status: dispatch.status, attempts: dispatch.attempts, ...link },
   });
-  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  if (dispatch.status !== 204) { await releaseLock(env, key, sha); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: ROLLBACK_WORKFLOW, commit_sha: sha, version_tag: tag };
 }
 
@@ -695,15 +721,14 @@ export async function retireForConsensus(env: Env, proposalId: string, decisionI
      VALUES (?, ?, 'retire', ?, 'approved', ?, ?, ?, ?, ?)`,
   ).bind(requestId, target, actor, proposalId, `consensus:retire:${target}`,
     JSON.stringify({ workflow: "retire-worker.yml", proposal_id: proposalId, policy_decision_id: decisionId }), at, at).run();
-  const dispatch = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/workflows/retire-worker.yml/dispatches",
-    { method: "POST", body: JSON.stringify({ ref: "main", inputs: { worker: target, confirm_production: "DELETE" } }) });
+  const dispatch = await dispatchWorkflow(env.GH_ACTIONS_TOKEN, "retire-worker.yml", { worker: target, confirm_production: "DELETE" });
   const status = dispatch.status === 204 ? "running" : "failed";
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.retire_dispatched" : "deployment.dispatch_failed", actor, subject: target, outcome: status,
-    payload: { request_id: requestId, workflow: "retire-worker.yml", github_status: dispatch.status, proposal_id: proposalId },
+    payload: { request_id: requestId, workflow: "retire-worker.yml", github_status: dispatch.status, attempts: dispatch.attempts, proposal_id: proposalId },
   });
-  if (dispatch.status !== 204) throw new Error(`dispatch_failed_${dispatch.status}`);
+  if (dispatch.status !== 204) { await releaseLock(env, `consensus:retire:${target}`, "0".repeat(40)); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: "retire-worker.yml", worker: target };
 }
 
@@ -1039,7 +1064,7 @@ export class DeploymentLock {
 
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
-    if (request.method !== "POST" || (path !== "/claim" && path !== "/status")) {
+    if (request.method !== "POST" || (path !== "/claim" && path !== "/status" && path !== "/release")) {
       return json({ error: "not_found" }, 404);
     }
     let body: { sha?: unknown };
@@ -1056,6 +1081,11 @@ export class DeploymentLock {
       const existing = await this.state.storage.get(key) as { claimed_at?: unknown } | undefined;
       if (path === "/status") {
         return json({ claimed: !!existing, claimed_at: typeof existing?.claimed_at === "string" ? existing.claimed_at : null });
+      }
+      // Only the Orchestrator reaches this object (no route): it releases a claim when nothing was dispatched.
+      if (path === "/release") {
+        if (existing) await this.state.storage.delete?.(key);
+        return json({ released: !!existing });
       }
       if (existing) return json({ claimed: false, claimed_at: typeof existing.claimed_at === "string" ? existing.claimed_at : null }, 409);
       const claimedAt = new Date().toISOString();
