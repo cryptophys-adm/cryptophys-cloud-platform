@@ -68,6 +68,7 @@ These hold everywhere:
 - **Limits.** One deploy per target per hour and six per 24 hours. Deploys run only at SAFE minutes.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.
+- **CI gate for consensus deploys.** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
 
 ## Source, CI and deploy (ADR-0012)
 
