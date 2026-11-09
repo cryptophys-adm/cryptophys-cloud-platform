@@ -33,3 +33,18 @@ It needs no GitHub at any step.
 
 - **Shim imports.** `src/runner/assets.js` holds the wasm toolchain. Only `src/worker.ts` imports it, so the Node tests never load it. Wrangler imports the shims as Text (`[[rules]]`). The globs match the import specifiers as written there, so keep those import paths.
 - **Local run.** `node tools/forge-runner/run.mjs` runs the same checks code in local workerd. There the type-check step reads `not_configured`.
+
+## Change requests (phase 4, shadow)
+
+`src/changes.ts`, migration 0037, ADR-0012 §5d. Every same-repository pull request becomes change
+request `gh-<number>`: `forge-change-request.yml` pushes its head to `cr/<number>` and registers it
+(`POST /v1/forge/changes`, CI service token, `confirm: "REGISTER"`). The cron checks open change
+request heads before commits of `main`. `GET /v1/forge/changes` lists each one with:
+
+- the changed paths and the owner-only reasons (ADR §2.4);
+- the check of its head (tests, bundles, secret scan, type-check and Console build);
+- the verdict: `pending`, `blocked`, `needs_owner` or `would_merge`.
+
+`mirror-to-forge.yml` reports GitHub's outcome (`POST /v1/forge/changes/outcome`, `confirm: "REPORT"`),
+which freezes the verdict. Merge parity counts GitHub merges the Forge agreed with (target 10). The
+Forge merges nothing yet.

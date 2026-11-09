@@ -13,6 +13,9 @@
 //     the CI service token only (forge-ci-report.yml), while GitHub is still the source of truth.
 //   - POST /v1/forge/typecheck-report {confirm: "REPORT"}: the type-check result of a commit from
 //     Workers Builds (workers/forge-typecheck), CI service token only (ADR-0012 §5c).
+//   - Change requests (phase 4, shadow; changes.ts): POST /v1/forge/changes {confirm: "REGISTER"} and
+//     POST /v1/forge/changes/outcome {confirm: "REPORT"} from the CI service token only;
+//     GET /v1/forge/changes lists them with the Forge's merge verdict and the merge parity.
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { accessConfigured, accessGate, actorOf, listConfigured, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
@@ -21,13 +24,14 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import { listChecks, recordCiReport, type ArtifactsReader } from "./checks.ts";
 import { recordTypecheckReport } from "./typecheck.ts";
+import { listChanges, recordOutcome, registerChange } from "./changes.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -201,6 +205,21 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
+      if (request.method === "GET" && url.pathname === "/v1/forge/changes") return json(await listChanges(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
+      if (request.method === "POST" && (url.pathname === "/v1/forge/changes" || url.pathname === "/v1/forge/changes/outcome")) {
+        if (operator.identity.type !== "service_token") return errorResponse(403, "service_token_required");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        const actor = actorOf(operator.identity);
+        if (url.pathname === "/v1/forge/changes/outcome") {
+          if (body.value.confirm !== "REPORT") return errorResponse(400, "confirmation_required", 'type "REPORT" to record a pull request outcome');
+          return json({ change: await recordOutcome(env.DB, body.value as never, actor) });
+        }
+        if (body.value.confirm !== "REGISTER") return errorResponse(400, "confirmation_required", 'type "REGISTER" to register a change request');
+        if ((await repoState(env)) !== "ready") return errorResponse(409, "repo_not_ready");
+        const change = await withRepo(env, (repo) => registerChange(env.DB, repo, body.value as never, actor));
+        return change ? json({ change }) : errorResponse(503, "artifacts_not_configured");
+      }
       if (request.method === "POST" && (url.pathname === "/v1/forge/import" || url.pathname === "/v1/forge/mirror-token" || url.pathname === "/v1/forge/ci-report" || url.pathname === "/v1/forge/typecheck-report")) {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;

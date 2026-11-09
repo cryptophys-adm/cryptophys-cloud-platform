@@ -44,7 +44,8 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
      build secret differs from the token's current secret; paste it again (or rotate the token and
      update GitHub `production` and these build secrets together).
 6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
-7. Optional, for phase 4: **Settings → Build → Branch control → Enable Preview Builds**, Preview
-   command `node typecheck-and-report.mjs` (the report carries the branch).
+7. **Phase 4 (needed for change requests):** **Settings → Build → Branch control → Enable Preview
+   Builds**, Preview build command `node typecheck-and-report.mjs`. Change request heads are pushed
+   to `cr/<number>` branches; without preview builds their verdict stays `pending` on the type-check.
 
 The Console Code page then shows `types ok` / `N type errors` / `types pending` per commit.
