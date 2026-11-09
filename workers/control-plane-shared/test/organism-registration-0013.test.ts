@@ -397,6 +397,7 @@ test("R14. consensus rejects registration against an unavailable host before exe
 test("R15. a host change after voter precheck cannot admit a seat against a different Worker", async () => {
   const { env, db } = kernelEnv();
   setMode(db, "critical");
+  env.VOTE_PLATFORM_API = { vote: async () => ({ voter: "platform-api", vote: "approve", reason: "test binding" }) };
   db.raw.prepare("UPDATE agents SET voter = 0 WHERE agent_id = 'platform-api'").run();
   await censusTick(db as never, repoWith(realDna()));
   const census = await latestCensusRow({ DB: db } as never);
