@@ -45,7 +45,7 @@ These hold everywhere:
 | `cryptophys-deployment-orchestrator` | Deploy requests, the deployments list (Console Pipelines), native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
 | `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check reported by Workers Builds | :04/:19/:34/:49 |
-| `cryptophys-forge-typecheck` | Workers Builds stub for the type-check (`workers/forge-typecheck`): no route, no bindings, not in the registry | — |
+| `cryptophys-forge-typecheck` | Workers Builds stub for the type-check and the Console UI build (`workers/forge-typecheck`, TypeScript 7): no route, no bindings, not in the registry | — |
 | `cryptophys-home` | Retired (redirects to Nexus); scheduled for removal | — |
 | `cryptophys-signal-engine` | Disabled (TP-018) | — |
 
@@ -76,7 +76,7 @@ These hold everywhere:
 | Source of truth | GitHub `cryptophys-adm/cryptophys-cloud-platform` (`main`) | Artifacts `cryptophys/platform` |
 | Mirror | `mirror-to-forge.yml` on every push | — |
 | CI | GitHub Actions (`validate-control-plane.yml` for every PR and main push, `forge-runner-parity.yml`) | Forge checks |
-| Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate |
+| Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan, plus the Workers Builds type-check and Console UI build; `ready` when all pass; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate (phase 4 requires `ready`) |
 | Deploy | `ops-dispatch.yml` (request files in `ops/requests/`), then `deploy-*.yml` (wait for SAFE minute, deploy, verify live, roll back on failure) | Orchestrator: Scripts API upload and Deployments API |
 | Rollback | Native in the Orchestrator (`CF_DEPLOY_TOKEN`); `rollback-worker.yml` until the native path has run | native |
 
