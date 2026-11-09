@@ -137,6 +137,7 @@ test("R4. a new agent and engine in the DNA register themselves by consensus; th
   setMode(db, "deploy");
   const t0 = Date.now();
   await censusTick(db as never, repoWith(grownDna()), t0);
+  assert.equal((await latestCensusRow({ DB: db } as never))!.status, "changes");
   assert.deepEqual((await latestCensusRow({ DB: db } as never))!.findings.map((f) => f.kind), ["unregistered_agent", "unregistered_engine"]);
 
   await runCycle(env as never, memory, "scheduled", t0);
@@ -307,6 +308,7 @@ test("R11. an invalid census cannot authorize registration even when its genome 
   await censusTick(db as never, repoWith(dna, MAIN), Date.now() + CENSUS_REFRESH_MS + 1);
   const latest = (await latestCensus(db as never)).census[0];
   assert.equal(latest.status, "invalid");
+  assert.equal((await latestCensusRow({ DB: db } as never))?.status, "invalid");
   assert.ok(latest.genome.length > 0);
   const r = await syscall(env as never, "supervisor", "consensus.propose", {
     action: "register_agent", target: "forge-steward",
@@ -315,5 +317,31 @@ test("R11. an invalid census cannot authorize registration even when its genome 
   assert.equal(r.outcome, "succeeded");
   assert.equal(last(db).status, "failed");
   assert.match(last(db).outcome_json, /census_invalid/);
+  assert.equal(agentRow(db, "forge-steward"), undefined);
+});
+
+
+test("R12. a host that becomes unavailable after consensus cannot receive a registration", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "deploy");
+  await censusTick(db as never, repoWith(grownDna()));
+  const policy = env.POLICY as { evaluate: (input: Record<string, unknown>) => Promise<any> };
+  const original = policy.evaluate.bind(env.POLICY);
+  let unavailable = false;
+  policy.evaluate = async (input) => {
+    const decision = await original(input);
+    if (!unavailable && input.action === "consensus.execute" && input.resource === "register_agent:forge-steward") {
+      db.raw.prepare("UPDATE service_registry SET status = 'unavailable' WHERE service_id = 'cryptophys-forge'").run();
+      unavailable = true;
+    }
+    return decision;
+  };
+  const r = await syscall(env as never, "supervisor", "consensus.propose", {
+    action: "register_agent", target: "forge-steward",
+    params: { service: "cryptophys-forge", capabilities: ["platform.observe", "reports.publish"], tier_max: 1, main_sha: MAIN },
+  });
+  assert.equal(r.outcome, "succeeded");
+  assert.equal(last(db).status, "failed");
+  assert.match(last(db).outcome_json, /host_not_active/);
   assert.equal(agentRow(db, "forge-steward"), undefined);
 });
