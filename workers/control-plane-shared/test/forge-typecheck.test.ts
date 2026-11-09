@@ -17,10 +17,11 @@ const TOOLCHAIN = { typescript: "5.9.3", "@types/node": "22.20.5" };
 const ok = (over: Record<string, unknown> = {}) => ({ commit: SHA, conclusion: "success", build_id: "b-1", branch: "main", files: 279, errors: 0, diagnostics: [], toolchain: TOOLCHAIN, ...over });
 
 test("TC1. the build script turns tsc output into a report: errors counted, diagnostics text only, capped at 50", () => {
-  const out = "workers/a.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.\nsome noise\nworkers/b.ts(3,1): error TS2304: Cannot find name 'x'.\n";
-  assert.deepEqual(parseDiagnostics(out), ["workers/a.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.", "workers/b.ts(3,1): error TS2304: Cannot find name 'x'."]);
+  const out = "workers/a.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.\nsome noise\nworkers/b.ts(3,1): error TS2304: Cannot find name 'x'.\nworkers/secret.ts(4,2): error TS2322: Type '\"ghp_exampleSecret123456\"' is not assignable to type 'number'.\n";
+  assert.deepEqual(parseDiagnostics(out), ["workers/a.ts(1,14): error TS2322", "workers/b.ts(3,1): error TS2304", "workers/secret.ts(4,2): error TS2322"]);
+  assert.doesNotMatch(parseDiagnostics(out).join("\n"), /ghp_exampleSecret123456/);
   const failed = summarize(2, out, TOOLCHAIN);
-  assert.deepEqual([failed.conclusion, failed.errors, failed.diagnostics.length], ["failure", 2, 2]);
+  assert.deepEqual([failed.conclusion, failed.errors, failed.diagnostics.length], ["failure", 3, 3]);
   assert.deepEqual(summarize(0, "", TOOLCHAIN), { conclusion: "success", errors: 0, diagnostics: [], toolchain: TOOLCHAIN });
   assert.equal(summarize(1, "crash without TS lines", TOOLCHAIN).errors, 1, "a failed compiler run with no parsable line is still one error");
   const many = Array.from({ length: 80 }, (_, i) => `f${i}.ts(1,1): error TS1: e`).join("\n");
@@ -73,7 +74,7 @@ test("TC2. recordTypecheckReport validates every field and never accepts an inco
   const long = ok({ conclusion: "failure", errors: 2, diagnostics: ["x".repeat(1000), "y"], build_id: "b-2" });
   await recordTypecheckReport(db, long, CI_CLIENT_ID);
   const failed = await typecheckStep(db, SHA);
-  assert.deepEqual([failed.status, failed.errors, failed.diagnostics?.[0].length, failed.build_id], ["failed", 2, 600, "b-2"]);
+  assert.deepEqual([failed.status, failed.errors, failed.diagnostics?.[0], failed.build_id], ["failed", 2, "Diagnostic omitted; inspect the Workers Builds run for details.", "b-2"]);
   const audits = (db as any).raw.prepare("SELECT outcome FROM audit_events WHERE event_type = 'forge.typecheck_reported' ORDER BY rowid").all().map((a: any) => a.outcome);
   assert.deepEqual(audits, ["success", "failure"]);
 });
@@ -119,7 +120,7 @@ test("TC3. a check reads the commit's report: passed, failed (fails the check), 
   await recordTypecheckReport(db as never, ok({ conclusion: "failure", errors: 1, diagnostics: ["workers/x.ts(1,1): error TS2322: no"] }), CI_CLIENT_ID, t0);
   const failed = await checkCommit(repoWith(FILES), SHA, deps(db));
   assert.deepEqual([failed.status, failed.fail], ["failed", 0], "the tests passed; the type-check failed the check");
-  assert.ok(failed.failures.includes("typecheck workers/x.ts(1,1): error TS2322: no"));
+  assert.ok(failed.failures.includes("typecheck workers/x.ts(1,1): error TS2322"));
   const pending = await checkCommit(repoWith(FILES), "e".repeat(40), deps(db));
   assert.deepEqual([pending.status, pending.steps.typecheck?.status], ["passed", "pending"], "no report yet: not a pass of the step, not a failure of the check");
   assert.equal((await checkCommit(repoWith(FILES), SHA, deps(null))).steps.typecheck?.status, "not_configured");
@@ -136,7 +137,7 @@ test("TC4. a report that arrives after the check is folded into the recorded run
   assert.equal(late.applied_to_run, true);
   const listed = (await listChecks(db as never, 5)).checks[0];
   assert.deepEqual([listed.status, listed.typecheck, listed.ready], ["failed", { status: "failed", errors: 1, build_id: "b-1", console_build: null }, false]);
-  assert.deepEqual(listed.failures, ["typecheck workers/y.ts(2,2): error TS2304: z"]);
+  assert.deepEqual(listed.failures, ["typecheck workers/y.ts(2,2): error TS2304"]);
   // A later success replaces the diagnostics but does not un-fail a run that failed for other reasons.
   db.raw.prepare("UPDATE forge_check_runs SET failures = ? WHERE commit_sha = ?").run(JSON.stringify(["one.test.ts :: t: nope", "typecheck old"]), SHA);
   await recordTypecheckReport(db as never, ok({ build_id: "b-3" }), CI_CLIENT_ID, t0 + 180_000);
@@ -171,6 +172,8 @@ test("TC6. wiring: no Container remains; the Builds project is the one the READM
   for (const s of ["Root directory:** `workers/forge-typecheck`", "`node typecheck-and-report.mjs`", "`FORGE_URL`", "`CF_ACCESS_CLIENT_ID`", "/v1/forge/typecheck-report"]) assert.ok(readme.includes(s), s);
   assert.doesNotMatch(read(".github/workflows/validate-control-plane.yml"), /typecheck-container/);
   assert.match(read("workers/forge/src/index.ts"), /"0035_forge_typecheck_reports\.sql", "0036_forge_console_build\.sql"/);
+  const buildScript = read("workers/forge-typecheck/typecheck-and-report.mjs");
+  assert.doesNotMatch(buildScript, /console\.log\(tc\.output|console\.log\(uiBuild\.output|console\.error\(install\.output/);
 });
 
 const UI_OK = { conclusion: "success", errors: 0, diagnostics: [], bytes: 904359 };
@@ -179,9 +182,10 @@ test("TC7. the same build reports the Console UI build; a UI failure fails the s
   // The build script: TS errors are the diagnostics; a Vite failure without one gives its last lines.
   assert.deepEqual(summarizeConsoleBuild(0, "built in 3.5s", 904359), UI_OK);
   const tsFail = summarizeConsoleBuild(2, "src/main.tsx(3,8): error TS2882: Cannot find module './index.css'.\n", undefined);
-  assert.deepEqual([tsFail.conclusion, tsFail.errors, tsFail.diagnostics], ["failure", 1, ["src/main.tsx(3,8): error TS2882: Cannot find module './index.css'."]]);
+  assert.deepEqual([tsFail.conclusion, tsFail.errors, tsFail.diagnostics], ["failure", 1, ["src/main.tsx(3,8): error TS2882"]]);
   const viteFail = summarizeConsoleBuild(1, "a\nb\nc\nd\ne\n[vite]: Rollup failed to resolve import \"x\"\n", undefined);
-  assert.deepEqual([viteFail.errors, viteFail.diagnostics.length, viteFail.diagnostics.at(-1)], [5, 5, '[vite]: Rollup failed to resolve import "x"']);
+  assert.deepEqual([viteFail.errors, viteFail.diagnostics], [1, ["Console UI build failed; inspect the Workers Builds run for details."]]);
+  assert.doesNotMatch(viteFail.diagnostics.join(" "), /Rollup|resolve import/);
   assert.equal("bytes" in summarizeConsoleBuild(1, "x", 10), false, "no size for a failed build");
 
   const db = migratedDb();
@@ -204,7 +208,7 @@ test("TC7. the same build reports the Console UI build; a UI failure fails the s
   await recordTypecheckReport(db as never, ok({ build_id: "b-9", console_build: { conclusion: "failure", errors: 1, diagnostics: ["src/x.tsx(1,1): error TS2304: y"] } }), CI_CLIENT_ID, t0 + 120_000);
   const failed = (await listChecks(db as never, 5)).checks[0];
   assert.deepEqual([failed.status, failed.typecheck?.status, failed.typecheck?.errors, failed.typecheck?.console_build, failed.ready], ["failed", "failed", 0, "failed", false]);
-  assert.deepEqual(failed.failures, ["console-build src/x.tsx(1,1): error TS2304: y"]);
+  assert.deepEqual(failed.failures, ["console-build src/x.tsx(1,1): error TS2304"]);
   const audit = (db as any).raw.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'forge.typecheck_reported' ORDER BY rowid DESC LIMIT 1").get();
   assert.equal(JSON.parse(audit.payload_json).console_build, "failed");
   // The gate itself: every part must pass; a report without the UI build (older builds) is not ready.
@@ -215,4 +219,56 @@ test("TC7. the same build reports the Console UI build; a UI failure fails the s
   assert.equal(isReady("passed", "clean", { ...tc, console_build: null }), false);
   assert.equal(isReady("passed", "clean", { ...tc, status: "pending" }), false);
   assert.equal(isReady("passed", "clean", null), false);
+});
+
+test("TC8. a report arriving while the Forge run is still running is applied when record finishes; diagnostics are redacted", async () => {
+  const db = migratedDb();
+  const t0 = Date.parse("2026-11-09T07:00:00Z");
+  const run = await checkCommit(repoWith(FILES), SHA, deps(db));
+  assert.equal(run.steps.typecheck?.status, "pending");
+  db.raw.prepare("INSERT INTO forge_check_runs (commit_sha, status, runner, started_at) VALUES (?, 'running', 'r', ?)")
+    .run(SHA, new Date(t0).toISOString());
+  const late = await recordTypecheckReport(db as never, ok({
+    conclusion: "failure", errors: 1,
+    diagnostics: ['workers/late.ts(3,4): error TS2322: Type "ghp_exampleSecret123456" is not assignable to number.'],
+  }), CI_CLIENT_ID, t0 + 30_000);
+  assert.equal(late.applied_to_run, false, "the report is stored while the check is still running");
+  await record(db as never, run, t0 + 60_000);
+  const listed = (await listChecks(db as never, 5)).checks[0];
+  assert.deepEqual([listed.status, listed.typecheck?.status, listed.failures, listed.ready], [
+    "failed", "failed", ["typecheck workers/late.ts(3,4): error TS2322"], false,
+  ]);
+  assert.doesNotMatch(JSON.stringify(listed), /ghp_exampleSecret123456/);
+
+  // Older D1 rows may already contain compiler messages. Sanitize them on every read surface.
+  const legacyDiagnostic = 'workers/legacy.ts(1,1): error TS2322: Type "ghp_legacySecret123456" is not assignable to number.';
+  const legacyConsoleDiagnostic = 'src/legacy.tsx(2,3): error TS2304: Cannot find name "sk_test_legacySecret987654".';
+  db.raw.prepare("UPDATE forge_typecheck_reports SET diagnostics = ?, console_build = ? WHERE commit_sha = ?")
+    .run(JSON.stringify([legacyDiagnostic]), JSON.stringify({ status: "failed", errors: 1, diagnostics: [legacyConsoleDiagnostic] }), SHA);
+  const legacyStep = await typecheckStep(db as never, SHA);
+  assert.deepEqual(legacyStep.diagnostics, ["workers/legacy.ts(1,1): error TS2322"]);
+  assert.deepEqual(legacyStep.console_build?.diagnostics, ["src/legacy.tsx(2,3): error TS2304"]);
+  const stored = db.raw.prepare("SELECT steps, failures FROM forge_check_runs WHERE commit_sha = ?").get(SHA) as { steps: string; failures: string };
+  const storedSteps = JSON.parse(stored.steps);
+  storedSteps.typecheck.diagnostics = [legacyDiagnostic];
+  const storedFailures = JSON.parse(stored.failures);
+  storedFailures.push(`typecheck ${legacyDiagnostic}`, `console-build ${legacyConsoleDiagnostic}`);
+  db.raw.prepare("UPDATE forge_check_runs SET steps = ?, failures = ? WHERE commit_sha = ?")
+    .run(JSON.stringify(storedSteps), JSON.stringify(storedFailures), SHA);
+  const legacyList = (await listChecks(db as never, 5)).checks[0];
+  assert.deepEqual(legacyList.failures, [
+    "typecheck workers/late.ts(3,4): error TS2322",
+    "typecheck workers/legacy.ts(1,1): error TS2322",
+    "console-build src/legacy.tsx(2,3): error TS2304",
+  ]);
+  assert.doesNotMatch(JSON.stringify(legacyList), /ghp_legacySecret123456|sk_test_legacySecret987654/);
+
+  const second = "d".repeat(40);
+  await recordTypecheckReport(db as never, ok({
+    commit: second, conclusion: "failure", errors: 1, diagnostics: [],
+    console_build: { conclusion: "failure", errors: 1, diagnostics: ['src/secret.tsx(1,1): error TS2304: "sk_test_exampleSecret987654"'] },
+  }), CI_CLIENT_ID, t0 + 90_000);
+  const consoleStep = await typecheckStep(db as never, second);
+  assert.deepEqual(consoleStep.console_build?.diagnostics, ["src/secret.tsx(1,1): error TS2304"]);
+  assert.doesNotMatch(JSON.stringify(consoleStep), /sk_test_exampleSecret987654/);
 });

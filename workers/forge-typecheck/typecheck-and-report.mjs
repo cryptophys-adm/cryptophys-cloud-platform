@@ -14,7 +14,11 @@ import { fileURLToPath } from "node:url";
 const MAX_DIAGNOSTICS = 50;
 
 export function parseDiagnostics(output) {
-  return output.split("\n").filter((l) => /\berror TS\d+:/.test(l)).map((l) => l.trim().slice(0, 600));
+  const plain = output.replace(/\u001b\[[0-9;]*m/g, "");
+  return plain.split("\n").map((line) => {
+    const match = line.trim().match(/^(.+?\(\d+,\d+\): error TS\d+)/);
+    return match ? match[1].slice(0, 600) : null;
+  }).filter(Boolean).slice(0, MAX_DIAGNOSTICS);
 }
 
 /**
@@ -42,7 +46,7 @@ export function summarize(status, output, toolchain) {
 export function summarizeConsoleBuild(status, output, bytes) {
   let diagnostics = parseDiagnostics(output);
   if (status !== 0 && diagnostics.length === 0) {
-    diagnostics = output.split("\n").map((l) => l.trim()).filter(Boolean).slice(-5).map((l) => l.slice(0, 600));
+    diagnostics = ["Console UI build failed; inspect the Workers Builds run for details."];
   }
   const errors = status === 0 ? 0 : Math.max(diagnostics.length, 1);
   const result = { conclusion: status === 0 ? "success" : "failure", errors, diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS) };
@@ -87,7 +91,7 @@ export async function postReport(fetchImpl, forgeUrl, clientId, clientSecret, bo
   let answer = null;
   try { answer = JSON.parse(text); } catch { /* not JSON */ }
   if (!res.ok || !answer || answer.commit !== body.commit) {
-    throw new Error(`typecheck-report: the Forge did not record the report (HTTP ${res.status}): ${text.replace(/\s+/g, " ").slice(0, 200)}`);
+    throw new Error(`typecheck-report: the Forge did not record the report (HTTP ${res.status}) (invalid JSON or commit mismatch)`);
   }
   return answer;
 }
@@ -120,20 +124,21 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
   const { commit } = resolved;
   console.log(`typecheck-and-report: checking ${commit} (from ${resolved.source})`);
   const install = run("npm", ["ci", "--no-audit", "--no-fund", "--ignore-scripts"], shared);
-  if (install.status !== 0) { console.error(install.output.slice(-4000)); process.exit(2); }
+  if (install.status !== 0) { console.error(`typecheck-and-report: npm ci failed in control-plane-shared (exit ${install.status})`); process.exit(2); }
   const require = createRequire(path.join(shared, "package.json"));
   const toolchain = { typescript: require("typescript/package.json").version, "@types/node": require("@types/node/package.json").version };
   const tc = run("npm", ["run", "typecheck", "--silent"], shared);
-  console.log(tc.output.trim().slice(-20000));
   const summary = summarize(tc.status, tc.output, toolchain);
+  console.log(`typecheck-and-report: control-plane type-check ${summary.conclusion} (${summary.errors} errors)`);
+  for (const diagnostic of summary.diagnostics) console.log(diagnostic);
   const ui = path.join(here, "..", "console", "ui");
   const uiInstall = run("npm", ["ci", "--no-audit", "--no-fund", "--ignore-scripts"], ui);
   const uiBuild = uiInstall.status === 0 ? run("npm", ["run", "build", "--silent"], ui) : uiInstall;
-  console.log(uiBuild.output.trim().slice(-8000));
   let bytes;
   try { bytes = uiBuild.status === 0 ? dirBytes(path.join(ui, "dist")) : undefined; } catch { bytes = undefined; }
   const consoleBuild = summarizeConsoleBuild(uiBuild.status, uiBuild.output, bytes);
-  console.log(`typecheck-and-report: control plane ${summary.conclusion} (${summary.errors} errors); Console UI build ${consoleBuild.conclusion}${bytes ? ` (${bytes} bytes)` : ""}`);
+  console.log(`typecheck-and-report: Console UI build ${consoleBuild.conclusion} (${consoleBuild.errors} errors)${bytes ? ` (${bytes} bytes)` : ""}`);
+  for (const diagnostic of consoleBuild.diagnostics) console.log(diagnostic);
   try {
     await report({ commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary, console_build: consoleBuild }, env);
   } catch (e) {

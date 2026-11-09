@@ -11,8 +11,7 @@ repository `cryptophys/platform`. No GitHub, no Container.
 2. The **build command** `node typecheck-and-report.mjs` installs the locked toolchain in
    `../control-plane-shared` (`npm ci --ignore-scripts`), runs `npm run typecheck`
    (`tsc --noEmit -p ../control-plane-tsconfig.json`), and reports the result for the commit to the
-   Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics are text only
-   (file, line, code, message); no file content and no secret is sent.
+   Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics contain only file, line and TypeScript error code; compiler messages and source literals are neither printed to build logs nor sent to Forge. Existing D1 report and check rows are sanitized when read; historical values are not rewritten.
    The same build then installs `../console/ui` and runs its `npm run build` (the UI's own
    `tsc --noEmit` and the Vite build, as GitHub CI's "Build the Console UI" step) and reports it in
    the same request as `console_build` (conclusion, errors, diagnostics, output size).
