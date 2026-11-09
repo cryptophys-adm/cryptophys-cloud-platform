@@ -16,6 +16,8 @@
 //   - Change requests (phase 4, shadow; changes.ts): POST /v1/forge/changes {confirm: "REGISTER"} and
 //     POST /v1/forge/changes/outcome {confirm: "REPORT"} from the CI service token only;
 //     GET /v1/forge/changes lists them with the Forge's merge verdict and the merge parity.
+//   - GET /v1/forge/deploy-plans (phase 4, shadow; deploy-plan.ts): the Forge's deploy plan for main
+//     next to the Orchestrator's GitHub-based plan for the same inputs, and the deploy-plan parity.
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { accessConfigured, accessGate, actorOf, listConfigured, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
@@ -25,13 +27,14 @@ import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import { listChecks, recordCiReport, type ArtifactsReader } from "./checks.ts";
 import { recordTypecheckReport } from "./typecheck.ts";
 import { listChanges, recordOutcome, registerChange } from "./changes.ts";
+import { listDeployPlans } from "./deploy-plan.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -205,6 +208,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
+      if (request.method === "GET" && url.pathname === "/v1/forge/deploy-plans") return json(await listDeployPlans(env.DB, Number(url.searchParams.get("limit") ?? "10") || 10));
       if (request.method === "GET" && url.pathname === "/v1/forge/changes") return json(await listChanges(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "POST" && (url.pathname === "/v1/forge/changes" || url.pathname === "/v1/forge/changes/outcome")) {
         if (operator.identity.type !== "service_token") return errorResponse(403, "service_token_required");

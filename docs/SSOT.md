@@ -75,6 +75,7 @@ These hold everywhere:
 |---|---|---|
 | Source of truth | GitHub `cryptophys-adm/cryptophys-cloud-platform` (`main`) | Artifacts `cryptophys/platform` |
 | Mirror | `mirror-to-forge.yml` on every push (also reports pull request outcomes to the Forge) | — |
+| Deploy plan (shadow) | Forge cron computes pending deploy units for main from Artifacts; the Orchestrator records its GitHub-based plan for the same inputs (`forge_deploy_plans`); plan parity towards 10 (ADR-0012 §5d) | Forge-planned deploys |
 | Change requests (shadow) | `forge-change-request.yml` after CI on each same-repository PR: head to `cr/<n>`, registered as `gh-<n>`; Forge verdict vs GitHub outcome, merge parity towards 10 (ADR-0012 §5d) | Forge merges |
 | CI | GitHub Actions (`validate-control-plane.yml` for every PR and main push, `forge-runner-parity.yml`) | Forge checks |
 | Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan, plus the Workers Builds type-check and Console UI build; `ready` when all pass; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate (phase 4 requires `ready`) |

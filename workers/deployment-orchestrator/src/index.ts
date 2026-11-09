@@ -7,6 +7,7 @@ import { accessConfigured, actorOf, authenticate, identityAllowed, requireOperat
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
+import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitForService, unitRegistryState, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 
 interface DurableObjectStorageLike {
@@ -124,36 +125,9 @@ export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
   return [...latest.values()];
 }
 
-/**
- * ADR-0009 phase 3: deploy units. Each production workflow deploys a fixed set of Workers from
- * the exact main commit; a unit is pending when files under its paths changed since the
- * version recorded in the registry. Console, Home and Platform API import the shared library.
- */
-const SHARED_SRC = "workers/control-plane-shared/src/";
-export const DEPLOY_UNITS = [
-  // Deploy the orchestrator first: the following Control Plane deployment binds the kernel to DeployRpc.
-  { unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml", services: ["cryptophys-deployment-orchestrator"], paths: ["workers/deployment-orchestrator/", SHARED_SRC] },
-  {
-    unit: "control-plane", workflow: "deploy-control-plane.yml",
-    services: ["cryptophys-policy-engine", "cryptophys-audit-ledger", "cryptophys-platform-registry", "cryptophys-recovery-manager", "cryptophys-drift-detector", "cryptophys-ai-kernel"],
-    paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", "workers/control-plane-migrations/", SHARED_SRC],
-  },
-  // Directory prefixes include manifests, lockfiles, bundler config and static assets, not just source files.
-  { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/", SHARED_SRC] },
-  { unit: "home", workflow: "deploy-home.yml", services: ["cryptophys-home"], paths: ["workers/home/", SHARED_SRC] },
-  { unit: "platform-api", workflow: "deploy-platform-api.yml", services: ["cryptophys-platform-api"], paths: ["workers/platform-api/", SHARED_SRC] },
-  // ADR-0012 phase 1b: the Forge (platform source on Cloudflare Artifacts).
-  { unit: "forge", workflow: "deploy-forge.yml", services: ["cryptophys-forge"], paths: ["workers/forge/", SHARED_SRC] },
-] as const;
-export type DeployUnit = (typeof DEPLOY_UNITS)[number];
-
-export function unitForService(serviceId: string): DeployUnit | null {
-  return DEPLOY_UNITS.find((u) => (u.services as readonly string[]).includes(serviceId)) ?? null;
-}
-
-export function unitChanged(unit: DeployUnit, files: string[]): boolean {
-  return files.some((f) => unit.paths.some((p) => f === p || f.startsWith(p)));
-}
+// ADR-0009 phase 3 deploy units and their ordering rules live in the shared library, so the Forge
+// computes the same plan from Artifacts (ADR-0012 phase 4, shadow).
+export { DEPLOY_UNITS, unitChanged, unitForService, type DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 
 /** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
 const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
@@ -208,62 +182,35 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
   if (!sha) { out.skipped.push({ unit: "*", reason: "main_lookup_failed" }); return out; }
   out.ci_green = (await ciGreen(env.GH_ACTIONS_TOKEN, sha)).green;
   if (!out.ci_green) { out.skipped.push({ unit: "*", reason: "ci_not_green" }); return out; }
+  const fingerprint = await registryFingerprint(env.DB);
   const tag = sha.slice(0, 12);
-  const pendingUnits: PendingDeploys["units"] = [];
+  const pendingUnits: PlannedUnit[] = [];
+  const skipped: Skip[] = [];
   let newMigration = false;
   for (const unit of DEPLOY_UNITS) {
-    const rows = await env.DB.prepare(
-      `SELECT service_id, status, desired_version FROM service_registry WHERE service_id IN (${unit.services.map(() => "?").join(", ")})`,
-    ).bind(...unit.services).all<{ service_id: string; status: string; desired_version: string | null }>();
-    if (rows.results.length !== unit.services.length || rows.results.some((r) => r.status === "disabled")) { out.skipped.push({ unit: unit.unit, reason: "not_registered_or_disabled" }); continue; }
-    const behind = [...new Set(rows.results.map((r) => r.desired_version).filter((v) => v !== tag))];
-    if (behind.length === 0) continue;
-    if (behind.some((v) => !v || !/^[0-9a-f]{7,40}$/.test(v))) { out.skipped.push({ unit: unit.unit, reason: "desired_version_unknown" }); continue; }
+    const state = await unitRegistryState(env.DB, unit, tag);
+    if ("skip" in state) { skipped.push({ unit: unit.unit, reason: state.skip }); continue; }
+    if (state.behind.length === 0) continue;
     let changed = false;
     let failed = false;
-    for (const base of behind) {
+    for (const base of state.behind) {
       const res = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/compare/" + base + "..." + sha + "?per_page=300");
       if (!res.ok) { failed = true; break; }
       const cmp = await res.json() as { status?: string; files?: { filename: string }[] };
       if (cmp.status !== "ahead") { failed = cmp.status !== "identical"; if (failed) break; continue; }
       const files = (cmp.files ?? []).map((f) => f.filename);
-      if (files.some((f) => f.startsWith("workers/control-plane-migrations/") && f.endsWith(".sql"))) newMigration = true;
+      if (files.some(isMigration)) newMigration = true;
       // GitHub lists at most 300 files; a larger diff is treated as touching every unit.
       if (files.length >= 300 || unitChanged(unit, files)) { changed = true; break; }
     }
-    if (failed) { out.skipped.push({ unit: unit.unit, reason: "compare_failed_or_diverged" }); continue; }
+    if (failed) { skipped.push({ unit: unit.unit, reason: "compare_failed_or_diverged" }); continue; }
     if (changed) pendingUnits.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
   }
-  // A new D1 migration is applied only by the Control Plane deploy, and every Worker's readiness
-  // requires the newest migration: deploy the Control Plane first, alone (2026-11-07, migration 0026).
-  const controlPlane = pendingUnits.find((u) => u.unit === "control-plane");
-  if (newMigration) {
-    if (controlPlane) {
-      out.units.push(controlPlane);
-      for (const u of pendingUnits) {
-        if (u.unit !== "control-plane") out.skipped.push({ unit: u.unit, reason: "control_plane_migration_first" });
-      }
-      return out;
-    }
-    // Never deploy another unit if the migration-bearing Control Plane cannot be verified.
-    // It may already be current (no skip recorded); otherwise fail closed on disabled,
-    // unregistered, unknown-version or compare-failed Control Plane state.
-    if (out.skipped.some((s) => s.unit === "control-plane")) {
-      out.skipped.push({ unit: "*", reason: "new_migration_control_plane_unavailable" });
-      return out;
-    }
-  }
-  // DeployRpc must exist before the AI Kernel is redeployed with its new service binding.
-  // Do not propose the Control Plane (or another unit) in the same cycle as the orchestrator.
-  const orchestrator = pendingUnits.find((u) => u.unit === "deployment-orchestrator");
-  if (orchestrator) {
-    out.units.push(orchestrator);
-    for (const u of pendingUnits) {
-      if (u.unit !== "deployment-orchestrator") out.skipped.push({ unit: u.unit, reason: "deployment_orchestrator_must_complete_first" });
-    }
-  } else {
-    out.units.push(...pendingUnits);
-  }
+  const plan = orderPending(pendingUnits, newMigration, skipped);
+  out.units.push(...plan.units);
+  out.skipped.push(...plan.skipped);
+  // ADR-0012 phase 4, shadow: record this plan next to the Forge's plan of the same commit and inputs.
+  try { await recordPlanSide(env.DB, "github", sha, fingerprint, plan); } catch { /* the comparison never blocks a deploy decision */ }
   return out;
 }
 

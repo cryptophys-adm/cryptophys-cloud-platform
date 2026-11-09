@@ -6,6 +6,7 @@ import worker, { REPO, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { cachedSnapshot, checksTick, snapshotFromArtifacts, tickWith } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
+import { planTick } from "./deploy-plan.ts";
 import { bundleWorkerDir, type WorkerBundle } from "./runner/core.ts";
 import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
@@ -29,6 +30,13 @@ export default {
     if (change.outcome === "checked" && Date.now() - started > 120_000) return; // leave the main commit for the next tick
     const outcome = await checksTick(env, REPO, deps);
     console.log(JSON.stringify({ event: "forge.checks_tick", ...outcome }));
+    // Phase 4, shadow: the deploy plan for main's head (cheap: registry reads and tree diffs).
+    if (env.ARTIFACTS) {
+      const repo = await env.ARTIFACTS.get(REPO);
+      try { console.log(JSON.stringify({ event: "forge.deploy_plan_tick", ...(await planTick(env.DB, repo)) })); }
+      catch (e) { console.error(JSON.stringify({ event: "forge.deploy_plan_tick", error: String((e as Error)?.message ?? e).slice(0, 300) })); }
+      finally { repo[Symbol.dispose]?.(); }
+    }
   },
 };
 
