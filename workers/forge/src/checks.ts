@@ -9,7 +9,7 @@
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
-import { stepFailures, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
+import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
 
 /** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
 export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckLookup }
@@ -179,15 +179,22 @@ function storedFailures(failures: string[]): string {
   return JSON.stringify(failures.slice(0, MAX_FAILURES_STORED).map((f) => f.slice(0, 600)));
 }
 
+async function applyStoredTypecheckReport(db: D1Database, commit: string): Promise<void> {
+  const step = await typecheckStep(db, commit);
+  if (step.status !== "pending") await applyTypecheckReportToRun(db, commit, step);
+}
+
 export async function record(db: D1Database, run: CheckRun | { commit: string; status: "error"; error: string; duration_ms: number }, nowMs: number): Promise<void> {
   const finishedAt = new Date(nowMs).toISOString();
   if (run.status === "error") {
     await db.prepare("UPDATE forge_check_runs SET status = 'error', failures = ?, finished_at = ?, duration_ms = ? WHERE commit_sha = ?")
       .bind(storedFailures([run.error]), finishedAt, run.duration_ms, run.commit).run();
+    await applyStoredTypecheckReport(db, run.commit);
     return;
   }
   await db.prepare("UPDATE forge_check_runs SET status = ?, files = ?, pass = ?, fail = ?, skip = ?, failures = ?, finished_at = ?, duration_ms = ?, steps = ?, guard_status = ? WHERE commit_sha = ?")
     .bind(run.status, run.files, run.pass, run.fail, run.skip, storedFailures(run.failures), finishedAt, run.duration_ms, JSON.stringify(run.steps), run.guard_status, run.commit).run();
+  await applyStoredTypecheckReport(db, run.commit);
 }
 
 export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> } }
@@ -298,6 +305,10 @@ export function isReady(status: string, guard: string | null, typecheck: CheckSu
 function summary(r: JoinedRow): CheckSummary {
   let failures: string[] = [];
   try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
+  failures = failures.map((failure) => {
+    const prefix = failure.startsWith("typecheck ") ? "typecheck " : failure.startsWith("console-build ") ? "console-build " : "";
+    return prefix ? `${prefix}${safeDiagnostics([failure.slice(prefix.length)])[0]}` : failure;
+  });
   const typecheck = stepsTypecheck(r.steps);
   return {
     commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures,

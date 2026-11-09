@@ -11,8 +11,7 @@ repository `cryptophys/platform`. No GitHub, no Container.
 2. The **build command** `node typecheck-and-report.mjs` installs the locked toolchain in
    `../control-plane-shared` (`npm ci --ignore-scripts`), runs `npm run typecheck`
    (`tsc --noEmit -p ../control-plane-tsconfig.json`), and reports the result for the commit to the
-   Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics are text only
-   (file, line, code, message); no file content and no secret is sent.
+   Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics contain only file, line and TypeScript error code; compiler messages and source literals are neither printed to build logs nor sent to Forge. Existing D1 report and check rows are sanitized when read; historical values are not rewritten.
    The same build then installs `../console/ui` and runs its `npm run build` (the UI's own
    `tsc --noEmit` and the Vite build, as GitHub CI's "Build the Console UI" step) and reports it in
    the same request as `console_build` (conclusion, errors, diagnostics, output size).
@@ -44,9 +43,13 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
      build secret differs from the token's current secret; paste it again (or rotate the token and
      update GitHub `production` and these build secrets together).
 6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
-7. **Phase 4 (needed for change requests):** in **Settings → Builds**, turn on **Builds for Preview
-   branches**. The Build command above also runs for preview branches. Set the **Preview command**
-   (the deploy step of a preview build) to `npx wrangler versions upload`. Change request heads are
-   pushed to `cr/<number>` branches; without preview builds their verdict stays `pending` on the type-check.
+7. **Phase 4 (needed for change requests):** this project was connected to Workers Builds
+   before Worker Previews. Setting `previews_enabled=true` alone does not switch an existing project
+   from the legacy preview model. The project currently has no branch preview records. In the
+   Cloudflare dashboard, use **Set up Worker Previews** and complete the one-time switch only after
+   reviewing preview-specific variables, secrets and bindings. The switch cannot be reversed.
+   Set the Preview command to `npx wrangler preview` (or `npx cf previews deploy`), not
+   `npx wrangler versions upload`. After the switch, pushes to `cr/<number>` branches create
+   preview builds and allow the type-check report to reach the Forge.
 
 The Console Code page then shows `types ok` / `N type errors` / `types pending` per commit.

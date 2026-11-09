@@ -38,10 +38,16 @@ function stepFromRow(row: TypecheckReportRow | null | undefined): TypecheckStep 
   if (!row) return { status: "pending" };
   let diagnostics: string[] = [];
   let toolchain: Toolchain | undefined;
-  try { const d = JSON.parse(row.diagnostics ?? "[]"); if (Array.isArray(d)) diagnostics = d.map(String); } catch { /* stored by recordTypecheckReport */ }
+  try { const d = JSON.parse(row.diagnostics ?? "[]"); diagnostics = safeDiagnostics(d); } catch { /* stored by recordTypecheckReport */ }
   try { const t = JSON.parse(row.toolchain ?? "null"); if (t && typeof t === "object") toolchain = t as Toolchain; } catch { /* same */ }
   let consoleBuild: ConsoleBuildStep | undefined;
-  try { const c = JSON.parse(row.console_build ?? "null"); if (c && typeof c === "object") consoleBuild = c as ConsoleBuildStep; } catch { /* same */ }
+  try {
+    const c = JSON.parse(row.console_build ?? "null");
+    if (c && typeof c === "object") {
+      const raw = c as ConsoleBuildStep;
+      consoleBuild = { ...raw, diagnostics: safeDiagnostics(raw.diagnostics) };
+    }
+  } catch { /* same */ }
   const passed = row.conclusion === "success" && consoleBuild?.status !== "failed";
   return {
     status: passed ? "passed" : "failed", errors: row.errors, files: row.files ?? undefined,
@@ -61,6 +67,18 @@ export interface TypecheckReportInput {
   console_build?: unknown;
 }
 
+/** Keep only file, line, and compiler code. Never persist compiler message text or source literals. */
+export function safeDiagnostics(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, MAX_DIAGNOSTICS_STORED).map((value) => {
+    const line = String(value).replace(/\u001b\[[0-9;]*m/g, "").trim();
+    const match = line.match(/^(.+?\(\d+,\d+\): error TS\d+)/);
+    if (match) return match[1].slice(0, MAX_DIAGNOSTIC_CHARS);
+    if (line === "Console UI build failed; inspect the Workers Builds run for details.") return line;
+    return "Diagnostic omitted; inspect the Workers Builds run for details.";
+  });
+}
+
 /** Validate the Console build part of a report: the same consistency rules as the type-check. */
 function consoleBuildFrom(input: unknown): ConsoleBuildStep | null {
   if (input === undefined || input === null) return null;
@@ -72,7 +90,7 @@ function consoleBuildFrom(input: unknown): ConsoleBuildStep | null {
   if ((c.conclusion === "success") !== (errors === 0)) throw bad("inconsistent_console_build");
   const bytes = c.bytes === undefined ? undefined : Number(c.bytes);
   if (bytes !== undefined && (!Number.isInteger(bytes) || bytes < 0)) throw bad("invalid_console_build");
-  const diagnostics = Array.isArray(c.diagnostics) ? c.diagnostics.slice(0, MAX_DIAGNOSTICS_STORED).map((d) => String(d).slice(0, MAX_DIAGNOSTIC_CHARS)) : [];
+  const diagnostics = safeDiagnostics(c.diagnostics);
   return { status: c.conclusion === "success" ? "passed" : "failed", errors, diagnostics, ...(bytes !== undefined ? { bytes } : {}) };
 }
 
@@ -97,7 +115,7 @@ export async function recordTypecheckReport(db: D1Database, input: TypecheckRepo
   if (conclusion === "failure" && errors === 0) throw bad("failure_without_errors");
   const files = input.files === undefined ? null : Number(input.files);
   if (files !== null && (!Number.isInteger(files) || files < 0)) throw bad("invalid_files");
-  const diagnostics = Array.isArray(input.diagnostics) ? input.diagnostics.slice(0, MAX_DIAGNOSTICS_STORED).map((d) => String(d).slice(0, MAX_DIAGNOSTIC_CHARS)) : [];
+  const diagnostics = safeDiagnostics(input.diagnostics);
   let toolchain: Toolchain | null = null;
   if (input.toolchain !== undefined) {
     const t = input.toolchain as Record<string, unknown> | null;
@@ -112,7 +130,7 @@ export async function recordTypecheckReport(db: D1Database, input: TypecheckRepo
      ON CONFLICT(commit_sha) DO UPDATE SET conclusion = excluded.conclusion, build_id = excluded.build_id, branch = excluded.branch, files = excluded.files,
        errors = excluded.errors, diagnostics = excluded.diagnostics, toolchain = excluded.toolchain, reported_at = excluded.reported_at, console_build = excluded.console_build`,
   ).bind(commit, conclusion, buildId, branch, files, errors, JSON.stringify(diagnostics), toolchain ? JSON.stringify(toolchain) : null, reportedAt, consoleJson).run();
-  const applied = await applyToRun(db, commit, stepFromRow({ commit_sha: commit, conclusion, build_id: buildId, branch, files, errors, diagnostics: JSON.stringify(diagnostics), toolchain: toolchain ? JSON.stringify(toolchain) : null, reported_at: reportedAt, console_build: consoleJson }));
+  const applied = await applyTypecheckReportToRun(db, commit, stepFromRow({ commit_sha: commit, conclusion, build_id: buildId, branch, files, errors, diagnostics: JSON.stringify(diagnostics), toolchain: toolchain ? JSON.stringify(toolchain) : null, reported_at: reportedAt, console_build: consoleJson }));
   await appendAuditEvent(db, { event_type: "forge.typecheck_reported", actor, subject: commit, outcome: conclusion, payload: { build_id: buildId, errors, files, console_build: consoleBuild?.status ?? null, applied_to_run: applied } });
   return { commit, conclusion, applied_to_run: applied };
 }
@@ -126,7 +144,7 @@ export function stepFailures(step: TypecheckStep): string[] {
 }
 
 /** Fold a report into an already recorded Forge check: set steps.typecheck; a failure fails the run. */
-async function applyToRun(db: D1Database, commit: string, step: TypecheckStep): Promise<boolean> {
+export async function applyTypecheckReportToRun(db: D1Database, commit: string, step: TypecheckStep): Promise<boolean> {
   const run = await db.prepare("SELECT status, steps, failures FROM forge_check_runs WHERE commit_sha = ?").bind(commit).first<{ status: string; steps: string | null; failures: string | null }>();
   if (!run || run.status === "running") return false;
   let steps: Record<string, unknown> = {};
@@ -135,7 +153,7 @@ async function applyToRun(db: D1Database, commit: string, step: TypecheckStep): 
   try { const f = JSON.parse(run.failures ?? "[]"); if (Array.isArray(f)) failures = f.map(String); } catch { failures = []; }
   failures = failures.filter((f) => !f.startsWith("typecheck ") && !f.startsWith("console-build "));
   if (step.status === "failed") failures.push(...stepFailures(step));
-  const status = step.status === "failed" ? "failed" : run.status;
+  const status = step.status === "failed" && run.status === "passed" ? "failed" : run.status;
   await db.prepare("UPDATE forge_check_runs SET steps = ?, failures = ?, status = ? WHERE commit_sha = ?")
     .bind(JSON.stringify({ ...steps, typecheck: step }), JSON.stringify(failures.slice(0, 50)), status, commit).run();
   return true;
