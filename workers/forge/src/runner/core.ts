@@ -20,7 +20,9 @@ export const BINARY_FILE = /\.(png|jpg|gz|wasm|ico|woff2?)$/;
 export const MAX_FILE_BYTES = 2_000_000;
 export const TEST_DIR = "workers/control-plane-shared/test";
 /** Test files per Dynamic Worker. 43 files today, so 6 Workers per run. */
-export const FILES_PER_WORKER = 8;
+// 2026-11-09: with ~50 test files, groups of 8 ran sql.js out of memory in one Dynamic Worker
+// ("Invalid array buffer length" in F4/F6); smaller groups keep each isolate's heap bounded.
+export const FILES_PER_WORKER = 4;
 export const COMPATIBILITY_DATE = "2026-11-01";
 const SHIMMED = /^node:(test|sqlite|fs|os|child_process)$/;
 const IMPORT_META_URL = ["import", "meta", "url"].join(".");

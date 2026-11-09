@@ -78,7 +78,8 @@ test("FC3. the runner core: paths, test files, groups and the deferred module bo
   const snap = { "workers/control-plane-shared/test/b.test.ts": "", "workers/control-plane-shared/test/a.test.ts": "", "workers/control-plane-shared/test/harness.ts": "", "workers/control-plane-shared/test/fixtures/x.test.ts": "" };
   assert.deepEqual(testFiles(snap), ["workers/control-plane-shared/test/a.test.ts", "workers/control-plane-shared/test/b.test.ts"]);
   const groups = groupFiles(Array.from({ length: 43 }, (_, i) => String(i)));
-  assert.equal(groups.length, 6, "43 files in 6 test Workers, under the 32 Worker invocations one request may make");
+  assert.equal(groups.length, 11, "43 files in 11 test Workers of at most 4, under the 32 Worker invocations one request may make");
+  assert.equal(FILES_PER_WORKER, 4, "groups of 8 ran sql.js out of memory (2026-11-09)");
   assert.ok(groups.every((g) => g.length <= FILES_PER_WORKER));
   const deferred = deferTopLevel('import assert from "node:assert/strict";\nconst k = Date.now();\ntest("x", () => {});\nexport {\n  k\n};\n');
   assert.match(deferred, /^import assert from "node:assert\/strict";\nexport async function __load\(\) \{\nconst k = Date\.now\(\);/);
@@ -106,7 +107,7 @@ test("FC4. one test Worker per group, without network access, with the bundler c
     },
   };
   const r = await runSuite(deps, snapshot);
-  assert.equal(loaded.length, 2, "10 files: one Worker of 7 (one did not bundle), one of 2");
+  assert.equal(loaded.length, 3, "10 files: Workers of 3 (one did not bundle), 4 and 2");
   for (const code of loaded) {
     assert.equal(code.globalOutbound, null, "tests have no network access");
     assert.deepEqual(code.env, { BUNDLER: "BUNDLER-STUB" });
@@ -115,8 +116,9 @@ test("FC4. one test Worker per group, without network access, with the bundler c
   }
   assert.equal(r.files, 10);
   assert.equal(r.pass, 7);
-  assert.equal(r.skip, 6);
-  assert.equal(r.fail, 1 + 1 + 2, "one failed test, one bundle error, two files of a Worker that crashed");
+  assert.equal(r.skip, 5);
+  assert.equal(r.fail, 1 + 1 + 1 + 2, "a failed test in each of two Workers, one bundle error, two files of a Worker that crashed");
+  assert.ok(r.failures.some((f) => f === "t04.test.ts :: b: boom"));
   assert.ok(r.failures.some((f) => f.startsWith("t03.test.ts: BUNDLE")));
   assert.ok(r.failures.some((f) => f.startsWith("t09.test.ts: RUN Worker exceeded CPU limit")));
   assert.ok(r.failures.some((f) => f === "t00.test.ts :: b: boom"));

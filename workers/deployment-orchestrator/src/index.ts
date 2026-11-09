@@ -130,7 +130,10 @@ export function latestRunPerWorkflow(runs: WorkflowRun[]): WorkflowRun[] {
 export { DEPLOY_UNITS, unitChanged, unitForService, type DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 
 /** CI for a consensus deploy: the push-event validation runs on the commit, all green. Deploy runs are not CI. */
-const REQUIRED_PUSH_VALIDATIONS = ["Validate", "Validate Control Plane Workers"] as const;
+// "Validate" (validate.yml) was merged into "Validate Control Plane Workers" by the 2026-11-08
+// hardening (#229). Requiring it afterwards made every consensus deploy fail closed as ci_not_green.
+// A wiring test keeps every name here equal to an existing workflow's name.
+export const REQUIRED_PUSH_VALIDATIONS = ["Validate Control Plane Workers"] as const;
 
 /** Consensus deploys require the combined commit-status gate and both push validations on main.
  * Missing, pending, skipped or unreadable evidence fails closed. */
