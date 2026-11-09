@@ -43,13 +43,15 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
      build secret differs from the token's current secret; paste it again (or rotate the token and
      update GitHub `production` and these build secrets together).
 6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
-7. **Phase 4 (needed for change requests):** this project was connected to Workers Builds
-   before Worker Previews. Setting `previews_enabled=true` alone does not switch an existing project
-   from the legacy preview model. The project currently has no branch preview records. In the
-   Cloudflare dashboard, use **Set up Worker Previews** and complete the one-time switch only after
-   reviewing preview-specific variables, secrets and bindings. The switch cannot be reversed.
-   Set the Preview command to `npx wrangler preview` (or `npx cf previews deploy`), not
-   `npx wrangler versions upload`. After the switch, pushes to `cr/<number>` branches create
-   preview builds and allow the type-check report to reach the Forge.
+7. **Do not enable preview builds with the CI service token (security, 2026-11-09).** A build
+   runs the checked-out branch's own code: `typecheck-and-report.mjs`, the Vite config and the npm
+   scripts all come from that branch. A preview build of a change request would therefore run
+   unreviewed code with `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET` in its environment, and the
+   CI service token is operator-level across the control plane. On GitHub, pull request code never
+   sees production secrets (the `production` environment is main-only); this must stay true here.
+   Production builds of `main` (reviewed, merged code) keep the build secrets. Type-checks of change
+   requests need a build with **no secrets** whose result the Forge reads itself; that design waits
+   for the owner (ADR-0012 §5d). Until then change requests stay `pending` on the type-check, and
+   GitHub CI type-checks every pull request as before.
 
 The Console Code page then shows `types ok` / `N type errors` / `types pending` per commit.
