@@ -15,6 +15,18 @@ export function parseDiagnostics(output) {
   return output.split("\n").filter((l) => /\berror TS\d+:/.test(l)).map((l) => l.trim().slice(0, 600));
 }
 
+/**
+ * The commit this build checks. Workers Builds sets WORKERS_CI_COMMIT_SHA for GitHub and GitLab; a
+ * build from Artifacts may leave it empty or short, so the checked-out HEAD is the fallback.
+ */
+export function resolveCommit(envSha, gitHead) {
+  const fromEnv = typeof envSha === "string" ? envSha.trim().toLowerCase() : "";
+  if (/^[0-9a-f]{40}$/.test(fromEnv)) return { commit: fromEnv, source: "WORKERS_CI_COMMIT_SHA" };
+  const head = typeof gitHead === "string" ? gitHead.trim().toLowerCase() : "";
+  if (/^[0-9a-f]{40}$/.test(head) && (!fromEnv || head.startsWith(fromEnv))) return { commit: head, source: "git rev-parse HEAD" };
+  return null;
+}
+
 export function summarize(status, output, toolchain) {
   const diagnostics = parseDiagnostics(output);
   const errors = status === 0 ? 0 : Math.max(diagnostics.length, 1);
@@ -48,8 +60,15 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
   const here = path.dirname(fileURLToPath(selfUrl));
   const shared = path.join(here, "..", "control-plane-shared");
   const env = process.env;
-  const commit = env.WORKERS_CI_COMMIT_SHA ?? "";
-  if (!/^[0-9a-f]{40}$/.test(commit)) { console.error("typecheck-and-report: WORKERS_CI_COMMIT_SHA is not a commit"); process.exit(2); }
+  const head = run("git", ["rev-parse", "HEAD"], here);
+  const resolved = resolveCommit(env.WORKERS_CI_COMMIT_SHA, head.status === 0 ? head.output : "");
+  if (!resolved) {
+    const seen = Object.keys(env).filter((k) => k.startsWith("WORKERS_CI")).sort().join(", ") || "none";
+    console.error(`typecheck-and-report: cannot tell which commit this build checks (WORKERS_CI_* variables present: ${seen}; git rev-parse HEAD exit ${head.status})`);
+    process.exit(2);
+  }
+  const { commit } = resolved;
+  console.log(`typecheck-and-report: checking ${commit} (from ${resolved.source})`);
   const install = run("npm", ["ci", "--no-audit", "--no-fund", "--ignore-scripts"], shared);
   if (install.status !== 0) { console.error(install.output.slice(-4000)); process.exit(2); }
   const require = createRequire(path.join(shared, "package.json"));

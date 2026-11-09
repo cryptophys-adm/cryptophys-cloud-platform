@@ -8,7 +8,7 @@ import { APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, baseEnv, call, migrat
 import forge from "../../forge/src/index.ts";
 import { checkCommit, listChecks, record, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps } from "../../forge/src/checks.ts";
 import { recordTypecheckReport, typecheckStep } from "../../forge/src/typecheck.ts";
-import { parseDiagnostics, summarize } from "../../forge-typecheck/typecheck-and-report.mjs";
+import { parseDiagnostics, resolveCommit, summarize } from "../../forge-typecheck/typecheck-and-report.mjs";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -25,6 +25,16 @@ test("TC1. the build script turns tsc output into a report: errors counted, diag
   assert.equal(summarize(1, "crash without TS lines", TOOLCHAIN).errors, 1, "a failed compiler run with no parsable line is still one error");
   const many = Array.from({ length: 80 }, (_, i) => `f${i}.ts(1,1): error TS1: e`).join("\n");
   assert.equal(summarize(1, many, TOOLCHAIN).diagnostics.length, 50);
+});
+
+test("TC1b. the build finds its commit: WORKERS_CI_COMMIT_SHA when it is a full SHA, else the checked-out HEAD", () => {
+  const head = "a".repeat(40);
+  assert.deepEqual(resolveCommit("B".repeat(40), head), { commit: "b".repeat(40), source: "WORKERS_CI_COMMIT_SHA" });
+  assert.deepEqual(resolveCommit(undefined, head + "\n"), { commit: head, source: "git rev-parse HEAD" }, "Artifacts builds may not set it");
+  assert.deepEqual(resolveCommit("", head), { commit: head, source: "git rev-parse HEAD" });
+  assert.deepEqual(resolveCommit("aaaaaaa", head), { commit: head, source: "git rev-parse HEAD" }, "a short SHA that matches HEAD");
+  assert.equal(resolveCommit("bbbbbbb", head), null, "a short SHA that contradicts HEAD is refused");
+  assert.equal(resolveCommit(undefined, "fatal: not a git repository"), null);
 });
 
 test("TC2. recordTypecheckReport validates every field and never accepts an inconsistent result", async () => {
