@@ -4,6 +4,9 @@ name: Mirror to Forge
 # repository (cryptophys/platform) after every push, so both hold the same commit SHAs. The write
 # token is minted by the Forge for the CI service token only, lives 10 minutes, and is masked.
 # Before the Forge is deployed and has imported the repository, the run is skipped with a notice.
+# Phase 4 (shadow): it then reports GitHub's outcome of change requests to the Forge: the pull
+# request this commit merged (its "(#N)" subject) and recently closed unmerged pull requests, and
+# deletes their cr/<number> branches.
 
 on:
   push:
@@ -12,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: mirror-to-forge
@@ -35,6 +39,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           access_headers="$(mktemp)"; out="$(mktemp)"; trap 'rm -f "$access_headers" "$out"' EXIT
@@ -59,3 +64,22 @@ jobs:
           echo "::add-mask::${token}"; echo "::add-mask::${remote}"
           git -c http.extraHeader="Authorization: Bearer ${token}" push --force "$remote" "HEAD:refs/heads/main"
           echo "Mirrored main $(git rev-parse HEAD) to the Forge."
+          forge="https://cryptophys-forge.${subdomain}.workers.dev"
+          report_outcome() { # number merged(true|false) merge_sha
+            local body status
+            body="$(jq -nc --argjson n "$1" --argjson m "$2" --arg s "$3" '{confirm: "REPORT", number: $n, merged: $m} + (if $m then {merge_sha: $s} else {} end)')"
+            status="$(curl --silent --show-error --proto '=https' --max-time 30 --request POST "${forge}/v1/forge/changes/outcome" \
+              --header "@${access_headers}" --header 'content-type: application/json' --data "$body" \
+              --output "$out" --write-out '%{http_code}' || true)"
+            case "$status" in
+              200) echo "Change request gh-$1: $(jq -r '.change.status + ", Forge verdict " + (.change.verdict_at_outcome // "none")' "$out")."
+                   git -c http.extraHeader="Authorization: Bearer ${token}" push --quiet "$remote" ":refs/heads/cr/$1" 2>/dev/null || true ;;
+              404) ;; # not a registered change request, or a Forge without change requests
+              *) echo "::warning::outcome for pull request #$1 returned HTTP ${status}" ;;
+            esac
+          }
+          subject="$(git log -1 --format=%s)"
+          if [[ "$subject" =~ \(#([0-9]{1,8})\)$ ]]; then report_outcome "${BASH_REMATCH[1]}" true "$(git rev-parse HEAD)"; fi
+          for n in $(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=10" --jq '.[] | select(.merged_at == null) | .number'); do
+            report_outcome "$n" false ""
+          done

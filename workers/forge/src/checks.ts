@@ -195,10 +195,15 @@ export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } 
 
 /** One cron tick: check at most one commit of main. */
 export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
+  return tickWith(env, repoName, deps, nowMs, (repo) => nextCommit(env.DB, repo, nowMs()));
+}
+
+/** Claim, check, record and audit one commit picked by `pick` (a commit of main, or a change request head). */
+export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs: () => number, pick: (repo: ArtifactsReader) => Promise<string | null>): Promise<TickOutcome> {
   if (!env.ARTIFACTS || !deps) return { outcome: "not_configured" };
   const repo = await env.ARTIFACTS.get(repoName);
   try {
-    const commit = await nextCommit(env.DB, repo, nowMs());
+    const commit = await pick(repo);
     if (!commit) return { outcome: "up_to_date" };
     if (!(await claim(env.DB, commit, nowMs()))) return { outcome: "busy" };
     const started = nowMs();
@@ -303,10 +308,20 @@ function summary(r: JoinedRow): CheckSummary {
   };
 }
 
+/** The check of one commit (a change request head or a commit of main), or null if none was recorded. */
+export async function checkOf(db: D1Database, commit: string): Promise<CheckSummary | null> {
+  const r = await db.prepare(
+    `SELECT r.*, g.conclusion AS github FROM forge_check_runs r LEFT JOIN forge_ci_reports g ON g.commit_sha = r.commit_sha WHERE r.commit_sha = ?`,
+  ).bind(commit).first<JoinedRow>();
+  return r ? summary(r) : null;
+}
+
 export async function listChecks(db: D1Database, limit: number): Promise<{ checks: CheckSummary[]; parity: Parity }> {
   const n = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  // Heads of open change requests are listed with their change request, not as commits of main.
   const rows = await db.prepare(
     `SELECT r.*, g.conclusion AS github FROM forge_check_runs r LEFT JOIN forge_ci_reports g ON g.commit_sha = r.commit_sha
+     WHERE r.commit_sha NOT IN (SELECT head_sha FROM forge_change_requests WHERE status = 'open')
      ORDER BY r.started_at DESC LIMIT ?`,
   ).bind(Math.max(n, PARITY_WINDOW)).all<JoinedRow>();
   const all = (rows.results ?? []).map(summary);

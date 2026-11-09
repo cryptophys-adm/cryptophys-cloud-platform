@@ -251,6 +251,37 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   - Use the Forge bundles for deploys, then the Console assets built on Workers Builds.
   - Run checks for branches and proposals (phase 4).
 
+### 5d. Phase 4 progress (2026-11-09)
+
+The owner said "lanjutkan semua" (continue everything) on 2026-11-09. Phase 4 starts in shadow: the Forge computes, and GitHub still executes.
+
+- **4.1 Change requests (shadow).**
+  - `forge-change-request.yml` runs after GitHub CI on each same-repository pull request. Forks are ignored. The workflow runs from the default branch, so the production secrets stay behind the main-only environment rule.
+  - It pushes the pull request's head to the Artifacts branch `cr/<number>` and registers change request `gh-<number>` with the merge base, title, author and GitHub CI conclusion. Nothing from the pull request runs.
+  - The Forge computes the changed paths with a tree diff and the owner-only reasons of §2.4:
+    - auth and Access files;
+    - the Policy Engine;
+    - the consensus rules and the kill switch (`consensus-*.ts`);
+    - secrets handling;
+    - a migration that rewrites or drops data, or edits an applied migration;
+    - ADR-0009 and ADR-0012;
+    - fewer assertions in a test, or a removed test (the §2.2 policy guard).
+  - The cron checks open change request heads first, then commits of `main`.
+  - The verdict is one of:
+    - `pending`: the check, type-check or Console build has not reported yet;
+    - `blocked`: something failed;
+    - `needs_owner`: everything passed, but the change touches an owner-only path;
+    - `would_merge`: everything passed and the change is routine.
+  - `mirror-to-forge.yml` reports GitHub's outcome:
+    - the pull request a `main` commit merged, read from its `(#N)` subject;
+    - recently closed pull requests that were not merged.
+
+    It also deletes their `cr/` branches. The verdict at that moment is frozen next to the outcome.
+  - **Merge parity:** a GitHub merge agrees when the Forge would have merged it or asked the owner. It disagrees when the Forge had blocked it. A `pending` verdict counts as "Forge late" and is not compared. The bar for the Forge to merge by itself is 10 consecutive agreements.
+  - The Console Code page shows the change requests (route `forge.changes`, read-only).
+  - **Deviation from §1.** During the shadow phase the `cr/` branches live in `platform`, not in `platform-work`, so that the existing Workers Builds project type-checks them as preview builds. They move to `platform-work` at cut-over.
+  - **Owner step.** In `cryptophys-forge-typecheck`, open **Settings → Build → Branch control**, enable **Preview builds** for non-production branches, and set the Preview build command to `node typecheck-and-report.mjs`. Until then every change request stays `pending` on its type-check.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):

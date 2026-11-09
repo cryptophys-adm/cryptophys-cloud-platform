@@ -1,0 +1,83 @@
+name: Forge change request
+
+# ADR-0012 phase 4, shadow: mirror each same-repository pull request to the Forge as change request
+# gh-<number>, after GitHub CI has run on its head. The head is pushed to the Artifacts branch
+# cr/<number> (with the Forge's 10-minute mirror token) and registered with the PR's title, author,
+# head, merge base and CI conclusion. The Forge then checks that head and computes the merge verdict
+# it would give; GitHub still decides. Nothing from the pull request is executed here: its commits are
+# only fetched and pushed. Runs from the default branch (workflow_run), so the production secrets stay
+# behind the environment's main-only rule. Pull requests from forks are ignored.
+
+on:
+  workflow_run:
+    workflows: ["Validate Control Plane Workers"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: forge-change-request-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  register:
+    if: >-
+      github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout the default branch with history (scripts and the merge base)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Push the head to cr/<number> and register it
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CF_ACCESS_CLIENT_ID}" || -z "${CLOUDFLARE_API_TOKEN}" ]]; then
+            echo "::notice::no production secrets in this run (for example a Dependabot pull request); not registered"; exit 0
+          fi
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$PR_NUMBER" =~ ^[0-9]{1,8}$ ]] || { echo "::notice::no pull request for this run"; exit 0; }
+          pr="$(mktemp)"; access_headers="$(mktemp)"; out="$(mktemp)"; trap 'rm -f "$pr" "$access_headers" "$out"' EXIT
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$pr"
+          if [[ "$(jq -r .state "$pr")" != "open" || "$(jq -r .head.sha "$pr")" != "$HEAD_SHA" ]]; then
+            echo "::notice::pull request #${PR_NUMBER} is closed or has moved past ${HEAD_SHA}; a newer run registers it"; exit 0
+          fi
+          git fetch --quiet --no-tags origin "$HEAD_SHA" main
+          base="$(git merge-base origin/main "$HEAD_SHA")"
+          .github/scripts/access-headers.sh "$access_headers"
+          subdomain="$(curl --fail --silent --show-error --proto '=https' --max-time 20 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -er '.result.subdomain | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))')"
+          forge="https://cryptophys-forge.${subdomain}.workers.dev"
+          status="$(curl --silent --show-error --proto '=https' --max-time 30 --request POST "${forge}/v1/forge/mirror-token" \
+            --header "@${access_headers}" --header 'content-type: application/json' --data '{"confirm":"MIRROR"}' \
+            --output "$out" --write-out '%{http_code}' || true)"
+          [[ "$status" == "200" ]] || { echo "::error::mirror-token returned HTTP ${status}"; exit 1; }
+          token="$(jq -er '.token' "$out")"; remote="$(jq -er '.remote' "$out")"
+          [[ "$remote" =~ ^https://[0-9a-f]{32}\.artifacts\.cloudflare\.net/git/cryptophys/platform\.git$ ]] || { echo "::error::Forge returned an untrusted Artifacts remote"; exit 1; }
+          echo "::add-mask::${token}"; echo "::add-mask::${remote}"
+          git -c http.extraHeader="Authorization: Bearer ${token}" push --quiet --force "$remote" "${HEAD_SHA}:refs/heads/cr/${PR_NUMBER}"
+          body="$(jq -c --arg head "$HEAD_SHA" --arg base "$base" --arg ci "$CONCLUSION" \
+            '{confirm: "REGISTER", number: .number, source_branch: .head.ref, title: .title, author: .user.login, head_sha: $head, base_sha: $base, github_ci: $ci}' "$pr")"
+          status="$(curl --silent --show-error --proto '=https' --max-time 60 --request POST "${forge}/v1/forge/changes" \
+            --header "@${access_headers}" --header 'content-type: application/json' --data "$body" \
+            --output "$out" --write-out '%{http_code}' || true)"
+          if [[ "$status" == "404" ]]; then echo "::notice::the Forge does not accept change requests yet (HTTP 404)"; exit 0; fi
+          [[ "$status" == "200" ]] || { echo "::error::changes returned HTTP ${status}: $(head -c 300 "$out")"; exit 1; }
+          echo "Registered pull request #${PR_NUMBER} (${HEAD_SHA}, base ${base}) as $(jq -r '.change.cr_id' "$out"); owner-only reasons: $(jq -r '.change.critical' "$out")"

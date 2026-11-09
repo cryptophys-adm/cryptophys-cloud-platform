@@ -1,10 +1,14 @@
-import { FlaskConical, FolderGit2, GitCommitHorizontal } from "lucide-react";
+import { FlaskConical, FolderGit2, GitCommitHorizontal, GitPullRequest } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { ago, listOf } from "../lib/format";
 import { usePoll } from "../lib/usePoll";
 
 const CHECK_TONE: Record<string, "green" | "red" | "amber" | "slate"> = { passed: "green", failed: "red", error: "amber", running: "slate" };
+const VERDICT: Record<string, { tone: "green" | "red" | "amber" | "slate" | "cyan"; label: string }> = {
+  would_merge: { tone: "green", label: "would merge" }, needs_owner: { tone: "amber", label: "needs owner" },
+  blocked: { tone: "red", label: "blocked" }, pending: { tone: "slate", label: "pending" },
+};
 
 // ADR-0012: the platform source on the Forge (Cloudflare Artifacts), read-only, and the Forge checks
 // of each commit next to GitHub CI (phase 3).
@@ -12,6 +16,9 @@ export default function Code() {
   const status = usePoll(() => call("forge.status"), 60_000);
   const commits = usePoll(() => call("forge.commits", undefined, undefined, { limit: "30" }), 60_000);
   const checks = usePoll(() => call("forge.checks", undefined, undefined, { limit: "20" }), 60_000);
+  const changes = usePoll(() => call("forge.changes", undefined, undefined, { limit: "15" }), 60_000);
+  const crs = listOf(changes.data, "changes");
+  const mergeParity = changes.data?.parity;
   const s = status.data;
   const rows = listOf(commits.data, "commits");
   const runs = listOf(checks.data, "checks");
@@ -30,6 +37,36 @@ export default function Code() {
           </div>
         )}
         <p className="mt-3 text-[11px] leading-relaxed text-slate-500">GitHub is still the source of truth during the migration (ADR-0012). Every push to main is mirrored here with the same commit IDs.</p>
+      </Panel>
+      <Panel title="Change requests · shadow" icon={<GitPullRequest className="h-3.5 w-3.5 text-violet-300" />}
+        right={<Badge tone={mergeParity && mergeParity.consecutive >= mergeParity.target ? "green" : "slate"}>{mergeParity ? `merge parity ${mergeParity.consecutive}/${mergeParity.target}` : "—"}</Badge>}>
+        {changes.loading && !changes.data ? <Skeleton /> : crs.length === 0 ? <Empty>No pull request has been mirrored to the Forge yet.</Empty> : (
+          <div className="space-y-1.5">
+            {crs.map((c: any) => {
+              const v = VERDICT[c.verdict] ?? { tone: "slate", label: c.verdict ?? "—" };
+              return (
+                <details key={c.cr_id} className="glass-inner px-3 py-2">
+                  <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="mono text-[11px] text-violet-200">#{c.number}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-slate-200">{c.title}</span>
+                    <Badge tone={v.tone}>{c.status === "open" ? v.label : `${v.label} at ${c.status}`}</Badge>
+                    {c.critical?.length ? <Badge tone="amber">owner path</Badge> : null}
+                    {c.status === "merged" ? <Badge tone={c.agrees === true ? "green" : c.agrees === false ? "red" : "slate"}>{c.agrees === true ? "agrees" : c.agrees === false ? "disagrees" : "Forge late"}</Badge> : null}
+                    <span className="text-[11px] text-slate-400">GitHub CI: {c.github_ci ?? "—"}</span>
+                    <span className="ml-auto text-[10px] text-slate-500">{c.updated_at ? ago(c.updated_at) : ""}</span>
+                  </summary>
+                  <div className="mt-2 space-y-1 text-[11px] text-slate-300">
+                    <div className="mono break-all text-slate-400">{c.source_branch} · head {String(c.head_sha).slice(0, 12)} · base {String(c.base_sha).slice(0, 12)} · {c.author}</div>
+                    {c.check ? <div>Check: {c.check.status} · {c.check.pass ?? "—"} passed · {c.check.fail ?? "—"} failed{c.check.typecheck ? ` · types ${c.check.typecheck.status}` : ""}{c.check.typecheck?.console_build ? ` · UI build ${c.check.typecheck.console_build}` : ""}</div> : <div className="text-slate-500">Not checked yet.</div>}
+                    {c.reasons?.length ? <ul className="space-y-0.5">{c.reasons.map((r: string, i: number) => <li key={i} className="mono break-words text-[10px] text-amber-200">{r}</li>)}</ul> : null}
+                    {c.changed_paths?.length ? <div className="mono break-words text-[10px] text-slate-500">{c.changed_paths.length} paths: {c.changed_paths.slice(0, 12).join(", ")}{c.changed_paths.length > 12 ? " …" : ""}</div> : null}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">ADR-0012 phase 4, shadow: each pull request is checked on the Forge and given the verdict the Forge would give. GitHub still merges; merge parity counts the merges where both agree.</p>
       </Panel>
       <Panel title="Forge checks" icon={<FlaskConical className="h-3.5 w-3.5 text-emerald-300" />}
         right={<Badge tone={parity && parity.consecutive >= parity.target ? "green" : "slate"}>{parity ? `parity ${parity.consecutive}/${parity.target}` : "—"}</Badge>}>
