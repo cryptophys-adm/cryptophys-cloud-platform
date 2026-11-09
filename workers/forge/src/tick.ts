@@ -8,6 +8,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
 import { planTick } from "./deploy-plan.ts";
+import { censusTick } from "./census.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
 export interface TickEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> } }
@@ -25,6 +26,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     await step("deploy_plan", async () => {
       const repo = await env.ARTIFACTS!.get(repoName);
       try { return await planTick(env.DB, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
+    });
+  }
+  if (env.ARTIFACTS) {
+    // ADR-0013 phase 2: the organism census of main's head (cheap: a few tree and blob reads).
+    await step("census", async () => {
+      const repo = await env.ARTIFACTS!.get(repoName);
+      try { return await censusTick(env.DB, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
     });
   }
   const started = nowMs();
