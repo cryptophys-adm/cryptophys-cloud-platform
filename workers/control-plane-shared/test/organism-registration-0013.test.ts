@@ -109,7 +109,7 @@ test("R3. vote rules: registrations carry no forbidden or hidden privileged capa
   assert.deepEqual(privilegedCapabilities(["platform.observe", "reports.publish", "consensus.propose"]), ["consensus.propose"]);
   const e: Evidence = {
     agents_enabled: true, audit_valid: true, services: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0,
-    registry: { "cryptophys-forge": { status: "active", desired_version: null }, "cryptophys-home": { status: "disabled", desired_version: null } },
+    registry: { "cryptophys-forge": { status: "registered", desired_version: null }, "cryptophys-home": { status: "disabled", desired_version: null } },
     agents: {
       "platform-api": { status: "enabled", host_worker: "cryptophys-platform-api", voter: true },
       "forge-steward": { status: "enabled", host_worker: "cryptophys-forge", voter: false },
@@ -437,4 +437,23 @@ test("R15. a host change after voter precheck cannot admit a seat against a diff
     undefined,
     "a rejected host race must not append an admission audit event",
   );
+});
+
+
+test("R16. registration votes fail closed for host states outside the registry schema", () => {
+  const e: Evidence = {
+    agents_enabled: true, audit_valid: true, services: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0,
+    registry: { "cryptophys-forge": { status: "active", desired_version: null } },
+    agents: { "forge-steward": { status: "enabled", host_worker: "cryptophys-forge", voter: false } },
+  };
+  const proposals: Proposal[] = [
+    { action: "register_agent", target: "new-agent", params: { service: "cryptophys-forge", capabilities: ["platform.observe"] }, class: "routine" },
+    { action: "register_engine", target: "cryptophys-forge", params: { task: "summarize_census" }, class: "routine" },
+    { action: "admit_voter", target: "forge-steward", params: {}, class: "critical" },
+  ];
+  for (const proposal of proposals) {
+    const vote = castVote("supervisor", proposal, e);
+    assert.equal(vote.vote, "reject", proposal.action);
+    assert.match(vote.reason, /not an active registered service/);
+  }
 });
