@@ -268,15 +268,18 @@ export default { async fetch(request, env) {
   if (env && env.BUNDLER) globalThis.__FORGE_BUNDLE = (dir) => env.BUNDLER.bundleWorker(dir);
   globalThis.__SQL = await initSqlJs({ instantiateWasm(imports, done) { WebAssembly.instantiate(wasm, imports).then((i) => done(i)); return {}; } });
   await new Promise((r) => setTimeout(r, 5)); // advance the clock (it only moves on I/O)
-  const cleanupSqlite = () => {
+  const cleanupSqlite = (keep = new Set()) => {
     const databases = globalThis.__SQL_DATABASES;
     let closeErrors = 0;
     if (databases && typeof databases[Symbol.iterator] === "function") {
       for (const db of Array.from(databases)) {
+        if (keep.has(db)) continue;
         try { db.close(); } catch { closeErrors++; }
       }
     }
-    return { open: databases && typeof databases.size === "number" ? databases.size : 0, closeErrors };
+    const open = databases && typeof databases[Symbol.iterator] === "function"
+      ? Array.from(databases).filter((db) => !keep.has(db)).length : 0;
+    return { open, closeErrors };
   };
   const report = [];
   for (const file of files) {
@@ -293,8 +296,21 @@ export default { async fetch(request, env) {
     const reg = globalThis.__TESTS || { tests: [], before: [], after: [] };
     for (const t of reg.tests) {
       if (t.skip || t.todo) { out.results.push({ name: t.name, status: "skip" }); continue; }
-      try { for (const h of reg.before) await h(); await t.fn({}); for (const h of reg.after) await h(); out.results.push({ name: t.name, status: "pass" }); }
-      catch (e) { out.results.push({ name: t.name, status: "fail", error: (String(e && e.message || e) + " | actual=" + JSON.stringify(e && e.actual)?.slice(0, 300) + " expected=" + JSON.stringify(e && e.expected)?.slice(0, 200) + " | " + String(e && e.stack || "").split("\\n").slice(1, 3).join(" ")).slice(0, 900) }); }
+      // Preserve module-scoped fixtures, but release every database created by this test and its hooks.
+      const keepSqlite = new Set(globalThis.__SQL_DATABASES ?? []);
+      try {
+        for (const h of reg.before) await h();
+        await t.fn({});
+        for (const h of reg.after) await h();
+        out.results.push({ name: t.name, status: "pass" });
+      } catch (e) {
+        out.results.push({ name: t.name, status: "fail", error: (String(e && e.message || e) + " | actual=" + JSON.stringify(e && e.actual)?.slice(0, 300) + " expected=" + JSON.stringify(e && e.expected)?.slice(0, 200) + " | " + String(e && e.stack || "").split("\\n").slice(1, 3).join(" ")).slice(0, 900) });
+      } finally {
+        const cleanup = cleanupSqlite(keepSqlite);
+        if (cleanup.open > 0 || cleanup.closeErrors > 0) {
+          out.results.push({ name: t.name + " :: SQLITE cleanup", status: "fail", error: "SQLite cleanup left " + cleanup.open + " database(s) open (" + cleanup.closeErrors + " close errors)" });
+        }
+      }
     }
     const cleanup = cleanupSqlite();
     out.sqlite_open_after = cleanup.open;

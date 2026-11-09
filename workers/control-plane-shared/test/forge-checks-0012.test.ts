@@ -393,11 +393,14 @@ test("FC17. a run records its steps; a bundle failure fails it, a secret finding
   assert.equal(listed.body.checks[0].guard_status, "findings");
 });
 
-test("FC19. the SQL.js shim tracks database instances for per-file cleanup", () => {
+test("FC19. the SQL.js shim tracks databases and the runner releases test-owned handles after each test", () => {
   const shim = read("workers/forge/src/runner/shims/node-sqlite.js");
+  const core = read("workers/forge/src/runner/core.ts");
   assert.match(shim, /__SQL_DATABASES/);
   assert.match(shim, /databases\.add\(this\)/);
   assert.match(shim, /databases\.delete\(this\)/);
+  assert.match(core, /const keepSqlite = new Set\(globalThis\.__SQL_DATABASES \?\? \[\]\)/);
+  assert.match(core, /cleanupSqlite\(keepSqlite\)/);
 });
 
 test("FC18. the Forge is not ready before its own migrations are applied; other Workers do not wait for them", async () => {
