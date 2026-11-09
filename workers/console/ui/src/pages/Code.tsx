@@ -43,11 +43,16 @@ export default function Code() {
                   <span className="text-[12px] text-slate-200">{r.pass ?? "—"} passed · {r.fail ?? "—"} failed</span>
                   {r.bundles ? <span className="text-[11px] text-slate-400">bundles {r.bundles.workers - r.bundles.failed}/{r.bundles.workers}</span> : null}
                   {r.typecheck && r.typecheck.status !== "not_configured" ? (
-                    <Badge tone={r.typecheck.status === "passed" ? "green" : r.typecheck.status === "failed" ? "red" : "slate"}>
-                      {r.typecheck.status === "passed" ? "types ok" : r.typecheck.status === "failed" ? `${r.typecheck.errors ?? "?"} type errors` : "types pending"}
-                    </Badge>
+                    r.typecheck.status === "pending" ? <Badge tone="slate">types pending</Badge>
+                      : (r.typecheck.errors ?? 0) > 0 || (r.typecheck.status === "failed" && !r.typecheck.console_build)
+                        ? <Badge tone="red">{`${r.typecheck.errors ?? "?"} type errors`}</Badge>
+                        : <Badge tone="green">types ok</Badge>
+                  ) : null}
+                  {r.typecheck?.console_build ? (
+                    <Badge tone={r.typecheck.console_build === "passed" ? "green" : "red"}>{r.typecheck.console_build === "passed" ? "UI build ok" : "UI build failed"}</Badge>
                   ) : null}
                   {r.guard_status ? <Badge tone={r.guard_status === "clean" ? "green" : "red"}>{r.guard_status === "clean" ? "no secrets" : "secret found"}</Badge> : null}
+                  {r.ready ? <Badge tone="cyan">ready</Badge> : null}
                   <span className="text-[11px] text-slate-400">GitHub CI: {r.github ?? "not reported"}{r.agrees === true ? " · agrees" : r.agrees === false ? " · disagrees" : ""}</span>
                   <span className="ml-auto text-[10px] text-slate-500">{r.started_at ? ago(r.started_at) : ""}{r.duration_ms ? ` · ${Math.round(r.duration_ms / 1000)} s` : ""}</span>
                 </summary>

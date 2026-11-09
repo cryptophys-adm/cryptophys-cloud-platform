@@ -9,7 +9,7 @@
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
-import type { TypecheckLookup, TypecheckStep } from "./typecheck.ts";
+import { stepFailures, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
 
 /** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
 export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckLookup }
@@ -120,7 +120,7 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
   const typecheck: TypecheckStep = suite.typecheck ? await suite.typecheck(commit) : { status: "not_configured" };
   const failures = [
     ...result.failures, ...bundles.failed.map((b) => `bundle ${b.dir}: ${b.error}`),
-    ...(typecheck.diagnostics ?? []).map((d) => `typecheck ${d}`),
+    ...stepFailures(typecheck),
     ...secrets.findings.map((f) => `secret ${f.rule} at ${f.path}:${f.line}`),
   ];
   return {
@@ -225,8 +225,16 @@ export interface CheckSummary {
   failures: string[]; started_at: string; finished_at: string | null; duration_ms: number | null;
   /** Bundles and guards: Worker count and failures, secret-scan outcome (null for runs before 0033). */
   bundles: { workers: number; failed: number } | null; guard_status: string | null;
-  /** The type-check step (null for runs before it existed). */
-  typecheck: { status: string; errors: number | null; build_id: string | null } | null;
+  /**
+   * The Workers Builds step (null for runs before it existed): `status` covers both parts, `errors`
+   * the control-plane type errors, `console_build` the Console UI build (null before builds reported it).
+   */
+  typecheck: { status: string; errors: number | null; build_id: string | null; console_build: "passed" | "failed" | null } | null;
+  /**
+   * Every gate passed: tests and bundles, no secret, control-plane types, Console UI build. Phase 4's
+   * merge gate and the deploy proposals require it; a pending or older-format step is not ready.
+   */
+  ready: boolean;
   /** The GitHub CI conclusion for the same commit, and whether the two agree (null while either is missing). */
   github: "success" | "failure" | null; agrees: boolean | null;
 }
@@ -271,17 +279,26 @@ function stepsBundles(steps: string | null): { workers: number; failed: number }
 function stepsTypecheck(steps: string | null): CheckSummary["typecheck"] {
   try {
     const t = (JSON.parse(steps ?? "null") as { typecheck?: TypecheckStep } | null)?.typecheck;
-    return t ? { status: String(t.status), errors: typeof t.errors === "number" ? t.errors : null, build_id: t.build_id ?? null } : null;
+    if (!t) return null;
+    const cb = t.console_build?.status;
+    return { status: String(t.status), errors: typeof t.errors === "number" ? t.errors : null, build_id: t.build_id ?? null, console_build: cb === "passed" || cb === "failed" ? cb : null };
   } catch { return null; }
+}
+
+/** The gate: a passed check with no secret, a passed type-check and a passed Console build. */
+export function isReady(status: string, guard: string | null, typecheck: CheckSummary["typecheck"]): boolean {
+  return status === "passed" && guard === "clean" && typecheck?.status === "passed" && typecheck.console_build === "passed";
 }
 
 function summary(r: JoinedRow): CheckSummary {
   let failures: string[] = [];
   try { const parsed = JSON.parse(r.failures ?? "[]"); if (Array.isArray(parsed)) failures = parsed.map(String); } catch { /* stored by record(); never malformed */ }
+  const typecheck = stepsTypecheck(r.steps);
   return {
     commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures,
     started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms,
-    bundles: stepsBundles(r.steps), guard_status: r.guard_status ?? null, typecheck: stepsTypecheck(r.steps),
+    bundles: stepsBundles(r.steps), guard_status: r.guard_status ?? null, typecheck,
+    ready: isReady(r.status, r.guard_status ?? null, typecheck),
     github: r.github ?? null, agrees: agreement(r.status, r.github ?? null),
   };
 }

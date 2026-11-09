@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
 import forge from "../../forge/src/index.ts";
-import { checkCommit, listChecks, record, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps } from "../../forge/src/checks.ts";
+import { checkCommit, isReady, listChecks, record, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps } from "../../forge/src/checks.ts";
 import { recordTypecheckReport, typecheckStep } from "../../forge/src/typecheck.ts";
-import { cleanCredential, parseDiagnostics, postReport, resolveCommit, summarize } from "../../forge-typecheck/typecheck-and-report.mjs";
+import { cleanCredential, parseDiagnostics, postReport, resolveCommit, summarize, summarizeConsoleBuild } from "../../forge-typecheck/typecheck-and-report.mjs";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -135,7 +135,7 @@ test("TC4. a report that arrives after the check is folded into the recorded run
   const late = await recordTypecheckReport(db as never, ok({ conclusion: "failure", errors: 1, diagnostics: ["workers/y.ts(2,2): error TS2304: z"] }), CI_CLIENT_ID, t0 + 120_000);
   assert.equal(late.applied_to_run, true);
   const listed = (await listChecks(db as never, 5)).checks[0];
-  assert.deepEqual([listed.status, listed.typecheck], ["failed", { status: "failed", errors: 1, build_id: "b-1" }]);
+  assert.deepEqual([listed.status, listed.typecheck, listed.ready], ["failed", { status: "failed", errors: 1, build_id: "b-1", console_build: null }, false]);
   assert.deepEqual(listed.failures, ["typecheck workers/y.ts(2,2): error TS2304: z"]);
   // A later success replaces the diagnostics but does not un-fail a run that failed for other reasons.
   db.raw.prepare("UPDATE forge_check_runs SET failures = ? WHERE commit_sha = ?").run(JSON.stringify(["one.test.ts :: t: nope", "typecheck old"]), SHA);
@@ -170,5 +170,49 @@ test("TC6. wiring: no Container remains; the Builds project is the one the READM
   const readme = read("workers/forge-typecheck/README.md");
   for (const s of ["Root directory:** `workers/forge-typecheck`", "`node typecheck-and-report.mjs`", "`FORGE_URL`", "`CF_ACCESS_CLIENT_ID`", "/v1/forge/typecheck-report"]) assert.ok(readme.includes(s), s);
   assert.doesNotMatch(read(".github/workflows/validate-control-plane.yml"), /typecheck-container/);
-  assert.match(read("workers/forge/src/index.ts"), /"0035_forge_typecheck_reports\.sql"/);
+  assert.match(read("workers/forge/src/index.ts"), /"0035_forge_typecheck_reports\.sql", "0036_forge_console_build\.sql"/);
+});
+
+const UI_OK = { conclusion: "success", errors: 0, diagnostics: [], bytes: 904359 };
+
+test("TC7. the same build reports the Console UI build; a UI failure fails the step and the check; ready needs every gate", async () => {
+  // The build script: TS errors are the diagnostics; a Vite failure without one gives its last lines.
+  assert.deepEqual(summarizeConsoleBuild(0, "built in 3.5s", 904359), UI_OK);
+  const tsFail = summarizeConsoleBuild(2, "src/main.tsx(3,8): error TS2882: Cannot find module './index.css'.\n", undefined);
+  assert.deepEqual([tsFail.conclusion, tsFail.errors, tsFail.diagnostics], ["failure", 1, ["src/main.tsx(3,8): error TS2882: Cannot find module './index.css'."]]);
+  const viteFail = summarizeConsoleBuild(1, "a\nb\nc\nd\ne\n[vite]: Rollup failed to resolve import \"x\"\n", undefined);
+  assert.deepEqual([viteFail.errors, viteFail.diagnostics.length, viteFail.diagnostics.at(-1)], [5, 5, '[vite]: Rollup failed to resolve import "x"']);
+  assert.equal("bytes" in summarizeConsoleBuild(1, "x", 10), false, "no size for a failed build");
+
+  const db = migratedDb();
+  const t0 = Date.parse("2026-11-09T06:00:00Z");
+  // Validation: the same consistency rules as the type-check.
+  for (const [cb, re] of [["x", /invalid_console_build/], [{ conclusion: "maybe" }, /invalid_console_build/], [{ conclusion: "success", errors: 2 }, /inconsistent_console_build/],
+    [{ conclusion: "failure", errors: 0 }, /inconsistent_console_build/], [{ conclusion: "success", bytes: -1 }, /invalid_console_build/]] as Array<[unknown, RegExp]>) {
+    await assert.rejects(recordTypecheckReport(db as never, ok({ console_build: cb }), CI_CLIENT_ID, t0), re);
+  }
+  // Types ok and UI ok: the step passes and the check is ready.
+  await recordTypecheckReport(db as never, ok({ console_build: UI_OK }), CI_CLIENT_ID, t0);
+  const step = await typecheckStep(db as never, SHA);
+  assert.deepEqual([step.status, step.console_build], ["passed", { status: "passed", errors: 0, diagnostics: [], bytes: 904359 }]);
+  const run = await checkCommit(repoWith(FILES), SHA, deps(db));
+  db.raw.prepare("INSERT INTO forge_check_runs (commit_sha, status, runner, started_at) VALUES (?, 'running', 'r', ?)").run(SHA, new Date(t0).toISOString());
+  await record(db as never, run, t0 + 60_000);
+  const ready = (await listChecks(db as never, 5)).checks[0];
+  assert.deepEqual([ready.status, ready.typecheck, ready.ready], ["passed", { status: "passed", errors: 0, build_id: "b-1", console_build: "passed" }, true]);
+  // A later build of the same commit whose UI build fails: types still ok, the step and the check fail.
+  await recordTypecheckReport(db as never, ok({ build_id: "b-9", console_build: { conclusion: "failure", errors: 1, diagnostics: ["src/x.tsx(1,1): error TS2304: y"] } }), CI_CLIENT_ID, t0 + 120_000);
+  const failed = (await listChecks(db as never, 5)).checks[0];
+  assert.deepEqual([failed.status, failed.typecheck?.status, failed.typecheck?.errors, failed.typecheck?.console_build, failed.ready], ["failed", "failed", 0, "failed", false]);
+  assert.deepEqual(failed.failures, ["console-build src/x.tsx(1,1): error TS2304: y"]);
+  const audit = (db as any).raw.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'forge.typecheck_reported' ORDER BY rowid DESC LIMIT 1").get();
+  assert.equal(JSON.parse(audit.payload_json).console_build, "failed");
+  // The gate itself: every part must pass; a report without the UI build (older builds) is not ready.
+  const tc = { status: "passed", errors: 0, build_id: "b", console_build: "passed" as const };
+  assert.equal(isReady("passed", "clean", tc), true);
+  assert.equal(isReady("passed", "findings", tc), false);
+  assert.equal(isReady("failed", "clean", tc), false);
+  assert.equal(isReady("passed", "clean", { ...tc, console_build: null }), false);
+  assert.equal(isReady("passed", "clean", { ...tc, status: "pending" }), false);
+  assert.equal(isReady("passed", "clean", null), false);
 });
