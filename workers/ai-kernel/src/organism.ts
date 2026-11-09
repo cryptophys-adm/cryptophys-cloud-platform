@@ -152,9 +152,10 @@ async function admitVoter(env: SyscallEnv, proposalId: string, p: { target: stri
       event_type: "consensus.voter_admitted", actor, subject: `agent:${p.target}`, outcome: "admitted", payload: { proposal_id: proposalId, host_worker: agent.host_worker },
     }, () => env.DB.prepare(
       `UPDATE agents SET voter = 1, updated_by = ?, updated_at = ? WHERE agent_id = ? AND voter = 0 AND status = 'enabled'
+         AND host_worker = ?
          AND EXISTS (SELECT 1 FROM service_registry WHERE service_id = agents.host_worker AND status IN ('registered', 'healthy', 'degraded'))
          AND NOT EXISTS (SELECT 1 FROM agents o WHERE o.host_worker = agents.host_worker AND o.voter = 1 AND o.agent_id <> agents.agent_id)`,
-    ).bind(actor, nowIso(), p.target));
+    ).bind(actor, nowIso(), p.target, declared.service));
   } catch (err) {
     if (err instanceof AuditMutationConflictError) {
       await requireActiveHost(env, agent.host_worker);
