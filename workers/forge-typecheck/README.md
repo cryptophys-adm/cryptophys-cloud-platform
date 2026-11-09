@@ -33,6 +33,11 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
    - `FORGE_URL` = the Forge's URL (`https://cryptophys-forge.<subdomain>.workers.dev`), plain;
    - `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` = the existing CI service token, both as
      **secrets** (the same values the GitHub `production` environment holds; no new credential).
+     These go under **Settings → Build → Variables and secrets**, not under the Worker's runtime
+     **Variables and Secrets**: runtime secrets are not visible to the build command.
+     If the build log says `Cloudflare Access refused the CI service token (HTTP 302 ...)`, the
+     build secret differs from the token's current secret; paste it again (or rotate the token and
+     update GitHub `production` and these build secrets together).
 6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
 7. Optional, for phase 4: **Settings → Build → Branch control → Enable Preview Builds**, Preview
    command `node typecheck-and-report.mjs` (the report carries the branch).
