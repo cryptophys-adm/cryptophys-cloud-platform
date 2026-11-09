@@ -1,3 +1,4 @@
+import { planSuperseded, retirePlan, retireSupersededDrafts } from "./superseded.ts";
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import {
   SERVICE_ID, errorResponse, healthResponse, json, limitParam, newId, nowIso, readJsonObject,
@@ -179,6 +180,14 @@ async function approvePlan(env: Env, plan: PlanRow, approver: string): Promise<R
   if (plan.status !== "draft") return errorResponse(409, "invalid_state", `plan is ${plan.status}, only draft plans can be approved`);
   if (approver === plan.created_by) return errorResponse(403, "separation_of_duties", "the plan author cannot approve their own plan");
   if (windowClosed(plan.approve_by)) return errorResponse(409, "approval_window_closed", `the plan had to be approved by ${plan.approve_by}`);
+  // A redeploy plan whose version is no longer desired, or whose drift is already fixed, is retired, not approved.
+  const stale = await planSuperseded(env.DB, plan);
+  if (stale) {
+    await retirePlan(env.DB, plan, stale, approver);
+    return errorResponse(409, "plan_superseded", stale === "superseded"
+      ? `${plan.service_id} no longer wants version ${plan.plan_version}; the plan was disabled`
+      : `${plan.service_id} already runs version ${plan.plan_version}; the plan was disabled`);
+  }
   const executeBy = deadline(Date.now(), windows(env).execution);
   const result = await env.DB.prepare(
     "UPDATE recovery_plans SET status = 'approved', approved_by = ?, execute_by = ?, updated_at = ? WHERE plan_id = ? AND status = 'draft'",
@@ -255,6 +264,11 @@ export default {
         // Preserve the failure after recording it so the scheduled invocation remains visibly failed.
         throw e;
       },
+    ));
+    // Retire draft redeploy plans that a later deploy made unnecessary (superseded.ts).
+    ctx.waitUntil(retireSupersededDrafts(env.DB).then(
+      (r) => { if (r.retired.length) console.log(JSON.stringify({ event: "recovery_superseded_sweep", ...r })); },
+      (e: unknown) => console.error(JSON.stringify({ event: "recovery_superseded_sweep", status: "failed", message: String((e as Error)?.message ?? e).slice(0, 300) })),
     ));
   },
   async fetch(request: Request, env: Env): Promise<Response> {
