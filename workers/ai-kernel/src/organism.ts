@@ -65,7 +65,7 @@ function requireCensusFinding(census: CensusRow, kind: string, subject: string):
 /** Recheck the live registry at execution time; the consensus evidence may be older than this write. */
 async function requireActiveHost(env: SyscallEnv, service: string): Promise<void> {
   const row = await env.DB.prepare("SELECT status FROM service_registry WHERE service_id = ?").bind(service).first<{ status: string }>();
-  if (!row || (row.status !== "healthy" && row.status !== "degraded")) throw new Error("host_not_active");
+  if (!row || !["registered", "healthy", "degraded"].includes(row.status)) throw new Error("host_not_active");
 }
 
 async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: string; target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
@@ -90,7 +90,7 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
     }, () => env.DB.prepare(
       `INSERT OR IGNORE INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at, voter)
        SELECT ?, ?, ?, ?, ?, ?, 'enabled', NULL, ?, ?, ?, 0
-       WHERE EXISTS (SELECT 1 FROM service_registry WHERE service_id = ? AND status IN ('healthy', 'degraded'))`,
+       WHERE EXISTS (SELECT 1 FROM service_registry WHERE service_id = ? AND status IN ('registered', 'healthy', 'degraded'))`,
     ).bind(p.target, gene.display_name!.slice(0, 80), service,
       `Declared in ${service}'s DNA (organism.json at ${census.main_sha.slice(0, 12)}); registered by consensus ${proposalId}.`,
       gene.tier_max, JSON.stringify(caps), actor, at, at, service));
@@ -118,7 +118,7 @@ async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: 
     }, () => env.DB.prepare(
       `INSERT INTO engines (service_id, task, status, registered_by, created_at, updated_at)
        SELECT ?, ?, 'enabled', ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM service_registry WHERE service_id = ? AND status IN ('healthy', 'degraded'))
+       WHERE EXISTS (SELECT 1 FROM service_registry WHERE service_id = ? AND status IN ('registered', 'healthy', 'degraded'))
        ON CONFLICT (service_id, task) DO UPDATE SET status = 'enabled', registered_by = excluded.registered_by, updated_at = excluded.updated_at WHERE engines.status <> 'enabled'`,
     ).bind(p.target, task, actor, at, at, p.target));
   } catch (err) {
@@ -152,7 +152,7 @@ async function admitVoter(env: SyscallEnv, proposalId: string, p: { target: stri
       event_type: "consensus.voter_admitted", actor, subject: `agent:${p.target}`, outcome: "admitted", payload: { proposal_id: proposalId, host_worker: agent.host_worker },
     }, () => env.DB.prepare(
       `UPDATE agents SET voter = 1, updated_by = ?, updated_at = ? WHERE agent_id = ? AND voter = 0 AND status = 'enabled'
-         AND EXISTS (SELECT 1 FROM service_registry WHERE service_id = agents.host_worker AND status IN ('healthy', 'degraded'))
+         AND EXISTS (SELECT 1 FROM service_registry WHERE service_id = agents.host_worker AND status IN ('registered', 'healthy', 'degraded'))
          AND NOT EXISTS (SELECT 1 FROM agents o WHERE o.host_worker = agents.host_worker AND o.voter = 1 AND o.agent_id <> agents.agent_id)`,
     ).bind(actor, nowIso(), p.target));
   } catch (err) {
