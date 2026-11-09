@@ -38,20 +38,45 @@ function run(cmd, args, cwd) {
   return { status: r.status ?? 1, output: `${r.stdout ?? ""}\n${r.stderr ?? ""}` };
 }
 
+/** A credential as stored: strip CR/LF, surrounding spaces and a copied "Header-Name:" prefix (as access-headers.sh does). */
+export function cleanCredential(value, headerName) {
+  return String(value ?? "").replace(/[\r\n]/g, "").replace(new RegExp(`^\\s*(${headerName}:)?\\s*`, "i"), "").replace(/\s+$/, "");
+}
+
+/**
+ * POST the report. Access answers a refused service token with a redirect to its sign-in page, so
+ * redirects are not followed: anything but a JSON 200 that names this commit is a failure, and the
+ * build fails with it. Returns the Forge's answer.
+ */
+export async function postReport(fetchImpl, forgeUrl, clientId, clientSecret, body) {
+  const res = await fetchImpl(new URL("/v1/forge/typecheck-report", forgeUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "content-type": "application/json", "CF-Access-Client-Id": clientId, "CF-Access-Client-Secret": clientSecret },
+    body: JSON.stringify({ confirm: "REPORT", ...body }),
+  });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`typecheck-report: Cloudflare Access refused the CI service token (HTTP ${res.status} to sign-in). Check CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the build variables.`);
+  }
+  const text = await res.text();
+  let answer = null;
+  try { answer = JSON.parse(text); } catch { /* not JSON */ }
+  if (!res.ok || !answer || answer.commit !== body.commit) {
+    throw new Error(`typecheck-report: the Forge did not record the report (HTTP ${res.status}): ${text.replace(/\s+/g, " ").slice(0, 200)}`);
+  }
+  return answer;
+}
+
 async function report(body, env) {
-  const url = env.FORGE_URL;
-  if (!url || !env.CF_ACCESS_CLIENT_ID || !env.CF_ACCESS_CLIENT_SECRET) {
+  const url = cleanCredential(env.FORGE_URL, "");
+  const id = cleanCredential(env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Id");
+  const secret = cleanCredential(env.CF_ACCESS_CLIENT_SECRET, "CF-Access-Client-Secret");
+  if (!url || !id || !secret) {
     console.log("typecheck-report: FORGE_URL or the CI service token is not configured in this build; result not reported.");
     return;
   }
-  const res = await fetch(new URL("/v1/forge/typecheck-report", url), {
-    method: "POST",
-    headers: { "content-type": "application/json", "CF-Access-Client-Id": env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": env.CF_ACCESS_CLIENT_SECRET },
-    body: JSON.stringify({ confirm: "REPORT", ...body }),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`typecheck-report: the Forge answered ${res.status}: ${text.slice(0, 300)}`);
-  console.log(`typecheck-report: recorded ${body.conclusion} for ${body.commit} (${text.slice(0, 200)})`);
+  const answer = await postReport(fetch, url, id, secret, body);
+  console.log(`typecheck-report: the Forge recorded ${answer.conclusion} for ${answer.commit} (applied to its check: ${answer.applied_to_run})`);
 }
 
 // Run as a script only (the Forge tests import the pure functions above; in that bundle import.meta.url is absent).
@@ -76,6 +101,11 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
   const tc = run("npm", ["run", "typecheck", "--silent"], shared);
   console.log(tc.output.trim().slice(-20000));
   const summary = summarize(tc.status, tc.output, toolchain);
-  await report({ commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary }, env);
+  try {
+    await report({ commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary }, env);
+  } catch (e) {
+    console.error(String(e?.message ?? e));
+    process.exit(3);
+  }
   process.exit(tc.status === 0 ? 0 : 1);
 }

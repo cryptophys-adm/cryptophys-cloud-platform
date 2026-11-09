@@ -8,7 +8,7 @@ import { APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, baseEnv, call, migrat
 import forge from "../../forge/src/index.ts";
 import { checkCommit, listChecks, record, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps } from "../../forge/src/checks.ts";
 import { recordTypecheckReport, typecheckStep } from "../../forge/src/typecheck.ts";
-import { parseDiagnostics, resolveCommit, summarize } from "../../forge-typecheck/typecheck-and-report.mjs";
+import { cleanCredential, parseDiagnostics, postReport, resolveCommit, summarize } from "../../forge-typecheck/typecheck-and-report.mjs";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -35,6 +35,25 @@ test("TC1b. the build finds its commit: WORKERS_CI_COMMIT_SHA when it is a full 
   assert.deepEqual(resolveCommit("aaaaaaa", head), { commit: head, source: "git rev-parse HEAD" }, "a short SHA that matches HEAD");
   assert.equal(resolveCommit("bbbbbbb", head), null, "a short SHA that contradicts HEAD is refused");
   assert.equal(resolveCommit(undefined, "fatal: not a git repository"), null);
+});
+
+test("TC1c. the build never takes an Access sign-in page for success; credentials are cleaned as access-headers.sh does", async () => {
+  // 2026-11-09 04:52 UTC: Access redirected the report to its sign-in page; fetch followed it, got HTML 200, and the script said "recorded".
+  const body = { commit: "b".repeat(40), conclusion: "success" };
+  let init: any = null;
+  const redirect = async (_u: URL, i: RequestInit) => { init = i; return new Response(null, { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login" } }); };
+  await assert.rejects(postReport(redirect, "https://forge.example/", "id.access", "s", body), /refused the CI service token \(HTTP 302/);
+  assert.equal(init.redirect, "manual", "redirects are not followed");
+  const html = async () => new Response("<!DOCTYPE html><title>Sign in ・ Cloudflare Access</title>", { status: 200, headers: { "content-type": "text/html" } });
+  await assert.rejects(postReport(html, "https://forge.example/", "id.access", "s", body), /did not record the report \(HTTP 200\)/);
+  const other = async () => Response.json({ commit: "c".repeat(40), conclusion: "success" });
+  await assert.rejects(postReport(other, "https://forge.example", "id.access", "s", body), /did not record/, "an answer for another commit is not this report");
+  const ok = async (u: URL, i: RequestInit) => { assert.equal(String(u), "https://forge.example/v1/forge/typecheck-report"); assert.equal((i.headers as any)["CF-Access-Client-Secret"], "s"); return Response.json({ commit: body.commit, conclusion: "success", applied_to_run: true }); };
+  assert.deepEqual(await postReport(ok, "https://forge.example/", "id.access", "s", body), { commit: body.commit, conclusion: "success", applied_to_run: true });
+  assert.equal(cleanCredential("  abc.access\r\n", "CF-Access-Client-Id"), "abc.access");
+  assert.equal(cleanCredential("CF-Access-Client-Secret: xyz\n", "CF-Access-Client-Secret"), "xyz");
+  assert.equal(cleanCredential("https://forge.example/\r\n", ""), "https://forge.example/");
+  assert.equal(cleanCredential(undefined, "x"), "");
 });
 
 test("TC2. recordTypecheckReport validates every field and never accepts an inconsistent result", async () => {
