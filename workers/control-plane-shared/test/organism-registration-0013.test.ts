@@ -393,3 +393,47 @@ test("R14. consensus rejects registration against an unavailable host before exe
   assert.equal(seat.vote, "reject");
   assert.match(seat.reason, /not an active registered service/);
 });
+
+test("R15. a host change after voter precheck cannot admit a seat against a different Worker", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "critical");
+  db.raw.prepare("UPDATE agents SET voter = 0 WHERE agent_id = 'platform-api'").run();
+  await censusTick(db as never, repoWith(realDna()));
+  const census = await latestCensusRow({ DB: db } as never);
+  assert.ok(census?.findings.some((f) => f.kind === "voter_seat_requested" && f.subject === "platform-api"));
+
+  const proposed = await syscall(env as never, "supervisor", "consensus.propose", {
+    action: "admit_voter", target: "platform-api", params: { main_sha: MAIN },
+  });
+  assert.equal(proposed.outcome, "succeeded");
+  const proposal = last(db);
+  assert.equal(proposal.status, "pending_owner", proposal.outcome_json);
+  assert.equal(canVote(env as never, "platform-api"), true);
+
+  const base = env.DB as any;
+  let raced = false;
+  env.DB = new Proxy(base, {
+    get(target, property) {
+      if (property === "batch") return async (statements: any[]) => {
+        if (!raced) {
+          db.raw.prepare("UPDATE agents SET host_worker = 'cryptophys-forge' WHERE agent_id = 'platform-api'").run();
+          raced = true;
+        }
+        return target.batch(statements);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  const result = await ownerDecide(env as never, proposal.proposal_id, "approve", APPROVER_EMAIL, "test");
+  assert.equal(raced, true);
+  assert.equal(result.status, "failed", JSON.stringify(result));
+  assert.equal(agentRow(db, "platform-api").host_worker, "cryptophys-forge", "the simulated concurrent host change occurred");
+  assert.equal(agentRow(db, "platform-api").voter, 0, "the seat must not be admitted on a host different from the census");
+  assert.equal(
+    db.raw.prepare("SELECT 1 FROM audit_events WHERE event_type = 'consensus.voter_admitted' AND subject = 'agent:platform-api'").get(),
+    undefined,
+    "a rejected host race must not append an admission audit event",
+  );
+});
