@@ -1,4 +1,4 @@
-import { FlaskConical, FolderGit2, GitCommitHorizontal, GitPullRequest } from "lucide-react";
+import { FlaskConical, FolderGit2, GitCommitHorizontal, GitPullRequest, Rocket } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { ago, listOf } from "../lib/format";
@@ -19,6 +19,10 @@ export default function Code() {
   const changes = usePoll(() => call("forge.changes", undefined, undefined, { limit: "15" }), 60_000);
   const crs = listOf(changes.data, "changes");
   const mergeParity = changes.data?.parity;
+  const plans = usePoll(() => call("forge.deploy_plans", undefined, undefined, { limit: "8" }), 60_000);
+  const planRows = listOf(plans.data, "plans");
+  const planParity = plans.data?.parity;
+  const unitsText = (u: string[] | null) => (u === null ? "not computed" : u.length ? u.join(" → ") : "nothing to deploy");
   const s = status.data;
   const rows = listOf(commits.data, "commits");
   const runs = listOf(checks.data, "checks");
@@ -67,6 +71,23 @@ export default function Code() {
           </div>
         )}
         <p className="mt-3 text-[11px] leading-relaxed text-slate-500">ADR-0012 phase 4, shadow: each pull request is checked on the Forge and given the verdict the Forge would give. GitHub still merges; merge parity counts the merges where both agree.</p>
+      </Panel>
+      <Panel title="Deploy plan · shadow" icon={<Rocket className="h-3.5 w-3.5 text-amber-300" />}
+        right={<Badge tone={planParity && planParity.consecutive >= planParity.target ? "green" : "slate"}>{planParity ? `plan parity ${planParity.consecutive}/${planParity.target}` : "—"}</Badge>}>
+        {plans.loading && !plans.data ? <Skeleton /> : planRows.length === 0 ? <Empty>No deploy plan has been computed yet.</Empty> : (
+          <div className="space-y-1.5">
+            {planRows.map((p: any, i: number) => (
+              <div key={`${p.main_sha}-${i}`} className="glass-inner flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-[11px]">
+                <span className="mono text-cyan-200">{String(p.main_sha).slice(0, 7)}</span>
+                <span className="text-slate-300">Forge: {unitsText(p.forge_units)}</span>
+                <span className="text-slate-400">GitHub: {unitsText(p.github_units)}</span>
+                {p.agrees === null ? null : <Badge tone={p.agrees ? "green" : "red"}>{p.agrees ? "agrees" : "disagrees"}</Badge>}
+                <span className="ml-auto text-[10px] text-slate-500">{p.forge_at || p.github_at ? ago(p.forge_at ?? p.github_at) : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">For the same main commit and registry versions, the Forge computes the pending deploy units from Artifacts and the Orchestrator from GitHub. GitHub still decides.</p>
       </Panel>
       <Panel title="Forge checks" icon={<FlaskConical className="h-3.5 w-3.5 text-emerald-300" />}
         right={<Badge tone={parity && parity.consecutive >= parity.target ? "green" : "slate"}>{parity ? `parity ${parity.consecutive}/${parity.target}` : "—"}</Badge>}>

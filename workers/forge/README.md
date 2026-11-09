@@ -48,3 +48,10 @@ request heads before commits of `main`. `GET /v1/forge/changes` lists each one w
 `mirror-to-forge.yml` reports GitHub's outcome (`POST /v1/forge/changes/outcome`, `confirm: "REPORT"`),
 which freezes the verdict. Merge parity counts GitHub merges the Forge agreed with (target 10). The
 Forge merges nothing yet.
+
+## Deploy plan (phase 4, shadow)
+
+`src/deploy-plan.ts`, migration 0038. Each tick computes which deploy units main's head needs, from
+Artifacts tree diffs against each unit's desired version, with the Orchestrator's shared rules
+(`control-plane-shared/src/deploy-units.ts`). The Orchestrator records its GitHub-based plan for the
+same commit and registry inputs; `GET /v1/forge/deploy-plans` lists both and the plan parity (target 10).

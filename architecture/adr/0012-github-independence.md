@@ -143,7 +143,10 @@ The owner creates every credential. None is created by an agent or stored in the
   - `CF_DEPLOY_TOKEN` and `GH_ACTIONS_TOKEN` on the Orchestrator;
   - `ACCESS_GROUPS_TOKEN` on the Platform Registry.
 - **Why.** The secrets are kept in one place and scoped to Workers. Their values cannot be read back by the API or the dashboard. Secrets Store has its own admin and deployer roles, and an audit log.
-- **Code.** It accepts both forms during the move (a plain Worker secret, or a Secrets Store binding). The binding is enabled once the store exists.
+- **Code (done 2026-11-09, `control-plane-shared/src/secrets.ts`).** The code accepts both forms during the move: a plain Worker secret `NAME`, or a Secrets Store binding `NAME_STORE`.
+  - The Orchestrator and Platform Registry entry points (`fetch`, `scheduled` and every RPC method) resolve `NAME_STORE` into `env.NAME` once per invocation, so the code that reads `env.NAME` is unchanged.
+  - The store binding wins when it answers. A failing or empty store falls back to the Worker secret, so the switch can be reversed until the old secrets are deleted.
+  - The bindings are added to `wrangler.toml` once the store ID is known, as `[[secrets_store_secrets]] binding = "GH_ACTIONS_TOKEN_STORE", store_id = "<id>", secret_name = "GH_ACTIONS_TOKEN"`. Do the same for `CF_DEPLOY_TOKEN_STORE` and `ACCESS_GROUPS_TOKEN_STORE`.
 - **Owner steps.**
   1. Create the store.
   2. Enter the three secrets with the `workers` scope.
@@ -281,6 +284,13 @@ The owner said "lanjutkan semua" (continue everything) on 2026-11-09. Phase 4 st
   - The Console Code page shows the change requests (route `forge.changes`, read-only).
   - **Deviation from §1.** During the shadow phase the `cr/` branches live in `platform`, not in `platform-work`, so that the existing Workers Builds project type-checks them as preview builds. They move to `platform-work` at cut-over.
   - **Owner step.** In `cryptophys-forge-typecheck`, open **Settings → Build → Branch control**, enable **Preview builds** for non-production branches, and set the Preview build command to `node typecheck-and-report.mjs`. Until then every change request stays `pending` on its type-check.
+- **4.2 Deploy plan (shadow).**
+  - The deploy units and their ordering rules move to `control-plane-shared/src/deploy-units.ts`. The rules are: a new migration deploys the Control Plane first and alone; the orchestrator deploys before the others; the plan fails closed when the Control Plane is unavailable. The Orchestrator's behaviour is unchanged.
+  - Each Forge cron tick computes the plan for main's head from the Artifacts repository, using a tree diff from each unit's desired version. It records the plan under the registry fingerprint, which is every unit's desired versions.
+  - The Orchestrator's `pendingDeploys`, which reads the GitHub compare API, records its plan for the same commit and fingerprint. The recording never blocks a deploy decision.
+  - Whichever records second sets `agrees` (`forge_deploy_plans`, migration 0038).
+  - **Plan parity:** consecutive agreements, target 10. Once it reaches the target, deploy decisions can stop depending on GitHub to say what changed. Executing deploys from Forge bundles through the Workers Versions API comes after that and needs `CF_DEPLOY_TOKEN` on the Orchestrator (§4).
+  - The Console Code page shows the plans (route `forge.deploy_plans`, read-only).
 
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
