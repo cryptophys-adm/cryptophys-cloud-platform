@@ -1,10 +1,12 @@
 // ADR-0012 phase 2: owner notifications without GitHub. These replace the scheduled
 // owner-attention.yml and drift-alert.yml workflows, which kept GitHub issues open and closed.
 //
-// Three topics are computed from D1:
+// Four topics are computed from D1:
 //   owner_attention  - recovery plans in draft and critical proposals in pending_owner (a click is needed);
 //   drift            - a service drifted, unhealthy, never observed, or not observed for 45 minutes;
-//   critical_reports - an agent published a critical report in the last 24 hours.
+//   critical_reports - an agent published a critical report in the last 24 hours;
+//   organism         - the Forge's census (ADR-0013) found the DNA and the live registries apart:
+//                      a declared Worker or agent not registered, an agent no longer declared, a change.
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
 // needs no table of its own. When the send_email binding OWNER_EMAIL and the var NOTIFY_FROM are
@@ -15,7 +17,7 @@ import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audi
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
-export const TOPICS = ["owner_attention", "drift", "critical_reports"] as const;
+export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism"] as const;
 export type Topic = (typeof TOPICS)[number];
 /** Observations older than this (45 min, three missed Drift Detector runs) count as stale. */
 export const STALE_MS = 45 * 60_000;
@@ -110,9 +112,22 @@ async function criticalReports(db: D1Database, now: number): Promise<Notice> {
   };
 }
 
+async function organism(db: D1Database): Promise<Notice> {
+  let row: { main_sha: string; status: string; findings: string } | null = null;
+  try { row = await db.prepare("SELECT main_sha, status, findings FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first<{ main_sha: string; status: string; findings: string }>(); } catch { row = null; }
+  let findings: Array<{ kind: string; subject: string; detail: string }> = [];
+  try { const f = JSON.parse(row?.findings ?? "[]"); if (Array.isArray(f)) findings = f; } catch { findings = []; }
+  return {
+    topic: "organism", active: findings.length > 0,
+    fingerprint: await fp(findings.map((f) => `${f.kind}:${f.subject}`)),
+    title: findings.length ? `The platform's DNA and its registries differ: ${findings.length} item(s)` : "Every organ and agent in the DNA is registered",
+    lines: findings.slice(0, 10).map((f) => f.detail), link: `${CONSOLE_URL}#/agents`,
+  };
+}
+
 /** The live notices, for the Console and for reconcileNotices. Read-only. */
 export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now)];
+  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db)];
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));

@@ -33,6 +33,8 @@ const MOCK = {
     { main_sha: "9a6a31f2ae8af6ca4a57ddc976787ecbc63d7dde", forge_units: ["control-plane"], forge_skipped: [{ unit: "forge", reason: "control_plane_migration_first" }], forge_at: "2026-11-09T07:19:00.000Z", github_units: ["control-plane"], github_skipped: [], github_at: "2026-11-09T07:20:00.000Z", agrees: true },
     { main_sha: "188b6bb31ed1a17cdaec44ea6180da087395e973", forge_units: [], forge_skipped: [], forge_at: "2026-11-09T06:19:00.000Z", github_units: null, github_skipped: null, github_at: null, agrees: null },
   ] },
+  "/api/forge/v1/forge/census": { census: [{ main_sha: "6872844" + "0".repeat(33), status: "changes", organs: 12, agents: 10, engines: 9, voters: 9, taken_at: "2026-11-09T12:04:00.000Z",
+    findings: [{ kind: "unregistered_agent", subject: "forge-steward", detail: "agent forge-steward on cryptophys-forge is in the DNA but not registered (asks for a council seat), which is a long line that wraps on a phone" }], genome: [] }] },
   "/api/forge/v1/forge/commits": { commits: [{ sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" }] },
   "/api/kernel/v1/notices": { email: "not_configured", notices: [
     { topic: "owner_attention", active: true, fingerprint: "f", title: "1 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor): review at https://nexus.cryptophys.work/console/#/recovery/plan_00000000-0000-4000-8000-000000000000"] },

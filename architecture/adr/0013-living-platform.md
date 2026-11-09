@@ -59,7 +59,7 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 | Phase | What | Owner needed |
 |---|---|---|
 | **1 (this change)** | DNA for every Worker. CI requires every static list to equal the DNA: deploy units and the Control Plane order, drift probes and bindings, Access, rollback, voters, kernel agents, vote bindings and their wrangler blocks, AI engines, plain-English names, agent seeds. Dynamic Console footer (live organs from the overview). Report kind `knowledge_audit` in the Console and the shared type. The Supervisor finds kernel agents by `host_worker`, not by a fixed list. | no |
-| **2. Census** | The Forge reads the DNA of each new `main` commit from Artifacts and compares it with `service_registry`, `agents` and a new `engines` table. It records new, missing and changed organs, publishes an "organism" report to the kernel, and raises an owner notice when something is missing. | no |
+| **2. Census (done 2026-11-09)** | The Forge reads the DNA of each new `main` commit from Artifacts and compares it with `service_registry`, `agents` and a new `engines` table. It records new, missing and changed organs, publishes an "organism" report to the kernel, and raises an owner notice when something is missing. | no |
 | **3. Self-registration** | New consensus actions: `register_agent` and `register_engine`. They are routine; they become critical when an agent asks for a privileged capability. Also `admit_voter`, which is always critical. The Supervisor proposes them from the census. When one passes, the Platform Registry writes the row. Removed organs are proposed for retirement, which is always critical. | voter seats and privileged capabilities |
 | **4. Dynamic council** | `VOTERS` is derived from `agents.voter` (admitted seats only), with one seat per Worker. A seat whose vote binding is missing is reported, not silently replaced by the kernel's rule. | done by phase 3 admissions |
 
@@ -69,6 +69,16 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 - **Capabilities are fixed at registration.** Changing them means re-registering the agent, which goes through the same gate.
 - **Critical actions keep the owner click.** These are Access, secrets, policy, consensus rules, destructive migrations, retirement and trading. Trading stays prohibited.
 - **The kill switch and the `shadow` mode still stop everything.**
+
+### 4. Phase 2 as built (2026-11-09)
+
+- **`forge/src/census.ts`.** Each Forge tick reads `workers/*/organism.json` at main's head from Artifacts and validates it. It compares the DNA with `service_registry` and `agents`.
+- **Finding kinds:** `unregistered_service`, `disabled_service`, `unregistered_agent` (flagged when it asks for a council seat), `undeclared_agent`, `agent_host_changed`, `agent_capabilities_changed`, and `invalid_dna`.
+- **Storage.** One row per main commit in `forge_organism_census` (migration 0040), holding the counts (organs, agents, seats, engines) and the genome summary.
+- **Audit.** `forge.organism_census` is audited only when the findings change.
+- **Owner notice.** The AI Kernel's notices gain the topic `organism`, which goes to the Console and to email when configured.
+- **Console.** `GET /v1/forge/census` (route `forge.census`) feeds the Agents page panel "Organism census".
+- **Scope.** The census reads only. Registration is phase 3.
 
 ## Consequences
 

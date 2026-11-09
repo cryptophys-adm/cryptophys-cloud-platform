@@ -28,13 +28,14 @@ import { listChecks, recordCiReport, type ArtifactsReader } from "./checks.ts";
 import { recordTypecheckReport } from "./typecheck.ts";
 import { listChanges, recordOutcome, registerChange } from "./changes.ts";
 import { listDeployPlans } from "./deploy-plan.ts";
+import { latestCensus } from "./census.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -208,6 +209,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
+      if (request.method === "GET" && url.pathname === "/v1/forge/census") return json(await latestCensus(env.DB, Number(url.searchParams.get("limit") ?? "5") || 5));
       if (request.method === "GET" && url.pathname === "/v1/forge/deploy-plans") return json(await listDeployPlans(env.DB, Number(url.searchParams.get("limit") ?? "10") || 10));
       if (request.method === "GET" && url.pathname === "/v1/forge/changes") return json(await listChanges(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "POST" && (url.pathname === "/v1/forge/changes" || url.pathname === "/v1/forge/changes/outcome")) {

@@ -250,8 +250,8 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   // + 3 knowledge-review rows (TP-028: the list, approve and reject).
   // + 2 read-only Forge rows (ADR-0012 phase 1b: the Code page) + the Forge checks (phase 3)
   // - the manual execution route (hardening 2026-11-08: the AI runs approved plans)
-  // + the read-only deployments list (the Pipelines page) + the Forge change requests and deploy plans (ADR-0012 phase 4, shadow).
-  assert.equal(keys.length, 52);
+  // + the read-only deployments list (the Pipelines page) + the Forge change requests and deploy plans (ADR-0012 phase 4, shadow) + the organism census (ADR-0013).
+  assert.equal(keys.length, 53);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"].map((p) => `kernel POST ${p}`),
@@ -274,6 +274,7 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
     "forge GET /v1/forge/checks",
     "forge GET /v1/forge/changes",
     "forge GET /v1/forge/deploy-plans",
+    "forge GET /v1/forge/census",
   ];
   assert.deepEqual([...keys].sort(), [...expected].sort());
   assert.ok(!keys.some((k) => k.includes("mcp")));

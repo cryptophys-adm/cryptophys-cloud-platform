@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { Bot, Network } from "lucide-react";
+import { Bot, Dna, Network } from "lucide-react";
 import MeshGraph from "../components/MeshGraph";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
-import { fmt, listOf, navigate } from "../lib/format";
+import { ago, fmt, listOf, navigate } from "../lib/format";
 
 export default function Agents() {
   const { data, loading, error } = usePoll(() => call("kernel.agents"), 60_000);
@@ -14,6 +14,8 @@ export default function Agents() {
   const hosts = useMemo(() => [...new Set(agents.map((a: any) => a.host_worker))].sort() as string[], [agents]);
   const rows = agents.filter((a: any) => (!host || a.host_worker === host) && (!q || a.agent_id.includes(q.toLowerCase())));
   const enabled = agents.filter((a: any) => a.status === "enabled").length;
+  const census = usePoll(() => call("forge.census", undefined, undefined, { limit: "1" }), 120_000);
+  const latest = listOf(census.data, "census")[0];
 
   return (
     <div className="flex flex-col gap-3">
@@ -25,6 +27,19 @@ export default function Agents() {
           <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-400" />XAUUSD</span>
           <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-slate-600" />suspended</span>
         </div>
+      </Panel>
+
+      <Panel title="Organism census · DNA vs registries" icon={<Dna className="h-3.5 w-3.5 text-emerald-300" />}
+        right={latest ? <div className="flex flex-wrap justify-end gap-2"><Badge tone={latest.status === "consistent" ? "green" : latest.status === "invalid" ? "red" : "amber"}>{latest.status}</Badge><Badge tone="slate">{latest.organs} organs · {latest.agents} agents · {latest.voters} seats · {latest.engines} engines</Badge></div> : null}>
+        {census.loading && !census.data ? <Skeleton /> : !latest ? <Empty>The Forge has not taken a census yet.</Empty> : (
+          <div className="space-y-2 text-[12px]">
+            <div className="text-[11px] text-slate-400">main {String(latest.main_sha).slice(0, 7)} · {latest.taken_at ? ago(latest.taken_at) : ""}</div>
+            {latest.findings?.length ? (
+              <ul className="space-y-1">{latest.findings.map((f: any, i: number) => <li key={i} className="glass-inner px-3 py-1.5 text-[11px] text-amber-200"><span className="mono mr-2 text-slate-400">{f.kind}</span>{f.detail}</li>)}</ul>
+            ) : <p className="text-[11px] text-emerald-300">Every Worker and agent the DNA declares is registered, with the declared host and capabilities.</p>}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">ADR-0013: each Worker declares itself in organism.json. The Forge compares that DNA with the live registries on every main commit; differences reach the owner's notices, and registration follows through consensus.</p>
       </Panel>
 
       <Panel title="Agent Roster" icon={<Bot className="h-3.5 w-3.5 text-cyan-300" />}

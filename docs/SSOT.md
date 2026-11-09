@@ -64,7 +64,8 @@ These hold everywhere:
 ## The living platform (ADR-0013)
 
 - **DNA.** Every Worker declares itself in `workers/<dir>/organism.json`: service, deploy unit, Access, rollback, drift probe, hosted agents (voter or not), AI engines. CI fails when a static list (deploy units, drift probes, Access, rollback, council, kernel agents, vote bindings, engines, names) disagrees with the DNA.
-- **Next.** The Forge takes a census of the DNA on each main commit (phase 2); new agents and engines register through consensus, council seats and privileged capabilities with the owner's click (phase 3).
+- **Census (phase 2).** The Forge compares the DNA of each main commit with `service_registry` and `agents` (`forge_organism_census`); differences become the owner notice `organism` and appear on the Console Agents page.
+- **Next (phase 3).** New agents and engines register through consensus; council seats and privileged capabilities need the owner's click.
 
 ## Autonomy (ADR-0007, ADR-0009)
 
