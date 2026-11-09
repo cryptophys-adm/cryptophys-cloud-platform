@@ -50,6 +50,8 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
     // Only the pre-0041 schema is a supported legacy mode. Transient DB errors must fail closed.
     const message = String((error as Error)?.message ?? error);
     if (!/no such column:\s*voter\b/i.test(message)) throw error;
+    const enginesTable = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'engines'").first<{ name: string }>();
+    if (enginesTable) throw new Error("partial_phase3_schema: engines exists without agents.voter");
     phase3 = false;
     agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json, tier_max FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string; tier_max: number }>()).results ?? [];
   }

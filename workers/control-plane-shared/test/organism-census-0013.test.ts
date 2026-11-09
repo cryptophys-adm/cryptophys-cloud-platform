@@ -138,3 +138,23 @@ test("C7. unexpected registry query errors do not fall back to the legacy schema
   assert.equal(row.findings[0].kind, "invalid_dna");
   assert.match(row.findings[0].detail, /database is locked/);
 });
+
+
+test("C8. a partially applied phase-3 schema fails closed when engines exists without agents.voter", async () => {
+  const db = migratedDb();
+  db.raw.prepare("ALTER TABLE agents DROP COLUMN voter").run();
+  const r = await censusTick(db as never, repoWith(realDna()));
+  assert.equal(r.status, "invalid");
+  const row = (await latestCensus(db as never)).census[0];
+  assert.equal(row.findings[0].kind, "invalid_dna");
+  assert.match(row.findings[0].detail, /partial_phase3_schema/);
+});
+
+test("C9. the exact pre-0041 schema remains a supported legacy census mode", async () => {
+  const db = migratedDb();
+  db.raw.prepare("ALTER TABLE agents DROP COLUMN voter").run();
+  db.raw.prepare("DROP TABLE engines").run();
+  const r = await censusTick(db as never, repoWith(realDna()));
+  assert.equal(r.status, "consistent");
+  assert.equal(r.findings, 0);
+});
