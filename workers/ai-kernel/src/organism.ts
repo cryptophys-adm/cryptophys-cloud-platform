@@ -51,8 +51,15 @@ const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].so
 async function currentCensus(env: SyscallEnv, mainSha: unknown): Promise<CensusRow> {
   const census = await latestCensusRow(env);
   if (!census) throw new Error("census_unavailable");
+  if (census.status !== "changes" && census.status !== "consistent") throw new Error("census_invalid");
   if (String(mainSha ?? "") !== census.main_sha) throw new Error("census_head_changed");
   return census;
+}
+
+function requireCensusFinding(census: CensusRow, kind: string, subject: string): void {
+  if (census.status !== "changes" || !census.findings.some((finding) => finding.kind === kind && finding.subject === subject)) {
+    throw new Error("census_finding_missing");
+  }
 }
 
 /** Recheck the live registry at execution time; the consensus evidence may be older than this write. */
@@ -63,6 +70,7 @@ async function requireActiveHost(env: SyscallEnv, service: string): Promise<void
 
 async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: string; target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
   const census = await currentCensus(env, p.params.main_sha);
+  requireCensusFinding(census, "unregistered_agent", p.target);
   const declared = findAgentGene(census, p.target);
   if (!declared || !declared.gene.capabilities || declared.gene.tier_max === undefined || !declared.gene.display_name) throw new Error("agent_not_in_dna");
   const { service, gene } = declared;
@@ -99,6 +107,7 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
 async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
   const census = await currentCensus(env, p.params.main_sha);
   const task = String(p.params.task ?? "");
+  requireCensusFinding(census, "unregistered_engine", `${p.target}:${task}`);
   const organ = census.genome.find((o) => o.service === p.target);
   if (!organ || !organ.engines.includes(task)) throw new Error("engine_not_in_dna");
   await requireActiveHost(env, p.target);
@@ -129,8 +138,9 @@ async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: 
  */
 async function admitVoter(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string, canVote: (agentId: string) => boolean): Promise<JsonObject> {
   const census = await currentCensus(env, p.params.main_sha);
+  requireCensusFinding(census, "voter_seat_requested", p.target);
   const declared = findAgentGene(census, p.target);
-  if (!declared?.gene.voter) throw new Error("seat_not_in_dna");
+  if (!declared?.gene.voter throw new Error("seat_not_in_dna");
   const agent = await env.DB.prepare("SELECT status, host_worker, voter FROM agents WHERE agent_id = ?").bind(p.target).first<{ status: string; host_worker: string; voter: number }>();
   if (!agent) throw new Error("agent_not_registered");
   if (agent.status !== "enabled") throw new Error("agent_not_enabled");

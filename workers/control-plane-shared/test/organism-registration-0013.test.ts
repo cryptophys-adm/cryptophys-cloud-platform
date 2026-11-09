@@ -296,3 +296,24 @@ test("R10. a failed registration audit rolls back the agent insert", async () =>
   assert.equal(agentRow(db, "forge-steward"), undefined);
   assert.equal(db.raw.prepare("SELECT 1 FROM audit_events WHERE event_type = 'agent.registered' AND subject = 'agent:forge-steward'").get(), undefined);
 });
+
+
+test("R11. an invalid census cannot authorize registration even when its genome summary is present", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "deploy");
+  const dna = grownDna();
+  await censusTick(db as never, repoWith(dna, MAIN));
+  db.raw.prepare("DROP TABLE engines").run();
+  await censusTick(db as never, repoWith(dna, MAIN), Date.now() + CENSUS_REFRESH_MS + 1);
+  const latest = (await latestCensus(db as never)).census[0];
+  assert.equal(latest.status, "invalid");
+  assert.ok(latest.genome.length > 0);
+  const r = await syscall(env as never, "supervisor", "consensus.propose", {
+    action: "register_agent", target: "forge-steward",
+    params: { service: "cryptophys-forge", capabilities: ["platform.observe", "reports.publish"], tier_max: 1, main_sha: MAIN },
+  });
+  assert.equal(r.outcome, "succeeded");
+  assert.equal(last(db).status, "failed");
+  assert.match(last(db).outcome_json, /census_invalid/);
+  assert.equal(agentRow(db, "forge-steward"), undefined);
+});
