@@ -1,10 +1,10 @@
-import { useState } from "react";
 import { BookOpenCheck, Check, Sparkles, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
+import { DataTable, STATUS, StatusBar } from "../components/viz";
 
 /** TP-028: learned-knowledge proposals from Aether (tier 1 drafts). Approval is for shadow testing only. */
 const tone = (s?: string): "green" | "amber" | "red" | "slate" =>
@@ -35,7 +35,6 @@ function Item({ p }: { p: any }) {
 export default function Knowledge() {
   const { who, act } = useSession();
   const { data, loading, error, refresh } = usePoll(() => call("kernel.knowledge", undefined, undefined, { limit: "100" }), 60_000);
-  const [open, setOpen] = useState<string | null>(null);
   const rows = listOf(data, "proposals");
   const counts: Record<string, number> = data?.counts ?? {};
   const pending = rows.filter((p: any) => p.status === "pending");
@@ -46,28 +45,30 @@ export default function Knowledge() {
         <p className="text-[12px] leading-relaxed text-slate-400">
           Aether's curator and calibrator propose what they measured. Your approval only lets a proposal run in shadow on the XAUUSD rooms; it never changes a live agent. Promotion is a separate owner PR in the XAUUSD repository. Proposals expire after 14 days. Advisory only: no levels, sizes or orders.
         </p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {["pending", "approved", "rejected", "expired"].map((k) => <Badge key={k} tone={tone(k)}>{k} · {counts[k] ?? 0}</Badge>)}
-        </div>
+        <StatusBar className="mt-3" segments={[
+          { key: "approved", label: "approved for shadow", value: counts.approved ?? 0, color: STATUS.good },
+          { key: "pending", label: "pending", value: counts.pending ?? 0, color: STATUS.warning },
+          { key: "rejected", label: "rejected", value: counts.rejected ?? 0, color: STATUS.serious },
+          { key: "expired", label: "expired", value: counts.expired ?? 0, color: STATUS.neutral },
+        ]} />
       </Panel>
       <Panel title="Proposals" icon={<BookOpenCheck className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length}</Badge>}>
-        {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : rows.length === 0 ? <Empty>No proposals yet. Aether proposes once it has enough decision cards and outcomes.</Empty> : (
-          <div className="space-y-1.5">
-            {rows.map((p: any) => (
-              <div key={p.proposal_id} className="glass-inner px-3 py-2.5">
-                <button type="button" className="flex w-full flex-wrap items-center gap-2 text-left" onClick={() => setOpen(open === p.proposal_id ? null : p.proposal_id)} aria-expanded={open === p.proposal_id}>
-                  <Dot tone={tone(p.status)} pulse={p.status === "pending"} />
-                  <span className="mono text-[12px] text-cyan-200">{p.item_id}@{p.item_version}</span>
-                  <Badge tone="purple">{String(p.kind).replace("_", " ")}</Badge>
-                  <span className="text-[11px] text-slate-400">{KIND_TEXT[p.kind] ?? ""}</span>
-                  <span className="ml-auto flex items-center gap-2"><Badge tone={tone(p.status)}>{p.status}</Badge><span className="text-[10px] text-slate-600">{ago(p.created_at)}</span></span>
-                </button>
-                <div className="mt-1 text-[10px] text-slate-500">
-                  proposed by <span className="mono">{p.proposer_agent_id}</span>
-                  {p.decided_by && <> · {p.status} by <span className="mono">{p.decided_by}</span> {ago(p.decided_at)}</>}
-                  {p.reason && <> · {p.reason}</>}
-                </div>
-                {open === p.proposal_id && <Item p={p} />}
+        {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : (
+          <DataTable rows={rows} rowKey={(p) => p.proposal_id} initialSort={{ key: "when", dir: "desc" }} maxHeight={560}
+            footer={pending.length ? <span className="text-amber-300">open a pending row to review and decide</span> : null}
+            empty="No proposals yet. Aether proposes once it has enough decision cards and outcomes." columns={[
+              { key: "status", header: "status", sort: (p) => p.status, cell: (p) => <span className="inline-flex items-center gap-1.5"><Dot tone={tone(p.status)} pulse={p.status === "pending"} />{p.status}</span> },
+              { key: "item", header: "item", sort: (p) => p.item_id, cell: (p) => <span className="mono text-cyan-200">{p.item_id}@{p.item_version}</span> },
+              { key: "kind", header: "kind", sort: (p) => p.kind, cell: (p) => <span title={KIND_TEXT[p.kind] ?? ""}><Badge tone="purple">{String(p.kind).replace("_", " ")}</Badge></span> },
+              { key: "text", header: "what it says", className: "wrap", cell: (p) => <span className="text-slate-300">{p.item?.text ?? "—"}</span> },
+              { key: "proposer", header: "proposer", sort: (p) => p.proposer_agent_id, cell: (p) => <span className="mono text-[11px] text-slate-400">{p.proposer_agent_id}</span> },
+              { key: "decided", header: "decided", sort: (p) => p.decided_by ?? "", cell: (p) => p.decided_by ? <span className="text-[11px] text-slate-400">{p.decided_by} · {ago(p.decided_at)}</span> : <span className="text-slate-600">—</span> },
+              { key: "when", header: "proposed", sort: (p) => Date.parse(p.created_at) || 0, cell: (p) => <span className="text-slate-500" title={p.created_at}>{ago(p.created_at)}</span> },
+            ]}
+            expand={(p) => (
+              <div>
+                <p className="text-[11px] text-slate-400">{KIND_TEXT[p.kind] ?? ""}{p.reason ? ` · ${p.reason}` : ""}</p>
+                <Item p={p} />
                 {p.status === "pending" && (who.approver ? (
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.knowledge_approve", params: p.proposal_id, body: { reason: "approved for shadow testing in the Console" },
@@ -80,8 +81,7 @@ export default function Knowledge() {
                   </div>
                 ) : <div className="mt-1 text-[11px] text-slate-500">Only an approver can decide.</div>)}
               </div>
-            ))}
-          </div>
+            )} />
         )}
       </Panel>
     </div>

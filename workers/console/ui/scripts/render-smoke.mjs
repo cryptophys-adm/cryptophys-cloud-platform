@@ -52,6 +52,44 @@ const MOCK = {
   },
   "/api/kernel/v1/consensus/report": { window_days: 7, total: 0, scored: 0, agree: 0, false_positive: 0, false_negative: 0, pending: 0, agreement_rate: null, by_action: {}, items: [] },
 };
+// Visual hardening 2026-11-09: realistic volumes so the charts and scrollable tables render with data
+// (timestamps relative to now, deterministic otherwise).
+const NOW = Date.now();
+const at = (min) => new Date(NOW - min * 60_000).toISOString();
+const SVC = ["platform-api", "deployment-orchestrator", "platform-registry", "policy-engine", "drift-detector", "audit-ledger", "recovery-manager", "ai-kernel", "forge", "console", "home"].map((s) => `cryptophys-${s}`);
+const STATUSES = ["executed", "shadow_passed", "shadow_blocked", "rejected", "failed", "pending_owner", "expired"];
+const ACTIONS = ["deploy_commit", "observe_drift", "suspend_agent", "register_agent", "admit_voter", "rollback_worker_version"];
+Object.assign(MOCK, {
+  "/api/platform/v1/overview": { overview: { observed_at: at(1), agents_enabled: true,
+    services: SVC.map((s, i) => ({ service_id: s, drifted: i === 3 || i === 9, persistent: i === 9, observed_at: at(i) })),
+    open_agent_plans: [{ plan_id: "plan_00000000-0000-0000-0000-000000000000", service_id: SVC[9], status: "draft", created_at: at(40) }],
+    agent_reports_24h: { counts: { critical: 1, warning: 4, info: 31 }, latest_attention: [
+      { report_id: "r1", agent_id: "auditor", kind: "audit_digest", severity: "critical", subject: "Audit chain verified; 3 denied syscalls by platform-api in one hour, which is a long subject that wraps", created_at: at(30) },
+      { report_id: "r2", agent_id: "supervisor", kind: "platform_digest", severity: "warning", subject: "Console drifts persistently", created_at: at(70) }] },
+    xauusd_latest: { decision: "HOLD", confidence: 0.61, candle_key: "XAUUSD:60:2026-11-09T12:00", decided_at: at(20), reported_at: at(19) } } },
+  "/api/kernel/v1/consensus": { mode: "deploy", stats_24h: { executed: 6, shadow_passed: 3, shadow_blocked: 2, rejected: 1, failed: 1, pending_owner: 1, expired: 1 },
+    proposals: Array.from({ length: 60 }, (_, i) => ({ proposal_id: `cns_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, proposer_agent_id: "supervisor",
+      action: ACTIONS[i % ACTIONS.length], target: i % 6 === 3 ? "forge-steward" : SVC[i % SVC.length], class: i % 6 === 4 ? "critical" : "routine",
+      status: STATUSES[i % STATUSES.length], approvals: 6 + (i % 3), rejections: i % 3 === 2 ? 1 : 0, eligible: 8, passed: i % 7 < 3, policy_decision: i % 7 === 2 ? "deny" : "allow",
+      created_at: at(i * 37), evidence: { policy_reason: i % 7 === 2 ? "failed: target_rate_limit" : "all policy checks passed" } })) },
+  "/api/kernel/v1/agents": { agents_enabled: true, agents: [
+    ...["supervisor", "signal-analyst", "auditor"].map((id) => ({ agent_id: id, display_name: id, host_worker: "cryptophys-ai-kernel", tier_max: id === "supervisor" ? 1 : 1, status: "enabled", capabilities: ["platform.observe", "reports.publish"] })),
+    ...SVC.slice(0, 7).map((s) => ({ agent_id: s.replace("cryptophys-", ""), display_name: `${s} AI Agent`, host_worker: s, tier_max: 1, status: "enabled", capabilities: ["platform.observe", "memory.recall"] })),
+    ...Array.from({ length: 21 }, (_, i) => ({ agent_id: `xauusd-agent-${i}`, display_name: `XAUUSD agent ${i}`, host_worker: i < 7 ? "xauusd-chain" : "xauusd-hud", tier_max: i % 5 === 0 ? 0 : 1, status: i === 4 ? "suspended" : "enabled", status_reason: i === 4 ? "5 failures in 1 h" : null, capabilities: ["signals.observe"] })),
+  ] },
+  "/api/kernel/v1/reports": { reports: Array.from({ length: 40 }, (_, i) => ({ report_id: `rep_${i}`, agent_id: ["auditor", "supervisor", "signal-analyst", "platform-api"][i % 4], kind: ["audit_digest", "platform_digest", "xauusd_digest", "platform_digest"][i % 4],
+    severity: i % 13 === 0 ? "critical" : i % 4 === 1 ? "warning" : "info", subject: `Digest ${i}: everything nominal except a long sentence that must wrap inside the table cell`, ai_status: i % 5 ? "ok" : "unavailable",
+    body: { decision: ["BUY", "SELL", "HOLD"][i % 3], confidence: 0.5 + (i % 5) / 10 }, created_at: at(i * 23) })) },
+  "/api/audit/v1/events": { events: Array.from({ length: 120 }, (_, i) => ({ event_id: `evt_${i}`, event_type: ["consensus.tallied", "consensus.executed", "agent.syscall", "deployment.dispatched", "forge.check", "drift.observed", "policy.decided", "recovery.plan_created", "account.updated"][i % 9],
+    actor: i % 4 ? "agent:supervisor" : "owner@example.com", subject: SVC[i % SVC.length], outcome: i % 11 ? "succeeded" : "failed", event_hash: "ab".repeat(32), created_at: at(i * 9) })) },
+  "/api/policy/v1/decisions": { decisions: Array.from({ length: 80 }, (_, i) => ({ decision_id: `dec_${i}`, subject: "agent:supervisor", action: ["consensus.execute", "agent.syscall", "deploy", "registry.update"][i % 4],
+    resource: `deploy_commit:${SVC[i % SVC.length]}`, decision: i % 6 ? "allow" : "deny", reason: i % 6 ? "all policy checks passed" : "failed: target_rate_limit, platform_daily_limit", created_at: at(i * 14) })) },
+  "/api/registry/v1/services": { services: SVC.map((s, i) => ({ service_id: s, display_name: s.replace("cryptophys-", ""), status: i === 10 ? "disabled" : "healthy", desired_version: "7eaf570a4ed5" })) },
+  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", observed_at: at(i * 3) })) },
+  "/api/recovery/v1/plans": { plans: Array.from({ length: 14 }, (_, i) => ({ plan_id: `plan_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, service_id: SVC[i % 5], title: `Recover ${SVC[i % 5]} from version mismatch`, status: ["draft", "approved", "executing", "completed", "failed", "disabled"][i % 6], created_by: "agent:supervisor", created_at: at(i * 90), steps: [{}, {}] })) },
+});
+MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
+
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png" };
 
 const server = http.createServer((req, res) => {
@@ -86,6 +124,7 @@ for (const width of [390, 1440]) {
     if (overflow > 1) problems.push(`${width}px #/${route}: horizontal scroll of ${overflow}px`);
     const text = await page.evaluate(() => document.body.innerText.length);
     if (text < 40) problems.push(`${width}px #/${route}: blank page`);
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });
   }
   await page.close();
 }

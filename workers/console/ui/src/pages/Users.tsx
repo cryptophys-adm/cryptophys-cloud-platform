@@ -5,6 +5,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
+import { DataTable, STATUS, StatusBar } from "../components/viz";
 
 /** Owner decision 2026-11-07: admin = Cerebrum access with a privilege; user = Nexus sign-in only. */
 const PRIVILEGE_TEXT: Record<string, string> = {
@@ -88,47 +89,43 @@ export default function Users() {
         </p>
         <SyncBanner state={sync ?? data?.login_sync} owner={owner}
           onSync={() => act({ route: "registry.accounts_sync", body: { confirm: "SYNC" }, title: "Sync Nexus sign-in", done: "Nexus sign-in sync request completed; check the status below.", after })} />
-        {loading && !data ? <Skeleton rows={4} /> : error ? <Empty>Could not load accounts: {String(error)}</Empty> : (
-          <div className="space-y-1.5">
-            {[...owners.map((e) => ({ email: e, cfg: "owner" })), ...operators.map((e) => ({ email: e, cfg: "operator" }))].map((c) => (
-              <div key={`cfg-${c.email}`} className="glass-inner flex flex-wrap items-center gap-2 px-3 py-2 text-[12px]">
-                <ShieldCheck className="h-3.5 w-3.5 text-fuchsia-300" />
-                <span className="mono break-all text-slate-100">{c.email}</span>
-                <Badge tone="purple">{c.cfg === "owner" ? "owner · approver" : "operator"}</Badge>
-                <span className="ml-auto text-[10px] text-slate-500">configured · not editable here</span>
-              </div>
-            ))}
-            {accounts.length === 0 && <Empty>No accounts yet. {owner ? "Add the first one below." : "An owner adds them."}</Empty>}
-            {accounts.map((a: any) => (
-              <div key={a.email} className={`glass-inner flex flex-wrap items-center gap-2 px-3 py-2 text-[12px] ${a.status !== "active" ? "opacity-60" : ""}`}>
-                <span className="mono break-all text-slate-100">{a.email}</span>
-                <Badge tone={tone(a) as any}>{label(a)}</Badge>
-                {a.status !== "active" && <Badge tone="slate">disabled</Badge>}
-                {a.note && <span className="text-[11px] text-slate-400">{a.note}</span>}
-                <span className="ml-auto text-[10px] text-slate-500">by {a.updated_by} · {ago(a.updated_at)}</span>
-                {owner && a.email !== who.actor && (
-                  <div className="flex w-full flex-wrap gap-1.5 sm:w-auto">
-                    <select aria-label={`Role of ${a.email}`} className="field !w-auto !py-1 text-[11px]" value={a.status === "active" ? (a.kind === "user" ? "user" : a.privilege) : ""}
-                      onChange={(ev) => { const v = ev.target.value; if (!v) return; submit({ email: a.email, note: a.note, kind: v === "user" ? "user" : "admin", privilege: v === "user" ? undefined : v }); }}>
-                      {a.status !== "active" && <option value="">re-enable as…</option>}
-                      <option value="viewer">admin · viewer</option>
-                      <option value="operator">admin · operator</option>
-                      <option value="approver">admin · approver</option>
-                      <option value="user">user · Nexus only</option>
-                    </select>
-                    {a.status === "active" && (
-                      <button type="button" className="btn btn-danger !py-1" onClick={() => act({
-                        route: "registry.account_disable", params: a.email, body: { confirm: "REVOKE" }, title: `Disable ${a.email}`,
-                        lines: ["Their control-plane role ends at once. Nexus sign-in removal depends on a successful Access group sync; an existing Access session can last up to 8 hours. If sync fails, the account may still pass Access until you retry Sync sign-in."],
-                        done: "Control-plane role disabled. Check the Nexus sign-in status below.", after,
-                      })}><Ban className="h-3.5 w-3.5" />Disable…</button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        {loading && !data ? <Skeleton rows={4} /> : error ? <Empty>Could not load accounts: {String(error)}</Empty> : (<>
+          <StatusBar className="mb-3" segments={[
+            { key: "approver", label: "approver", value: accounts.filter((a: any) => a.status === "active" && a.kind === "admin" && a.privilege === "approver").length + owners.length, color: STATUS.owner },
+            { key: "operator", label: "operator", value: accounts.filter((a: any) => a.status === "active" && a.kind === "admin" && a.privilege === "operator").length + operators.length, color: STATUS.good },
+            { key: "viewer", label: "viewer", value: accounts.filter((a: any) => a.status === "active" && a.kind === "admin" && a.privilege === "viewer").length, color: STATUS.info },
+            { key: "user", label: "Nexus only", value: accounts.filter((a: any) => a.status === "active" && a.kind === "user").length, color: STATUS.warning },
+            { key: "disabled", label: "disabled", value: accounts.filter((a: any) => a.status !== "active").length, color: STATUS.neutral },
+          ]} />
+          <DataTable rows={[...owners.map((e) => ({ email: e, cfg: "owner" })), ...operators.map((e) => ({ email: e, cfg: "operator" })), ...accounts]} rowKey={(a: any) => `${a.cfg ?? "acc"}:${a.email}`}
+            initialSort={{ key: "role", dir: "asc" }} maxHeight={480} empty={<>No accounts yet. {owner ? "Add the first one below." : "An owner adds them."}</>} columns={[
+              { key: "email", header: "email", sort: (a: any) => a.email, cell: (a: any) => <span className={`mono text-slate-100 ${a.status && a.status !== "active" ? "opacity-60" : ""}`}>{a.cfg && <ShieldCheck className="mr-1 inline h-3.5 w-3.5 text-fuchsia-300" />}{a.email}</span> },
+              { key: "role", header: "access", sort: (a: any) => a.cfg ? `0${a.cfg}` : a.status !== "active" ? "9" : `1${label(a)}`, cell: (a: any) => a.cfg
+                ? <Badge tone="purple">{a.cfg === "owner" ? "owner · approver" : "operator"}</Badge>
+                : <span className="inline-flex gap-1"><Badge tone={tone(a) as any}>{label(a)}</Badge>{a.status !== "active" && <Badge tone="slate">disabled</Badge>}</span> },
+              { key: "note", header: "note", className: "wrap", cell: (a: any) => <span className="text-[11px] text-slate-400">{a.cfg ? "configured · not editable here" : a.note ?? ""}</span> },
+              { key: "updated", header: "changed", sort: (a: any) => Date.parse(a.updated_at) || 0, cell: (a: any) => a.cfg ? <span className="text-slate-600">—</span> : <span className="text-[11px] text-slate-500">by {a.updated_by} · {ago(a.updated_at)}</span> },
+              ...(owner ? [{ key: "act", header: "change", cell: (a: any) => a.cfg || a.email === who.actor ? <span className="text-slate-600">—</span> : (
+                <div className="flex flex-wrap gap-1.5">
+                  <select aria-label={`Role of ${a.email}`} className="field !w-auto !py-1 text-[11px]" value={a.status === "active" ? (a.kind === "user" ? "user" : a.privilege) : ""}
+                    onChange={(ev) => { const v = ev.target.value; if (!v) return; submit({ email: a.email, note: a.note, kind: v === "user" ? "user" : "admin", privilege: v === "user" ? undefined : v }); }}>
+                    {a.status !== "active" && <option value="">re-enable as…</option>}
+                    <option value="viewer">admin · viewer</option>
+                    <option value="operator">admin · operator</option>
+                    <option value="approver">admin · approver</option>
+                    <option value="user">user · Nexus only</option>
+                  </select>
+                  {a.status === "active" && (
+                    <button type="button" className="btn btn-danger !py-1" onClick={() => act({
+                      route: "registry.account_disable", params: a.email, body: { confirm: "REVOKE" }, title: `Disable ${a.email}`,
+                      lines: ["Their control-plane role ends at once. Nexus sign-in removal depends on a successful Access group sync; an existing Access session can last up to 8 hours. If sync fails, the account may still pass Access until you retry Sync sign-in."],
+                      done: "Control-plane role disabled. Check the Nexus sign-in status below.", after,
+                    })}><Ban className="h-3.5 w-3.5" />Disable…</button>
+                  )}
+                </div>
+              ) }] : []),
+            ]} />
+        </>)}
       </Panel>
 
       {owner ? (

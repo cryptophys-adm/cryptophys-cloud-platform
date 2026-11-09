@@ -8,6 +8,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import CognitionPanel from "../components/CognitionPanel";
 import { statusTone } from "./Consensus";
+import { DataTable, STATUS, StatusBar, VoteBar } from "../components/viz";
 
 export default function Command() {
   const { ov, loading, refresh } = useOverview();
@@ -101,22 +102,25 @@ export default function Command() {
 
       <Panel title="Consensus · AI mesh decisions" icon={<Gavel className="h-3.5 w-3.5 text-violet-300" />}
         right={<div className="flex items-center gap-2"><Badge tone={cns.data?.mode === "shadow" ? "amber" : "purple"}>mode · {cns.data?.mode ?? "—"}</Badge><a href="#/consensus" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">All →</a></div>}>
-        {cns.loading && !cns.data ? <Skeleton rows={2} /> : cnsRows.length === 0 ? <Empty>No proposals yet. Agents propose when they see persistent drift.</Empty> : (
-          <div className="space-y-1.5">
-            {cnsRows.map((p: any) => (
-              <a key={p.proposal_id} href="#/consensus" className="glass-inner flex flex-wrap items-center gap-2 px-3 py-2 text-[12px] hover:border-white/15">
-                <Dot tone={statusTone(p.status) === "slate" ? "slate" : (statusTone(p.status) as any)} pulse={p.status === "pending_owner"} />
-                <span className="mono text-cyan-200">{p.action}</span><span className="mono text-[11px] text-slate-400">→ {p.target}</span>
-                <span className="mono text-[11px] text-slate-500">{p.approvals}/{p.eligible}</span>
-                <span className="ml-auto"><Badge tone={statusTone(p.status)}>{String(p.status).replace("_", " ")}</Badge></span>
-              </a>
-            ))}
-          </div>
+        {cns.loading && !cns.data ? <Skeleton rows={2} /> : (
+          <DataTable rows={cnsRows} rowKey={(p) => p.proposal_id} onRowClick={() => { window.location.hash = "#/consensus"; }} maxHeight={260} dense
+            empty="No proposals yet. Agents propose when they see persistent drift." columns={[
+              { key: "status", header: "status", cell: (p) => <span className="inline-flex items-center gap-1.5"><Dot tone={statusTone(p.status) as any} pulse={p.status === "pending_owner"} />{String(p.status).replace("_", " ")}</span> },
+              { key: "action", header: "action", cell: (p) => <span className="mono text-cyan-200">{p.action}</span> },
+              { key: "target", header: "target", cell: (p) => <span className="mono text-[11px] text-slate-400">{p.target}</span> },
+              { key: "votes", header: "votes", cell: (p) => <VoteBar approvals={p.approvals} rejections={p.rejections} eligible={p.eligible} /> },
+              { key: "when", header: "when", cell: (p) => <span className="text-slate-500">{ago(p.created_at)}</span> },
+            ]} />
         )}
       </Panel>
 
       <Panel title="Service Mesh" icon={<Server className="h-3.5 w-3.5 text-cyan-300" />} right={<a href="#/infrastructure" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Infrastructure →</a>}>
-        {loading && !ov ? <Skeleton rows={4} /> : (
+        {loading && !ov ? <Skeleton rows={4} /> : (<>
+          <StatusBar className="mb-3" segments={[
+            { key: "ok", label: "in sync", value: services.length - drifted.length, color: STATUS.good },
+            { key: "transient", label: "drift (new)", value: drifted.filter((d) => !d.persistent).length, color: STATUS.warning },
+            { key: "persistent", label: "drift (persistent)", value: drifted.filter((d) => d.persistent).length, color: STATUS.critical },
+          ]} />
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {services.map((s) => (
               <div key={s.service_id} className={`glass-inner flex items-center gap-2.5 px-3 py-2.5 ${s.drifted ? "border-rose-400/20" : ""}`}>
@@ -126,21 +130,22 @@ export default function Command() {
               </div>
             ))}
           </div>
-        )}
+        </>)}
       </Panel>
 
       <div className="grid gap-3 lg:grid-cols-2">
         <Panel title="Attention · last 24h" icon={<ShieldAlert className="h-3.5 w-3.5 text-amber-300" />} right={<a href="#/cognition" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Reports →</a>}>
-          {(ov?.agent_reports_24h?.latest_attention ?? []).length === 0 ? <Empty>No warnings or critical reports in 24 hours.</Empty> : (
-            <div className="space-y-1.5">
-              {ov!.agent_reports_24h!.latest_attention!.map((r) => (
-                <div key={r.report_id} className="glass-inner flex items-start gap-2 px-3 py-2 text-[12px]">
-                  <span className="mt-1.5"><Dot tone={r.severity === "critical" ? "red" : "amber"} /></span>
-                  <div className="min-w-0 flex-1"><div className="truncate text-slate-200">{r.subject}</div><div className="mono text-[10px] text-slate-500">{r.agent_id} · {r.kind} · {ago(r.created_at)}</div></div>
-                </div>
-              ))}
-            </div>
-          )}
+          <StatusBar className="mb-3" segments={[
+            { key: "info", label: "info", value: counts.info ?? 0, color: STATUS.info },
+            { key: "warning", label: "warning", value: counts.warning ?? 0, color: STATUS.warning },
+            { key: "critical", label: "critical", value: counts.critical ?? 0, color: STATUS.critical },
+          ]} />
+          <DataTable rows={ov?.agent_reports_24h?.latest_attention ?? []} rowKey={(r) => r.report_id} maxHeight={240} dense empty="No warnings or critical reports in 24 hours." columns={[
+            { key: "sev", header: "severity", cell: (r) => <span className="inline-flex items-center gap-1.5"><Dot tone={r.severity === "critical" ? "red" : "amber"} />{r.severity}</span> },
+            { key: "subject", header: "subject", className: "wrap", cell: (r) => <span className="text-slate-200">{r.subject}</span> },
+            { key: "agent", header: "agent", cell: (r) => <span className="mono text-[11px] text-slate-400">{r.agent_id}</span> },
+            { key: "when", header: "when", cell: (r) => <span className="text-slate-500">{ago(r.created_at)}</span> },
+          ]} />
         </Panel>
         <Panel title="XAUUSD · display only" icon={<Dot tone="cyan" />} right={<a href="#/markets" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Markets →</a>}>
           {!x ? <Empty>No decision relayed yet.</Empty> : x.error ? <Empty>Relay unavailable.</Empty> : (
