@@ -11,6 +11,15 @@ const ACCOUNT = "a".repeat(32);
 function fakeGraphql(handlers: Record<string, (vars: any) => unknown>) {
   const calls: Array<{ auth: string | null; query: string; vars: any }> = [];
   const fetcher = async (url: string, init?: RequestInit) => {
+    if (url.includes("/billable-usage")) {
+      const handler = handlers["billableUsage"];
+      if (handler) {
+        const out = handler({});
+        if (out instanceof Error) return new Response(JSON.stringify({ result: null, errors: [{ message: out.message }] }), { status: 400 });
+        return new Response(JSON.stringify({ result: out, success: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: [], success: true }), { status: 200 });
+    }
     assert.equal(url, "https://api.cloudflare.com/client/v4/graphql");
     const body = JSON.parse(String(init?.body));
     calls.push({ auth: new Headers(init?.headers).get("authorization"), query: body.query, vars: body.variables });
@@ -83,4 +92,142 @@ test("U3. a dataset that fails shows its error, never a number; the others still
   const again: any = await cloudflareUsage(env, NOW + 60_000, fetcher);
   assert.equal(again.cached, true);
   assert.equal(calls.length, 4, "served from cache");
+});
+
+test("U4. with the token, billable usage is fetched and parsed into Spend Summary and Product Breakdown", async () => {
+  resetUsageCache();
+  const db = migratedDb();
+  const sampleBillableRows = [
+    {
+      BillingCurrency: "USD",
+      BillingPeriodStart: "2026-10-17T00:00:00Z",
+      ChargePeriodStart: "2026-10-17T00:00:00Z",
+      ChargePeriodEnd: "2026-11-16T23:59:59Z",
+      ServiceName: "Regular Twitch Neurons",
+      ServiceFamilyName: "Workers AI",
+      ConsumedQuantity: 1410000,
+      ConsumedUnit: "Neurons",
+      PricingQuantity: 1410000,
+      ContractedCost: 1.41,
+    },
+    {
+      BillingCurrency: "USD",
+      BillingPeriodStart: "2026-10-17T00:00:00Z",
+      ChargePeriodStart: "2026-10-17T00:00:00Z",
+      ChargePeriodEnd: "2026-11-16T23:59:59Z",
+      ServiceName: "Container Memory, per GiB-hr",
+      ServiceFamilyName: "Compute",
+      ConsumedQuantity: 117,
+      ConsumedUnit: "GiB-hr",
+      PricingQuantity: 117,
+      ContractedCost: 1.17,
+    },
+    {
+      BillingCurrency: "USD",
+      BillingPeriodStart: "2026-10-17T00:00:00Z",
+      ChargePeriodStart: "2026-10-17T00:00:00Z",
+      ChargePeriodEnd: "2026-11-16T23:59:59Z",
+      ServiceName: "Container Disk, per GB-hr",
+      ServiceFamilyName: "Compute",
+      ConsumedQuantity: 30,
+      ConsumedUnit: "GB-hr",
+      PricingQuantity: 30,
+      ContractedCost: 0.03,
+    },
+  ];
+
+  const { fetcher } = fakeGraphql({
+    workersInvocationsAdaptive: () => [],
+    d1AnalyticsAdaptiveGroups: () => [],
+    aiInferenceAdaptiveGroups: () => [],
+    kvOperationsAdaptiveGroups: () => [],
+    billableUsage: () => sampleBillableRows,
+  });
+
+  const r: any = await cloudflareUsage({ CF_ANALYTICS_TOKEN: "tok", CF_ACCOUNT_ID: ACCOUNT, DB: db as never }, NOW, fetcher);
+  assert.equal(r.configured, true);
+  assert.ok(r.spend_summary);
+  assert.equal(r.spend_summary.total_cost, 2.61);
+  assert.equal(r.spend_summary.projected_cost, 3.24);
+  assert.equal(r.spend_summary.average_daily_cost, 0.10);
+  assert.equal(r.spend_summary.days_observed, 25);
+  assert.equal(r.spend_summary.total_days, 31);
+  assert.equal(r.spend_summary.billing_period, "Oct 2026");
+
+  assert.equal(r.billable_products.length, 3);
+  const rtn = r.billable_products.find((p: any) => p.product === "Regular Twitch Neurons");
+  assert.ok(rtn);
+  assert.equal(rtn.usage_cost, 1.41);
+  assert.equal(rtn.total_usage, "1,410,000 Neurons");
+
+  const cm = r.billable_products.find((p: any) => p.product === "Container Memory, per GiB-hr");
+  assert.ok(cm);
+  assert.equal(cm.usage_cost, 1.17);
+
+  const cd = r.billable_products.find((p: any) => p.product === "Container Disk, per GB-hr");
+  assert.ok(cd);
+  assert.equal(cd.usage_cost, 0.03);
+
+  // Check DB persistence to infra_burn_metrics
+  const burnRows = db.raw.prepare("SELECT service_id, estimated_cost_usd FROM infra_burn_metrics WHERE period_day = '2026-11-10'").all() as any[];
+  assert.ok(burnRows.length >= 1);
+});
+
+test("U5. when billable costs exceed Free Tier, supervisor/orchestrator throttling intents are generated", async () => {
+  resetUsageCache();
+  const sampleBillableRows = [
+    {
+      ServiceName: "Regular Twitch Neurons",
+      ServiceFamilyName: "Workers AI",
+      ConsumedQuantity: 1410000,
+      ConsumedUnit: "Neurons",
+      ContractedCost: 1.41,
+    },
+    {
+      ServiceName: "Container Memory, per GiB-hr",
+      ServiceFamilyName: "Compute",
+      ConsumedQuantity: 117,
+      ConsumedUnit: "GiB-hr",
+      ContractedCost: 1.17,
+    },
+  ];
+
+  const { fetcher } = fakeGraphql({
+    workersInvocationsAdaptive: () => [],
+    d1AnalyticsAdaptiveGroups: () => [],
+    aiInferenceAdaptiveGroups: () => [],
+    kvOperationsAdaptiveGroups: () => [],
+    billableUsage: () => sampleBillableRows,
+  });
+
+  const r: any = await cloudflareUsage({ CF_ANALYTICS_TOKEN: "tok", CF_ACCOUNT_ID: ACCOUNT }, NOW, fetcher);
+  assert.equal(r.free_tier_status, "overage_detected");
+  assert.equal(r.orchestrator_cost_intents.length, 2);
+
+  const aiIntent = r.orchestrator_cost_intents.find((i: any) => i.action === "throttle_ai_neurons");
+  assert.ok(aiIntent);
+  assert.equal(aiIntent.target_service, "cryptophys-ai-kernel");
+  assert.match(aiIntent.directive, /FREE_TIER_RESTRICTION/);
+
+  const containerIntent = r.orchestrator_cost_intents.find((i: any) => i.action === "reduce_container_runtime");
+  assert.ok(containerIntent);
+  assert.equal(containerIntent.target_service, "compute-containers");
+});
+
+test("U6. billable usage API error reports an error cleanly without breaking GraphQL metrics", async () => {
+  resetUsageCache();
+  const { fetcher } = fakeGraphql({
+    workersInvocationsAdaptive: () => [{ sum: { requests: 50, errors: 0 }, dimensions: { date: "2026-11-10", scriptName: "test" } }],
+    d1AnalyticsAdaptiveGroups: () => [],
+    aiInferenceAdaptiveGroups: () => [],
+    kvOperationsAdaptiveGroups: () => [],
+    billableUsage: () => new Error("billable_forbidden_403"),
+  });
+
+  const r: any = await cloudflareUsage({ CF_ANALYTICS_TOKEN: "tok", CF_ACCOUNT_ID: ACCOUNT }, NOW, fetcher);
+  assert.equal(r.configured, true);
+  assert.match(r.billable_error, /billable_forbidden_403/);
+  assert.equal(r.spend_summary, null);
+  assert.equal(r.billable_products.length, 0);
+  assert.equal(r.metrics.find((m: any) => m.key === "workers_requests").today, 50);
 });

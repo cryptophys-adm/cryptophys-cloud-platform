@@ -155,9 +155,11 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
     } else if (marketStatus === "closed") {
       targetMode = "survival";
       reason = "market closed (weekend): entering survival hibernation to conserve AI tokens and compute";
-    } else if (tradingNetPnl < -100 || runwayDays < 7) {
+    } else if (infraBurn > 0.20 || tradingNetPnl < -100 || runwayDays < 7) {
       targetMode = "survival";
-      reason = `drawdown or low runway (net 24h: $${tradingNetPnl}, runway: ${runwayDays}d): throttling compute`;
+      reason = infraBurn > 0.20
+        ? `billable infrastructure burn ($${infraBurn}/day exceeding free tier): entering survival mode to throttle compute and preserve free tier`
+        : `drawdown or low runway (net 24h: $${tradingNetPnl}, runway: ${runwayDays}d): throttling compute`;
     } else if (tradingNetPnl > 50 && runwayDays > 90) {
       // Growth raises budgets, so the supervisor never enters it on its own: it only reports that
       // the owner could set the override (owner 2026-11-10).
@@ -372,6 +374,23 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       why: String(mtb.reason ?? `mode ${mtb.power_mode}`).slice(0, 300),
     });
   }
+
+  // Audit real billable usage overages and report throttling intent to maintain free tier
+  try {
+    const dayStr = new Date(now).toISOString().slice(0, 10);
+    const overages = await env.DB.prepare(
+      "SELECT service_id, estimated_cost_usd FROM infra_burn_metrics WHERE period_day = ? AND estimated_cost_usd > 0"
+    ).bind(dayStr).all<{ service_id: string; estimated_cost_usd: number }>();
+    for (const o of overages.results ?? []) {
+      report.findings.push({
+        kind: "billable_usage_overage",
+        service_id: o.service_id,
+        action: "throttle_free_tier",
+        outcome: "throttled",
+        why: `incurred billable cost of ${o.estimated_cost_usd.toFixed(2)} USD; throttled to preserve Free Tier`,
+      });
+    }
+  } catch {}
 
   await memory.put("last_cycle", report);
   return report;
