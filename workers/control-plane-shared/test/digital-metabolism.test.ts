@@ -174,3 +174,25 @@ test("P2-M6 the Console's metabolism view is read-only and carries live state, c
   assert.equal((db as any).raw.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n, before, "the view writes nothing");
   assert.match(read("workers/ai-kernel/src/index.ts"), /path === "\/v1\/metabolism" && request\.method === "GET"/);
 });
+
+test("P2-M7 supervisor reports billable usage overages from infra_burn_metrics and logs findings", async () => {
+  const db = migratedDb();
+  const now = Date.UTC(2026, 10, 10, 15, 0, 0);
+  (db as any).raw.prepare(
+    "INSERT INTO infra_burn_metrics (metric_id, period_day, service_id, ai_neurons, estimated_cost_usd, calculated_at) VALUES ('brn_ai_kernel_20261110', '2026-11-10', 'cryptophys-ai-kernel', 10000, 1.41, '2026-11-10T12:00:00Z')"
+  ).run();
+
+  const memoryMap = new Map<string, unknown>();
+  const memory = {
+    get: async <T>(k: string) => memoryMap.get(k) as T | undefined,
+    put: async (k: string, v: unknown) => { memoryMap.set(k, v); },
+  };
+
+  const report = await runCycle({ DB: db as never } as never, memory, "operator", now);
+  const overageFinding = report.findings.find((f: any) => f.kind === "billable_usage_overage");
+  assert.ok(overageFinding);
+  assert.equal(overageFinding.service_id, "cryptophys-ai-kernel");
+  assert.equal(overageFinding.action, "throttle_free_tier");
+  assert.equal(overageFinding.outcome, "throttled");
+  assert.match(String(overageFinding.why ?? ""), /1\.41 USD/);
+});

@@ -379,17 +379,18 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
 
   // Audit real billable usage overages and report throttling intent to maintain free tier
   try {
-    const dayStr = new Date(now).toISOString().slice(0, 10);
+    const thirtyDaysAgo = new Date(now - 30 * 86_400_000).toISOString().slice(0, 10);
     const overages = await env.DB.prepare(
-      "SELECT service_id, estimated_cost_usd FROM infra_burn_metrics WHERE period_day = ? AND estimated_cost_usd > 0"
-    ).bind(dayStr).all<{ service_id: string; estimated_cost_usd: number }>();
+      "SELECT service_id, period_day, estimated_cost_usd FROM infra_burn_metrics WHERE period_day >= ? AND estimated_cost_usd > 0 ORDER BY period_day DESC, estimated_cost_usd DESC"
+    ).bind(thirtyDaysAgo).all<{ service_id: string; period_day: string; estimated_cost_usd: number }>();
     for (const o of overages.results ?? []) {
       report.findings.push({
         kind: "billable_usage_overage",
         service_id: o.service_id,
+        period_day: o.period_day,
         action: "throttle_free_tier",
         outcome: "throttled",
-        why: `incurred billable cost of ${o.estimated_cost_usd.toFixed(2)} USD; throttled to preserve Free Tier`,
+        why: `incurred billable cost of ${o.estimated_cost_usd.toFixed(2)} USD on ${o.period_day}; throttled to preserve Free Tier`,
       });
     }
   } catch {}

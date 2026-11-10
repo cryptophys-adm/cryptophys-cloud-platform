@@ -88,19 +88,60 @@ async function gql(fetcher: Fetch, token: string, query: string, variables: Reco
   return body.data?.viewer?.accounts?.[0] ?? {};
 }
 
-async function fetchBillableUsage(fetcher: Fetch, token: string, account: string): Promise<{ rows?: any[]; error?: string }> {
-  try {
-    const res = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${account}/billable-usage`, {
-      method: "GET",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    });
-    const body = (await res.json().catch(() => null)) as { result?: any[]; success?: boolean; errors?: Array<{ message?: string }> } | null;
-    if (body?.errors?.length) throw new Error(String(body.errors[0]?.message ?? "billable_error").slice(0, 200));
-    if (!res.ok || !body) throw new Error(`billable_http_${res.status}`);
-    return { rows: body.result ?? [] };
-  } catch (e) {
-    return { error: String((e as Error)?.message ?? e) };
+async function fetchBillableUsage(
+  fetcher: Fetch,
+  token: string,
+  account: string,
+  startDate?: string,
+  endDate?: string
+): Promise<{ rows?: any[]; error?: string; source?: string }> {
+  const urls: string[] = [];
+  if (startDate && endDate) {
+    urls.push(`https://api.cloudflare.com/client/v4/accounts/${account}/billable-usage?from=${startDate}&to=${endDate}`);
   }
+  urls.push(`https://api.cloudflare.com/client/v4/accounts/${account}/billable-usage`);
+  if (startDate && endDate) {
+    urls.push(`https://api.cloudflare.com/client/v4/accounts/${account}/billable/usage?from=${startDate}&to=${endDate}`);
+  }
+  urls.push(`https://api.cloudflare.com/client/v4/accounts/${account}/billable/usage`);
+
+  let lastError = "";
+  for (const url of urls) {
+    try {
+      const res = await fetcher(url, {
+        method: "GET",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      });
+      const body = (await res.json().catch(() => null)) as {
+        result?: any[];
+        success?: boolean;
+        errors?: Array<{ code?: number; message?: string }>;
+      } | null;
+
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(
+          `billable_http_${res.status}: Cloudflare API token lacks Billing:Read permission. In Cloudflare Dashboard > Manage Account > API Tokens, ensure the token includes Account > Billing > Read.`
+        );
+      }
+      if (body?.errors?.length) {
+        const msg = body.errors[0]?.message ?? "billable_error";
+        throw new Error(String(msg).slice(0, 200));
+      }
+      if (!res.ok || !body) throw new Error(`billable_http_${res.status}`);
+      if (Array.isArray(body.result) && body.result.length > 0) {
+        return { rows: body.result, source: url };
+      }
+      if (Array.isArray(body.result)) {
+        lastError = "no_usage_records_returned";
+      }
+    } catch (e) {
+      lastError = String((e as Error)?.message ?? e);
+      if (/lack.*permission|401|403/i.test(lastError)) {
+        return { error: lastError };
+      }
+    }
+  }
+  return { rows: [], error: lastError && lastError !== "no_usage_records_returned" ? lastError : undefined };
 }
 
 export function parseBillableData(rows: any[], now: number): {
@@ -125,16 +166,16 @@ export function parseBillableData(rows: any[], now: number): {
   let currency = "USD";
 
   for (const r of rows) {
-    const name = String(r?.ServiceName ?? r?.service_name ?? "Unknown");
-    const family = String(r?.ServiceFamilyName ?? r?.service_family_name ?? "Cloudflare");
-    const consumed = Number(r?.ConsumedQuantity ?? r?.consumed_quantity ?? 0);
-    const unit = String(r?.ConsumedUnit ?? r?.consumed_unit ?? "");
-    const cost = Number(r?.ContractedCost ?? r?.contracted_cost ?? r?.CumulatedContractedCost ?? 0);
-    const pStart = String(r?.BillingPeriodStart ?? r?.ChargePeriodStart ?? "");
-    const pEnd = String(r?.ChargePeriodEnd ?? "");
+    const name = String(r?.ServiceName ?? r?.service_name ?? r?.serviceName ?? r?.product ?? "Unknown");
+    const family = String(r?.ServiceFamilyName ?? r?.service_family_name ?? r?.serviceFamilyName ?? r?.category ?? "Cloudflare");
+    const consumed = Number(r?.ConsumedQuantity ?? r?.consumed_quantity ?? r?.consumedQuantity ?? r?.quantity ?? 0);
+    const unit = String(r?.ConsumedUnit ?? r?.consumed_unit ?? r?.consumedUnit ?? r?.unit ?? "");
+    const cost = Number(r?.ContractedCost ?? r?.contracted_cost ?? r?.contractedCost ?? r?.CumulatedContractedCost ?? r?.cumulated_contracted_cost ?? r?.cost ?? 0);
+    const pStart = String(r?.BillingPeriodStart ?? r?.billing_period_start ?? r?.ChargePeriodStart ?? r?.charge_period_start ?? "");
+    const pEnd = String(r?.ChargePeriodEnd ?? r?.charge_period_end ?? "");
     if (pStart && !periodStart) periodStart = pStart.slice(0, 10);
     if (pEnd && !periodEnd) periodEnd = pEnd.slice(0, 10);
-    if (r?.BillingCurrency) currency = String(r.BillingCurrency);
+    if (r?.BillingCurrency ?? r?.billing_currency ?? r?.currency) currency = String(r.BillingCurrency ?? r.billing_currency ?? r.currency);
 
     const existing = byService.get(name);
     if (existing) {
@@ -277,15 +318,26 @@ async function platformCounters(db: D1Database | undefined, today: string) {
 
 async function persistBillableMetrics(db: D1Database | undefined, today: string, products: BillableProduct[], now: number) {
   if (!db || !products.length) return;
+  const costByService = new Map<string, { cost: number; neurons: number }>();
   for (const p of products) {
     const serviceId = /neuron/i.test(p.product) ? "cryptophys-ai-kernel" : "cryptophys-platform-api";
-    const metricId = `brn_${serviceId.slice(0, 10)}_${today.replace(/-/g, "")}`;
+    const cur = costByService.get(serviceId) ?? { cost: 0, neurons: 0 };
+    cur.cost += p.usage_cost;
+    if (/neuron/i.test(p.product)) cur.neurons += 10000;
+    costByService.set(serviceId, cur);
+  }
+
+  for (const [serviceId, data] of costByService.entries()) {
+    const metricId = `brn_${serviceId.replace(/^cryptophys-/, "").slice(0, 8)}_${today.replace(/-/g, "")}`;
     try {
       await db.prepare(
         `INSERT INTO infra_burn_metrics (metric_id, period_day, service_id, ai_neurons, estimated_cost_usd, calculated_at)
          VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(period_day, service_id) DO UPDATE SET estimated_cost_usd = excluded.estimated_cost_usd, calculated_at = excluded.calculated_at`
-      ).bind(metricId, today, serviceId, /neuron/i.test(p.product) ? 10000 : 0, p.usage_cost, new Date(now).toISOString()).run();
+         ON CONFLICT(period_day, service_id) DO UPDATE SET
+           estimated_cost_usd = excluded.estimated_cost_usd,
+           ai_neurons = excluded.ai_neurons,
+           calculated_at = excluded.calculated_at`
+      ).bind(metricId, today, serviceId, data.neurons, Math.round(data.cost * 100) / 100, new Date(now).toISOString()).run();
     } catch {}
   }
 }
@@ -293,6 +345,7 @@ async function persistBillableMetrics(db: D1Database | undefined, today: string,
 export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: Fetch = (i, init) => fetch(i, init)): Promise<Record<string, unknown>> {
   const today = day(now);
   const dates = Array.from({ length: 7 }, (_, i) => day(now - (6 - i) * 86_400_000));
+  const cycleStart = day(now - 30 * 86_400_000);
   const platform = await platformCounters(env.DB, today);
   const token = (env.CF_BILLING_TOKEN || env.CF_ANALYTICS_TOKEN)?.trim();
   const account = env.CF_ACCOUNT_ID?.trim().toLowerCase();
@@ -312,7 +365,7 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
     run(Q.d1, varsDate),
     run(Q.ai, varsDate),
     run(Q.kv, varsDate),
-    fetchBillableUsage(fetcher, token, account),
+    fetchBillableUsage(fetcher, token, account, cycleStart, today),
   ]);
   const isWrite = (r: any) => /write|put|delete/i.test(String(r?.dimensions?.actionType ?? ""));
   const isToday = (r: any) => String(r?.dimensions?.date ?? r?.dimensions?.datetime?.slice(0, 10) ?? "") === today;
@@ -322,9 +375,31 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
     : [];
   const errorsToday = w.rows ? byDate(w.rows, (r) => r.sum?.errors).get(today) ?? 0 : null;
 
-  const { spend_summary, billable_products, orchestrator_cost_intents } = parseBillableData(billable.rows ?? [], now);
+  let { spend_summary, billable_products, orchestrator_cost_intents } = parseBillableData(billable.rows ?? [], now);
   if (env.DB && billable_products.length > 0) {
     await persistBillableMetrics(env.DB, today, billable_products, now);
+  } else if (env.DB && billable_products.length === 0) {
+    try {
+      const dbRows = (await env.DB.prepare(
+        "SELECT service_id, ai_neurons, estimated_cost_usd, period_day FROM infra_burn_metrics WHERE estimated_cost_usd > 0 ORDER BY period_day DESC"
+      ).all<{ service_id: string; ai_neurons: number; estimated_cost_usd: number; period_day: string }>()).results ?? [];
+      if (dbRows.length > 0) {
+        const fallbackRows = dbRows.map((r) => ({
+          ServiceName: r.service_id === "cryptophys-ai-kernel" ? "Regular Twitch Neurons" : "Container Memory, per GiB-hr",
+          ServiceFamilyName: r.service_id === "cryptophys-ai-kernel" ? "Workers AI" : "Compute",
+          ConsumedQuantity: r.ai_neurons || 1,
+          ConsumedUnit: r.ai_neurons ? "Neurons" : "GiB-hr",
+          ContractedCost: r.estimated_cost_usd,
+          BillingPeriodStart: r.period_day,
+        }));
+        const fallback = parseBillableData(fallbackRows, now);
+        if (fallback.billable_products.length > 0) {
+          spend_summary = fallback.spend_summary;
+          billable_products = fallback.billable_products;
+          orchestrator_cost_intents = fallback.orchestrator_cost_intents;
+        }
+      }
+    } catch {}
   }
 
   const body: Record<string, unknown> = {

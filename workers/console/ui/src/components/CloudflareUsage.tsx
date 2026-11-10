@@ -78,6 +78,24 @@ export default function CloudflareUsage() {
         </div>
       ) : (
         <div className="space-y-4">
+          {/* Billable Usage API error or permission notice */}
+          {d.billable_error && (
+            <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-[11px] text-amber-200 leading-relaxed">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+              <div className="space-y-1">
+                <div>
+                  <span className="font-semibold text-amber-300">Cloudflare Billable Usage API Notice:</span>{" "}
+                  {d.billable_error}
+                </div>
+                {/permission|401|403|unauthorized/i.test(d.billable_error) && (
+                  <div className="text-[10px] text-slate-300">
+                    Action required: In the Cloudflare Dashboard (&gt; Manage Account &gt; API Tokens), verify that the API token set as <span className="mono font-semibold">CF_ANALYTICS_TOKEN</span> or <span className="mono font-semibold">CF_BILLING_TOKEN</span> on <span className="mono font-semibold">cryptophys-platform-api</span> has the <span className="mono font-semibold">Account &gt; Billing &gt; Read</span> permission in addition to <span className="mono font-semibold">Account &gt; Account Analytics &gt; Read</span>.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Section 1: Spend Summary Cards */}
           <div className="space-y-2">
             <div className="text-[10px] uppercase tracking-widest text-slate-500">Spend summary · Billing period {spend?.billing_period ?? "—"}</div>
@@ -86,7 +104,7 @@ export default function CloudflareUsage() {
                 <div className="text-[10px] uppercase tracking-wider text-slate-400">Total Cost</div>
                 <div className="mono text-xl font-bold text-slate-100">{fmtMoney(spend?.total_cost)}</div>
                 <div className="text-[10px] text-slate-500">
-                  {spend ? `Usage observed ${spend.period_start} – ${spend.period_end}` : "Observed cycle cost"}
+                  {spend ? `Usage observed ${spend.period_start} – ${spend.period_end}` : "Within Free Tier quota"}
                 </div>
               </div>
               <div className="glass-inner p-3 space-y-1">
@@ -112,7 +130,7 @@ export default function CloudflareUsage() {
           </div>
 
           {/* Section 2: Product Breakdown Table */}
-          {products.length > 0 && (
+          {products.length > 0 ? (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div className="text-[10px] uppercase tracking-widest text-slate-500">Billable usage breakdown · By product</div>
@@ -134,7 +152,17 @@ export default function CloudflareUsage() {
                 initialSort={{ key: "usage_cost", dir: "desc" }}
               />
             </div>
-          )}
+          ) : !d.billable_error ? (
+            <div className="glass-inner p-3 space-y-1 text-[11px]">
+              <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Zero Billable Overage · Free Tier In Effect</span>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                Resource consumption is currently within Workers Free plan limits, or awaiting Cloudflare daily usage-based billing aggregation (updated once daily at 00:00 UTC).
+              </p>
+            </div>
+          ) : null}
 
           {/* Section 3: Supervisor / Orchestrator Free Tier Control Intent Advisory */}
           <div className="glass-inner p-3 space-y-2">

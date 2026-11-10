@@ -573,11 +573,18 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     if (burnRow && typeof burnRow.total_burn === "number" && burnRow.total_burn > 0) {
       infraBurn24h = Math.round(burnRow.total_burn * 100) / 100;
     } else {
-      const aiUsage = await env.DB.prepare(
-        "SELECT SUM(requests) AS total_requests FROM ai_usage WHERE day = ?"
-      ).bind(dayStr).first<{ total_requests: number }>();
-      const requests = aiUsage?.total_requests ?? 0;
-      infraBurn24h = Math.round((0.15 + (requests * 0.001)) * 100) / 100;
+      const recentBurn = await env.DB.prepare(
+        "SELECT SUM(estimated_cost_usd) AS total_burn FROM infra_burn_metrics WHERE period_day >= ? AND estimated_cost_usd > 0"
+      ).bind(new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)).first<{ total_burn: number }>();
+      if (recentBurn && typeof recentBurn.total_burn === "number" && recentBurn.total_burn > 0) {
+        infraBurn24h = Math.round((recentBurn.total_burn / 7) * 100) / 100;
+      } else {
+        const aiUsage = await env.DB.prepare(
+          "SELECT SUM(requests) AS total_requests FROM ai_usage WHERE day = ?"
+        ).bind(dayStr).first<{ total_requests: number }>();
+        const requests = aiUsage?.total_requests ?? 0;
+        infraBurn24h = Math.round((0.15 + (requests * 0.001)) * 100) / 100;
+      }
     }
   } catch {}
 
