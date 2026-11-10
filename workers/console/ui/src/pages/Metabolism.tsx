@@ -3,6 +3,7 @@ import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { ActivityChart, BarList, DataTable, STATUS, Stat, StatusBar, bucketize } from "../components/viz";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
+import CloudflareUsage from "../components/CloudflareUsage";
 import { ago, listOf } from "../lib/format";
 
 /**
@@ -54,6 +55,8 @@ export default function Metabolism() {
           </>
         )}
       </Panel>
+
+      <CloudflareUsage />
 
       <div className="grid gap-3 lg:grid-cols-2">
         <Panel title={`Power mode over time · ${cycles.length} cycles (14 d)`} icon={<Activity className="h-3.5 w-3.5 text-cyan-300" />}>

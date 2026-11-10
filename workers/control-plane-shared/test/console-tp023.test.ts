@@ -251,8 +251,8 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   // + 2 read-only Forge rows (ADR-0012 phase 1b: the Code page) + the Forge checks (phase 3)
   // - the manual execution route (hardening 2026-11-08: the AI runs approved plans)
   // + the read-only deployments list (the Pipelines page) + the Forge change requests and deploy plans (ADR-0012 phase 4, shadow) + the organism census (ADR-0013)
-  // + the read-only metabolism view (owner 2026-11-10).
-  assert.equal(keys.length, 54);
+  // + the read-only metabolism view and the real Cloudflare usage (owner 2026-11-10).
+  assert.equal(keys.length, 55);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"].map((p) => `kernel POST ${p}`),
@@ -270,6 +270,7 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
     "orchestrator GET /v1/deployments",
     "orchestrator POST /v1/deployments",
     "platform GET /v1/overview",
+    "platform GET /v1/usage",
     "forge GET /v1/forge/status",
     "forge GET /v1/forge/commits",
     "forge GET /v1/forge/checks",

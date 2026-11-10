@@ -82,6 +82,7 @@ These hold everywhere:
   - **Survival** (market closed, a drawdown over $100 in 24 h, or under 7 days of runway) throttles only AI spending: `memory.remember`, `knowledge.propose` and AI budgets at 25 %. It never throttles `consensus.propose`, so deploys, rollbacks and suspensions keep working.
   - **Growth** (doubled AI budgets) applies only when the owner sets `power_mode_override = growth`. The Supervisor only reports "growth eligible".
   - Every automatic mode change is written with a `metabolism.power_mode_changed` event in the audit chain.
+- **Cloudflare usage (Console: Organism and Metabolism pages).** `GET /v1/usage` on the Platform API reads the GraphQL Analytics API against the Workers Free limits (Workers 100k requests/day, D1 5M rows read and 100k written/day, Workers AI 10k neurons/day, KV 100k reads and 1k writes/day). It needs two owner-set secrets on `cryptophys-platform-api`: `CF_ANALYTICS_TOKEN` (only Account Analytics: Read) and `CF_ACCOUNT_ID`. Without them the panel shows only the platform's own AI request counter, never an estimate.
 - **CI gate for consensus deploys.** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
 
 ## Source, CI and deploy (ADR-0012)
