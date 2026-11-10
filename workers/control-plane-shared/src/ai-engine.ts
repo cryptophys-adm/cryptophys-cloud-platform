@@ -179,7 +179,9 @@ export class AiEngine {
         const modeRow = await this.db.prepare(
           "SELECT value FROM metabolism_controls WHERE control = 'power_mode'"
         ).first<{ value: string }>();
-        if (modeRow?.value) mode = modeRow.value;
+        // An automatic mode may only save budget. Growth raises budgets, so it takes effect only as
+        // an owner override, never from trading results (owner 2026-11-10).
+        if (modeRow?.value === "survival") mode = "survival";
       }
     } catch {
       // Graceful fallback if table does not exist in early migration tests

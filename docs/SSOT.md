@@ -2,7 +2,7 @@
 
 `CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0013). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
-Last reviewed: 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
+Last reviewed: 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
 ## Platform rules
 
@@ -78,6 +78,10 @@ These hold everywhere:
 - **Limits.** One deploy per target per hour and six per 24 hours. Deploys run only at SAFE minutes.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.
+- **Digital metabolism (power mode, #263, #264, #265).** The Supervisor reads deal results from XAUUSD (read only; nothing places orders or moves funds) and the infrastructure burn, then sets `metabolism_controls.power_mode`. Owner rules (2026-11-10):
+  - **Survival** (market closed, a drawdown over $100 in 24 h, or under 7 days of runway) throttles only AI spending: `memory.remember`, `knowledge.propose` and AI budgets at 25 %. It never throttles `consensus.propose`, so deploys, rollbacks and suspensions keep working.
+  - **Growth** (doubled AI budgets) applies only when the owner sets `power_mode_override = growth`. The Supervisor only reports "growth eligible".
+  - Every automatic mode change is written with a `metabolism.power_mode_changed` event in the audit chain.
 - **CI gate for consensus deploys.** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
 
 ## Source, CI and deploy (ADR-0012)
