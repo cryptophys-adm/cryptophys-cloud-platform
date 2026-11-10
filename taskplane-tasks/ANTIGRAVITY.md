@@ -31,6 +31,7 @@ Read this file, then `taskplane-tasks/CONTEXT.md` (hard rules), then the task's 
    - Never run `wrangler deploy`, `wrangler d1 execute --remote`, `wrangler vectorize create` or any Cloudflare API write.
    - `wrangler deploy --dry-run` is allowed and required.
 7. **Quotas.** Stay inside the Workers Paid included usage. Each task states its budget; respect it in code (caps, cron cadence, retention).
+8. **Console shows measured data only** (owner, 2026-11-10). No hardcoded metrics, simulators, default numbers or modes, and no claims that the platform moves funds or pays from trading. Missing values show "—". `test/console-truthfulness.test.ts` enforces it; see `AGENTS.md`.
 
 ## Definition of done (the PR must show all of this)
 

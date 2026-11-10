@@ -172,7 +172,7 @@ export default function Organism() {
 
       </div>
 
-      {/* Real Cloudflare usage (GET /v1/usage), owner 2026-11-10: no simulated numbers */}
+      {/* Real Cloudflare usage (GET /v1/usage), owner 2026-11-10: measured values only */}
       <CloudflareUsage />
 
       {/* Epigenetic Evolution & Canon Protection */}
