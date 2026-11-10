@@ -22,6 +22,22 @@ export interface PolicyResult { decision: "allow" | "deny"; reason: string; chec
 
 const check = (id: string, passed: boolean, detail: string): PolicyCheck => ({ id, passed, detail });
 
+export async function getActivePowerMode(db: D1Database): Promise<"survival" | "homeostasis" | "growth"> {
+  try {
+    const override = await db.prepare("SELECT value FROM metabolism_controls WHERE control = 'power_mode_override'").first<{ value: string }>();
+    if (override && ["survival", "homeostasis", "growth"].includes(override.value)) {
+      return override.value as "survival" | "homeostasis" | "growth";
+    }
+    const row = await db.prepare("SELECT value FROM metabolism_controls WHERE control = 'power_mode'").first<{ value: string }>();
+    if (row && ["survival", "homeostasis", "growth"].includes(row.value)) {
+      return row.value as "survival" | "homeostasis" | "growth";
+    }
+  } catch {
+    // Graceful fallback if table does not exist
+  }
+  return "homeostasis";
+}
+
 /** Deterministic rule evaluation. AI is never consulted here. */
 export async function evaluatePolicy(db: D1Database, action: string, resource: string, context: JsonObject): Promise<PolicyResult> {
   const checks: PolicyCheck[] = [];
@@ -52,6 +68,13 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     // AI Worker OS (ADR-0007): the resource is the capability; the subject must be agent:<id>.
     // Over HTTP the subject is the caller's Access identity, so a person cannot pose as an agent.
     checks.push(...(await agentSyscallChecks(db, String(context.__subject ?? ""), resource)));
+    const powerMode = await getActivePowerMode(db);
+    if (powerMode === "survival") {
+      const nonEssential = ["memory.remember", "knowledge.propose", "consensus.propose"];
+      if (nonEssential.includes(resource)) {
+        checks.push(check("power_mode_survival", false, `capability ${resource} is throttled in survival mode to conserve treasury runway`));
+      }
+    }
   } else if (action === "consensus.execute") {
     // ADR-0009: the Policy Engine is a veto on every consensus outcome, whatever the vote.
     // The resource is "<action>:<target>"; the kernel passes the class it computed.

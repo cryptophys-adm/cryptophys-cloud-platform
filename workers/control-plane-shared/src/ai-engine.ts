@@ -168,6 +168,35 @@ export class AiEngine {
 
   /** Reserve one request from the per-service and account-wide daily budgets. */
   private async reserve(day: string): Promise<boolean> {
+    let mode = "homeostasis";
+    try {
+      const overrideRow = await this.db.prepare(
+        "SELECT value FROM metabolism_controls WHERE control = 'power_mode_override'"
+      ).first<{ value: string }>();
+      if (overrideRow && ["survival", "homeostasis", "growth"].includes(overrideRow.value)) {
+        mode = overrideRow.value;
+      } else {
+        const modeRow = await this.db.prepare(
+          "SELECT value FROM metabolism_controls WHERE control = 'power_mode'"
+        ).first<{ value: string }>();
+        if (modeRow?.value) mode = modeRow.value;
+      }
+    } catch {
+      // Graceful fallback if table does not exist in early migration tests
+    }
+
+    const effectiveDailyLimit = mode === "survival"
+      ? Math.min(20, Math.floor(this.dailyLimit * 0.25))
+      : mode === "growth"
+        ? Math.floor(this.dailyLimit * 2.0)
+        : this.dailyLimit;
+
+    const effectiveAccountLimit = mode === "survival"
+      ? Math.min(50, Math.floor(this.accountDailyLimit * 0.25))
+      : mode === "growth"
+        ? Math.floor(this.accountDailyLimit * 2.0)
+        : this.accountDailyLimit;
+
     // One conditional UPSERT is required: a separate SUM then INSERT lets concurrent Workers
     // observe the same remaining account budget and exceed the shared daily cap.
     const result = await this.db.prepare(
@@ -177,7 +206,7 @@ export class AiEngine {
        ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1
        WHERE requests < ?
          AND (SELECT COALESCE(SUM(requests), 0) FROM ai_usage WHERE day = ?) < ?`,
-    ).bind(this.service, day, day, this.accountDailyLimit, this.dailyLimit, day, this.accountDailyLimit).run();
+    ).bind(this.service, day, day, effectiveAccountLimit, effectiveDailyLimit, day, effectiveAccountLimit).run();
     return (result.meta.changes ?? 0) > 0;
   }
 

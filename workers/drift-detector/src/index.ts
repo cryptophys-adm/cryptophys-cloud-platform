@@ -35,6 +35,7 @@ export interface Env extends BaseEnv {
   EXT_XAUUSD_PULL_ADAPTER: FetchBinding;
   EXT_XAUUSD_NEXUS: FetchBinding;
   EXT_AETHER: FetchBinding;
+  EXT_XAUUSD_OMEGA: FetchBinding;
   SVC_PLATFORM_API: HealthRpcBinding;
   SVC_DEPLOYMENT_ORCHESTRATOR: HealthRpcBinding;
   SVC_PLATFORM_REGISTRY: HealthRpcBinding;
@@ -73,6 +74,7 @@ export function externalTargets(env: Env): Record<string, FetchBinding | undefin
     "xauusd-tradingview-pull-adapter": env.EXT_XAUUSD_PULL_ADAPTER,
     "xauusd-nexus-dashboard": env.EXT_XAUUSD_NEXUS,
     "cryptophys-aether": env.EXT_AETHER,
+    "xauusd-omega": env.EXT_XAUUSD_OMEGA,
   };
 }
 

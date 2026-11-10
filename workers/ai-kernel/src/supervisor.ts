@@ -9,11 +9,11 @@
  *  - Persistent drift (two consecutive drifted observations of a managed service, no open
  *    agent plan for it, none proposed in the last 24 h) -> recovery.propose (tier 1).
  */
-import type { JsonObject } from "../../control-plane-shared/src/http.ts";
+import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
-import { syscall, type SyscallEnv, type SyscallResult } from "./syscall.ts";
+import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
 import { latestCensusRow, proposalFor } from "./organism.ts";
 
@@ -129,6 +129,74 @@ export interface CycleReport {
   memory?: "ok" | "unavailable";
   findings: JsonObject[];
   actions: SyscallResult[];
+}
+
+/** Evaluates digital metabolism health, updates adaptive power mode, and appends a cycle audit. */
+export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()): Promise<JsonObject | null> {
+  try {
+    const obs = await observeMetabolism(env, now);
+    const marketStatus = obs.market_status as "open" | "closed" | "holiday";
+    const tradingNetPnl = (obs.trading_net_pnl_24h as number) ?? 0;
+    const infraBurn = (obs.infra_burn_cost_24h as number) ?? 0.15;
+    const treasuryReserve = (obs.treasury_reserve_usd as number) ?? 500;
+    const runwayDays = (obs.runway_days as number) ?? 500;
+    const metabolicRatio = (obs.metabolic_ratio as number | null) ?? null;
+    const override = String(obs.power_mode_override ?? "none");
+    const autoAdapt = obs.auto_adaptation_enabled === true;
+    const currentMode = obs.power_mode as "survival" | "homeostasis" | "growth";
+
+    let targetMode: "survival" | "homeostasis" | "growth" = "homeostasis";
+    let reason = "baseline homeostasis: balanced operational state";
+
+    if (override !== "none" && ["survival", "homeostasis", "growth"].includes(override)) {
+      targetMode = override as any;
+      reason = `manual operator override enforced (${override})`;
+    } else if (marketStatus === "closed") {
+      targetMode = "survival";
+      reason = "market closed (weekend): entering survival hibernation to conserve AI tokens and compute";
+    } else if (tradingNetPnl < -100 || runwayDays < 7) {
+      targetMode = "survival";
+      reason = `drawdown or low runway (net 24h: $${tradingNetPnl}, runway: ${runwayDays}d): throttling compute`;
+    } else if (tradingNetPnl > 50 && runwayDays > 90) {
+      targetMode = "growth";
+      reason = `trading surplus achieved (net 24h: +$${tradingNetPnl}, runway: ${runwayDays}d): expanding compute for shadow evolution`;
+    }
+
+    let modeChanged = false;
+    if (autoAdapt && targetMode !== currentMode) {
+      await env.DB.prepare(
+        "UPDATE metabolism_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'power_mode'"
+      ).bind(targetMode, "kernel:supervisor", new Date(now).toISOString()).run();
+      modeChanged = true;
+    }
+
+    const cycleId = newId("mtb");
+    const evaluatedAt = new Date(now).toISOString();
+    const actionsJson = JSON.stringify({ mode_changed: modeChanged, previous_mode: currentMode, target_mode: targetMode });
+
+    await env.DB.prepare(
+      `INSERT INTO metabolism_cycles (
+        cycle_id, evaluated_at, market_status, trading_net_pnl_24h, infra_burn_cost_24h,
+        metabolic_ratio, treasury_reserve_usd, runway_days, power_mode, mode_reason, actions_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      cycleId, evaluatedAt, marketStatus, tradingNetPnl, infraBurn,
+      metabolicRatio, treasuryReserve, runwayDays, targetMode, reason.slice(0, 300), actionsJson
+    ).run();
+
+    return {
+      cycle_id: cycleId,
+      market_status: marketStatus,
+      power_mode: targetMode,
+      mode_changed: modeChanged,
+      reason,
+      treasury_reserve_usd: treasuryReserve,
+      runway_days: runwayDays,
+    };
+  } catch (err) {
+    console.error(JSON.stringify({ service: SERVICE, event: "metabolism_evaluation_failed", message: String((err as Error)?.message ?? err) }));
+    return null;
+  }
 }
 
 export async function runCycle(env: KernelEnv, memory: Memory, trigger: "scheduled" | "operator", now = Date.now()): Promise<CycleReport> {
@@ -284,6 +352,18 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     } catch (err) {
       report.findings.push({ kind: "deploy", action: "none", why: `pending deploys unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
+  }
+
+  // Digital Metabolism & Adaptive Power Mode Lifecycle
+  const mtb = await evaluateMetabolismState(env, now);
+  if (mtb && (mtb.mode_changed || trigger === "operator")) {
+    report.findings.push({
+      kind: "metabolism",
+      service_id: "cryptophys-digital-metabolism",
+      action: mtb.mode_changed ? "power_mode_adapted" : "observed",
+      outcome: "succeeded",
+      why: String(mtb.reason ?? `mode ${mtb.power_mode}`).slice(0, 300),
+    });
   }
 
   await memory.put("last_cycle", report);
