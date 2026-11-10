@@ -1,3 +1,4 @@
+import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { describeResource, explainReason } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
@@ -105,12 +106,15 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     const sameTarget = await db.prepare(
       `SELECT COUNT(*) AS n FROM consensus_proposals WHERE target = ? AND action = ? AND status IN ${ran} AND decided_at >= ?`,
     ).bind(target, act, hour).first<{ n: number }>();
-    checks.push(check("target_rate_limit", (sameTarget?.n ?? 0) === 0, "at most one executed action per action and target per hour"));
+    const perHour = await readPolicyParameter(db, "target-actions-per-hour");
+    checks.push(check("target_rate_limit", (sameTarget?.n ?? 0) < perHour, `at most ${perHour} executed action(s) per action and target per hour`));
     const platform = await db.prepare(
       `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
     ).bind(day).first<{ n: number }>();
-    checks.push(check("platform_daily_limit", !["deploy_commit", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < 6,
-      "at most 6 deploys or rollbacks per day across the platform"));
+    // Council-adjustable inside hard bounds (control-plane-shared/src/policy-params.ts, owner 2026-11-10).
+    const daily = await readPolicyParameter(db, "daily-deploy-limit");
+    checks.push(check("platform_daily_limit", !["deploy_commit", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < daily,
+      `at most ${daily} deploys or rollbacks per day across the platform`));
   } else {
     checks.push(check("known_action", false, `action must be one of ${ACTIONS.join(", ")}`));
   }

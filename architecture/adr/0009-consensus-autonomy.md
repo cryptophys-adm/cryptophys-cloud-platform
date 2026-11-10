@@ -442,3 +442,16 @@ Critical actions are only recorded until the mode is `critical`. The risk is acc
   Migrations never change the mode. Agents cannot change it, and the voters, rules and classes remain unchangeable (§1).
 - **Deploy verification** now accepts any known mode, and fails when an execution has been `executing` for more than 30 minutes.
 - **Tests:** `test/consensus-mode.test.ts` (3). 257 of 257 tests pass.
+
+## Amendment 2026-11-10: council-adjustable policy parameters
+
+Owner: "naikkan ke 10, buatkan PR, dan Policy Engine boleh dimodifikasi oleh cerebrum council"; asked how far, the owner chose "Parameter, consensus saja".
+
+- The daily limit of executed deploys and rollbacks rises from 6 to 10. One executed action per action and target per hour stays.
+- §1's "changing the rules is prohibited" is narrowed for two numeric parameters only. The council changes them with the routine consensus action `set_policy_parameter`, without an owner click:
+  - `daily-deploy-limit`: default 10, hard bounds 1–20;
+  - `target-actions-per-hour`: default 1, hard bounds 1–3.
+- The hard bounds live in reviewed code (`control-plane-shared/src/policy-params.ts`), never in the database. A stored value outside them is clamped. Every vote rejects a value outside them, and the executor refuses it.
+- Each change is written together with a `policy.parameter_changed` audit event.
+- Everything else stays code and outside the council's reach: no trading or funds, the owner click for critical actions, the kill switch, mode shadow, Access, and the list of adjustable parameters itself.
+

@@ -23,9 +23,27 @@ import { observe } from "./syscall.ts";
 import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { executeRegistration } from "./organism.ts";
+import { isPolicyParameter, readPolicyParameter, validPolicyValue } from "../../control-plane-shared/src/policy-params.ts";
+
+/** Owner 2026-11-10: the council changes a Policy Engine parameter, only inside its hard bounds; audited with the write. */
+async function setPolicyParameter(env: SyscallEnv, proposalId: string, decisionId: string, p: Proposal, actor: string): Promise<JsonObject> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, p.action, p.target);
+  if (!isPolicyParameter(p.target)) throw new Error("unknown_policy_parameter");
+  const value = p.params.value;
+  if (!validPolicyValue(p.target, value)) throw new Error("value_outside_hard_bounds");
+  const previous = await readPolicyParameter(env.DB, p.target);
+  await appendAuditEventWithMutation(env.DB, {
+    event_type: "policy.parameter_changed", actor, subject: `policy:${p.target}`, outcome: String(value),
+    payload: { proposal_id: proposalId, parameter: p.target, previous, value },
+  }, () => env.DB.prepare(
+    `INSERT INTO policy_parameters (name, value, updated_by, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (name) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+  ).bind(p.target, value, actor, nowIso()));
+  return { parameter: p.target, previous, value };
+}
 
 /** ADR-0013 phase 3 registrations: routine ones run in phase 2's set, seats and privileged agents after an owner click. */
-const ROUTINE_REGISTRATIONS = ["register_agent", "register_engine"];
+const ROUTINE_REGISTRATIONS = ["register_agent", "register_engine", "set_policy_parameter"];
 const CRITICAL_REGISTRATIONS = ["register_privileged_agent", "admit_voter"];
 
 
@@ -108,6 +126,8 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
     case "register_agent":
     case "register_engine":
       return await executeRegistration(env, proposalId, decisionId, p, actor, (id) => canVote(env, id));
+    case "set_policy_parameter":
+      return await setPolicyParameter(env, proposalId, decisionId, p, actor);
     default:
       throw new Error("no_executor");
   }

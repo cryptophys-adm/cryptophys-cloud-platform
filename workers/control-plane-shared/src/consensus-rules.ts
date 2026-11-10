@@ -5,6 +5,7 @@
  */
 import type { JsonObject } from "./http.ts";
 import { CAPABILITIES, PROHIBITED_CAPABILITY } from "./capabilities.ts";
+import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy-params.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -31,6 +32,8 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
   register_privileged_agent: { class: "critical", target: "agent", description: "Register a DNA-declared agent that asks for a privileged capability" },
   admit_voter: { class: "critical", target: "agent", description: "Give a registered agent a council seat (one per Worker)" },
+  // Owner 2026-11-10: the council may change Policy Engine parameters by consensus alone, inside hard bounds in code.
+  set_policy_parameter: { class: "routine", target: "platform", description: "Change a council-adjustable Policy Engine parameter within its hard bounds" },
 };
 
 /**
@@ -82,6 +85,12 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
   if (p.action === "register_engine") {
     if (!ENGINE_TASK.test(String(p.params.task ?? ""))) return { vote: "reject", reason: "task must be a lowercase identifier" };
     return null; // the registry rule (target service registered and active) and the others apply
+  }
+  if (p.action === "set_policy_parameter") {
+    if (!isPolicyParameter(p.target)) return { vote: "reject", reason: `${p.target} is not a council-adjustable policy parameter` };
+    const b = POLICY_PARAMETERS[p.target];
+    if (!validPolicyValue(p.target, p.params.value)) return { vote: "reject", reason: `value must be an integer from ${b.min} to ${b.max}` };
+    return { vote: "approve", reason: `${p.params.value} is inside the hard bounds ${b.min}-${b.max}` };
   }
   if (p.action === "admit_voter") {
     const a = e.agents[p.target];
