@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "metabolism"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "metabolism", "organism"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {

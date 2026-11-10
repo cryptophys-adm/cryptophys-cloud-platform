@@ -16,6 +16,7 @@ import Consensus from "./pages/Consensus";
 import Knowledge from "./pages/Knowledge";
 import Code from "./pages/Code";
 import Metabolism from "./pages/Metabolism";
+import Organism from "./pages/Organism";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -34,6 +35,7 @@ export default function App() {
   const { head, id } = route;
   let page; let current = head;
   switch (head) {
+    case "organism": page = <Organism />; break;
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;

@@ -25,6 +25,9 @@ export default function Command() {
   // ADR-0012 phase 2: owner notices from the AI Kernel (replaces the GitHub issues).
   const notices = usePoll(() => call("kernel.notices"), 60_000);
   const active = listOf(notices.data, "notices").filter((n: any) => n?.active);
+  // Live digital metabolism (GET /v1/metabolism); nothing here is computed in the browser.
+  const metabolism = usePoll(() => call("kernel.metabolism"), 60_000);
+  const mtb: any = (metabolism.data as any)?.live ?? {};
 
   return (
     <div className="flex flex-col gap-3">
@@ -65,6 +68,30 @@ export default function Command() {
         <Kpi label="Critical 24h" value={ov ? String(counts.critical ?? 0) : "—"} sub={`${counts.warning ?? 0} warn · ${counts.info ?? 0} info`} color={(counts.critical ?? 0) ? "#f85149" : "#3fb950"} icon={<ShieldAlert size={12} />} />
         <Kpi label="AI Mesh" value={ov ? (ov.agents_enabled ? "LIVE" : "HALT") : "—"} sub="global kill switch" color={ov?.agents_enabled === false ? "#f85149" : "#bc8cff"} icon={<Bot size={12} />} />
         <Kpi label="Evidence Gate" value={gate} sub={gate === "GO" ? "no critical evidence" : gate === "BLOCKED" ? "critical evidence open" : "loading"} color={gate === "BLOCKED" ? "#f85149" : gate === "GO" ? "#3fb950" : "#58a6ff"} icon={<CheckCircle size={12} />} />
+      </div>
+
+      {/* Living Organism Metabolism Banner */}
+      <div className="glass p-4 flex flex-wrap items-center justify-between gap-3 border border-emerald-500/20 bg-emerald-500/5">
+        <div className="flex items-center gap-3">
+          <span className="relative flex h-3 w-3">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+          </span>
+          <div>
+            <div className="text-xs font-bold text-white flex items-center gap-2">
+              Autonomous Living Organism · Digital Metabolism
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/20 text-emerald-300">
+                {mtb.power_mode ? "LIVE" : "—"}
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Treasury Kas: <strong className="mono text-emerald-300">{typeof mtb.treasury_reserve_usd === "number" ? `$${mtb.treasury_reserve_usd.toFixed(2)}` : "—"}</strong> · Burn: <strong className="mono text-amber-300">{typeof mtb.infra_burn_cost_24h === "number" ? `$${mtb.infra_burn_cost_24h.toFixed(2)}/day` : "—"}</strong> · Runway: <strong className="mono text-cyan-300">{typeof mtb.runway_days === "number" ? `${Math.floor(mtb.runway_days)} Hari` : "—"}</strong> · Power: <strong className="mono text-emerald-400">{mtb.power_mode ? String(mtb.power_mode).toUpperCase() : "—"}</strong>
+            </div>
+          </div>
+        </div>
+        <a href="#/metabolism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">
+          Lihat Metabolism →
+        </a>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
