@@ -323,13 +323,13 @@ test("15. supervisor waits instead of proposing when the daily or hourly deploy 
     const { env, db, memory } = kernelEnv();
     setMode(db, "deploy");
     behind(db);
-    for (let i = 0; i < 6; i++) insert(db, `svc-${i}`, "executed", 120 + i, i);
+    for (let i = 0; i < 10; i++) insert(db, `svc-${i}`, "executed", 120 + i, i);
     try {
       github();
       const before = proposals(db).length;
       const cycle = await runCycle(env as never, memory, "scheduled");
       assert.equal(proposals(db).length, before, "no proposal while the daily limit is reached");
-      assert.ok(cycle.findings.some((f: any) => /daily limit of 6 deploys reached/.test(String(f.why))));
+      assert.ok(cycle.findings.some((f: any) => /daily limit of 10 deploys reached/.test(String(f.why))));
     } finally { globalThis.fetch = realFetch; }
   }
   {

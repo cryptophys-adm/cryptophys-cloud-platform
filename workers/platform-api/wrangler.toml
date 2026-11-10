@@ -17,7 +17,6 @@ AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 AI_DAILY_REQUEST_LIMIT = "40"
 # 250 keeps the worst case (6k-char input, 600 output tokens, ~34 neurons) under the free 10k neurons/day (2026-11-07).
 AI_ACCOUNT_DAILY_REQUEST_LIMIT = "250"
-CF_ACCOUNT_ID = "8f5d947aa98cc5d48e66fe35d3aef484"
 
 # No routes, custom domains or secrets are configured. The D1 database_id is resolved by the
 # deploy workflow (ADR-0001); OPERATOR_IDENTITIES and the Access vars are set at deploy time.

@@ -17,11 +17,12 @@ import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
 import { latestCensusRow, proposalFor } from "./organism.ts";
+import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
-/** Mirrors the Policy Engine platform_daily_limit (6 deploys or rollbacks per 24 h). */
-export const DAILY_DEPLOY_LIMIT = 6;
+/** Default of the Policy Engine platform_daily_limit; the live value is the council-adjustable policy parameter. */
+export const DAILY_DEPLOY_LIMIT = POLICY_PARAMETERS["daily-deploy-limit"].default;
 /** Wave C: denied or failed syscalls in one hour before the supervisor proposes suspending an agent. */
 export const SUSPEND_AFTER_FAILURES_PER_HOUR = 5;
 
@@ -325,11 +326,12 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       const daily = await env.DB.prepare(
         `SELECT COUNT(*) AS n, MIN(decided_at) AS oldest FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
       ).bind(dayAgo).first<{ n: number; oldest: string | null }>();
-      if ((daily?.n ?? 0) >= DAILY_DEPLOY_LIMIT && pending.units.length > 0) {
+      const dailyLimit = await readPolicyParameter(env.DB, "daily-deploy-limit");
+      if ((daily?.n ?? 0) >= dailyLimit && pending.units.length > 0) {
         const reopens = daily?.oldest ? new Date(Date.parse(daily.oldest) + 86_400_000).toISOString().slice(11, 16) : "later";
-        report.findings.push({ kind: "deploy", action: "none", why: `daily limit of ${DAILY_DEPLOY_LIMIT} deploys reached; ${pending.units.length} unit(s) wait until about ${reopens} UTC` });
+        report.findings.push({ kind: "deploy", action: "none", why: `daily limit of ${dailyLimit} deploys reached; ${pending.units.length} unit(s) wait until about ${reopens} UTC` });
       }
-      for (const u of (daily?.n ?? 0) >= DAILY_DEPLOY_LIMIT ? [] : pending.units) {
+      for (const u of (daily?.n ?? 0) >= dailyLimit ? [] : pending.units) {
         const recentTarget = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND status IN ${ran} AND decided_at >= ? LIMIT 1`,
         ).bind(u.target, hourAgo).first();

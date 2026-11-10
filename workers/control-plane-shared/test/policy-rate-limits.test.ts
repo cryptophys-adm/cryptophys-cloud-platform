@@ -29,18 +29,18 @@ const setMode = (db: Db, mode: string) => db.raw.prepare("UPDATE consensus_contr
 test("R1. once the mode executes, shadow records never count against the deploy limits", async () => {
   const db = migratedDb();
   setMode(db, "deploy");
-  record(db, 6, "shadow_passed", (i) => `svc-${i}`);
+  record(db, 10, "shadow_passed", (i) => `svc-${i}`);
   record(db, 1, "shadow_passed", () => "cryptophys-policy-engine", 0.2);
   const d = await ask(db);
-  assert.equal(check(d, "platform_daily_limit"), true, "six shadow_passed records are not six deploys");
+  assert.equal(check(d, "platform_daily_limit"), true, "ten shadow_passed records are not ten deploys");
   assert.equal(check(d, "target_rate_limit"), true, "a shadow record in the last hour is not an executed action");
 });
 
-test("R2. real executions still count: the sixth executed deploy closes the day, one per target per hour", async () => {
+test("R2. real executions still count: the tenth executed deploy closes the day (owner 2026-11-10), one per target per hour", async () => {
   const db = migratedDb();
   setMode(db, "deploy");
-  record(db, 5, "executed", (i) => `svc-${i}`);
-  assert.equal(check(await ask(db), "platform_daily_limit"), true, "five executed deploys leave room for one more");
+  record(db, 9, "executed", (i) => `svc-${i}`);
+  assert.equal(check(await ask(db), "platform_daily_limit"), true, "nine executed deploys leave room for one more");
   record(db, 1, "executing", () => "svc-x", 3);
   const full = await ask(db);
   assert.equal(check(full, "platform_daily_limit"), false);
@@ -54,8 +54,30 @@ test("R2. real executions still count: the sixth executed deploy closes the day,
 test("R3. in shadow mode the shadow records still simulate the limits faithfully", async () => {
   const db = migratedDb();
   setMode(db, "shadow");
-  record(db, 6, "shadow_passed", (i) => `svc-${i}`);
+  record(db, 10, "shadow_passed", (i) => `svc-${i}`);
   const d = await ask(db);
   assert.equal(check(d, "platform_daily_limit"), false);
   assert.equal(d.decision, "deny");
+});
+
+// Owner 2026-11-10: the council may change Policy Engine parameters by consensus alone, inside hard bounds in code.
+test("R4. the council changes a policy parameter by consensus; values outside the hard bounds are refused and clamped", async () => {
+  const { POLICY_PARAMETERS, readPolicyParameter } = await import("../src/policy-params.ts");
+  const { castVote } = await import("../src/consensus-rules.ts");
+  const db = migratedDb();
+  assert.equal(await readPolicyParameter(db as never, "daily-deploy-limit"), 10, "migration 0044 seeds 10");
+  assert.equal(await readPolicyParameter(db as never, "target-actions-per-hour"), 1);
+  const ev: any = { agents_enabled: true, audit_valid: true, services: {}, registry: {}, agents: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0 };
+  const vote = (target: string, value: unknown) => castVote("policy-engine", { action: "set_policy_parameter", target, params: { value }, class: "routine" } as any, ev);
+  assert.equal(vote("daily-deploy-limit", 12).vote, "approve");
+  assert.equal(vote("daily-deploy-limit", POLICY_PARAMETERS["daily-deploy-limit"].max + 1).vote, "reject");
+  assert.equal(vote("daily-deploy-limit", 2.5).vote, "reject");
+  assert.equal(vote("kill-switch", 0).vote, "reject", "only listed parameters are adjustable");
+  // A value that bypassed consensus outside the bounds is clamped, never trusted.
+  db.raw.prepare("UPDATE policy_parameters SET value = 20 WHERE name = 'target-actions-per-hour'").run();
+  assert.equal(await readPolicyParameter(db as never, "target-actions-per-hour"), POLICY_PARAMETERS["target-actions-per-hour"].max);
+  db.raw.prepare("UPDATE policy_parameters SET value = 12 WHERE name = 'daily-deploy-limit'").run();
+  setMode(db, "deploy");
+  record(db, 11, "executed", (i) => `svc-${i}`);
+  assert.equal(check(await ask(db), "platform_daily_limit"), true, "the Policy Engine reads the parameter");
 });

@@ -52,7 +52,7 @@ const agentStatus = (db: Db, id: string) => ({ ...(db.raw.prepare("SELECT status
 const service = (db: Db, id: string) => (db.raw.prepare("SELECT status, desired_version FROM service_registry WHERE service_id = ?").get(id) as any);
 
 test("1. the phase 2 executable set is routine, reversible, and has no deploy", () => {
-  assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["observe_drift", "register_agent", "register_engine", "registry_disable_service", "registry_enable_service", "resume_agent", "set_desired_version", "suspend_agent"]);
+  assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["observe_drift", "register_agent", "register_engine", "registry_disable_service", "registry_enable_service", "resume_agent", "set_desired_version", "set_policy_parameter", "suspend_agent"]);
   for (const a of PHASE2_EXECUTABLE) assert.doesNotMatch(a, /deploy|rollback|restore|secret|retire|access/);
 });
 
@@ -157,4 +157,21 @@ test("7. target Workers refuse without a live, matching, allowed, fresh consensu
   setMode(db, "shadow");
   await assert.rejects(applyConsensus(registryEnv as never, p.proposal_id, p.policy_decision_id, p.action, p.target, {}), /consensus_shadow_mode/);
   await assert.rejects(observeForConsensus(baseEnv("cryptophys-drift-detector", db) as never, p.proposal_id, p.policy_decision_id), /consensus_shadow_mode/);
+});
+
+test("13. set_policy_parameter executes by consensus alone and is audited with the write (owner 2026-11-10)", async () => {
+  const { env, db } = kernelEnv();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'routine' WHERE control = 'mode'").run();
+  const r = await syscall(env as never, "supervisor", "consensus.propose", { action: "set_policy_parameter", target: "daily-deploy-limit", params: { value: 12 } });
+  assert.equal(r.outcome, "succeeded");
+  const p = last(db);
+  assert.equal(p.status, "executed", p.outcome_json);
+  assert.equal((db.raw.prepare("SELECT value FROM policy_parameters WHERE name = 'daily-deploy-limit'").get() as any).value, 12);
+  const audit = db.raw.prepare("SELECT outcome, payload_json FROM audit_events WHERE event_type = 'policy.parameter_changed'").get() as any;
+  assert.equal(audit.outcome, "12");
+  assert.equal(JSON.parse(audit.payload_json).previous, 10);
+  const bad = await syscall(env as never, "supervisor", "consensus.propose", { action: "set_policy_parameter", target: "target-actions-per-hour", params: { value: 99 } });
+  assert.equal(bad.outcome, "succeeded");
+  assert.notEqual(last(db).status, "executed", "a value outside the hard bounds never executes");
+  assert.equal((db.raw.prepare("SELECT value FROM policy_parameters WHERE name = 'target-actions-per-hour'").get() as any).value, 1);
 });

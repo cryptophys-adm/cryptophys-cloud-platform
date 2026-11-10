@@ -138,7 +138,7 @@ function Agreement() {
 const MODES = ["shadow", "routine", "deploy", "critical"] as const;
 const MODE_EFFECT: Record<string, string> = {
   routine: "Agents will execute passed reversible actions themselves: suspend/resume agents, registry changes, drift observation.",
-  deploy: "Agents will also deploy CI-green commits from main and roll back on their own (1 per target per hour, 6 per day, automatic rollback).",
+  deploy: "Agents will also deploy CI-green commits from main and roll back on their own (1 per target per hour, 10 per day by default, adjustable by the council within hard bounds, automatic rollback).",
   critical: "Critical actions will reach your Owner Approval Queue and run after your click.",
 };
 

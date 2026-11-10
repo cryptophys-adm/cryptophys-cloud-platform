@@ -14,7 +14,7 @@ const ROOT = new URL("../../../", import.meta.url);
 test("P1. codes become sentences; unknown codes are still readable", () => {
   assert.equal(explainReason("failed: target_rate_limit"), "Blocked: This service was already changed in the last hour; it will be retried after that.");
   assert.equal(explainReason("all policy checks passed"), "All safety checks passed.");
-  assert.match(explainReason("failed: platform_daily_limit, ci_green"), /^Blocked: The daily limit of 6 deploys.*; the commit's automated checks/);
+  assert.match(explainReason("failed: platform_daily_limit, ci_green"), /^Blocked: The daily limit of deploys.*; the commit's automated checks/);
   assert.equal(explainCode("brand_new_code"), "brand new code");
   assert.equal(explainReason("A sentence already."), "A sentence already.");
   assert.equal(serviceName("cryptophys-policy-engine"), "Policy Engine");
