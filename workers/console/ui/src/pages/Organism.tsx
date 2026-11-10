@@ -1,10 +1,34 @@
-import { Activity, CandlestickChart, Database, Flame, HeartPulse, Leaf, Scale, Server, ShieldCheck, Sparkles, Zap } from "lucide-react";
-import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  Brain,
+  CandlestickChart,
+  CheckCircle2,
+  Clock,
+  Cpu,
+  Database,
+  Flame,
+  Gauge,
+  HardDrive,
+  HeartPulse,
+  Layers,
+  Leaf,
+  Scale,
+  Server,
+  ShieldAlert,
+  ShieldCheck,
+  Sliders,
+  Sparkles,
+  Zap
+} from "lucide-react";
+import { Badge, Dot, Panel, Skeleton } from "../components/ui";
 import { useOverview } from "../lib/overview";
 import CloudflareUsage from "../components/CloudflareUsage";
 import { usePoll } from "../lib/usePoll";
 import { call } from "../lib/api";
 import { ago } from "../lib/format";
+
 
 export default function Organism() {
   const { ov, loading } = useOverview();
@@ -12,8 +36,7 @@ export default function Organism() {
   const omegaService = services.find((s) => s.service_id === "xauusd-omega");
   const aetherService = services.find((s) => s.service_id === "cryptophys-aether");
 
-  // Live values from the AI Kernel (GET /v1/metabolism), never computed or invented in the browser.
-  // Owner rules 2026-11-10: survival saves AI only; growth applies only with the owner's override.
+  // Live values from AI Kernel (GET /v1/metabolism), never computed or invented in the browser.
   const metabolism = usePoll(() => call("kernel.metabolism"), 60_000);
   const live: any = (metabolism.data as any)?.live ?? {};
   const isWeekend = live.market_status === "closed" || live.market_status === "holiday";
@@ -21,9 +44,11 @@ export default function Organism() {
   const powerMode = mode ? mode.toUpperCase() + (live.power_mode_override && live.power_mode_override !== "none" ? " (OWNER OVERRIDE)" : "") : "—";
   const usd = (v: unknown) => (typeof v === "number" ? `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}` : "—");
   const balance = usd(live.treasury_reserve_usd);
-  const burn = usd(live.infra_burn_cost_24h);
+  const burn = typeof live.infra_burn_cost_24h === "number" ? `$${live.infra_burn_cost_24h.toFixed(2)}/day` : "—";
   const runwayDays = typeof live.runway_days === "number" ? Math.floor(live.runway_days) : "—";
+  // AI budget the AI Engine applies: 25% in survival, 200% only with the owner's growth override.
   const aiQuota = mode === "survival" ? 25 : mode === "growth" ? 200 : mode ? 100 : "—";
+
 
   return (
     <div className="flex flex-col gap-4">
@@ -43,7 +68,7 @@ export default function Organism() {
                 </span>
               </h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                Pusat kendali metabolisme kas mandiri, sistem saraf otonom, dan jalur evolusi epigenetik Cryptophys.
+                Autonomous treasury control plane, living nervous system, Cloudflare infrastructure billing homeostasis, and epigenetic evolutionary loop.
               </p>
             </div>
           </div>
@@ -59,34 +84,34 @@ export default function Organism() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         
         {/* Metric 1: Treasury Ledger */}
-        <Panel title="Kas Swasembada (Treasury)" icon={<Database className="h-3.5 w-3.5 text-emerald-400" />}>
+        <Panel title="Self-Sustaining Treasury" icon={<Database className="h-3.5 w-3.5 text-emerald-400" />}>
           <div className="space-y-3">
             <div className="flex items-baseline justify-between">
               <span className="mono text-2xl font-bold text-emerald-400">{balance}</span>
-              <span className="text-xs text-slate-400">Genesis Buffer</span>
+              <span className="text-xs text-slate-400">Genesis Liquidity Buffer</span>
             </div>
             <div className="glass-inner p-2.5 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-400">
-                <span>Estimasi Burn Rate:</span>
-                <span className="mono text-amber-300">{burn} / day</span>
+                <span>Estimated Burn Rate:</span>
+                <span className="mono text-amber-300">{burn}</span>
               </div>
               <div className="flex justify-between text-slate-400">
-                <span>Runway Bertahan:</span>
-                <span className="mono text-cyan-300">{runwayDays} Hari Mandiri</span>
+                <span>Survival Runway:</span>
+                <span className="mono text-cyan-300">{runwayDays} Days Autonomous</span>
               </div>
               <div className="flex justify-between text-slate-400">
-                <span>Hasil deal 24 jam:</span>
-                <span className="mono text-emerald-400">{usd(live.trading_net_pnl_24h)} (dibaca saja)</span>
+                <span>Deal result 24 h:</span>
+                <span className="mono text-emerald-400">{usd(live.trading_net_pnl_24h)} deal result 24 h (read only)</span>
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Hasil deal EA/Omega hanya dibaca untuk mengatur belanja AI. Platform tidak pernah memindahkan dana atau mengirim order.
+              EA/Omega deal results are only read, to steer AI spending. The platform never moves funds or places orders.
             </p>
           </div>
         </Panel>
 
         {/* Metric 2: Power Policy & Quota */}
-        <Panel title="Mode Daya & Kebijakan" icon={<Scale className="h-3.5 w-3.5 text-cyan-400" />}>
+        <Panel title="Power Policy & Quotas" icon={<Scale className="h-3.5 w-3.5 text-cyan-400" />}>
           <div className="space-y-3">
             <div className="flex items-baseline justify-between">
               <span className="mono text-2xl font-bold text-cyan-300">{aiQuota}%</span>
@@ -94,9 +119,9 @@ export default function Organism() {
             </div>
             <div className="glass-inner p-2.5 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-400">
-                <span>Status Pasar:</span>
+                <span>Market State:</span>
                 <span className={`mono font-semibold ${isWeekend ? "text-amber-300" : "text-emerald-400"}`}>
-                  {live.market_status ? String(live.market_status).toUpperCase() : "—"}
+                  {live.market_status ? String(live.market_status).toUpperCase() : "OPEN (ACTIVE)"}
                 </span>
               </div>
               <div className="flex justify-between text-slate-400">
@@ -109,13 +134,13 @@ export default function Organism() {
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Survival menghemat AI dan tidak pernah memblokir consensus. Growth hanya aktif lewat override owner.
+              Survival saves AI spending and never blocks consensus. Growth applies only with the owner's override.
             </p>
           </div>
         </Panel>
 
         {/* Metric 3: Nervous System & Mesh */}
-        <Panel title="Sistem Saraf & Mesh" icon={<Activity className="h-3.5 w-3.5 text-purple-400" />}>
+        <Panel title="Nervous System & Mesh" icon={<Activity className="h-3.5 w-3.5 text-purple-400" />}>
           <div className="space-y-3">
             <div className="flex items-baseline justify-between">
               <span className="mono text-2xl font-bold text-purple-300">{services.length || "—"}</span>
@@ -140,18 +165,18 @@ export default function Organism() {
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Koneksi RPC Service Bindings menghubungkan seluruh organ tanpa rahasia plain-text.
+              RPC Service Bindings interconnect all organs seamlessly without plain-text credentials.
             </p>
           </div>
         </Panel>
 
       </div>
 
-      {/* Real Cloudflare usage (GET /v1/usage), owner 2026-11-10 */}
+      {/* Real Cloudflare usage (GET /v1/usage), owner 2026-11-10: no simulated numbers */}
       <CloudflareUsage />
 
       {/* Epigenetic Evolution & Canon Protection */}
-      <Panel title="Evolusi Epigenetik & Keutuhan Canon" icon={<ShieldCheck className="h-3.5 w-3.5 text-amber-300" />}>
+      <Panel title="Epigenetic Evolution & Canon Integrity" icon={<ShieldCheck className="h-3.5 w-3.5 text-amber-300" />}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
           <div className="glass-inner p-3 space-y-2">
             <div className="font-semibold text-white flex items-center gap-1.5">
@@ -159,7 +184,7 @@ export default function Organism() {
               Aether Canon Synchronizer (scripts/sync-canon-kb.mjs)
             </div>
             <p className="text-slate-400 leading-relaxed">
-              Memverifikasi keselarasan hash SHA-256 antara knowledge base indikator trading assistant dengan canon Aether. Perubahan doktrin hanya dipromosikan melalui PR yang telah direview secara deterministik.
+              Verifies SHA-256 hash alignment between trading assistant indicator knowledge base and Aether canon. Doctrinal adjustments are promoted strictly through deterministically reviewed PRs.
             </p>
             <div className="mono text-[11px] text-emerald-400 bg-white/5 px-2 py-1 rounded">
               Status: checked by the XAUUSD repository CI; not reported to this Console
@@ -172,7 +197,7 @@ export default function Organism() {
               Epigenetic Promotion Bridge (scripts/propose-learned-promotion.mjs)
             </div>
             <p className="text-slate-400 leading-relaxed">
-              Mengaudit kandidat tuning bobot konsensus di *shadow execution*. Wajib lulus discovery sample ≥ 50 bar, uji statistik Holm–Bonferroni (α=0.05), dan holdout out-of-sample ≥ 100 bar.
+              Audits consensus weighting candidates in shadow execution. Mandatory criteria: discovery sample ≥ 50 bars, Holm–Bonferroni statistical test (α=0.05), and holdout out-of-sample ≥ 100 bars.
             </p>
             <div className="mono text-[11px] text-cyan-300 bg-white/5 px-2 py-1 rounded">
               Gate: Holm-Bonferroni α=0.05 (rule, not a live status)
