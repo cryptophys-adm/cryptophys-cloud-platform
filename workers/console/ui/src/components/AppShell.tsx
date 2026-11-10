@@ -3,8 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight,
-} from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, HeartPulse } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -21,6 +20,7 @@ export const NAV = [
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },
   { label: "Knowledge", href: "#/knowledge", key: "knowledge", icon: Sparkles },
+  { label: "Metabolism", href: "#/metabolism", key: "metabolism", icon: HeartPulse },
   { label: "Recovery", href: "#/recovery", key: "recovery", icon: Wrench },
   { label: "Infrastructure", href: "#/infrastructure", key: "infrastructure", icon: Server },
   { label: "Policy", href: "#/policy", key: "policy", icon: Scale },

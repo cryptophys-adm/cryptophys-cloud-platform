@@ -11,17 +11,18 @@ export default function Organism() {
   const omegaService = services.find((s) => s.service_id === "xauusd-omega");
   const aetherService = services.find((s) => s.service_id === "cryptophys-aether");
 
-  // Determine market status (weekend hibernation check: Fri 22:00 to Sun 22:00 UTC)
-  const now = new Date();
-  const day = now.getUTCDay();
-  const hour = now.getUTCHours();
-  const isWeekend = (day === 5 && hour >= 22) || day === 6 || (day === 0 && hour < 22);
-
-  const powerMode = isWeekend ? "SURVIVAL (HIBERNATING)" : "GROWTH";
-  const balanceUsd = 500.0;
-  const burnRate = isWeekend ? 0.6 : 2.4;
-  const runwayDays = Math.floor(balanceUsd / burnRate);
-  const aiQuota = isWeekend ? 25 : 150;
+  // Live values from the AI Kernel (GET /v1/metabolism), never computed or invented in the browser.
+  // Owner rules 2026-11-10: survival saves AI only; growth applies only with the owner's override.
+  const metabolism = usePoll(() => call("kernel.metabolism"), 60_000);
+  const live: any = (metabolism.data as any)?.live ?? {};
+  const isWeekend = live.market_status === "closed" || live.market_status === "holiday";
+  const mode = String(live.power_mode ?? "");
+  const powerMode = mode ? mode.toUpperCase() + (live.power_mode_override && live.power_mode_override !== "none" ? " (OWNER OVERRIDE)" : "") : "—";
+  const usd = (v: unknown) => (typeof v === "number" ? `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}` : "—");
+  const balance = usd(live.treasury_reserve_usd);
+  const burn = usd(live.infra_burn_cost_24h);
+  const runwayDays = typeof live.runway_days === "number" ? Math.floor(live.runway_days) : "—";
+  const aiQuota = mode === "survival" ? 25 : mode === "growth" ? 200 : mode ? 100 : "—";
 
   return (
     <div className="flex flex-col gap-4">
@@ -46,7 +47,7 @@ export default function Organism() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge tone={isWeekend ? "amber" : "green"}>
+            <Badge tone={mode === "survival" ? "amber" : mode === "growth" ? "cyan" : "green"}>
               {powerMode}
             </Badge>
           </div>
@@ -60,25 +61,25 @@ export default function Organism() {
         <Panel title="Kas Swasembada (Treasury)" icon={<Database className="h-3.5 w-3.5 text-emerald-400" />}>
           <div className="space-y-3">
             <div className="flex items-baseline justify-between">
-              <span className="mono text-2xl font-bold text-emerald-400">${balanceUsd.toFixed(2)}</span>
+              <span className="mono text-2xl font-bold text-emerald-400">{balance}</span>
               <span className="text-xs text-slate-400">Genesis Buffer</span>
             </div>
             <div className="glass-inner p-2.5 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-400">
                 <span>Estimasi Burn Rate:</span>
-                <span className="mono text-amber-300">${burnRate.toFixed(2)} / day</span>
+                <span className="mono text-amber-300">{burn} / day</span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Runway Bertahan:</span>
                 <span className="mono text-cyan-300">{runwayDays} Hari Mandiri</span>
               </div>
               <div className="flex justify-between text-slate-400">
-                <span>Alokasi Trading:</span>
-                <span className="mono text-emerald-400">Auto-funding Infra</span>
+                <span>Hasil deal 24 jam:</span>
+                <span className="mono text-emerald-400">{usd(live.trading_net_pnl_24h)} (dibaca saja)</span>
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Hasil trading riil dari EA/Omega secara mandiri membiayai operasional cloud (Workers, AI inference, D1).
+              Hasil deal EA/Omega hanya dibaca untuk mengatur belanja AI. Platform tidak pernah memindahkan dana atau mengirim order.
             </p>
           </div>
         </Panel>
@@ -94,12 +95,12 @@ export default function Organism() {
               <div className="flex justify-between text-slate-400">
                 <span>Status Pasar:</span>
                 <span className={`mono font-semibold ${isWeekend ? "text-amber-300" : "text-emerald-400"}`}>
-                  {isWeekend ? "CLOSED (HIBERNATE)" : "OPEN (ACTIVE)"}
+                  {live.market_status ? String(live.market_status).toUpperCase() : "—"}
                 </span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Throttling Policy:</span>
-                <span className="mono text-slate-200">Tier 1 Throttled in Survival</span>
+                <span className="mono text-slate-200">Survival: memory &amp; knowledge only</span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Supervisor Cycle:</span>
@@ -107,7 +108,7 @@ export default function Organism() {
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Policy Engine menghemat daya saat kas kritis dan memperluas kapasitas saat kas surplus.
+              Survival menghemat AI dan tidak pernah memblokir consensus. Growth hanya aktif lewat override owner.
             </p>
           </div>
         </Panel>
@@ -116,20 +117,20 @@ export default function Organism() {
         <Panel title="Sistem Saraf & Mesh" icon={<Activity className="h-3.5 w-3.5 text-purple-400" />}>
           <div className="space-y-3">
             <div className="flex items-baseline justify-between">
-              <span className="mono text-2xl font-bold text-purple-300">{services.length || 18}</span>
+              <span className="mono text-2xl font-bold text-purple-300">{services.length || "—"}</span>
               <span className="text-xs text-slate-400">Registered Services</span>
             </div>
             <div className="glass-inner p-2.5 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-400">
                 <span>xauusd-omega:</span>
                 <span className={`mono ${omegaService?.drifted ? "text-amber-400" : "text-emerald-400"}`}>
-                  {omegaService?.drifted ? "Drifted" : "Healthy & Probed"}
+                  {!omegaService ? "Not observed" : omegaService.drifted ? "Drifted" : "In sync"}
                 </span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>cryptophys-aether:</span>
                 <span className={`mono ${aetherService?.drifted ? "text-amber-400" : "text-emerald-400"}`}>
-                  {aetherService?.drifted ? "Drifted" : "Canon Guardian Synced"}
+                  {!aetherService ? "Not observed" : aetherService.drifted ? "Drifted" : "In sync"}
                 </span>
               </div>
               <div className="flex justify-between text-slate-400">
@@ -157,7 +158,7 @@ export default function Organism() {
               Memverifikasi keselarasan hash SHA-256 antara knowledge base indikator trading assistant dengan canon Aether. Perubahan doktrin hanya dipromosikan melalui PR yang telah direview secara deterministik.
             </p>
             <div className="mono text-[11px] text-emerald-400 bg-white/5 px-2 py-1 rounded">
-              Status: SHA-256 Identical & Compiled ✓
+              Status: checked by the XAUUSD repository CI; not reported to this Console
             </div>
           </div>
 
@@ -170,7 +171,7 @@ export default function Organism() {
               Mengaudit kandidat tuning bobot konsensus di *shadow execution*. Wajib lulus discovery sample ≥ 50 bar, uji statistik Holm–Bonferroni (α=0.05), dan holdout out-of-sample ≥ 100 bar.
             </p>
             <div className="mono text-[11px] text-cyan-300 bg-white/5 px-2 py-1 rounded">
-              Empirical Gate: Holm-Bonferroni α=0.05 Required
+              Gate: Holm-Bonferroni α=0.05 (rule, not a live status)
             </div>
           </div>
         </div>

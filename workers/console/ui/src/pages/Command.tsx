@@ -25,6 +25,9 @@ export default function Command() {
   // ADR-0012 phase 2: owner notices from the AI Kernel (replaces the GitHub issues).
   const notices = usePoll(() => call("kernel.notices"), 60_000);
   const active = listOf(notices.data, "notices").filter((n: any) => n?.active);
+  // Live digital metabolism (GET /v1/metabolism); nothing here is computed in the browser.
+  const metabolism = usePoll(() => call("kernel.metabolism"), 60_000);
+  const mtb: any = (metabolism.data as any)?.live ?? {};
 
   return (
     <div className="flex flex-col gap-3">
@@ -78,16 +81,16 @@ export default function Command() {
             <div className="text-xs font-bold text-white flex items-center gap-2">
               Autonomous Living Organism · Digital Metabolism
               <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/20 text-emerald-300">
-                ACTIVE
+                {mtb.power_mode ? "LIVE" : "—"}
               </span>
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              Treasury Kas: <strong className="mono text-emerald-300">$500.00</strong> · Burn: <strong className="mono text-amber-300">$2.40/day</strong> · Runway: <strong className="mono text-cyan-300">208 Hari</strong> · Power: <strong className="mono text-emerald-400">GROWTH (150% AI Quota)</strong>
+              Treasury Kas: <strong className="mono text-emerald-300">{typeof mtb.treasury_reserve_usd === "number" ? `$${mtb.treasury_reserve_usd.toFixed(2)}` : "—"}</strong> · Burn: <strong className="mono text-amber-300">{typeof mtb.infra_burn_cost_24h === "number" ? `$${mtb.infra_burn_cost_24h.toFixed(2)}/day` : "—"}</strong> · Runway: <strong className="mono text-cyan-300">{typeof mtb.runway_days === "number" ? `${Math.floor(mtb.runway_days)} Hari` : "—"}</strong> · Power: <strong className="mono text-emerald-400">{mtb.power_mode ? String(mtb.power_mode).toUpperCase() : "—"}</strong>
             </div>
           </div>
         </div>
-        <a href="#/organism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">
-          Lihat Organism Hub →
+        <a href="#/metabolism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">
+          Lihat Metabolism →
         </a>
       </div>
 

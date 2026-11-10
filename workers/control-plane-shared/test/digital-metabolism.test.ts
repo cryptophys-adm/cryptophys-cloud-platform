@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { baseEnv, migratedDb } from "./harness.ts";
+
+const read = (p: string) => readFileSync(new URL(`../../../${p}`, import.meta.url), "utf8");
 import { parsePolicyRequest, decide, evaluatePolicy, getActivePowerMode } from "../../policy-engine/src/index.ts";
 import { observeMetabolism, computeMarketStatus } from "../../ai-kernel/src/syscall.ts";
 import { evaluateMetabolismState, runCycle } from "../../ai-kernel/src/supervisor.ts";
@@ -155,4 +158,19 @@ test("P2-M5 growth budgets apply only as an owner override, survival savings app
   await db.prepare("UPDATE metabolism_controls SET value = 'none' WHERE control = 'power_mode_override'").run();
   await db.prepare("UPDATE metabolism_controls SET value = 'survival' WHERE control = 'power_mode'").run();
   assert.equal(await reserveCount(7), 1, "survival still saves automatically (25%)");
+});
+
+test("P2-M6 the Console's metabolism view is read-only and carries live state, cycles, ledger and audited changes", async () => {
+  const { metabolismView } = await import("../../ai-kernel/src/metabolism-view.ts");
+  const db = migratedDb();
+  const env: any = { ...baseEnv("cryptophys-ai-kernel", db) };
+  await evaluateMetabolismState(env, Date.UTC(2026, 10, 14, 12, 0, 0));
+  const before = (db as any).raw.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
+  const v: any = await metabolismView(env, Date.UTC(2026, 10, 14, 12, 5, 0));
+  assert.equal(v.live.power_mode, "survival");
+  assert.equal(v.cycles.length, 1);
+  assert.equal(v.ledger[0].entry_type, "capital_injection");
+  assert.deepEqual(v.mode_changes.map((c: any) => [c.previous_mode, c.mode]), [["homeostasis", "survival"]]);
+  assert.equal((db as any).raw.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n, before, "the view writes nothing");
+  assert.match(read("workers/ai-kernel/src/index.ts"), /path === "\/v1\/metabolism" && request\.method === "GET"/);
 });
