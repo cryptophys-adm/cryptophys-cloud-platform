@@ -16,6 +16,7 @@ import { serviceName } from "../lib/plain";
 
 export const NAV = [
   { label: "Command", href: "#/", key: "", icon: Terminal },
+  { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },

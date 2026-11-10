@@ -67,6 +67,30 @@ export default function Command() {
         <Kpi label="Evidence Gate" value={gate} sub={gate === "GO" ? "no critical evidence" : gate === "BLOCKED" ? "critical evidence open" : "loading"} color={gate === "BLOCKED" ? "#f85149" : gate === "GO" ? "#3fb950" : "#58a6ff"} icon={<CheckCircle size={12} />} />
       </div>
 
+      {/* Living Organism Metabolism Banner */}
+      <div className="glass p-4 flex flex-wrap items-center justify-between gap-3 border border-emerald-500/20 bg-emerald-500/5">
+        <div className="flex items-center gap-3">
+          <span className="relative flex h-3 w-3">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+          </span>
+          <div>
+            <div className="text-xs font-bold text-white flex items-center gap-2">
+              Autonomous Living Organism · Digital Metabolism
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/20 text-emerald-300">
+                ACTIVE
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Treasury Kas: <strong className="mono text-emerald-300">$500.00</strong> · Burn: <strong className="mono text-amber-300">$2.40/day</strong> · Runway: <strong className="mono text-cyan-300">208 Hari</strong> · Power: <strong className="mono text-emerald-400">GROWTH (150% AI Quota)</strong>
+            </div>
+          </div>
+        </div>
+        <a href="#/organism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">
+          Lihat Organism Hub →
+        </a>
+      </div>
+
       <div className="grid gap-3 lg:grid-cols-2">
         <Panel title="Approval Queue" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />} right={<Badge tone={plans.length ? "amber" : "green"}>{plans.length} pending</Badge>}>
           {loading && !ov ? <Skeleton /> : plans.length === 0 ? <Empty>No proposals waiting for a human. The mesh is acting within its mandate.</Empty> : (
