@@ -1,6 +1,7 @@
 import { Activity, CandlestickChart, Database, Flame, HeartPulse, Leaf, Scale, Server, ShieldCheck, Sparkles, Zap } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { useOverview } from "../lib/overview";
+import CloudflareUsage from "../components/CloudflareUsage";
 import { usePoll } from "../lib/usePoll";
 import { call } from "../lib/api";
 import { ago } from "../lib/format";
@@ -145,6 +146,9 @@ export default function Organism() {
         </Panel>
 
       </div>
+
+      {/* Real Cloudflare usage (GET /v1/usage), owner 2026-11-10 */}
+      <CloudflareUsage />
 
       {/* Epigenetic Evolution & Canon Protection */}
       <Panel title="Evolusi Epigenetik & Keutuhan Canon" icon={<ShieldCheck className="h-3.5 w-3.5 text-amber-300" />}>

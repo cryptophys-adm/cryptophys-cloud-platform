@@ -176,7 +176,7 @@ export function ActivityChart({ buckets, bin, series, height = 120, caption }: {
   const tip = useTip();
   const [hover, setHover] = useState<number | null>(null);
   const top = niceMax(Math.max(1, ...buckets.map((b) => b.total)));
-  const padL = 26, padB = 18, padT = 6;
+  const padL = Math.max(26, String(top).length * 6 + 10), padB = 18, padT = 6;
   const plotW = Math.max(0, width - padL - 4);
   const plotH = height - padB - padT;
   const slot = buckets.length ? plotW / buckets.length : 0;
@@ -193,7 +193,7 @@ export function ActivityChart({ buckets, bin, series, height = 120, caption }: {
           {[0, top / 2, top].map((v) => (
             <g key={v}>
               <line x1={padL} x2={width - 2} y1={y(v)} y2={y(v)} stroke={v === 0 ? AXIS : GRID} strokeWidth={1} />
-              <text x={padL - 4} y={y(v) + 3} textAnchor="end" fontSize={9} fill="#7d8590" className="mono">{Number.isInteger(v) ? v : v.toFixed(1)}</text>
+              <text x={padL - 4} y={y(v) + 3} textAnchor="end" fontSize={9} fill="#7d8590" className="mono">{Number.isInteger(v) ? v.toLocaleString("en-US") : v.toFixed(1)}</text>
             </g>
           ))}
           {buckets.map((b, i) => {

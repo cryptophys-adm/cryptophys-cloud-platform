@@ -9,6 +9,7 @@ import { accessGate, accessConfigured, listConfigured, requireOperator } from ".
 import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
+import { cloudflareUsage } from "../../control-plane-shared/src/cf-usage.ts";
 
 /** The kernel's read-only RPC surface (workers/ai-kernel/src/worker.ts KernelRpc). */
 export interface KernelRpcBinding { overview(): Promise<Record<string, unknown>> }
@@ -27,6 +28,9 @@ export interface Env {
   AI_DAILY_REQUEST_LIMIT?: string;
   AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string;
   KERNEL?: KernelRpcBinding;
+  /** Owner-created, read-only (Account Analytics: Read) token and the account id for GET /v1/usage. */
+  CF_ANALYTICS_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
 }
 
 const SERVICE = "cryptophys-platform-api";
@@ -98,7 +102,7 @@ export default {
     if (url.pathname === "/health" || url.pathname === "/healthz") return json(platformHealth(env));
     if (url.pathname === "/ready" || url.pathname === "/readyz") return readiness(env);
     if (url.pathname === "/") {
-      return json({ service: env.PLATFORM_NAME, api_version: env.API_CONTRACT_VERSION, endpoints: ["/health", "/ready", "/v1/overview[?advisory=true]"],
+      return json({ service: env.PLATFORM_NAME, api_version: env.API_CONTRACT_VERSION, endpoints: ["/health", "/ready", "/v1/overview[?advisory=true]", "/v1/usage"],
         operating_system: "AI Worker OS (ADR-0007): agents and the MCP front door live in cryptophys-ai-kernel" });
     }
     if (url.pathname === "/v1/overview") {
@@ -116,6 +120,12 @@ export default {
         body.advisory = await engineFor({ ...env, DB: env.DB }, SERVICE, [overviewTask.name]).run(overviewTask, overview, `overview:${Date.now()}`);
       }
       return json(body);
+    }
+    if (url.pathname === "/v1/usage") {
+      // Real Cloudflare usage against the free-plan limits (read only; the token never leaves this Worker).
+      const operator = await requireOperator(request, env);
+      if (!operator.ok) return operator.response;
+      return json(await cloudflareUsage(env));
     }
     return json({ error: "not_found" }, 404);
   },
