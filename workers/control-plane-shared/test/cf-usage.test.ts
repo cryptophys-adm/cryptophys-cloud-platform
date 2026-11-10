@@ -50,9 +50,9 @@ test("U2. with the token, every metric is read from GraphQL for today (UTC) agai
   resetUsageCache();
   const { fetcher, calls } = fakeGraphql({
     workersInvocationsAdaptive: () => [
-      { sum: { requests: 1200, errors: 3 }, dimensions: { date: "2026-11-10", scriptName: "cryptophys-ai-kernel" } },
-      { sum: { requests: 300, errors: 0 }, dimensions: { date: "2026-11-10", scriptName: "cryptophys-console" } },
-      { sum: { requests: 9000, errors: 1 }, dimensions: { date: "2026-11-09", scriptName: "cryptophys-ai-kernel" } },
+      { sum: { requests: 1200, errors: 3 }, dimensions: { datetime: "2026-11-10T12:00:00Z", scriptName: "cryptophys-ai-kernel" } },
+      { sum: { requests: 300, errors: 0 }, dimensions: { datetime: "2026-11-10T14:00:00Z", scriptName: "cryptophys-console" } },
+      { sum: { requests: 9000, errors: 1 }, dimensions: { datetime: "2026-11-09T08:00:00Z", scriptName: "cryptophys-ai-kernel" } },
     ],
     d1AnalyticsAdaptiveGroups: () => [{ sum: { rowsRead: 250_000, rowsWritten: 5_000 }, dimensions: { date: "2026-11-10" } }],
     aiInferenceAdaptiveGroups: () => [{ sum: { totalNeurons: 2500 }, dimensions: { date: "2026-11-10" } }],
@@ -64,7 +64,13 @@ test("U2. with the token, every metric is read from GraphQL for today (UTC) agai
   const r: any = await cloudflareUsage({ CF_ANALYTICS_TOKEN: "tok", CF_ACCOUNT_ID: ACCOUNT }, NOW, fetcher);
   assert.equal(r.configured, true);
   assert.equal(calls.length, 4);
-  assert.ok(calls.every((c) => c.auth === "Bearer tok" && c.vars.a === ACCOUNT && c.vars.e === "2026-11-10" && c.vars.s === "2026-11-04"));
+  assert.ok(calls.every((c) => c.auth === "Bearer tok" && c.vars.a === ACCOUNT));
+  const workersCall = calls.find((c) => c.query.includes("workersInvocationsAdaptive"))!;
+  assert.equal(workersCall.vars.s, "2026-11-04T00:00:00Z");
+  assert.equal(workersCall.vars.e, "2026-11-10T23:59:59Z");
+  const d1Call = calls.find((c) => c.query.includes("d1AnalyticsAdaptiveGroups"))!;
+  assert.equal(d1Call.vars.s, "2026-11-04");
+  assert.equal(d1Call.vars.e, "2026-11-10");
   const m = Object.fromEntries(r.metrics.map((x: any) => [x.key, x]));
   assert.deepEqual([m.workers_requests.today, m.workers_requests.limit, m.workers_requests.pct], [1500, FREE_LIMITS.workers_requests.limit, 1.5]);
   assert.equal(m.workers_requests.history.find((h: any) => h.date === "2026-11-09").value, 9000);
