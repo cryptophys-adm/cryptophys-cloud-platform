@@ -175,8 +175,10 @@ test("U4. with the token, billable usage is fetched and parsed into Spend Summar
   assert.equal(cd.usage_cost, 0.03);
 
   // Check DB persistence to infra_burn_metrics
-  const burnRows = db.raw.prepare("SELECT service_id, estimated_cost_usd FROM infra_burn_metrics WHERE period_day = '2026-11-10'").all() as any[];
-  assert.ok(burnRows.length >= 1);
+  const burnRows = db.raw.prepare("SELECT service_id, estimated_cost_usd FROM infra_burn_metrics WHERE period_day = '2026-11-10' ORDER BY service_id").all() as any[];
+  assert.equal(burnRows.length, 2);
+  assert.equal(burnRows.find((b: any) => b.service_id === "cryptophys-ai-kernel").estimated_cost_usd, 1.41);
+  assert.equal(burnRows.find((b: any) => b.service_id === "cryptophys-platform-api").estimated_cost_usd, 1.20);
 });
 
 test("U5. when billable costs exceed Free Tier, supervisor/orchestrator throttling intents are generated", async () => {
@@ -236,4 +238,28 @@ test("U6. billable usage API error reports an error cleanly without breaking Gra
   assert.equal(r.spend_summary, null);
   assert.equal(r.billable_products.length, 0);
   assert.equal(r.metrics.find((m: any) => m.key === "workers_requests").today, 50);
+});
+
+test("U7. when billable API returns empty, fallback to recorded infra_burn_metrics in DB keeps spend summary and throttling active", async () => {
+  resetUsageCache();
+  const db = migratedDb();
+  db.raw.prepare(
+    "INSERT INTO infra_burn_metrics (metric_id, period_day, service_id, ai_neurons, estimated_cost_usd, calculated_at) VALUES ('brn_ai_kernel_20261110', '2026-11-10', 'cryptophys-ai-kernel', 10000, 1.41, '2026-11-10T12:00:00Z')"
+  ).run();
+
+  const { fetcher } = fakeGraphql({
+    workersInvocationsAdaptive: () => [],
+    d1AnalyticsAdaptiveGroups: () => [],
+    aiInferenceAdaptiveGroups: () => [],
+    kvOperationsAdaptiveGroups: () => [],
+    billableUsage: () => [],
+  });
+
+  const r: any = await cloudflareUsage({ CF_ANALYTICS_TOKEN: "tok", CF_ACCOUNT_ID: ACCOUNT, DB: db as never }, NOW, fetcher);
+  assert.equal(r.configured, true);
+  assert.ok(r.spend_summary);
+  assert.equal(r.spend_summary.total_cost, 1.41);
+  assert.equal(r.billable_products.length, 1);
+  assert.equal(r.free_tier_status, "overage_detected");
+  assert.ok(r.orchestrator_cost_intents.length >= 1);
 });

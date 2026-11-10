@@ -28,8 +28,9 @@ export interface Env {
   AI_DAILY_REQUEST_LIMIT?: string;
   AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string;
   KERNEL?: KernelRpcBinding;
-  /** Owner-created, read-only (Account Analytics: Read) token and the account id for GET /v1/usage. */
+  /** Owner-created, read-only (Account Analytics: Read and Billing: Read) token and the account id for GET /v1/usage. */
   CF_ANALYTICS_TOKEN?: string;
+  CF_BILLING_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
 }
 
