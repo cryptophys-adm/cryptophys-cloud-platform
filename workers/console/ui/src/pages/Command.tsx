@@ -82,12 +82,12 @@ export default function Command() {
               </span>
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              Treasury Kas: <strong className="mono text-emerald-300">$500.00</strong> · Burn: <strong className="mono text-amber-300">$2.40/day</strong> · Runway: <strong className="mono text-cyan-300">208 Hari</strong> · Power: <strong className="mono text-emerald-400">GROWTH (150% AI Quota)</strong>
+              Treasury: <strong className="mono text-emerald-300">$500.00</strong> · Burn: <strong className="mono text-amber-300">$2.40/day</strong> · Runway: <strong className="mono text-cyan-300">208 Days</strong> · Power: <strong className="mono text-emerald-400">GROWTH (150% AI Quota)</strong>
             </div>
           </div>
         </div>
         <a href="#/organism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">
-          Lihat Organism Hub →
+          View Organism Hub →
         </a>
       </div>
 
