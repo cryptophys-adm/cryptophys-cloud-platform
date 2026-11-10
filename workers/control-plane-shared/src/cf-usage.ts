@@ -239,7 +239,7 @@ export function parseBillableData(rows: any[], now: number): {
 }
 
 const Q = {
-  workers: `query($a:string!,$s:Date!,$e:Date!){viewer{accounts(filter:{accountTag:$a}){g:workersInvocationsAdaptive(limit:10000,filter:{date_geq:$s,date_leq:$e}){sum{requests errors}dimensions{date scriptName}}}}}`,
+  workers: `query($a:string!,$s:Time!,$e:Time!){viewer{accounts(filter:{accountTag:$a}){g:workersInvocationsAdaptive(limit:10000,filter:{datetime_geq:$s,datetime_leq:$e}){sum{requests errors}dimensions{datetime scriptName}}}}}`,
   d1: `query($a:string!,$s:Date!,$e:Date!){viewer{accounts(filter:{accountTag:$a}){g:d1AnalyticsAdaptiveGroups(limit:10000,filter:{date_geq:$s,date_leq:$e}){sum{rowsRead rowsWritten}dimensions{date}}}}}`,
   ai: `query($a:string!,$s:Date!,$e:Date!){viewer{accounts(filter:{accountTag:$a}){g:aiInferenceAdaptiveGroups(limit:10000,filter:{date_geq:$s,date_leq:$e}){sum{totalNeurons}dimensions{date}}}}}`,
   kv: `query($a:string!,$s:Date!,$e:Date!){viewer{accounts(filter:{accountTag:$a}){g:kvOperationsAdaptiveGroups(limit:10000,filter:{date_geq:$s,date_leq:$e}){sum{requests}dimensions{date actionType}}}}}`,
@@ -249,7 +249,7 @@ function byDate(rows: any[], pick: (r: any) => number, where: (r: any) => boolea
   const m = new Map<string, number>();
   for (const r of rows ?? []) {
     if (!where(r)) continue;
-    const d = String(r?.dimensions?.date ?? "");
+    const d = String(r?.dimensions?.date ?? r?.dimensions?.datetime?.slice(0, 10) ?? "");
     m.set(d, (m.get(d) ?? 0) + (Number(pick(r)) || 0));
   }
   return m;
@@ -304,18 +304,20 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
     };
   }
   if (cache && cache.account === account && now - cache.at < USAGE_CACHE_MS) return { ...cache.body, cached: true, platform };
-  const vars = { a: account, s: dates[0], e: today };
-  const run = async (q: string) => { try { return { rows: (await gql(fetcher, token, q, vars)).g ?? [] }; } catch (e) { return { error: String((e as Error)?.message ?? e) }; } };
+  const varsDate = { a: account, s: dates[0], e: today };
+  const varsTime = { a: account, s: `${dates[0]}T00:00:00Z`, e: `${today}T23:59:59Z` };
+  const run = async (q: string, vars: Record<string, unknown> = varsDate) => { try { return { rows: (await gql(fetcher, token, q, vars)).g ?? [] }; } catch (e) { return { error: String((e as Error)?.message ?? e) }; } };
   const [w, d, a, k, billable] = await Promise.all([
-    run(Q.workers),
-    run(Q.d1),
-    run(Q.ai),
-    run(Q.kv),
+    run(Q.workers, varsTime),
+    run(Q.d1, varsDate),
+    run(Q.ai, varsDate),
+    run(Q.kv, varsDate),
     fetchBillableUsage(fetcher, token, account),
   ]);
   const isWrite = (r: any) => /write|put|delete/i.test(String(r?.dimensions?.actionType ?? ""));
+  const isToday = (r: any) => String(r?.dimensions?.date ?? r?.dimensions?.datetime?.slice(0, 10) ?? "") === today;
   const scripts = w.rows
-    ? [...byDate(w.rows.filter((r: any) => r?.dimensions?.date === today).map((r: any) => ({ dimensions: { date: r.dimensions.scriptName }, sum: r.sum })), (r) => r.sum?.requests).entries()]
+    ? [...byDate(w.rows.filter(isToday).map((r: any) => ({ dimensions: { date: r.dimensions?.scriptName }, sum: r.sum })), (r) => r.sum?.requests).entries()]
       .map(([script, requests]) => ({ script, requests })).sort((x, y) => y.requests - x.requests)
     : [];
   const errorsToday = w.rows ? byDate(w.rows, (r) => r.sum?.errors).get(today) ?? 0 : null;
