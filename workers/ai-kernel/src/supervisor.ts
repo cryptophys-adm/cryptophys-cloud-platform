@@ -10,6 +10,7 @@
  *    agent plan for it, none proposed in the last 24 h) -> recovery.propose (tier 1).
  */
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
+import { appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
@@ -158,15 +159,21 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
       targetMode = "survival";
       reason = `drawdown or low runway (net 24h: $${tradingNetPnl}, runway: ${runwayDays}d): throttling compute`;
     } else if (tradingNetPnl > 50 && runwayDays > 90) {
-      targetMode = "growth";
-      reason = `trading surplus achieved (net 24h: +$${tradingNetPnl}, runway: ${runwayDays}d): expanding compute for shadow evolution`;
+      // Growth raises budgets, so the supervisor never enters it on its own: it only reports that
+      // the owner could set the override (owner 2026-11-10).
+      reason = `growth eligible (net 24h: +$${tradingNetPnl}, runway: ${runwayDays}d); staying in homeostasis until the owner sets the growth override`;
     }
 
     let modeChanged = false;
     if (autoAdapt && targetMode !== currentMode) {
-      await env.DB.prepare(
-        "UPDATE metabolism_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'power_mode'"
-      ).bind(targetMode, "kernel:supervisor", new Date(now).toISOString()).run();
+      // The power mode changes what the Policy Engine allows, so every change is in the audit chain,
+      // committed together with the mode itself.
+      await appendAuditEventWithMutation(env.DB, {
+        event_type: "metabolism.power_mode_changed", actor: "agent:supervisor", subject: "metabolism:power_mode", outcome: targetMode,
+        payload: { previous_mode: currentMode, mode: targetMode, reason: reason.slice(0, 300), market_status: marketStatus },
+      }, () => env.DB.prepare(
+        "UPDATE metabolism_controls SET value = ?, updated_by = ?, updated_at = ? WHERE control = 'power_mode' AND value = ?"
+      ).bind(targetMode, "agent:supervisor", new Date(now).toISOString(), currentMode));
       modeChanged = true;
     }
 

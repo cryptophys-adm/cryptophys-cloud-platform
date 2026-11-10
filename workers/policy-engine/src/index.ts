@@ -70,7 +70,9 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     checks.push(...(await agentSyscallChecks(db, String(context.__subject ?? ""), resource)));
     const powerMode = await getActivePowerMode(db);
     if (powerMode === "survival") {
-      const nonEssential = ["memory.remember", "knowledge.propose", "consensus.propose"];
+      // Survival saves AI tokens only. consensus.propose is never throttled: deploys, rollbacks and
+      // agent suspensions must stay possible on weekends and in drawdowns (owner 2026-11-10).
+      const nonEssential = ["memory.remember", "knowledge.propose"];
       if (nonEssential.includes(resource)) {
         checks.push(check("power_mode_survival", false, `capability ${resource} is throttled in survival mode to conserve treasury runway`));
       }
