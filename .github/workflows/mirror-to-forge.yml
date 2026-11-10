@@ -1,6 +1,6 @@
 name: Mirror to Forge
 
-# ADR-0012 phase 1: while GitHub is still the source of truth, push main to the Forge's Artifacts
+# ADR-0012 phases 1–4: while GitHub is still the source of truth, push main to the Forge's Artifacts
 # repository (cryptophys/platform) after every push, so both hold the same commit SHAs. The write
 # token is minted by the Forge for the CI service token only, lives 10 minutes, and is masked.
 # Before the Forge is deployed and has imported the repository, the run is skipped with a notice.
