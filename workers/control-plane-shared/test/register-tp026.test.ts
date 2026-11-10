@@ -33,14 +33,26 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
     EXT_XAUUSD_PULL_ADAPTER: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_NEXUS: http(() => new Response("<html>", { status: 200 })),
     EXT_AETHER: http(() => Response.json({ status: "ok" })),
+    EXT_XAUUSD_OMEGA: http(() => Response.json({ status: "ok" })),
     ...extra,
   } as any;
 }
 
-test("1. Migration: service_registry has 17 rows (15 + Aether from 0027 + Forge from 0030), console and home registered, schemaReady is true", async () => {
+test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge from 0030 + Omega from 0042), console and home registered, schemaReady is true", async () => {
   const db = migratedDb();
   const rows = db.raw.prepare("SELECT * FROM service_registry ORDER BY service_id").all() as any[];
-  assert.equal(rows.length, 17);
+  assert.equal(rows.length, 18);
+
+  const omegaRow = rows.find((r) => r.service_id === "xauusd-omega");
+  assert.ok(omegaRow);
+  assert.equal(omegaRow.display_name, "XAUUSD Omega Execution Engine");
+  assert.equal(omegaRow.environment, "production");
+  assert.equal(omegaRow.status, "registered");
+  assert.equal(omegaRow.desired_version, null);
+  const omegaMeta = JSON.parse(omegaRow.metadata_json);
+  assert.equal(omegaMeta.owner, "cryptophys-adm");
+  assert.equal(omegaMeta.health_path, "/health");
+  assert.equal(omegaMeta.deployed_by, "cryptophys-adm/xauusd-ai-trading-assistant");
 
   const consoleRow = rows.find((r) => r.service_id === "cryptophys-console");
   assert.ok(consoleRow);
@@ -236,3 +248,25 @@ test("TP-027: the Drift Detector is not ready without its EXT_AETHER binding", a
   assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
   assert.equal((await call(drift, { ...env, EXT_AETHER: undefined }, req("GET", "/ready"))).status, 503);
 });
+
+test("TP-042: after 0042 the xauusd-omega row is registered and probed at /health over EXT_XAUUSD_OMEGA; a failing Omega drifts", async () => {
+  const db = migratedDb();
+  const row = db.raw.prepare("SELECT status, metadata_json FROM service_registry WHERE service_id = 'xauusd-omega'").get() as { status: string; metadata_json: string };
+  assert.equal(row.status, "registered");
+  assert.equal(JSON.parse(row.metadata_json).health_path, "/health");
+  assert.equal(targets(driftTestEnv(db) as never)["xauusd-omega"], undefined, "xauusd-omega is an external target, not an RPC target");
+  const ok: any = await observe(driftTestEnv(db), "test", "test");
+  const omega = ok.services.find((s: any) => s.service_id === "xauusd-omega");
+  assert.equal(omega.drifted, false);
+  assert.equal(omega.probe.healthy, true);
+  const down: any = await observe(driftTestEnv(db, { EXT_XAUUSD_OMEGA: { fetch: async () => Response.json({ status: "degraded" }) } }), "test", "test");
+  assert.equal(down.services.find((s: any) => s.service_id === "xauusd-omega").drifted, true);
+});
+
+test("TP-042: the Drift Detector is not ready without its EXT_XAUUSD_OMEGA binding", async () => {
+  const db = migratedDb();
+  const env = driftTestEnv(db);
+  assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
+  assert.equal((await call(drift, { ...env, EXT_XAUUSD_OMEGA: undefined }, req("GET", "/ready"))).status, 503);
+});
+

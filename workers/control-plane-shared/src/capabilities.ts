@@ -19,6 +19,7 @@ export const CAPABILITIES: Record<string, Capability> = {
   "signals.observe": { tier: 0, reversible: true, description: "Read the latest XAUUSD advisory decisions from xauusd-ai-trading-assistant" },
   "audit.verify": { tier: 0, reversible: true, description: "Verify the audit hash chain and count 24-hour governance events" },
   "memory.recall": { tier: 0, reversible: true, description: "Recall up to 5 semantically similar memories owned by the calling agent" },
+  "metabolism.observe": { tier: 0, reversible: true, description: "Read treasury balance, burn rate, market status and active power mode" },
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
   "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
   "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize", max_per_hour: 12 },

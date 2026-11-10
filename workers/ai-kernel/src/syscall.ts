@@ -164,18 +164,159 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   };
 }
 
-/** Tier 0: latest XAUUSD advisory decisions from xauusd-ai-trading-assistant (read-only). */
-export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } }, now = Date.now(), timeoutMs = 5000): Promise<JsonObject> {
-  const observedAt = new Date(now).toISOString();
-  if (!env.XAUUSD_AI) {
-    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: "xauusd_binding_missing" };
+export interface ObserveSignalsOptions {
+  now?: number;
+  timeoutMs?: number;
+  endpoint?: "auto" | "engine" | "legacy" | "deals";
+  limit?: number;
+  includeDeals?: boolean;
+  dealsLimit?: number;
+}
+
+export interface NormalizedDeal {
+  deal_ticket: number;
+  position_ticket: number | null;
+  mode: string;
+  side: "BUY" | "SELL";
+  volume: number;
+  profit: number;
+  commission: number;
+  swap: number;
+  net_profit: number;
+  reason: string;
+  signal_id: string | null;
+  opened_ms: number | null;
+  closed_ms: number;
+  currency: string | null;
+}
+
+export interface DealStatsSummary {
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number | null;
+  net_profit: number;
+  profit_factor: number | null;
+  average_win: number | null;
+  average_loss: number | null;
+  max_drawdown: number;
+}
+
+function normalizeDecisionItem(raw: any): JsonObject | null {
+  if (!raw || typeof raw !== "object") return null;
+  const key = typeof raw.decision_key === "string" ? raw.decision_key : typeof raw.candle_key === "string" ? raw.candle_key : "";
+  const keyRe = /^OANDA:XAUUSD:(15|60):\d{10,14}$/;
+  if (!keyRe.test(key)) return null;
+  const openMs = Number(key.split(":").pop());
+  if (!Number.isFinite(openMs)) return null;
+
+  const validDecisions = new Set(["BUY", "SELL", "WAIT", "NO_TRADE"]);
+  const rawDecision = typeof raw.stance === "string" ? raw.stance : raw.decision;
+  const decision = validDecisions.has(rawDecision) ? rawDecision : "UNKNOWN";
+
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const pos = (v: unknown) => { const n = num(v); return n !== null && n > 0 ? n : null; };
+  const conf = num(raw.confidence);
+  const confidence = conf !== null && conf >= 0 && conf <= 1 ? conf : null;
+
+  const decidedAt = typeof raw.decided_at === "string"
+    ? raw.decided_at.slice(0, 40)
+    : typeof raw.timestamp === "string"
+      ? raw.timestamp.slice(0, 40)
+      : null;
+
+  const rrr = pos(raw.trade?.rrr) ?? pos(raw.risk_reward);
+
+  let rawReasoning = "";
+  if (typeof raw.summary === "string" && raw.summary.trim()) {
+    rawReasoning = raw.summary;
+  } else if (Array.isArray(raw.reasons) && raw.reasons.length > 0) {
+    rawReasoning = raw.reasons.join("; ");
+  } else if (typeof raw.reasoning === "string") {
+    rawReasoning = raw.reasoning;
   }
+  const reasoning = withoutLevels(rawReasoning).slice(0, 300);
+
+  return {
+    candle_key: key,
+    candle_open_ms: openMs,
+    decided_at: decidedAt,
+    decision,
+    confidence,
+    risk_reward: rrr,
+    reasoning,
+  };
+}
+
+function normalizeDeals(body: any): NormalizedDeal[] {
+  const rawDeals = Array.isArray(body?.deals) ? body.deals : [];
+  const list: NormalizedDeal[] = [];
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  for (const d of rawDeals) {
+    if (!d || typeof d !== "object") continue;
+    const ticket = Number.isInteger(d.deal_ticket) ? d.deal_ticket : null;
+    if (!ticket) continue;
+    const side = String(d.side || "").toUpperCase() === "BUY" ? "BUY" : "SELL";
+    const profit = num(d.profit);
+    const commission = num(d.commission);
+    const swap = num(d.swap);
+    list.push({
+      deal_ticket: ticket,
+      position_ticket: Number.isInteger(d.position_ticket) ? d.position_ticket : null,
+      mode: typeof d.mode === "string" ? d.mode : "unknown",
+      side,
+      volume: typeof d.volume === "number" && d.volume > 0 ? d.volume : 0,
+      profit: r2(profit),
+      commission: r2(commission),
+      swap: r2(swap),
+      net_profit: r2(profit + commission + swap),
+      reason: typeof d.reason === "string" ? d.reason : "other",
+      signal_id: typeof d.signal_id === "string" ? d.signal_id : null,
+      opened_ms: typeof d.opened_ms === "number" && d.opened_ms > 0 ? d.opened_ms : null,
+      closed_ms: typeof d.closed_ms === "number" && d.closed_ms > 0 ? d.closed_ms : 0,
+      currency: typeof d.currency === "string" ? d.currency : null,
+    });
+  }
+  return list;
+}
+
+function computeDealStats(deals: NormalizedDeal[]): DealStatsSummary {
+  const nets = deals.map((d) => d.net_profit);
+  const wins = nets.filter((x) => x > 0);
+  const losses = nets.filter((x) => x < 0);
+  const sum = (a: number[]) => a.reduce((s, x) => s + x, 0);
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  let peak = 0, equity = 0, maxDrawdown = 0;
+  for (const x of [...nets].reverse()) {
+    equity += x;
+    peak = Math.max(peak, equity);
+    maxDrawdown = Math.max(maxDrawdown, peak - equity);
+  }
+  return {
+    trades: nets.length,
+    wins: wins.length,
+    losses: losses.length,
+    win_rate: nets.length ? r2(wins.length / nets.length) : null,
+    net_profit: r2(sum(nets)),
+    profit_factor: losses.length ? r2(sum(wins) / Math.abs(sum(losses))) : null,
+    average_win: wins.length ? r2(sum(wins) / wins.length) : null,
+    average_loss: losses.length ? r2(sum(losses) / losses.length) : null,
+    max_drawdown: r2(maxDrawdown),
+  };
+}
+
+async function fetchXauusd(
+  binding: { fetch(input: string, init?: RequestInit): Promise<Response> },
+  path: string,
+  timeoutMs: number,
+): Promise<{ ok: true; body: any } | { ok: false; error: string; status?: number }> {
   let res: Response;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      res = await env.XAUUSD_AI.fetch("https://xauusd.internal/api/decisions?limit=6", {
+      res = await binding.fetch(`https://xauusd.internal${path}`, {
         headers: { accept: "application/json" },
         signal: controller.signal,
       } as RequestInit);
@@ -185,59 +326,116 @@ export async function observeSignals(env: BaseEnv & { XAUUSD_AI?: { fetch(input:
   } catch (err) {
     const msg = String((err as Error)?.message ?? err);
     const error = /abort/i.test(msg) ? "xauusd_timeout" : "xauusd_unreachable";
-    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error };
+    return { ok: false, error };
   }
   if (!res.ok) {
-    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: `xauusd_http_${res.status}` };
+    return { ok: false, error: `xauusd_http_${res.status}`, status: res.status };
   }
-  let body: any;
   try {
-    body = await res.json();
+    const body = await res.json();
+    return { ok: true, body };
   } catch {
-    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: "xauusd_invalid_body" };
+    return { ok: false, error: "xauusd_invalid_body" };
   }
-  const itemsRaw = Array.isArray(body?.items) ? body.items : [];
-  const validDecisions = new Set(["BUY", "SELL", "WAIT", "NO_TRADE"]);
-  const keyRe = /^OANDA:XAUUSD:60:\d{10,14}$/;
+}
+
+/** Tier 0: latest XAUUSD advisory decisions and execution deals from xauusd-ai-trading-assistant (read-only). */
+export async function observeSignals(
+  env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } },
+  nowOrOptions: number | ObserveSignalsOptions = Date.now(),
+  timeoutMsArg = 5000,
+): Promise<JsonObject> {
+  const opts: ObserveSignalsOptions = typeof nowOrOptions === "number" ? { now: nowOrOptions, timeoutMs: timeoutMsArg } : (nowOrOptions ?? {});
+  const now = typeof opts.now === "number" ? opts.now : Date.now();
+  const timeoutMs = typeof opts.timeoutMs === "number" ? opts.timeoutMs : timeoutMsArg;
+  const observedAt = new Date(now).toISOString();
+  const limit = Math.max(1, Math.min(50, Number(opts.limit || 6)));
+
+  if (!env.XAUUSD_AI) {
+    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: "xauusd_binding_missing" };
+  }
+
+  if (opts.endpoint === "deals") {
+    const dealsRes = await fetchXauusd(env.XAUUSD_AI, `/api/deals?limit=${limit}`, timeoutMs);
+    if (!dealsRes.ok) {
+      return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: dealsRes.error };
+    }
+    const deals = normalizeDeals(dealsRes.body);
+    return {
+      source: "xauusd-ai-trading-assistant",
+      observed_at: observedAt,
+      available: true,
+      endpoint_used: "deals",
+      deals: deals as unknown as JsonObject[],
+      deal_stats: computeDealStats(deals) as unknown as JsonObject,
+    };
+  }
+
+  let usedEndpoint = "engine";
+  let fetchRes: { ok: true; body: any } | { ok: false; error: string; status?: number };
+
+  if (opts.endpoint === "legacy") {
+    usedEndpoint = "legacy";
+    fetchRes = await fetchXauusd(env.XAUUSD_AI, `/api/decisions?limit=${limit}`, timeoutMs);
+  } else {
+    fetchRes = await fetchXauusd(env.XAUUSD_AI, `/api/engine/decisions?limit=${limit}`, timeoutMs);
+    if (!fetchRes.ok && fetchRes.status === 404) {
+      usedEndpoint = "legacy";
+      fetchRes = await fetchXauusd(env.XAUUSD_AI, `/api/decisions?limit=${limit}`, timeoutMs);
+    }
+  }
+
+  if (!fetchRes.ok) {
+    return { source: "xauusd-ai-trading-assistant", observed_at: observedAt, available: false, error: fetchRes.error };
+  }
+
+  const body = fetchRes.body;
+  let rawItems: any[] = [];
+  if (Array.isArray(body?.decisions)) {
+    rawItems = body.decisions;
+  } else if (body?.decision && typeof body.decision === "object") {
+    rawItems = [body.decision];
+  } else if (Array.isArray(body?.items)) {
+    rawItems = body.items;
+  }
+
   const items: JsonObject[] = [];
-  for (const raw of itemsRaw.slice(0, 6)) {
-    const key = typeof raw?.candle_key === "string" ? raw.candle_key : "";
-    if (!keyRe.test(key)) continue;
-    const openMs = Number(key.split(":").pop());
-    if (!Number.isFinite(openMs)) continue;
-    const decision = validDecisions.has(raw?.decision) ? raw.decision : "UNKNOWN";
-    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-    const pos = (v: unknown) => { const n = num(v); return n !== null && n > 0 ? n : null; };
-    const conf = num(raw?.confidence);
-    const confidence = conf !== null && conf >= 0 && conf <= 1 ? conf : null;
-    const decidedAt = typeof raw?.timestamp === "string" ? raw.timestamp.slice(0, 40) : null;
-    // No price level ever enters the kernel (owner rule, 2026-11-07): entry, stop and target are not
-    // read, and price-like numbers in the reasoning become "[level]". The risk/reward ratio is kept.
-    const reasoning = typeof raw?.reasoning === "string" ? withoutLevels(raw.reasoning).slice(0, 300) : "";
-    items.push({
-      candle_key: key,
-      candle_open_ms: openMs,
-      decided_at: decidedAt,
-      decision,
-      confidence,
-      risk_reward: pos(raw?.risk_reward),
-      reasoning,
-    });
+  for (const raw of rawItems.slice(0, limit)) {
+    const item = normalizeDecisionItem(raw);
+    if (item) items.push(item);
   }
+
   const latest = items.length > 0 ? items[0] : null;
   let stale = items.length === 0;
   if (latest) {
-    const closeMs = (latest.candle_open_ms as number) + 3_600_000;
-    stale = now - closeMs > 90 * 60_000;
+    const isM15 = String(latest.candle_key).includes(":15:");
+    const barMs = isM15 ? 15 * 60_000 : 3_600_000;
+    const staleGraceMs = isM15 ? 45 * 60_000 : 90 * 60_000;
+    const closeMs = (latest.candle_open_ms as number) + barMs;
+    stale = now - closeMs > staleGraceMs;
   }
-  return {
+
+  const result: JsonObject = {
     source: "xauusd-ai-trading-assistant",
     observed_at: observedAt,
     available: true,
     stale,
+    endpoint_used: usedEndpoint,
     latest: latest as unknown as JsonObject,
     recent: items,
   };
+
+  if (opts.includeDeals) {
+    const dealsLimit = Math.max(1, Math.min(200, Number(opts.dealsLimit || 50)));
+    const dealsRes = await fetchXauusd(env.XAUUSD_AI, `/api/deals?limit=${dealsLimit}`, timeoutMs);
+    if (dealsRes.ok) {
+      const deals = normalizeDeals(dealsRes.body);
+      result.deals = deals as unknown as JsonObject[];
+      result.deal_stats = computeDealStats(deals) as unknown as JsonObject;
+    }
+  }
+
+  return result;
 }
 
 /** Price-like numbers (3+ digits, including grouped thousands and optional decimals) become "[level]". */
@@ -307,9 +505,103 @@ export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonO
   };
 }
 
+export function computeMarketStatus(now = Date.now()): "open" | "closed" | "holiday" {
+  const date = new Date(now);
+  const day = date.getUTCDay();
+  const hour = date.getUTCHours();
+  if (day === 6) return "closed";
+  if (day === 5 && hour >= 22) return "closed";
+  if (day === 0 && hour < 22) return "closed";
+  return "open";
+}
+
+/** Tier 0: read digital metabolism, treasury reserve, burn metrics and power mode. */
+export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Promise<JsonObject> {
+  const observedAt = new Date(now).toISOString();
+  const marketStatus = computeMarketStatus(now);
+
+  let powerMode: "survival" | "homeostasis" | "growth" = "homeostasis";
+  let powerOverride = "none";
+  let autoAdaptation = true;
+
+  try {
+    const controls = await env.DB.prepare("SELECT control, value FROM metabolism_controls").all<{ control: string; value: string }>();
+    for (const c of controls.results) {
+      if (c.control === "power_mode" && ["survival", "homeostasis", "growth"].includes(c.value)) {
+        powerMode = c.value as any;
+      }
+      if (c.control === "power_mode_override") {
+        powerOverride = c.value;
+      }
+      if (c.control === "auto_adaptation_enabled") {
+        autoAdaptation = c.value === "1";
+      }
+    }
+  } catch {}
+
+  const effectivePowerMode = (["survival", "homeostasis", "growth"].includes(powerOverride) ? powerOverride : powerMode) as "survival" | "homeostasis" | "growth";
+
+  let treasuryReserve = 500.0;
+  try {
+    const latestTrz = await env.DB.prepare(
+      "SELECT balance_after_usd FROM treasury_ledger ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).first<{ balance_after_usd: number }>();
+    if (latestTrz && typeof latestTrz.balance_after_usd === "number") {
+      treasuryReserve = latestTrz.balance_after_usd;
+    }
+  } catch {}
+
+  let tradingNetPnl24h = 0;
+  if (env.XAUUSD_AI) {
+    try {
+      const dealsRes = await fetchXauusd(env.XAUUSD_AI, "/api/deals?limit=100", 3000);
+      if (dealsRes.ok) {
+        const deals = normalizeDeals(dealsRes.body);
+        const dayAgo = now - 24 * 3600_000;
+        const recent24h = deals.filter((d) => d.closed_ms >= dayAgo);
+        tradingNetPnl24h = Math.round(recent24h.reduce((sum, d) => sum + d.net_profit, 0) * 100) / 100;
+      }
+    } catch {}
+  }
+
+  let infraBurn24h = 0.15;
+  try {
+    const dayStr = new Date(now).toISOString().slice(0, 10);
+    const aiUsage = await env.DB.prepare(
+      "SELECT SUM(requests) AS total_requests FROM ai_usage WHERE day = ?"
+    ).bind(dayStr).first<{ total_requests: number }>();
+    const requests = aiUsage?.total_requests ?? 0;
+    infraBurn24h = Math.round((0.15 + (requests * 0.001)) * 100) / 100;
+  } catch {}
+
+  const metabolicRatio = infraBurn24h > 0 ? Math.round((tradingNetPnl24h / infraBurn24h) * 100) / 100 : null;
+  const runwayDays = infraBurn24h > 0 ? Math.round((treasuryReserve / infraBurn24h) * 10) / 10 : null;
+
+  return {
+    source: "cryptophys-digital-metabolism",
+    observed_at: observedAt,
+    market_status: marketStatus,
+    power_mode: effectivePowerMode,
+    power_mode_override: powerOverride,
+    auto_adaptation_enabled: autoAdaptation,
+    treasury_reserve_usd: treasuryReserve,
+    runway_days: runwayDays,
+    infra_burn_cost_24h: infraBurn24h,
+    trading_net_pnl_24h: tradingNetPnl24h,
+    metabolic_ratio: metabolicRatio,
+  };
+}
+
 const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentId: string) => Promise<JsonObject>> = {
   "platform.observe": (env) => observe(env),
-  "signals.observe": (env, input) => observeSignals(env, typeof input.now === "number" ? input.now : Date.now()),
+  "signals.observe": (env, input) => observeSignals(env, {
+    now: typeof input.now === "number" ? input.now : Date.now(),
+    endpoint: typeof input.endpoint === "string" ? (input.endpoint as any) : undefined,
+    includeDeals: input.include_deals === true || input.includeDeals === true,
+    limit: typeof input.limit === "number" ? input.limit : undefined,
+    dealsLimit: typeof input.deals_limit === "number" ? input.deals_limit : undefined,
+  }),
+  "metabolism.observe": (env, input) => observeMetabolism(env, typeof input.now === "number" ? input.now : Date.now()),
   "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
   "knowledge.status": (env, input, agentId) => knowledgeStatus(env.DB, agentId, input),
