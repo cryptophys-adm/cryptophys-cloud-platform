@@ -107,3 +107,52 @@ test("P2-M4 supervisor evaluates digital metabolism and writes cycle records", a
   const modeDb = (db as any).raw.prepare("SELECT value FROM metabolism_controls WHERE control = 'power_mode'").get() as any;
   assert.equal(modeDb.value, "survival");
 });
+
+// Owner 2026-11-10: the power mode may save AI tokens, never block the platform's own safety, and
+// never expand budgets from trading results.
+test("P2-M5 survival mode never throttles consensus.propose (deploys, rollbacks, suspensions)", async () => {
+  const db = migratedDb();
+  await db.prepare("UPDATE metabolism_controls SET value = 'survival' WHERE control = 'power_mode'").run();
+  const res = await evaluatePolicy(db, "agent.syscall", "consensus.propose", { __subject: "agent:supervisor" });
+  assert.equal(res.checks.find((c) => c.id === "power_mode_survival"), undefined);
+  assert.equal(res.decision, "allow", res.reason);
+  const mem = await evaluatePolicy(db, "agent.syscall", "memory.remember", { __subject: "agent:supervisor" });
+  assert.ok(mem.checks.some((c) => c.id === "power_mode_survival" && !c.passed), "memory still throttled");
+});
+
+test("P2-M5 the supervisor never enters growth on its own, and every mode change is audited", async () => {
+  const db = migratedDb();
+  const deals = [{ deal_ticket: 3001, side: "BUY", volume: 0.1, profit: 400, commission: 0, swap: 0, net_profit: 400, closed_ms: Date.UTC(2026, 10, 10, 13, 0, 0) }];
+  const env: any = { ...baseEnv("cryptophys-ai-kernel", db), XAUUSD_AI: { fetch: async () => new Response(JSON.stringify({ status: "ok", deals }), { status: 200 }) } };
+  const tOpen = Date.UTC(2026, 10, 10, 14, 0, 0);
+  const r: any = await evaluateMetabolismState(env, tOpen);
+  assert.equal(r.power_mode, "homeostasis");
+  assert.match(r.reason, /growth eligible/);
+  const mode = (db as any).raw.prepare("SELECT value FROM metabolism_controls WHERE control = 'power_mode'").get() as any;
+  assert.equal(mode.value, "homeostasis");
+
+  const closed: any = await evaluateMetabolismState(env, Date.UTC(2026, 10, 14, 12, 0, 0));
+  assert.equal(closed.power_mode, "survival");
+  const audit = (db as any).raw.prepare("SELECT actor, outcome, payload_json FROM audit_events WHERE event_type = 'metabolism.power_mode_changed'").all() as any[];
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].outcome, "survival");
+  assert.equal(JSON.parse(audit[0].payload_json).previous_mode, "homeostasis");
+});
+
+test("P2-M5 growth budgets apply only as an owner override, survival savings apply automatically", async () => {
+  const { AiEngine } = await import("../src/ai-engine.ts");
+  const db = migratedDb();
+  const reserveCount = async (n: number) => {
+    const engine: any = new (AiEngine as any)({ service: "cryptophys-platform-api", ai: { run: async () => ({ response: "{}" }) }, db, dailyLimit: 4, accountDailyLimit: 100 });
+    let ok = 0;
+    for (let i = 0; i < n; i++) if (await engine.reserve(`2026-11-1${n}`)) ok += 1;
+    return ok;
+  };
+  await db.prepare("UPDATE metabolism_controls SET value = 'growth' WHERE control = 'power_mode'").run();
+  assert.equal(await reserveCount(8), 4, "an automatic growth mode does not raise the budget");
+  await db.prepare("UPDATE metabolism_controls SET value = 'growth' WHERE control = 'power_mode_override'").run();
+  assert.equal(await reserveCount(9), 8, "the owner's growth override doubles it");
+  await db.prepare("UPDATE metabolism_controls SET value = 'none' WHERE control = 'power_mode_override'").run();
+  await db.prepare("UPDATE metabolism_controls SET value = 'survival' WHERE control = 'power_mode'").run();
+  assert.equal(await reserveCount(7), 1, "survival still saves automatically (25%)");
+});
