@@ -1,9 +1,10 @@
 name: Mirror to Forge
 
-# ADR-0012 phase 1: while GitHub is still the source of truth, push main to the Forge's Artifacts
+# ADR-0012 phases 1–3 and phase-4 shadow: while GitHub is still the source of truth, push main to the Forge's Artifacts
 # repository (cryptophys/platform) after every push, so both hold the same commit SHAs. The write
 # token is minted by the Forge for the CI service token only, lives 10 minutes, and is masked.
 # Before the Forge is deployed and has imported the repository, the run is skipped with a notice.
+# Disable this workflow before the phase-4 merge cut-over; it force-updates Artifacts main from GitHub and must not run after GitHub becomes a mirror.
 # Phase 4 (shadow): it then reports GitHub's outcome of change requests to the Forge: the pull
 # request this commit merged (its "(#N)" subject) and recently closed unmerged pull requests, and
 # deletes their cr/<number> branches.

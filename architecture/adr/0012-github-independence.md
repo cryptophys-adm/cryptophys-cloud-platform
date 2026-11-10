@@ -38,7 +38,7 @@ The original Cryptophys estate (ADR-0005 inventory) had its own forge: Gitea (so
   - push/clone/fetch events to Queues.
 
   Limits are 1 GB per repository, and this repository is about 14 MB. Pricing is the first 10,000 operations and 1 GB per month, then $0.15 per 1,000 operations and $0.50 per GB-month.
-- **Workers Builds** can build and deploy a Worker from an Artifacts repository. It is a managed Cloudflare build environment. **The owner chose not to use it** (§6.1).
+- **Workers Builds** can build and deploy a Worker from an Artifacts repository. It is a managed Cloudflare build environment. The owner approved a **main-only** use for the TypeScript type-check and Console UI build (§5c); pull-request branches must not run there with the CI service token (§5d).
 - **Dynamic Workers (Worker Loader)** run code in an isolate, with outbound network blocked if wanted. They also offer:
   - **Durable Object Facets**, which give that isolate its own SQLite database;
   - `@cloudflare/worker-bundler`, which bundles TypeScript and npm dependencies at runtime.
@@ -56,24 +56,24 @@ Build **the Forge**: a Cloudflare-native replacement for Gitea + Tekton + Argo, 
 - The namespace is `cryptophys`.
   - Canonical repository: `cryptophys/platform`, branch `main`.
   - Work repository: `cryptophys/platform-work`, holding all branches by people and agents.
-- **Only the Forge Worker writes `main` of the canonical repository.** People and agents get repo-scoped write tokens for the work repository only, with a short TTL, minted by the Forge after an Access-authenticated request.
-- The Forge subscribes to push events on both repositories.
-  - A push to canonical `main` that the Forge did not make is an **incident**. The Forge records it, alerts, refuses to deploy that SHA, and asks the owner to restore (critical).
+- **Canonical-main writer by phase.** During GitHub-source phases 1–3 and the phase-4 shadow period, `.github/workflows/mirror-to-forge.yml` is the temporary migration exception: after a push to GitHub `main`, GitHub Actions mirrors that exact SHA to Artifacts `main` using a short-lived write token minted by the Forge. The workflow force-updates the Artifacts ref to keep it identical to GitHub `main`; this is source synchronization, not a Worker deployment. The exception ends at the phase-4 merge cut-over, after the Forge reaches 10 consecutive merge-parity agreements and begins writing canonical `main`; from then on GitHub is only a mirror. Phase 5 completes the operational cut-over by moving contributors to `platform-work`, revoking `GH_ACTIONS_TOKEN`, and archiving GitHub. People and agents get repo-scoped write tokens for the work repository only, with a short TTL, minted by the Forge after an Access-authenticated request.
+- **Target event model.** The Forge is intended to subscribe to push events on both repositories. **Current implementation status (2026-11-10):** the deployed Worker has a `scheduled()` entry point; `workers/forge/wrangler.toml` runs it every 15 minutes (`4,19,34,49`), and `forgeTick()` polls Artifacts `main` and open change-request heads. No push-event webhook or Queue consumer is wired in the current Worker. Treat event subscription as target behavior, not as a deployed freshness guarantee.
+  - **Authorized mirror exception (phases 1–3 and phase-4 shadow).** While GitHub remains the source of truth, the only permitted non-Forge write to canonical `main` is the exact-SHA push from `mirror-to-forge.yml` using the short-lived, repo-scoped token minted by the Forge for the CI service token. This is expected source synchronization, not an incident or a deployment.
+  - Any other push to canonical `main` that the Forge did not make is an **incident**. The Forge records it, alerts, refuses to deploy that SHA, and asks the owner to restore (critical). At the phase-4 merge cut-over, the mirror exception ends; only the Forge may write canonical `main`. Before that cut-over, the GitHub-to-Artifacts workflow must be disabled: it is an unconditional push-triggered `git push --force`, and leaving it active after GitHub becomes a mirror could overwrite canonical Artifacts `main` from a stale mirror head. Phase 5 archives GitHub and revokes its token.
   - Production is protected by the deploy gate (§3) even if the repository is not.
-- Bootstrap: one-time `import` of the GitHub repository with its full history. While GitHub is still the source (phases 1–3), the Forge keeps the import fresh.
+- Bootstrap: one-time `import` of the GitHub repository with its full history. While GitHub is still the source (phases 1–3 and phase-4 shadow), the Forge keeps the import fresh.
 
 ### 2. Change requests, checks and review (replaces pull requests)
 
 The new Worker `cryptophys-forge` keeps change requests in D1. Each change request records the work branch, head SHA, base SHA, status, checks, reviews, the owner decision and audit events. A change request moves through these steps:
 
-1. **Checks: the Forge runner, Dynamic Workers only** (owner, §6.1). On every branch push, a Workflow in the Forge does the following:
+1. **Checks: Forge tests, migration tests and bundles run in Dynamic Workers; the TypeScript type-check and Console UI build use the main-only Workers Builds exception** (§5c, §6.1). On every branch push, a Workflow in the Forge does the following:
    1. It reads the tree at the head SHA from Artifacts.
    2. It installs dependencies from an R2 package cache. The cache is keyed by the lockfile hash and filled from the npm registry only by the Forge.
-   3. It runs each step in a fresh Dynamic Worker with outbound network blocked:
-      - **type-check** with the TypeScript compiler (pure JavaScript);
+   3. It runs Forge test and bundle steps in fresh Dynamic Workers with outbound network blocked:
       - **tests**: the existing `node:test` files run under a small `node:test`-compatible runner. The `node:sqlite` harness (`harness.ts`) is replaced by a Durable Object Facet SQLite database with the real migrations applied. Files the tests read come from the tree at that SHA;
       - **migration tests** and **bundle builds** with `@cloudflare/worker-bundler`, one per Worker, as the dry run;
-      - **Console build**: React, Tailwind and PostCSS bundled in the isolate. The **render smoke** runs on Browser Run.
+      - **Console render smoke** runs on Browser Run. The Console UI build itself runs in the main-only Workers Builds project (§5c).
 
    Results are recorded per SHA in D1. **A change request with any failing or missing check cannot merge.** Tests are never skipped or weakened to fit the runner. A test that cannot run there yet keeps running on GitHub until it is ported, and phase 3 is not done until every test runs in the Forge.
 2. **Forge guards.** These are deterministic and run in a Dynamic Worker with no network:
@@ -233,7 +233,7 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
 
   - Dropping `DOM` (157 MB, 29 errors) or `@types/node` (143 MB, 176 errors) neither fits nor keeps the same check.
   - TypeScript 7.0.2 (the native compiler) checks the project clean in 0.34 s, using 116 MB heap and 145 MB RSS. It ships only native binaries per platform, with no WebAssembly build.
-  - **Consequence.** The type-check cannot be a Forge check today without weakening it. It stays on GitHub Actions until a compiler fits in an isolate, or the owner chooses another runner. Phase 5 (archiving GitHub) waits for that decision.
+  - **Consequence (Dynamic Worker).** The full type-check does not fit in a Dynamic Worker without weakening it. The owner later approved Workers Builds for the trusted `main` build (§5c below). GitHub Actions continues to type-check pull requests; Forge change-request type-checks remain `pending` until a secretless build/report design is approved. Phase 5 waits for that decision.
 - **Type-check on Workers Builds (owner decision 2026-11-08, evening).** Asked where the type-check should run, the owner first chose a Cloudflare Container (#236). Its deploy failed on the Containers API (the deploy token has no Containers permission) and Cloudflare refused the rollback across the Durable Object migration, so the Worker ran at `66a4859` with no Container and the step recorded `error`, never a pass. Asked again with the measurements of two alternatives, the owner chose **Workers Builds from the Artifacts repository**; the Container was withdrawn (#237). The alternatives, measured:
 
   | Option | Evidence | Verdict |
@@ -242,17 +242,17 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   | Workers Builds from Artifacts | Supported by Cloudflare (Oct 2026); 4 vCPU, 8 GB, 6,000 min/month included | **Chosen** |
   | Cloudflare Container | Worked in CI; needs a token permission and an ADR-0005 exception | Withdrawn |
 
-  - **Project.** `workers/forge-typecheck/` is the Builds project (root directory). Its build command `node typecheck-and-report.mjs` installs the locked toolchain in `control-plane-shared` and runs `tsc --noEmit -p workers/control-plane-tsconfig.json`; its deploy command deploys a stub Worker with no route, no `workers.dev` URL and no bindings, because Workers Builds deploys a Worker.
-  - **Report.** The build reports `{commit, conclusion, build_id, branch, files, errors, diagnostics, toolchain}` to `POST /v1/forge/typecheck-report` with the CI service token. Diagnostics are text only. The Forge stores one row per commit (`forge_typecheck_reports`, migration 0035), audits `forge.typecheck_reported`, and folds the result into its check of that commit: the `typecheck` step, and a failure fails the check. Until a report arrives the step reads `pending`.
-  - **Setup (owner, dashboard).** Connect the Artifacts repository `cryptophys/platform` to a Worker `cryptophys-forge-typecheck`, root `workers/forge-typecheck`, with `FORGE_URL` and the existing CI service token as build secrets. `workers/forge-typecheck/README.md` has the steps. Preview builds on other branches give phase 4 its branch checks.
+  - **Project.** `workers/forge-typecheck/` is the Builds project (root directory). Its build command `node typecheck-and-report.mjs` installs the locked toolchain in `control-plane-shared` and runs `tsc --noEmit -p workers/control-plane-tsconfig.json`. The project is restricted to the canonical Artifacts `main` branch; pull-request/change-request branches are not run by this secret-bearing build. Its deploy command deploys a stub Worker with no route, no `workers.dev` URL and no bindings, because Workers Builds deploys a Worker.
+  - **Report.** The trusted `main` build reports `{commit, conclusion, build_id, branch, files, errors, diagnostics, toolchain}` to `POST /v1/forge/typecheck-report` with the CI service token. This operator-level credential is never exposed to change-request branch code. Diagnostics are text only. The Forge stores one row per commit (`forge_typecheck_reports`, migration 0035), audits `forge.typecheck_reported`, and folds the result into its check of that commit: the `typecheck` step, and a failure fails the check. Until a report arrives the step reads `pending`.
+  - **Setup (owner, dashboard).** Connect the Artifacts repository `cryptophys/platform` to a Worker `cryptophys-forge-typecheck`, root `workers/forge-typecheck`, with `FORGE_URL` and the existing CI service token as build secrets. Restrict this secret-bearing project to the canonical `main` branch. Do not enable preview builds or expose these secrets to change-request branches (§5d). `workers/forge-typecheck/README.md` has the steps.
   - **Consequence.** The type-check leaves GitHub without a Container. The stub deploy is the one deploy that is not governed by consensus; it is not a production service and is not in the registry.
   - **Proven (2026-11-09).** The owner connected the Builds project. Build `d5b0391f` reported `success` (0 errors; TypeScript 5.9.3) for `5e228b8` at 05:03 UTC, and the Forge check of that commit passed with `typecheck: passed` (379 tests, 12 bundles, secrets clean). Two lessons, both fixed in code: Workers Builds may leave `WORKERS_CI_COMMIT_SHA` empty, so the build reads the commit from the checkout (#238); and `fetch` follows an Access redirect to the sign-in page, so the report now uses `redirect: "manual"` and accepts only a JSON 200 naming the commit (#240). The CI service token's credentials go in **build variables and secrets**, not in the Worker's runtime secrets.
   - **TypeScript 7 (owner, 2026-11-09).** Every package moved from TypeScript 5.9.3 to 7.0.2, the native compiler (Dependabot #233 widened to all packages). The control-plane project checks in about 0.6 s instead of tens of seconds. One source change: TypeScript 6+ checks side-effect imports by default, so the Console UI declares `*.css` (`workers/console/ui/src/css.d.ts`). The Workers Builds type-check installs the same lockfile, so its reports name TypeScript 7.0.2.
-  - **Console build (2026-11-09).** The same Workers Builds run builds the Console UI (`npm run build` in `workers/console/ui`: its own `tsc --noEmit`, then Vite) and reports it as `console_build` with the type-check (migration 0036). A failed Console build fails the step and the check, as it fails GitHub CI. The checks list gives each commit `ready`: tests and bundles passed, no secret, types passed and the Console built. The Console Code page shows `UI build ok` and `ready`. The Chromium render smoke stays on GitHub for now; Workers Builds has no browser.
+  - **Console build (2026-11-09).** The same main-only Workers Builds run builds the Console UI (`npm run build` in `workers/console/ui`: its own `tsc --noEmit`, then Vite) and reports it as `console_build` with the type-check (migration 0036). A failed Console build fails the step and the check, as it fails GitHub CI. For a trusted `main` commit, the checks list gives `ready` only when tests and bundles passed, no secret was found, types passed and the Console built. Change-request heads remain `pending` on type-check until a secretless build/report design is approved. The Console Code page shows `UI build ok` and `ready` for the main commit. The Chromium render smoke stays on GitHub for now; Workers Builds has no browser.
 - **Next.**
-  - Phase 4: the merge gate requires `ready`.
-  - Use the Forge bundles for deploys, then the Console assets built on Workers Builds.
-  - Run checks for branches and proposals (phase 4).
+  - Phase 4: a change request requires all branch-safe Forge checks and the owner-only review/decision rules. Its type-check remains `pending` until the owner approves a secretless build/report path; GitHub Actions continues to type-check every pull request in the meantime.
+  - Use the Forge bundles for deploys, then the Console assets built on the main-only Workers Builds project.
+  - Run branch tests, migrations, bundles and guards in Dynamic Workers; do not run untrusted branch code in the secret-bearing Workers Builds project.
 
 ### 5d. Phase 4 progress (2026-11-09)
 
@@ -282,7 +282,7 @@ The owner said "lanjutkan semua" (continue everything) on 2026-11-09. Phase 4 st
     It also deletes their `cr/` branches. The verdict at that moment is frozen next to the outcome.
   - **Merge parity:** a GitHub merge agrees when the Forge would have merged it or asked the owner. It disagrees when the Forge had blocked it. A `pending` verdict counts as "Forge late" and is not compared. The bar for the Forge to merge by itself is 10 consecutive agreements.
   - The Console Code page shows the change requests (route `forge.changes`, read-only).
-  - **Deviation from §1.** During the shadow phase the `cr/` branches live in `platform`, not in `platform-work`, so that the existing Workers Builds project type-checks them as preview builds. They move to `platform-work` at cut-over.
+  - **Deviation from §1.** During the shadow phase the `cr/` branches live in `platform`, not in `platform-work`, so the Forge can read them from Artifacts. They are not built by Workers Builds; preview builds remain disabled while that project holds the CI service token. They move to `platform-work` at cut-over.
   - **Preview builds withdrawn (2026-11-09, security).** Preview builds of `cr/<number>` never triggered from the Artifacts repository. They must not be used with the build secrets anyway: a build runs the branch's own code, so a change request could read the CI service token. GitHub never exposes production secrets to pull request code, and that stays true here. The owner turned preview builds off. Change request type-checks need a build with no secrets whose result the Forge reads itself with a read-only Workers Builds token held by the Forge. That design waits for the owner.
 - **4.2 Deploy plan (shadow).**
   - The deploy units and their ordering rules move to `control-plane-shared/src/deploy-units.ts`. The rules are: a new migration deploys the Control Plane first and alone; the orchestrator deploys before the others; the plan fails closed when the Control Plane is unavailable. The Orchestrator's behaviour is unchanged.
@@ -310,7 +310,7 @@ How notices are kept and shown:
 
 ### 6. Owner decisions (2026-11-08)
 
-1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).
+1. **Build runner: Dynamic Workers for Forge tests, migrations and bundles; main-only Workers Builds exception for TypeScript type-check and Console UI build.** The 2026-11-08 Dynamic Workers decision rejected Containers and a managed test runner for Forge execution. The owner later approved Workers Builds for the trusted `main` type-check and Console UI build (§5c). Preview builds for change requests are withdrawn because their code would receive the operator-level CI service token; a secretless design is pending (§5d).
 2. **Merges: agent consensus.** `merge_change` is a routine ADR-0009 action, except for the critical paths listed in §2.4.
 3. **GitHub after cut-over: archive.** It is not mirrored and not deleted.
 4. **Artifacts data location: unrestricted.**
@@ -332,7 +332,7 @@ How notices are kept and shown:
 
 - **Keep GitHub, harden it** (the narrower options of 2026-11-08). Rejected by the owner.
 - **`@cloudflare/ci` SDK.** It requires a Container binding, so ADR-0005 rejects it.
-- **Workers Builds.** It is managed and the fastest path, but the owner chose isolates only (§6.1).
+- **Workers Builds for all checks or untrusted branches.** Rejected. Dynamic Workers remain responsible for Forge tests, migrations and bundles. The owner approved only the main-only type-check and Console UI build exception (§5c); no preview build may receive the CI service token (§5d).
 - **Owner-approved merges.** The owner chose agent consensus. Critical paths stay with the owner (§2.4).
 - **A Git server implemented in our own Worker** (objects in R2, refs in a Durable Object). This is possible, but Artifacts already provides Git storage on Cloudflare. Writing our own adds risk with no benefit; it could be reconsidered if Artifacts is withdrawn.
 - **GitLab or another external forge.** It only moves the dependency to another vendor.
