@@ -34,6 +34,8 @@ export interface Env {
   PLATFORM?: ServiceBinding;
   /** ADR-0012: the Forge (platform source on Cloudflare Artifacts), read-only from the Console. */
   FORGE?: ServiceBinding;
+  /** Aether, the Knowledge Guardian cluster (cryptophys-adm/cryptophys-aether): its read-only overview for the Knowledge page. */
+  AETHER?: ServiceBinding;
   ASSETS?: AssetsBinding;
   /** ADR-0010: the one public origin. The Console lives at <NEXUS_ORIGIN>/console/. */
   NEXUS_ORIGIN?: string;
@@ -44,7 +46,7 @@ export interface Env {
 /** ADR-0010: the Console is mounted under this path on the Nexus host (Workers route nexus.cryptophys.work/console*). */
 export const MOUNT = "/console";
 
-export type ConsoleService = "kernel" | "recovery" | "registry" | "policy" | "drift" | "audit" | "orchestrator" | "platform" | "forge";
+export type ConsoleService = "kernel" | "recovery" | "registry" | "policy" | "drift" | "audit" | "orchestrator" | "platform" | "forge" | "aether";
 
 /** URL service name -> binding name. */
 export const SERVICE_BINDINGS: Record<ConsoleService, keyof Env> = {
@@ -57,6 +59,7 @@ export const SERVICE_BINDINGS: Record<ConsoleService, keyof Env> = {
   orchestrator: "ORCHESTRATOR",
   platform: "PLATFORM",
   forge: "FORGE",
+  aether: "AETHER",
 };
 
 export interface AllowRule { service: ConsoleService; method: string; path: string }
@@ -86,6 +89,7 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("orchestrator", "POST", ["/v1/deployments"]),
   ...rows("platform", "GET", ["/v1/overview", "/v1/usage"]),
   // ADR-0012 phase 1b: the Code page reads the Forge (no write route is forwarded); phase 3 adds checks, phase 4 change requests.
+  ...rows("aether", "GET", ["/v1/overview"]),
   ...rows("forge", "GET", ["/v1/forge/status", "/v1/forge/commits", "/v1/forge/checks", "/v1/forge/changes", "/v1/forge/deploy-plans", "/v1/forge/census"]),
 ];
 

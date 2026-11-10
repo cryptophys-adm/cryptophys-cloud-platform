@@ -98,6 +98,24 @@ MOCK["/api/kernel/v1/metabolism"] = {
   mode_changes: [{ actor: "agent:supervisor", mode: "survival", previous_mode: "homeostasis", reason: "market closed (weekend)", at: at(615) }],
   rules: ["Survival throttles only AI spending; it never blocks consensus.", "Growth applies only with the owner's override.", "Read only: no orders, no funds."],
 };
+MOCK["/api/aether/v1/overview"] = { service: "cryptophys-aether", generated_at: at(1),
+  canon: { version: "canon-v1", content_sha256: "a".repeat(64), files: 4, kb_version: 4, kb_content_sha256: "b".repeat(64),
+    file_list: ["canon/doctrine.json", "canon/roles.json", "canon/definitions.json", "canon/indicator/kb-v4.json"].map((p, i) => ({ path: p, sha256: String(i).repeat(64) })),
+    kb: { version: 4, status: "derived_from_pine_ssot", sections: ["input_lanes", "field_dictionary", "decision_policy", "analysis_requirements", "limitations", "news_policy", "provenance"], input_lanes: ["tradingview_webhook", "local_computation"] },
+    roles: Array.from({ length: 12 }, (_, i) => ({ id: `agent_${i}`, name: `Agent ${i}`, kind: "engine", family: ["structure", "trend", "momentum"][i % 3] })),
+    definitions: ["outcome_scoring", "stuck_states", "reputation", "shadow_promotion", "parity", "compliance_checks", "decision_card"],
+    doctrine: [{ id: "advisory_only", rule: "The server never trades: no broker integration, no order and no position size in the Workers.", since: "2026-10" }, { id: "learned_is_not_canon", rule: "Learned knowledge is labelled learned and never becomes canon without a reviewed PR.", since: "2026-11" }] },
+  knowledge: { counts: {}, items: [] },
+  weighting: [{ timeframe: "60", active: { id: "weighting@default" }, agents: [{ agent: "prophet", weight: 1.12 }, { agent: "gmi", weight: 0.94 }] }],
+  progress: {
+    curation: { version: "cryptophys.aether-curation-progress.v1", schedule_utc: "daily 02:52", cards: 244,
+      role_drift: { window_days: 7, cards: 244, span_days: 6, need: { span_days: 6, rooms: 20, rooms_with_break: 10, rate_pct_above: 5 }, ready: 0,
+        agents: [{ agent: "prophet", rooms: 120, check: "calibration_talk", rooms_with_break: 4, rate_pct: 3, ready: false }, { agent: "moderator", rooms: 244, check: null, rooms_with_break: 0, rate_pct: 0, ready: false }] },
+      caution: { window_days: 30, decisive_outcomes: 96, need: { decisive: 12, baseline_decisive: 12, alpha: 0.05 }, ready: 0,
+        situations: [{ agent: "prophet", chart: "15", session: "london", decisive: 9, wrong_pct: 22, baseline_decisive: 30, baseline_wrong_pct: 17, ready: false }] },
+      engine: { window_days: 30, need: { episodes: 3, cards: 10 }, ready: 0, families: [{ family: "prophet_r37", name: "Prophet", episodes: 1, cards: 4, longest_candles: 6, next_value: 16, ready: false }, { family: "gmi_v12_70", name: "GMI", episodes: 0, cards: 0, longest_candles: 0, next_value: 16, ready: false }] } },
+    weighting: [{ timeframe: "15", mode: "auto", rooms: 216, window_days: 10, active: "weighting@default", candidates: 14, verdicts: { collecting: 14 }, discovery: { have: 116, need: 200 }, holdout: { have: 100, need: 100, complete: true }, received_at: at(20) },
+      { timeframe: "60", mode: "auto", rooms: 59, window_days: 30, active: "weighting@default", candidates: 14, verdicts: { collecting: 14 }, discovery: { have: 0, need: 200 }, holdout: { have: 59, need: 100, complete: false }, received_at: at(30) }] } };
 MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "Workers Free", window: { from: "2026-11-04", to: "2026-11-10", resets: "00:00 UTC" },
   spend_summary: {
     billing_period: "Nov 2026",

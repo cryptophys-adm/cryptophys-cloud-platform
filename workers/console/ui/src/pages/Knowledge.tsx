@@ -1,10 +1,10 @@
-import { BookOpenCheck, Check, Sparkles, X } from "lucide-react";
+import { BookOpenCheck, Check, GraduationCap, Library, Sparkles, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
-import { DataTable, STATUS, StatusBar } from "../components/viz";
+import { DataTable, Meter, STATUS, Stat, StatusBar } from "../components/viz";
 
 /** TP-028: learned-knowledge proposals from Aether (tier 1 drafts). Approval is for shadow testing only. */
 const tone = (s?: string): "green" | "amber" | "red" | "slate" =>
@@ -14,6 +14,166 @@ const KIND_TEXT: Record<string, string> = {
   role_reminder: "An agent keeps breaking its role or the doctrine; a reminder of its role.",
   param_candidate: "A parameter value from a reviewed grid, to test in shadow.",
 };
+
+// Aether's own view (GET /v1/overview over the AETHER Service Binding): how far each learning rule is
+// from its threshold, and the knowledge that already exists. Every number is read from that answer; a
+// missing value shows a dash.
+const dash = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const short = (sha?: string | null) => (sha ? String(sha).slice(0, 12) : "—");
+const TF: Record<string, string> = { "15": "15m", "60": "1H", "240": "4H", "1D": "D1" };
+const words = (s?: string | null) => (s ? String(s).replace(/_/g, " ") : "—");
+
+/** A have/need meter when both numbers came back; a dash otherwise. */
+function Need({ label, have, need }: { label: string; have: unknown; need: unknown }) {
+  const h = num(have), n = num(need);
+  if (h === null || n === null) return <div className="text-[11px] text-slate-500">{label} · —</div>;
+  return <Meter label={label} value={h} target={n} />;
+}
+const Ready = ({ ready }: { ready?: boolean }) => (ready ? <Badge tone="green">ready</Badge> : <Badge tone="slate">collecting</Badge>);
+
+function Progress({ o }: { o: any }) {
+  const c = o?.progress?.curation;
+  const w: any[] = o?.progress?.weighting ?? [];
+  const rd = c?.role_drift, ca = c?.caution, en = c?.engine;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <Stat label="decision cards read" value={dash(c?.cards)} sub={rd || ca ? `role drift ${dash(rd?.window_days)}d · patterns ${dash(ca?.window_days)}d` : undefined} />
+        <Stat label="role reminders ready" value={dash(rd?.ready)} tone={num(rd?.ready) ? "good" : undefined} />
+        <Stat label="agent patterns ready" value={dash(ca?.ready)} tone={num(ca?.ready) ? "good" : undefined} />
+        <Stat label="engine patterns ready" value={dash(en?.ready)} tone={num(en?.ready) ? "good" : undefined} />
+      </div>
+      {!c ? <Empty>Aether returned no curation progress.</Empty> : (<>
+        <div>
+          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Curator · role drift</h4>
+          <p className="mb-2 text-[11px] text-slate-500">An agent that breaks one owner rule in more than {dash(rd?.need?.rate_pct_above)}% of {dash(rd?.need?.rooms)}+ rooms, cited by {dash(rd?.need?.rooms_with_break)}+ rooms, over {dash(rd?.window_days)} days.</p>
+          <div className="mb-2 max-w-md"><Need label="days of cards in the window" have={rd?.span_days} need={rd?.need?.span_days} /></div>
+          <DataTable dense rows={rd?.agents ?? []} rowKey={(a: any) => a.agent} maxHeight={260} empty="No rooms in the window yet." columns={[
+            { key: "agent", header: "agent", sort: (a: any) => a.agent, cell: (a: any) => <span className="mono text-cyan-200">{a.agent}</span> },
+            { key: "rooms", header: "rooms", sort: (a: any) => a.rooms, align: "right", cell: (a: any) => <span className="mono">{dash(a.rooms)} / {dash(rd?.need?.rooms)}</span> },
+            { key: "check", header: "most broken rule", cell: (a: any) => <span className="text-slate-300">{words(a.check)}</span> },
+            { key: "breaks", header: "rooms with it", sort: (a: any) => a.rooms_with_break, align: "right", cell: (a: any) => <span className="mono">{dash(a.rooms_with_break)} / {dash(rd?.need?.rooms_with_break)}</span> },
+            { key: "rate", header: "rate", sort: (a: any) => a.rate_pct, align: "right", cell: (a: any) => <span className="mono">{dash(a.rate_pct)}%</span> },
+            { key: "ready", header: "", cell: (a: any) => <Ready ready={a.ready} /> },
+          ]} />
+        </div>
+        <div>
+          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Curator · agent patterns</h4>
+          <p className="mb-2 text-[11px] text-slate-500">An agent wrong more often in one chart and session than in its other situations: {dash(ca?.need?.decisive)}+ decisive outcomes on each side, one-sided p &lt; {dash(ca?.need?.alpha)}, over {dash(ca?.window_days)} days. Decisive outcomes in the window: <span className="mono text-slate-300">{dash(ca?.decisive_outcomes)}</span>.</p>
+          <DataTable dense rows={ca?.situations ?? []} rowKey={(x: any) => `${x.agent}|${x.chart}|${x.session}`} maxHeight={260} empty="No scored outcomes in the window yet." columns={[
+            { key: "agent", header: "agent", sort: (x: any) => x.agent, cell: (x: any) => <span className="mono text-cyan-200">{x.agent}</span> },
+            { key: "where", header: "chart · session", cell: (x: any) => <span className="text-slate-300">{TF[x.chart] ?? dash(x.chart)} · {words(x.session)}</span> },
+            { key: "decisive", header: "decisive", sort: (x: any) => x.decisive, align: "right", cell: (x: any) => <span className="mono">{dash(x.decisive)} / {dash(ca?.need?.decisive)}</span> },
+            { key: "wrong", header: "wrong here", sort: (x: any) => x.wrong_pct, align: "right", cell: (x: any) => <span className="mono">{dash(x.wrong_pct)}%</span> },
+            { key: "base", header: "wrong elsewhere", align: "right", cell: (x: any) => <span className="mono">{x.baseline_wrong_pct == null ? "—" : `${x.baseline_wrong_pct}%`} <span className="text-slate-500">({dash(x.baseline_decisive)})</span></span> },
+            { key: "ready", header: "", cell: (x: any) => <Ready ready={x.ready} /> },
+          ]} />
+        </div>
+        <div>
+          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Calibrator · engine patterns</h4>
+          <p className="mb-2 text-[11px] text-slate-500">A structure engine that stays stuck in {dash(en?.need?.episodes)}+ separate episodes over {dash(en?.window_days)} days, seen in {dash(en?.need?.cards)}+ hourly cards: the next untested value of its reviewed grid is proposed for shadow.</p>
+          <div className="grid gap-3 md:grid-cols-2">
+            {(en?.families ?? []).map((f: any) => (
+              <div key={f.family} className="glass-inner space-y-2 px-3 py-2.5">
+                <div className="flex items-center justify-between text-[12px]"><span className="text-slate-200">{dash(f.name)} <span className="mono text-[10px] text-slate-500">{f.family}</span></span><Ready ready={f.ready} /></div>
+                <Need label="stuck episodes" have={f.episodes} need={en?.need?.episodes} />
+                <Need label="hourly cards stuck" have={f.cards} need={en?.need?.cards} />
+                <div className="text-[11px] text-slate-500">longest {dash(f.longest_candles)} candles · next grid value {dash(f.next_value)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </>)}
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Auto-tuning · quorum weighting per timeframe</h4>
+        <p className="mb-2 text-[11px] text-slate-500">XAUUSD replays each room under neighbouring weightings. A candidate is judged once its discovery slice reaches its minimum and the newest rooms fill the holdout; a better one activates by itself.</p>
+        {!w.length ? <Empty>No weighting report has reached Aether yet.</Empty> : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {w.map((t: any) => (
+              <div key={t.timeframe} className="glass-inner space-y-2 px-3 py-2.5">
+                <div className="flex items-center justify-between text-[12px]"><span className="text-slate-200">{TF[t.timeframe] ?? dash(t.timeframe)}</span><Badge tone="slate">{dash(t.mode)}</Badge></div>
+                <div className="text-[11px] text-slate-400">rooms <span className="mono text-slate-200">{dash(t.rooms)}</span> over {dash(t.window_days)}d · {dash(t.candidates)} candidates</div>
+                <Need label="discovery rooms" have={t.discovery?.have} need={t.discovery?.need} />
+                <Need label="holdout rooms" have={t.holdout?.have} need={t.holdout?.need} />
+                <div className="mono truncate text-[10px] text-slate-500" title={dash(t.active)}>active {dash(t.active)} · report {ago(t.received_at)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Existing({ o }: { o: any }) {
+  const canon = o?.canon;
+  const items: any[] = o?.knowledge?.items ?? [];
+  const counts: Record<string, number> = o?.knowledge?.counts ?? {};
+  const weighting: any[] = o?.weighting ?? [];
+  if (!canon) return <Empty>Aether returned no canon.</Empty>;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <Stat label="canon" value={dash(canon.version)} sub={`sha ${short(canon.content_sha256)}`} />
+        <Stat label="indicator KB" value={canon.kb_version == null ? "—" : `v${canon.kb_version}`} sub={`sha ${short(canon.kb_content_sha256)}`} />
+        <Stat label="doctrine rules" value={dash(canon.doctrine?.length)} />
+        <Stat label="learned items approved" value={dash(counts.approved ?? (o?.knowledge ? 0 : null))} sub="the learned pack (shadow only)" />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div>
+          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Canon files</h4>
+          <ul className="space-y-1 text-[11px]">
+            {(canon.file_list ?? []).map((f: any) => <li key={f.path} className="flex justify-between gap-2"><span className="mono text-slate-300">{f.path}</span><span className="mono text-slate-500">{short(f.sha256)}</span></li>)}
+          </ul>
+          <h4 className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Indicator KB</h4>
+          <p className="text-[11px] text-slate-400">{dash(canon.kb?.status && words(canon.kb.status))} · lanes: {(canon.kb?.input_lanes ?? []).map(words).join(", ") || "—"}</p>
+          <div className="mt-1 flex flex-wrap gap-1">{(canon.kb?.sections ?? []).map((k: string) => <Badge key={k} tone="slate">{words(k)}</Badge>)}</div>
+          <h4 className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Definitions</h4>
+          <div className="flex flex-wrap gap-1">{(canon.definitions ?? []).map((k: string) => <Badge key={k} tone="slate">{words(k)}</Badge>)}</div>
+        </div>
+        <div>
+          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Agent roles ({dash(canon.roles?.length)})</h4>
+          <div className="flex max-h-48 flex-wrap gap-1 overflow-auto">{(canon.roles ?? []).map((r: any) => <span key={r.id} title={`${dash(r.kind)} · ${dash(r.family)}`}><Badge tone="purple">{dash(r.name ?? r.id)}</Badge></span>)}</div>
+        </div>
+      </div>
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Doctrine</h4>
+        <DataTable dense rows={canon.doctrine ?? []} rowKey={(r: any) => r.id} maxHeight={300} empty="No doctrine rules." columns={[
+          { key: "id", header: "rule", sort: (r: any) => r.id, cell: (r: any) => <span className="mono text-cyan-200">{r.id}</span> },
+          { key: "rule", header: "what it says", className: "wrap", cell: (r: any) => <span className="text-slate-300">{r.rule}</span> },
+          { key: "since", header: "since", sort: (r: any) => r.since ?? "", cell: (r: any) => <span className="text-slate-500">{dash(r.since)}</span> },
+        ]} />
+      </div>
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Learned items in Aether</h4>
+        <DataTable dense rows={items} rowKey={(i: any) => `${i.item_id}@${i.version}`} maxHeight={260} empty="Aether has not drafted a learned item yet: the rules above are still collecting." columns={[
+          { key: "status", header: "status", sort: (i: any) => i.status, cell: (i: any) => <span className="inline-flex items-center gap-1.5"><Dot tone={tone(i.status)} />{i.status}</span> },
+          { key: "item", header: "item", sort: (i: any) => i.item_id, cell: (i: any) => <span className="mono text-cyan-200">{i.item_id}@{i.version}</span> },
+          { key: "kind", header: "kind", cell: (i: any) => <Badge tone="purple">{words(i.kind)}</Badge> },
+          { key: "text", header: "what it says", className: "wrap", cell: (i: any) => <span className="text-slate-300">{dash(i.text)}</span> },
+          { key: "when", header: "updated", sort: (i: any) => Date.parse(i.updated_at) || 0, cell: (i: any) => <span className="text-slate-500">{ago(i.updated_at)}</span> },
+        ]} />
+      </div>
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Active weighting per timeframe</h4>
+        {!weighting.length ? <Empty>No weighting report has reached Aether yet.</Empty> : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {weighting.map((t: any) => (
+              <div key={t.timeframe} className="glass-inner px-3 py-2.5 text-[11px]">
+                <div className="mb-1 flex items-center justify-between"><span className="text-[12px] text-slate-200">{TF[t.timeframe] ?? dash(t.timeframe)}</span><span className="mono text-[10px] text-slate-500">{dash(t.active?.id)}</span></div>
+                <ul className="space-y-0.5">
+                  {(t.agents ?? []).slice(0, 6).map((a: any) => <li key={a.agent} className="flex justify-between gap-2"><span className="mono text-slate-400">{a.agent}</span><span className="mono text-slate-200">{num(a.weight) === null ? "—" : a.weight.toFixed(2)}</span></li>)}
+                </ul>
+                {!(t.agents ?? []).length && <span className="text-slate-500">—</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Item({ p }: { p: any }) {
   const item = p.item ?? {};
@@ -39,6 +199,8 @@ export default function Knowledge() {
   const counts: Record<string, number> = data?.counts ?? {};
   const pending = rows.filter((p: any) => p.status === "pending");
   const reload = () => void refresh();
+  const aether = usePoll(() => call("aether.overview"), 300_000);
+  const o: any = aether.data;
   return (
     <div className="flex flex-col gap-3">
       <Panel title="Learned Knowledge · Aether" icon={<Sparkles className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone={pending.length ? "amber" : "slate"}>{pending.length} pending</Badge>}>
@@ -51,6 +213,18 @@ export default function Knowledge() {
           { key: "rejected", label: "rejected", value: counts.rejected ?? 0, color: STATUS.serious },
           { key: "expired", label: "expired", value: counts.expired ?? 0, color: STATUS.neutral },
         ]} />
+      </Panel>
+      <Panel title="Learning progress · Aether" icon={<GraduationCap className="h-3.5 w-3.5 text-emerald-300" />} right={<Badge tone="slate">{o?.generated_at ? `read ${ago(o.generated_at)}` : "—"}</Badge>}>
+        <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
+          What the decision cards hold against each rule's threshold. A rule drafts a proposal only when it is ready; the curator and the calibrator run once a day ({dash(o?.progress?.curation?.schedule_utc)} UTC).
+        </p>
+        {aether.loading && !o ? <Skeleton rows={6} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Progress o={o} />}
+      </Panel>
+      <Panel title="Existing knowledge" icon={<Library className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="slate">{o?.canon?.version ? `canon ${o.canon.version}` : "—"}</Badge>}>
+        <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
+          The canon is the reviewed knowledge every agent works from; it changes only by a reviewed PR. Learned items are measured by Aether and are never canon.
+        </p>
+        {aether.loading && !o ? <Skeleton rows={6} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Existing o={o} />}
       </Panel>
       <Panel title="Proposals" icon={<BookOpenCheck className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : (

@@ -67,6 +67,12 @@ service = "cryptophys-platform-api"
 binding = "FORGE"
 service = "cryptophys-forge"
 
+# Aether, the Knowledge Guardian cluster: deployed from cryptophys-adm/cryptophys-aether. The
+# Knowledge page reads its overview (GET /v1/overview, read-only); Aether has no public URL.
+[[services]]
+binding = "AETHER"
+service = "cryptophys-aether"
+
 # Console UI (React SPA in the Nexus obsidian design), built from ui/ into ui/dist by the deploy
 # and validation workflows. run_worker_first: every request, assets included, passes the Access,
 # operator, CSP and allow-list checks in src/index.ts before anything is served.
