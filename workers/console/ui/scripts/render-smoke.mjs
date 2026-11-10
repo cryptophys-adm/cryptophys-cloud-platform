@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "metabolism"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -88,6 +88,16 @@ Object.assign(MOCK, {
   "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", observed_at: at(i * 3) })) },
   "/api/recovery/v1/plans": { plans: Array.from({ length: 14 }, (_, i) => ({ plan_id: `plan_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, service_id: SVC[i % 5], title: `Recover ${SVC[i % 5]} from version mismatch`, status: ["draft", "approved", "executing", "completed", "failed", "disabled"][i % 6], created_by: "agent:supervisor", created_at: at(i * 90), steps: [{}, {}] })) },
 });
+MOCK["/api/kernel/v1/metabolism"] = {
+  live: { source: "cryptophys-digital-metabolism", observed_at: at(1), market_status: "open", power_mode: "homeostasis", power_mode_override: "none", auto_adaptation_enabled: true,
+    treasury_reserve_usd: 500, runway_days: 3333.3, infra_burn_cost_24h: 0.15, trading_net_pnl_24h: -12.5, metabolic_ratio: -83.33 },
+  cycles: Array.from({ length: 60 }, (_, i) => ({ cycle_id: `mtb_${i}`, evaluated_at: at(i * 15), market_status: i > 40 ? "closed" : "open", trading_net_pnl_24h: i % 7 - 3, infra_burn_cost_24h: 0.15,
+    metabolic_ratio: 1.2, treasury_reserve_usd: 500, runway_days: 3333.3, power_mode: i > 40 ? "survival" : "homeostasis", mode_reason: i > 40 ? "market closed (weekend): entering survival hibernation to conserve AI tokens and compute" : "baseline homeostasis: balanced operational state" })),
+  ledger: [{ entry_id: "trz_seed", entry_type: "capital_injection", source: "genesis:runway_buffer", amount_usd: 500, balance_after_usd: 500, created_at: at(700) }],
+  burn_14d: SVC.slice(0, 6).map((s, i) => ({ service_id: s, cost_usd: 0.5 + i * 0.3, requests: 1000 * (i + 1), ai_neurons: 10 })),
+  mode_changes: [{ actor: "agent:supervisor", mode: "survival", previous_mode: "homeostasis", reason: "market closed (weekend)", at: at(615) }],
+  rules: ["Survival throttles only AI spending; it never blocks consensus.", "Growth applies only with the owner's override.", "Read only: no orders, no funds."],
+};
 MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
 
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png" };

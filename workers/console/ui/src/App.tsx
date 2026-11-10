@@ -15,6 +15,7 @@ import Users from "./pages/Users";
 import Consensus from "./pages/Consensus";
 import Knowledge from "./pages/Knowledge";
 import Code from "./pages/Code";
+import Metabolism from "./pages/Metabolism";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -45,6 +46,7 @@ export default function App() {
     case "markets": page = <Markets />; break;
     case "users": page = <Users />; break;
     case "code": page = <Code />; break;
+    case "metabolism": page = <Metabolism />; break;
     default: page = <Command />; current = "";
   }
   return <AppShell current={current}>{page}</AppShell>;
