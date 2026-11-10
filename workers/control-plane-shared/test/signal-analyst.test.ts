@@ -251,3 +251,99 @@ test("withoutLevels redacts common thousands and decimal separators", () => {
   assert.equal(withoutLevels("XAUUSD_4078"), "XAUUSD_[level]", "numeric levels embedded in symbol-like text are redacted");
   assert.equal(withoutLevels("XAUUSD4078"), "XAUUSD[level]", "numeric levels adjacent to letters are redacted");
 });
+
+test("P1-M3 15m SSOT Decision Engine normalization", async () => {
+  const m15Item = {
+    decision_key: `OANDA:XAUUSD:15:${NOW - 5 * 60_000}`,
+    bar_close: "2026-11-05T11:55:00.000Z",
+    decided_at: "2026-11-05T11:55:02.000Z",
+    stance: "BUY",
+    confidence: 0.85,
+    trade: { action: "ENTER_MARKET", side: "BUY", entry: 2650.5, stop: 2640.0, tp: 2675.0, rrr: 2.45 },
+    summary: "Strong breakout above 2650 with multi-timeframe consensus.",
+    reasons: ["H1 momentum aligned", "M15 structure confirmed"],
+  };
+  const mockEngine = {
+    fetch: async (url: string) => {
+      if (url.includes("/api/engine/decisions")) {
+        return new Response(JSON.stringify({ status: "ok", enabled: true, decisions: [m15Item] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  };
+  const db = migratedDb();
+  const { env } = kernelEnv(db, { XAUUSD_AI: mockEngine });
+  const r: any = await observeSignals(env as any, NOW);
+  assert.equal(r.available, true);
+  assert.equal(r.endpoint_used, "engine");
+  assert.equal(r.recent.length, 1);
+  const n = r.recent[0];
+  assert.equal(n.candle_key, `OANDA:XAUUSD:15:${NOW - 5 * 60_000}`);
+  assert.equal(n.decision, "BUY");
+  assert.equal(n.confidence, 0.85);
+  assert.equal(n.risk_reward, 2.45);
+  assert.equal(n.reasoning, "Strong breakout above [level] with multi-timeframe consensus.");
+  for (const k of ["entry", "stop", "tp", "entry_price", "stop_loss", "take_profit"]) {
+    assert.equal(k in n, false, `${k} must never enter the kernel`);
+  }
+});
+
+test("P1-M3 15m dynamic staleness boundary", async () => {
+  const open44 = NOW - 44 * 60_000 - 15 * 60_000;
+  const key44 = `OANDA:XAUUSD:15:${open44}`;
+  const mock44 = {
+    fetch: async () => new Response(JSON.stringify({ status: "ok", decisions: [{ decision_key: key44, stance: "WAIT" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+  };
+  const { env: e1 } = kernelEnv(migratedDb(), { XAUUSD_AI: mock44 });
+  const r1: any = await observeSignals(e1 as any, NOW);
+  assert.equal(r1.stale, false);
+
+  const open46 = NOW - 46 * 60_000 - 15 * 60_000;
+  const key46 = `OANDA:XAUUSD:15:${open46}`;
+  const mock46 = {
+    fetch: async () => new Response(JSON.stringify({ status: "ok", decisions: [{ decision_key: key46, stance: "WAIT" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+  };
+  const { env: e2 } = kernelEnv(migratedDb(), { XAUUSD_AI: mock46 });
+  const r2: any = await observeSignals(e2 as any, NOW);
+  assert.equal(r2.stale, true);
+});
+
+test("P1-M3 deals telemetry normalization and stats", async () => {
+  const dealsData = [
+    { deal_ticket: 1001, position_ticket: 501, mode: "ea_live", side: "BUY", volume: 0.1, entry_price: 2640.0, exit_price: 2650.0, stop_loss: 2635.0, take_profit: 2655.0, profit: 100.0, commission: -3.5, swap: -0.5, reason: "tp", signal_id: "sig_1", opened_ms: NOW - 3600_000, closed_ms: NOW - 1800_000, currency: "USD" },
+    { deal_ticket: 1002, position_ticket: 502, mode: "ea_live", side: "SELL", volume: 0.1, entry_price: 2650.0, exit_price: 2655.0, stop_loss: 2655.0, take_profit: 2635.0, profit: -50.0, commission: -3.5, swap: 0.0, reason: "sl", signal_id: "sig_2", opened_ms: NOW - 1800_000, closed_ms: NOW - 600_000, currency: "USD" },
+  ];
+  const mockWithDeals = {
+    fetch: async (url: string) => {
+      if (url.includes("/api/deals")) {
+        return new Response(JSON.stringify({ status: "ok", deals: dealsData }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ status: "ok", items: [item()] }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const db = migratedDb();
+  const { env } = kernelEnv(db, { XAUUSD_AI: mockWithDeals });
+
+  const rDeals: any = await observeSignals(env as any, { now: NOW, endpoint: "deals" });
+  assert.equal(rDeals.available, true);
+  assert.equal(rDeals.endpoint_used, "deals");
+  assert.equal(rDeals.deals.length, 2);
+  const d0 = rDeals.deals[0];
+  assert.equal(d0.deal_ticket, 1001);
+  assert.equal(d0.net_profit, 96.0);
+  for (const k of ["entry_price", "exit_price", "stop_loss", "take_profit"]) {
+    assert.equal(k in d0, false, `${k} must never be exposed in deal telemetry`);
+  }
+  const stats = rDeals.deal_stats;
+  assert.equal(stats.trades, 2);
+  assert.equal(stats.wins, 1);
+  assert.equal(stats.losses, 1);
+  assert.equal(stats.win_rate, 0.5);
+  assert.equal(stats.net_profit, 42.5);
+
+  const rCombined: any = await observeSignals(env as any, { now: NOW, includeDeals: true });
+  assert.equal(rCombined.available, true);
+  assert.ok(rCombined.deals);
+  assert.ok(rCombined.deal_stats);
+  assert.equal(rCombined.deal_stats.trades, 2);
+});
