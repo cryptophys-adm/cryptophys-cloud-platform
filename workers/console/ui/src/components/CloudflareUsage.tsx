@@ -1,4 +1,4 @@
-import { Cloud, KeyRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, Cpu, KeyRound, ShieldAlert } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "./ui";
 import { ActivityChart, BarList, DataTable, STATUS, type Bucket } from "./viz";
 import { call } from "../lib/api";
@@ -6,11 +6,13 @@ import { usePoll } from "../lib/usePoll";
 import { ago } from "../lib/format";
 
 /**
- * Real Cloudflare usage against the Workers Free limits (owner 2026-11-10). Data comes from
- * GET /v1/usage on the Platform API, which reads the GraphQL Analytics API with an owner-created,
- * read-only token. A metric that cannot be read shows its error, never a number.
+ * Real Cloudflare usage and billable costs against Workers Free limits (owner 2026-11-10).
+ * Data comes from GET /v1/usage on the Platform API, which reads the GraphQL Analytics API
+ * and Billable Usage API with an owner-created, read-only token.
+ * A metric that cannot be read shows its error or dash, never a number.
  */
 const fmt = (v: number) => v.toLocaleString("en-US");
+const fmtMoney = (v: unknown) => (typeof v === "number" ? "$" + Math.abs(v).toFixed(2) : "—");
 const tone = (pct: number | null) => (pct === null ? STATUS.neutral : pct >= 100 ? STATUS.critical : pct >= 80 ? STATUS.warning : STATUS.good);
 
 function MetricRow({ m }: { m: any }) {
@@ -39,17 +41,33 @@ export default function CloudflareUsage() {
   const metrics: any[] = Array.isArray(d.metrics) ? d.metrics : [];
   const workers = metrics.find((m) => m.key === "workers_requests");
   const buckets: Bucket[] = (workers?.history ?? []).map((h: any) => ({ start: Date.parse(`${h.date}T00:00:00Z`), counts: { req: h.value }, total: h.value }));
+  const spend = d.spend_summary;
+  const products: any[] = Array.isArray(d.billable_products) ? d.billable_products : [];
+  const intents: any[] = Array.isArray(d.orchestrator_cost_intents) ? d.orchestrator_cost_intents : [];
+  const isOverage = typeof spend?.total_cost === "number" && spend.total_cost > 0;
+
   return (
-    <Panel title="Cloudflare usage · Workers Free limits" icon={<Cloud className="h-3.5 w-3.5 text-cyan-300" />}
-      right={<div className="flex flex-wrap justify-end gap-2">
-        <Badge tone={d.configured ? "green" : "amber"}>{d.configured ? "live from Cloudflare" : loading && !data ? "loading" : "token not set"}</Badge>
-        {d.observed_at && <Badge tone="slate">{d.cached ? "cached · " : ""}{ago(d.observed_at)}</Badge>}
-      </div>}>
-      {loading && !data ? <Skeleton rows={3} /> : error && !data ? <Empty>The usage endpoint is not available yet: {error}</Empty> : !d.configured ? (
+    <Panel
+      title="Cloudflare Billable Usage · Free Tier Quotas"
+      icon={<Cloud className="h-3.5 w-3.5 text-cyan-300" />}
+      right={
+        <div className="flex flex-wrap justify-end gap-2">
+          <Badge tone={d.configured ? "green" : "amber"}>
+            {d.configured ? "live from Cloudflare" : loading && !data ? "loading" : "token not set"}
+          </Badge>
+          {d.observed_at && <Badge tone="slate">{d.cached ? "cached · " : ""}{ago(d.observed_at)}</Badge>}
+        </div>
+      }
+    >
+      {loading && !data ? (
+        <Skeleton rows={3} />
+      ) : error && !data ? (
+        <Empty>The usage endpoint is not available yet: {error}</Empty>
+      ) : !d.configured ? (
         <div className="space-y-3 text-[12px]">
           <div className="flex items-start gap-2 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-amber-100">
             <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>{d.setup ?? "The owner sets a read-only analytics token on cryptophys-platform-api."} Until then no Cloudflare number is shown here.</span>
+            <span>{d.setup ?? "The owner sets a read-only analytics and billing token on cryptophys-platform-api."} Until then no Cloudflare number is shown here.</span>
           </div>
           {d.platform && (
             <div>
@@ -59,10 +77,102 @@ export default function CloudflareUsage() {
           )}
         </div>
       ) : (
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {metrics.map((m) => <MetricRow key={m.key} m={m} />)}
+        <div className="space-y-4">
+          {/* Section 1: Spend Summary Cards */}
+          <div className="space-y-2">
+            <div className="text-[10px] uppercase tracking-widest text-slate-500">Spend summary · Billing period {spend?.billing_period ?? "—"}</div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="glass-inner p-3 space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400">Total Cost</div>
+                <div className="mono text-xl font-bold text-slate-100">{fmtMoney(spend?.total_cost)}</div>
+                <div className="text-[10px] text-slate-500">
+                  {spend ? `Usage observed ${spend.period_start} – ${spend.period_end}` : "Observed cycle cost"}
+                </div>
+              </div>
+              <div className="glass-inner p-3 space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400">Projected Cycle Cost</div>
+                <div className="mono text-xl font-bold text-amber-300">{fmtMoney(spend?.projected_cost)}</div>
+                <div className="text-[10px] text-slate-500">
+                  {spend ? `${spend.days_observed} of ${spend.total_days} cycle days observed` : "Projected month cost"}
+                </div>
+              </div>
+              <div className="glass-inner p-3 space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400">Average Daily Cost</div>
+                <div className="mono text-xl font-bold text-cyan-300">{fmtMoney(spend?.average_daily_cost)}</div>
+                <div className="text-[10px] text-slate-500">Based on observed usage in cycle</div>
+              </div>
+              <div className="glass-inner p-3 space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400">Billing Cycle Window</div>
+                <div className="mono text-sm font-semibold text-slate-200 mt-1">{spend?.billing_period ?? "—"}</div>
+                <div className="text-[10px] text-slate-500">
+                  {spend ? `${spend.period_start} to ${spend.period_end}` : "Account cycle"}
+                </div>
+              </div>
+            </div>
           </div>
+
+          {/* Section 2: Product Breakdown Table */}
+          {products.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-widest text-slate-500">Billable usage breakdown · By product</div>
+                <span className="mono text-[11px] text-slate-400">Total: {fmtMoney(spend?.total_cost)}</span>
+              </div>
+              <DataTable
+                rows={products}
+                rowKey={(r: any) => r.product}
+                maxHeight={220}
+                dense
+                empty="No billable product recorded."
+                columns={[
+                  { key: "product", header: "Product", sort: (r: any) => r.product, cell: (r: any) => <span className="font-semibold text-slate-200 text-[11px]">{r.product}</span> },
+                  { key: "category", header: "Category", sort: (r: any) => r.category, cell: (r: any) => <span className="text-slate-400 text-[11px]">{r.category}</span> },
+                  { key: "total_usage", header: "Total usage", align: "right", cell: (r: any) => <span className="mono text-slate-300 text-[11px]">{r.total_usage}</span> },
+                  { key: "billable_usage", header: "Billable usage", align: "right", cell: (r: any) => <span className="mono text-slate-300 text-[11px]">{r.billable_usage}</span> },
+                  { key: "usage_cost", header: "Usage cost", align: "right", sort: (r: any) => r.usage_cost, cell: (r: any) => <span className="mono text-amber-300 font-bold text-[11px]">{fmtMoney(r.usage_cost)}</span> },
+                ]}
+                initialSort={{ key: "usage_cost", dir: "desc" }}
+              />
+            </div>
+          )}
+
+          {/* Section 3: Supervisor / Orchestrator Free Tier Control Intent Advisory */}
+          <div className="glass-inner p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
+                {isOverage ? <ShieldAlert className="h-3.5 w-3.5 text-amber-400" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                <span>Supervisor &amp; Orchestrator Free Tier Throttling Pipeline</span>
+              </div>
+              <Badge tone={isOverage ? "amber" : "green"}>
+                {isOverage ? "OVERAGE DETECTED · THROTTLING ACTIVE" : "FREE TIER MAINTAINED"}
+              </Badge>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Usage cost is reported directly to the AI Kernel Supervisor and Deployment Orchestrator. When billable overage occurs, the system initiates automated throttling directives to lower runtime boundaries and return within the Cloudflare Free Tier.
+            </p>
+            {intents.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                {intents.map((i: any) => (
+                  <div key={i.intent_id} className="flex items-start gap-2 rounded-lg bg-black/20 p-2 text-[10px] text-slate-300">
+                    <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-400" />
+                    <div>
+                      <span className="font-semibold text-amber-300">[{i.target_service}] {i.action}:</span> {i.directive}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Section 4: Workers Free Limits Meters */}
+          <div className="space-y-2">
+            <div className="text-[10px] uppercase tracking-widest text-slate-500">Workers Free plan quotas &amp; live meters</div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {metrics.map((m) => <MetricRow key={m.key} m={m} />)}
+            </div>
+          </div>
+
+          {/* Section 5: Activity Charts & Worker Requests Today */}
           <div className="grid gap-3 lg:grid-cols-2">
             <div>
               <div className="mb-1.5 text-[10px] uppercase tracking-widest text-slate-500">Workers requests per day · 7 days (UTC)</div>
@@ -76,7 +186,8 @@ export default function CloudflareUsage() {
               ]} initialSort={{ key: "requests", dir: "desc" }} />
             </div>
           </div>
-          <p className="text-[10px] text-slate-500">{d.source}. Daily limits reset at {d.window?.resets ?? "00:00 UTC"}. Read-only token; nothing here changes the plan or spends money.</p>
+
+          <p className="text-[10px] text-slate-500">{d.source}. Daily limits reset at {d.window?.resets ?? "00:00 UTC"}. Read-only token; nothing here changes the plan or moves funds.</p>
         </div>
       )}
     </Panel>

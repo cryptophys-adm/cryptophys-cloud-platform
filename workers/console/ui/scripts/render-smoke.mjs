@@ -99,6 +99,26 @@ MOCK["/api/kernel/v1/metabolism"] = {
   rules: ["Survival throttles only AI spending; it never blocks consensus.", "Growth applies only with the owner's override.", "Read only: no orders, no funds."],
 };
 MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "Workers Free", window: { from: "2026-11-04", to: "2026-11-10", resets: "00:00 UTC" },
+  spend_summary: {
+    billing_period: "Nov 2026",
+    period_start: "2026-10-17",
+    period_end: "2026-11-16",
+    days_observed: 25,
+    total_days: 31,
+    total_cost: 2.61,
+    projected_cost: 3.24,
+    average_daily_cost: 0.10,
+    currency: "USD",
+  },
+  billable_products: [
+    { product: "Regular Twitch Neurons", category: "Workers AI", total_usage: "1,410,000 Neurons", billable_usage: "1,410,000 Neurons", usage_cost: 1.41 },
+    { product: "Container Memory, per GiB-hr", category: "Compute", total_usage: "117 GiB-hr", billable_usage: "117 GiB-hr", usage_cost: 1.17 },
+    { product: "Container Disk, per GB-hr", category: "Compute", total_usage: "30 GB-hr", billable_usage: "30 GB-hr", usage_cost: 0.03 },
+  ],
+  orchestrator_cost_intents: [
+    { intent_id: "intent_throttle_ai_neurons", product: "Regular Twitch Neurons", cost_usd: 1.41, target_service: "cryptophys-ai-kernel", action: "throttle_ai_neurons", directive: "FREE_TIER_RESTRICTION: Cap daily AI neuron usage at 10,000 neurons/day." },
+    { intent_id: "intent_reduce_container_memory", product: "Container Memory, per GiB-hr", cost_usd: 1.17, target_service: "compute-containers", action: "reduce_container_runtime", directive: "FREE_TIER_RESTRICTION: Curtail container idle runtime." },
+  ],
   metrics: [
     { key: "workers_requests", label: "Workers requests", today: 41200, limit: 100000, unit: "requests", pct: 41.2, history: Array.from({ length: 7 }, (_, i) => ({ date: new Date(NOW - (6 - i) * 86400000).toISOString().slice(0, 10), value: 30000 + i * 2500 })) },
     { key: "d1_rows_read", label: "D1 rows read", today: 4300000, limit: 5000000, unit: "rows", pct: 86 },
@@ -107,7 +127,7 @@ MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "
     { key: "kv_reads", label: "KV reads", today: 0, limit: 100000, unit: "reads", pct: 0 },
     { key: "kv_writes", label: "KV writes", today: 0, limit: 1000, unit: "writes", pct: 0 },
   ],
-  workers_today: SVC.map((s, i) => ({ script: s, requests: 9000 - i * 700 })), workers_errors_today: 4, source: "Cloudflare GraphQL Analytics API (sampled adaptive datasets)" };
+  workers_today: SVC.map((s, i) => ({ script: s, requests: 9000 - i * 700 })), workers_errors_today: 4, source: "Cloudflare GraphQL Analytics & Billable Usage API" };
 MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
 
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png" };
