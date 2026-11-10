@@ -74,6 +74,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.consensus_approve", "kernel", "POST", "/v1/consensus/{id}/approve", true, "APPROVE {id13}"],
   ["kernel.consensus_reject", "kernel", "POST", "/v1/consensus/{id}/reject", true, "REJECT {id13}"],
   ["kernel.knowledge", "kernel", "GET", "/v1/knowledge", false, null],
+  ["aether.overview", "aether", "GET", "/v1/overview", false, null],
   ["kernel.knowledge_approve", "kernel", "POST", "/v1/knowledge/{id}/approve", true, "APPROVE {id13}"],
   ["kernel.knowledge_reject", "kernel", "POST", "/v1/knowledge/{id}/reject", true, "REJECT {id13}"],
   ["kernel.agents_disabled", "kernel", "POST", "/v1/kernel/agents-enabled", false, "AGENTS OFF"],
@@ -109,8 +110,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 56 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 56);
+test("1. route table: exactly the 57 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 57);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -119,7 +120,7 @@ test("1. route table: exactly the 56 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 56);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 57);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -205,7 +206,7 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  assert.equal(CONSOLE_ALLOW_LIST.length, 55);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 56);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));
@@ -275,4 +276,22 @@ test("14. Observe now stays disabled until its request settles, with no lock tim
   assert.match(inf, /after: \(\) => \{ setBusy\(false\)/);
   assert.match(inf, /onError: \(\) => setBusy\(false\)/);
   assert.doesNotMatch(inf, /setTimeout/);
+});
+
+test("10. Aether's overview: GET reaches the AETHER binding as GET /v1/overview; nothing else does", async () => {
+  const env = consoleEnv();
+  const aether = recorder();
+  (env as Record<string, unknown>).AETHER = aether.binding;
+  const ok = await run(env, creq("GET", "/api/aether/v1/overview"));
+  assert.equal(ok.status, 200);
+  assert.equal(aether.calls.length, 1);
+  assert.equal(new URL(aether.calls[0].url).pathname, "/v1/overview");
+  assert.equal(aether.calls[0].method, "GET");
+  for (const [method, path] of [["POST", "/api/aether/v1/overview"], ["GET", "/api/aether/health"], ["GET", "/api/aether/v1/learned-pack"]]) {
+    const r = creq(method, path);
+    if (method !== "GET") r.headers.set("origin", ORIGIN);
+    assert.notEqual((await run(env, r)).status, 200, `${method} ${path} is not allowed`);
+  }
+  assert.equal(aether.calls.length, 1, "refused requests never reach Aether");
+  assert.equal(SERVICE_BINDINGS.aether, "AETHER");
 });
