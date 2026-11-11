@@ -43,6 +43,8 @@ export interface SyscallEnv extends BaseEnv {
   REGISTRY?: RegistryRpcBinding;
   DRIFT?: DriftRpcBinding;
   DEPLOY?: DeployRpcBinding;
+  /** ADR-0013 §3 (#262): the Forge's head of canonical main, read from Artifacts at call time. */
+  CANONICAL_MAIN?: { mainHead(): Promise<{ main_sha: string | null }> };
   VOTE_PLATFORM_API?: VoteRpcBinding;
   VOTE_DEPLOYMENT_ORCHESTRATOR?: VoteRpcBinding;
   VOTE_PLATFORM_REGISTRY?: VoteRpcBinding;

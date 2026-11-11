@@ -69,6 +69,13 @@ binding = "DEPLOY"
 service = "cryptophys-deployment-orchestrator"
 entrypoint = "DeployRpc"
 
+# ADR-0013 §3 (#262): the head of canonical main, read by the Forge from Artifacts at call time. The
+# registration executors require it to equal the census head they act on (fail closed without it).
+[[services]]
+binding = "CANONICAL_MAIN"
+service = "cryptophys-forge"
+entrypoint = "CanonicalMainRpc"
+
 # Wave C (C1): each control-plane Worker casts its own consensus vote (VoteRpc).
 [[services]]
 binding = "VOTE_PLATFORM_API"

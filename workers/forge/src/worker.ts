@@ -6,6 +6,7 @@ import worker, { REPO, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { cachedSnapshot, snapshotFromArtifacts } from "./checks.ts";
 import { forgeTick } from "./tick.ts";
+import { canonicalMainHead } from "./census.ts";
 import { bundleWorkerDir, type WorkerBundle } from "./runner/core.ts";
 import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
@@ -29,6 +30,19 @@ export default {
 export class HealthRpc extends WorkerEntrypoint<Env> {
   async health(): Promise<HealthBody> {
     return healthBody(this.env as never);
+  }
+}
+
+/**
+ * The head of canonical main, read from Artifacts at call time (ADR-0013 §3, #262). The AI Kernel's
+ * registration executors call it right before they write, so a census of an older head can never
+ * authorize a registration after main has moved. Read only; no input.
+ */
+export class CanonicalMainRpc extends WorkerEntrypoint<Env> {
+  async mainHead(): Promise<{ main_sha: string | null }> {
+    if (!this.env.ARTIFACTS) return { main_sha: null };
+    const repo = await this.env.ARTIFACTS.get(REPO);
+    try { return { main_sha: await canonicalMainHead(repo as never) }; } finally { repo[Symbol.dispose]?.(); }
   }
 }
 

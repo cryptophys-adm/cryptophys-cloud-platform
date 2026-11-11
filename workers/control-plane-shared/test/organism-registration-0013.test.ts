@@ -56,6 +56,7 @@ function grownDna(capabilities = ["platform.observe", "reports.publish"]) {
 }
 
 function kernelEnv(db: Db = migratedDb()) {
+  const canonical = { head: MAIN as string | null };
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
   const mem = new Map<string, unknown>();
   const env: Record<string, unknown> = {
@@ -65,9 +66,11 @@ function kernelEnv(db: Db = migratedDb()) {
     RECOVERY: { propose: async (agentId: string, decisionId: string) => { await verifySyscallDecision(db, decisionId, agentId, "recovery.propose"); return { plan: {} }; } },
     MEMORY: { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) },
     DEPLOY: { pendingDeploys: async () => ({ main_sha: null, ci_green: false, units: [], skipped: [] }) },
+    // The Forge's CanonicalMainRpc: the head of canonical main in Artifacts, read at execution time.
+    CANONICAL_MAIN: { mainHead: async () => ({ main_sha: canonical.head }) },
   };
   const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, structuredClone(v)); } };
-  return { env, db, memory };
+  return { env, db, memory, canonical };
 }
 const setMode = (db: Db, mode: string) => db.raw.prepare("UPDATE consensus_controls SET value = ? WHERE control = 'mode'").run(mode);
 const last = (db: Db) => db.raw.prepare("SELECT * FROM consensus_proposals ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as any;
@@ -455,5 +458,40 @@ test("R16. registration votes fail closed for host states outside the registry s
     const vote = castVote("supervisor", proposal, e);
     assert.equal(vote.vote, "reject", proposal.action);
     assert.match(vote.reason, /not an active registered service/);
+  }
+});
+
+const STEWARD = { action: "register_agent", target: "forge-steward", params: { service: "cryptophys-forge", capabilities: ["platform.observe", "reports.publish"], tier_max: 1, main_sha: MAIN } };
+
+test("R17. canonical main moving after the last census stops a registration, though no new census row exists (#262 blocker)", async () => {
+  const { env, db, canonical } = kernelEnv();
+  setMode(db, "deploy");
+  await censusTick(db as never, repoWith(grownDna(), MAIN));
+  // A push to main after the census tick: Artifacts main is now another commit, the census still names MAIN.
+  canonical.head = "c".repeat(40);
+  const r = await syscall(env as never, "supervisor", "consensus.propose", STEWARD);
+  assert.equal(r.outcome, "succeeded");
+  assert.equal(last(db).status, "failed");
+  assert.match(last(db).outcome_json, /census_stale_main_moved/);
+  assert.equal(agentRow(db, "forge-steward"), undefined, "nothing is written against a stale census");
+  // The census of the new head is taken; a proposal naming it registers the agent.
+  await censusTick(db as never, repoWith(grownDna(), canonical.head!), Date.now() + CENSUS_REFRESH_MS + 1);
+  await syscall(env as never, "supervisor", "consensus.propose", { ...STEWARD, params: { ...STEWARD.params, main_sha: canonical.head } });
+  assert.equal(last(db).status, "executed", last(db).outcome_json);
+  assert.equal(agentRow(db, "forge-steward")?.status, "enabled");
+});
+
+test("R18. registration fails closed when canonical main cannot be read (no binding, an error, no head)", async () => {
+  for (const variant of ["missing", "throws", "null"] as const) {
+    const { env, db, canonical } = kernelEnv();
+    setMode(db, "deploy");
+    await censusTick(db as never, repoWith(grownDna(), MAIN));
+    if (variant === "missing") delete env.CANONICAL_MAIN;
+    if (variant === "throws") env.CANONICAL_MAIN = { mainHead: async () => { throw new Error("forge unreachable"); } };
+    if (variant === "null") canonical.head = null;
+    await syscall(env as never, "supervisor", "consensus.propose", STEWARD);
+    assert.equal(last(db).status, "failed", variant);
+    assert.match(last(db).outcome_json, /canonical_main_unavailable/, variant);
+    assert.equal(agentRow(db, "forge-steward"), undefined, variant);
   }
 });

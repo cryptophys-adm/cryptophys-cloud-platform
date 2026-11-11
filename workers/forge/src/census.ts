@@ -96,9 +96,14 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
 /** A census of an unchanged head is retaken this often, so registrations by consensus show up in it. */
 export const CENSUS_REFRESH_MS = 30 * 60_000;
 
+/** The head of canonical main, read from the Artifacts repository now (never cached), or null. */
+export async function canonicalMainHead(repo: ArtifactsReader): Promise<string | null> {
+  return (await repo.log({ ref: "main", limit: 1 })).map((c) => (typeof c.hash === "string" ? c.hash : "")).find((h) => HEX40.test(h)) ?? null;
+}
+
 /** One census per main head (retaken every CENSUS_REFRESH_MS): read the DNA, compare, record, and audit when the findings changed. */
 export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now()): Promise<{ outcome: "recorded" | "refreshed" | "up_to_date" | "no_main"; main_sha?: string; status?: string; findings?: number }> {
-  const head = (await repo.log({ ref: "main", limit: 1 })).map((c) => (typeof c.hash === "string" ? c.hash : "")).find((h) => HEX40.test(h));
+  const head = await canonicalMainHead(repo);
   if (!head) return { outcome: "no_main" };
   const existing = await db.prepare("SELECT taken_at FROM forge_organism_census WHERE main_sha = ?").bind(head).first<{ taken_at: string }>();
   if (existing && nowMs - Date.parse(existing.taken_at) < CENSUS_REFRESH_MS) return { outcome: "up_to_date", main_sha: head };

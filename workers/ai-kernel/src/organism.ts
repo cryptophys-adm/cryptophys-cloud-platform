@@ -48,11 +48,23 @@ export function findAgentGene(census: CensusRow | null, agentId: string): { serv
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
+/**
+ * The census the proposal was voted on, proven current: it is the latest census row, it is valid, the
+ * proposal names its head, and that head is still canonical main in Artifacts right now (the Forge's
+ * CanonicalMainRpc, read at execution time). A push to main after the last census tick therefore stops
+ * every registration until the census of the new head is taken and voted on. Fails closed: without the
+ * binding, or when the Forge cannot answer, nothing is registered.
+ */
 async function currentCensus(env: SyscallEnv, mainSha: unknown): Promise<CensusRow> {
   const census = await latestCensusRow(env);
   if (!census) throw new Error("census_unavailable");
   if (census.status !== "changes" && census.status !== "consistent") throw new Error("census_invalid");
   if (String(mainSha ?? "") !== census.main_sha) throw new Error("census_head_changed");
+  if (!env.CANONICAL_MAIN) throw new Error("canonical_main_unavailable");
+  let canonical: string | null;
+  try { canonical = (await env.CANONICAL_MAIN.mainHead())?.main_sha ?? null; } catch { throw new Error("canonical_main_unavailable"); }
+  if (!canonical || !/^[0-9a-f]{40}$/.test(canonical)) throw new Error("canonical_main_unavailable");
+  if (canonical !== census.main_sha) throw new Error("census_stale_main_moved");
   return census;
 }
 
