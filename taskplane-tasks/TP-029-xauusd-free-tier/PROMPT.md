@@ -36,7 +36,8 @@ Repository: `cryptophys-adm/xauusd-ai-trading-assistant`. The platform orchestra
 1. **Models (owner decision 2026-11-11):** "ganti model reasoner, carikan yang setara tapi paling murah dan layak sebagai reasoner dan bukan third party".
    - **Reasoner:** `AI_MODEL_REASONER` changes from `@cf/nvidia/nemotron-3-120b-a12b` to **`@cf/zai-org/glm-4.7-flash`** with reasoning on.
      - It is Cloudflare-hosted, with function calling, reasoning and a 131k context.
-     - It is not on a deprecation list, and Cloudflare names it as a replacement.
+     - It is not on a deprecation list.
+     - It is the owner-selected candidate for the shadow comparison below. Cloudflare's 2026-11-05 deprecation notice recommends DeepSeek V4.1 Flash or GLM-5.3 for frontier needs, and Gemma 4 or Qwen 3.8 for smaller models. It lists GLM-4.7-Flash only in its earlier 2026-05-08 notice, for that round's deprecations.
      - It is already the analyst model and the fallback model in this repository.
    - **Cost, at about 4k input and 1.5k output (thinking) tokens per call:**
 
