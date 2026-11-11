@@ -60,7 +60,8 @@ test("1. migration 0023: consensus tables, shadow mode, supervisor may propose",
   const sup = db.raw.prepare("SELECT tier_max, capabilities_json FROM agents WHERE agent_id = 'supervisor'").get() as any;
   assert.equal(sup.tier_max, 1);
   assert.ok(JSON.parse(sup.capabilities_json).includes("consensus.propose"));
-  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE capabilities_json LIKE '%consensus.propose%'").get() as any).n, 1, "only the supervisor proposes in phase 1");
+  // Since 0045 the Knowledge Council also holds consensus.propose; the kernel lets it propose doctrine amendments only.
+  assert.deepEqual(db.raw.prepare("SELECT agent_id FROM agents WHERE capabilities_json LIKE '%consensus.propose%' ORDER BY agent_id").all().map((r: any) => r.agent_id), ["knowledge-council", "supervisor"], "the supervisor proposes platform actions; the Knowledge Council doctrine amendments only");
   assert.throws(() => db.raw.prepare("UPDATE consensus_controls SET value = 'autonomous'").run(), /CHECK/);
 });
 

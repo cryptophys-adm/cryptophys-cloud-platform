@@ -619,7 +619,26 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
   "knowledge.status": (env, input, agentId) => knowledgeStatus(env.DB, agentId, input),
+  "doctrine.status": (env, input) => doctrineStatus(env.DB, input),
 };
+
+/**
+ * Owner 2026-11-11: the doctrine amendments Cerebrum executed (doctrine_amendments, migration 0045),
+ * oldest first, after `since` (ISO time). The Knowledge Council applies only these.
+ */
+async function doctrineStatus(db: SyscallEnv["DB"], input: JsonObject): Promise<JsonObject> {
+  const since = typeof input.since === "string" && Number.isFinite(Date.parse(input.since)) ? new Date(Date.parse(input.since)).toISOString() : "1970-01-01T00:00:00.000Z";
+  const limit = Math.min(Math.max(Number(input.limit) || 100, 1), 200);
+  const rows = await db.prepare(
+    "SELECT amendment_id, rule_id, action, values_json, previous_json, canon, session_id, executed_by, executed_at FROM doctrine_amendments WHERE executed_at > ? ORDER BY executed_at, amendment_id LIMIT ?",
+  ).bind(since, limit).all<Record<string, string>>();
+  return {
+    amendments: rows.results.map((r) => ({
+      amendment_id: r.amendment_id, rule: r.rule_id, action: r.action, values: JSON.parse(r.values_json), previous: JSON.parse(r.previous_json),
+      canon: r.canon, session: r.session_id, executed_by: r.executed_by, executed_at: r.executed_at,
+    })),
+  };
+}
 
 async function dispatch(env: SyscallEnv, capability: string, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
   switch (capability) {

@@ -24,6 +24,28 @@ import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { executeRegistration } from "./organism.ts";
 import { isPolicyParameter, readPolicyParameter, validPolicyValue } from "../../control-plane-shared/src/policy-params.ts";
+import { DOCTRINE_ACTIONS, DOCTRINE_COUNCIL_AGENT, doctrineProblem } from "../../control-plane-shared/src/doctrine.ts";
+
+/**
+ * Owner 2026-11-11: Cerebrum executes the Knowledge Council's doctrine amendment. It records the
+ * amendment (doctrine_amendments, migration 0045) with its audit event; Aether reads the executed
+ * amendments through doctrine.status and applies only those.
+ */
+async function recordDoctrineAmendment(env: SyscallEnv, proposalId: string, decisionId: string, p: Proposal, actor: string): Promise<JsonObject> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, p.action, p.target);
+  const problem = doctrineProblem(p.action, p.target, p.params);
+  if (problem) throw new Error(`invalid_doctrine_amendment: ${problem}`);
+  const at = nowIso();
+  const rule = String(p.params.rule);
+  await appendAuditEventWithMutation(env.DB, {
+    event_type: "doctrine.amended", actor, subject: `doctrine:${rule}`, outcome: p.action,
+    payload: { proposal_id: proposalId, rule, values: p.params.values, previous: p.params.previous, canon: p.params.canon, session: p.params.session },
+  }, () => env.DB.prepare(
+    `INSERT INTO doctrine_amendments (amendment_id, rule_id, action, values_json, previous_json, canon, session_id, executed_by, executed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(proposalId, rule, p.action, JSON.stringify(p.params.values), JSON.stringify(p.params.previous), String(p.params.canon), String(p.params.session), actor, at));
+  return { rule, values: p.params.values, executed_at: at };
+}
 
 /** Owner 2026-11-10: the council changes a Policy Engine parameter, only inside its hard bounds; audited with the write. */
 async function setPolicyParameter(env: SyscallEnv, proposalId: string, decisionId: string, p: Proposal, actor: string): Promise<JsonObject> {
@@ -86,7 +108,7 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
 
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
-export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", ...ROUTINE_REGISTRATIONS]);
+export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
 export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
 
@@ -128,6 +150,8 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
       return await executeRegistration(env, proposalId, decisionId, p, actor, (id) => canVote(env, id));
     case "set_policy_parameter":
       return await setPolicyParameter(env, proposalId, decisionId, p, actor);
+    case "amend_doctrine":
+      return await recordDoctrineAmendment(env, proposalId, decisionId, p, actor);
     default:
       throw new Error("no_executor");
   }
@@ -149,6 +173,12 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   if (!TARGET.test(target)) throw new Error("invalid_target");
   if (JSON.stringify(params).length > 2000) throw new Error("params_too_large");
   const p: Proposal = { action, target, params, class: cls };
+  // The Knowledge Council proposes doctrine amendments and nothing else; no other agent amends doctrine.
+  if (DOCTRINE_ACTIONS.has(action) !== (proposer === DOCTRINE_COUNCIL_AGENT)) throw new Error(proposer === DOCTRINE_COUNCIL_AGENT ? "council_doctrine_only" : "doctrine_council_only");
+  if (DOCTRINE_ACTIONS.has(action)) {
+    const problem = doctrineProblem(action, target, params);
+    if (problem) throw new Error(`invalid_doctrine_amendment: ${problem}`);
+  }
 
   const evidence = await gatherEvidence(env, action, target, now);
   const eligible = councilSeats(evidence).filter((id) => id !== proposer);
@@ -258,7 +288,7 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -276,6 +306,9 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "retire_worker") {
     if (!env.DEPLOY) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.retireForConsensus(proposalId, decisionId, p.target);
+  }
+  if (p.action === "amend_constitution") {
+    return await recordDoctrineAmendment(env, proposalId, decisionId, { ...p, class: "critical" }, `owner:${approver} via consensus:${proposalId}`);
   }
   if (CRITICAL_REGISTRATIONS.includes(p.action)) {
     return await executeRegistration(env, proposalId, decisionId, p, `owner:${approver} via consensus:${proposalId}`, (id) => canVote(env, id));

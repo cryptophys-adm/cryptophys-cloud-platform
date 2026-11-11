@@ -1,4 +1,4 @@
-import { BookOpenCheck, Check, GraduationCap, Library, Sparkles, X } from "lucide-react";
+import { BookOpenCheck, Check, GraduationCap, Library, Scale, Sparkles, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -106,6 +106,55 @@ function Progress({ o }: { o: any }) {
   );
 }
 
+const COUNCIL_TONE: Record<string, "green" | "amber" | "red" | "cyan" | "slate"> = { in_sync: "green", propose: "cyan", observing: "slate", refused: "red", unreported: "amber" };
+const COUNCIL_TEXT: Record<string, string> = {
+  in_sync: "matches the measured system",
+  observing: "a difference not yet measured twice from the same version",
+  propose: "every seat agreed: proposed to Cerebrum",
+  refused: "the Aether seat refused it (outside its hard bound)",
+  unreported: "the system no longer reports a fact: needs an owner PR",
+};
+const show = (v: unknown) => (v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v));
+
+/** Owner 2026-11-11: the Knowledge Council's daily doctrine review, proposed to Cerebrum for execution. */
+function Council({ o }: { o: any }) {
+  const d = o?.doctrine;
+  const s = d?.council?.last_session;
+  const review: any[] = s?.review ?? [];
+  const open = review.filter((r) => r.status !== "in_sync");
+  const seats = d?.facts?.seats ?? {};
+  if (!d) return <Empty>Aether returned no doctrine view.</Empty>;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <Stat label="last session" value={s ? ago(s.held_at) : "—"} sub={s ? `${dash(s.session_id)} · mode ${dash(s.mode)}` : dash(d.council?.schedule_utc)} />
+        <Stat label="rules reviewed" value={s ? review.length : "—"} sub={s ? `${open.length} differ from the system` : undefined} tone={s ? (open.length ? "warning" : "good") : undefined} />
+        <Stat label="proposed to Cerebrum" value={s ? (s.proposals ?? []).filter((p: any) => p.proposal_id).length : "—"} />
+        <Stat label="amendments applied" value={dash(d.applied?.length)} sub={d.audited ? `doctrine audited ${d.audited}` : undefined} />
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Facts: {d.facts ? <>reported {ago(d.facts.received_at)} · {Object.entries(seats).map(([k, v]: any) => `${k} ${dash(v.facts)} facts (version ${dash(v.version_id)})`).join(" · ")}</> : "—"}
+      </p>
+      <DataTable dense rows={open} rowKey={(r: any) => r.rule} maxHeight={300} empty={s ? "Every anchored rule matches the measured system." : "The council has not met yet."} columns={[
+        { key: "status", header: "status", sort: (r: any) => r.status, cell: (r: any) => <span title={COUNCIL_TEXT[r.status] ?? ""}><Badge tone={COUNCIL_TONE[r.status] ?? "slate"}>{words(r.status)}</Badge></span> },
+        { key: "rule", header: "rule", sort: (r: any) => r.rule, cell: (r: any) => <span className="mono text-cyan-200">{r.rule}</span> },
+        { key: "drift", header: "doctrine → measured", className: "wrap", cell: (r: any) => (
+          <span className="text-[11px] text-slate-300">{(r.drifts ?? []).map((x: any) => `${x.fact}: ${show(x.doctrine)} → ${show(x.observed)}`).join("; ") || (r.unreported ?? []).map((x: any) => `${x.fact}: not reported`).join("; ") || "—"}</span>
+        ) },
+        { key: "seats", header: "seats", cell: (r: any) => <span className="text-[11px] text-slate-400">{r.seats ? Object.entries(r.seats).map(([k, v]) => `${k} ${v}`).join(" · ") : "—"}</span> },
+        { key: "action", header: "to Cerebrum", cell: (r: any) => <span className="mono text-[11px] text-slate-400">{dash(r.action)}</span> },
+      ]} />
+      <DataTable dense rows={d.council?.proposals ?? []} rowKey={(p: any, i) => `${p.session_id}:${p.rule_id}:${i}`} maxHeight={220} empty="No proposal yet." columns={[
+        { key: "when", header: "proposed", sort: (p: any) => Date.parse(p.created_at) || 0, cell: (p: any) => <span className="text-slate-500">{ago(p.created_at)}</span> },
+        { key: "rule", header: "rule", cell: (p: any) => <span className="mono text-cyan-200">{p.rule_id}</span> },
+        { key: "action", header: "action", cell: (p: any) => <span className="mono text-[11px]">{p.action}</span> },
+        { key: "status", header: "Cerebrum", cell: (p: any) => <span className="text-[11px] text-slate-300">{dash(p.status)}{p.detail ? ` · ${p.detail}` : ""}</span> },
+        { key: "id", header: "proposal", cell: (p: any) => <span className="mono text-[10px] text-slate-500">{dash(p.proposal_id)}</span> },
+      ]} />
+    </div>
+  );
+}
+
 function Existing({ o }: { o: any }) {
   const canon = o?.canon;
   const items: any[] = o?.knowledge?.items ?? [];
@@ -141,8 +190,10 @@ function Existing({ o }: { o: any }) {
         <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Doctrine</h4>
         <DataTable dense rows={canon.doctrine ?? []} rowKey={(r: any) => r.id} maxHeight={300} empty="No doctrine rules." columns={[
           { key: "id", header: "rule", sort: (r: any) => r.id, cell: (r: any) => <span className="mono text-cyan-200">{r.id}</span> },
+          { key: "class", header: "class", sort: (r: any) => r.class ?? "", cell: (r: any) => r.class ? <Badge tone={r.class === "constitutional" ? "amber" : "slate"}>{r.class}</Badge> : <span className="text-slate-600">—</span> },
           { key: "rule", header: "what it says", className: "wrap", cell: (r: any) => <span className="text-slate-300">{r.rule}</span> },
-          { key: "since", header: "since", sort: (r: any) => r.since ?? "", cell: (r: any) => <span className="text-slate-500">{dash(r.since)}</span> },
+          { key: "amended", header: "amended", cell: (r: any) => r.amended ? <span className="text-[11px] text-emerald-300" title={r.amended.amendment_id}>by Cerebrum · {ago(r.amended.executed_at)}</span> : <span className="text-slate-600">—</span> },
+          { key: "since", header: "since", sort: (r: any) => r.since ?? "", cell: (r: any) => <span className="text-slate-500">{dash(r.updated ?? r.since)}</span> },
         ]} />
       </div>
       <div>
@@ -225,6 +276,12 @@ export default function Knowledge() {
           The canon is the reviewed knowledge every agent works from; it changes only by a reviewed PR. Learned items are measured by Aether and are never canon.
         </p>
         {aether.loading && !o ? <Skeleton rows={6} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Existing o={o} />}
+      </Panel>
+      <Panel title="Knowledge Council · doctrine" icon={<Scale className="h-3.5 w-3.5 text-amber-300" />} right={<Badge tone="slate">{o?.doctrine?.council?.schedule_utc ? `${o.doctrine.council.schedule_utc} UTC` : "—"}</Badge>}>
+        <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
+          Once a day the Nexus, Omega and Aether seats compare the doctrine with what the running system reports. A difference every seat agrees on goes to the Cerebrum consensus: an operational fact inside its hard bound executes after the vote, a constitutional one after your approval on the Consensus page. Aether applies only what Cerebrum executed.
+        </p>
+        {aether.loading && !o ? <Skeleton rows={4} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Council o={o} />}
       </Panel>
       <Panel title="Proposals" icon={<BookOpenCheck className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : (

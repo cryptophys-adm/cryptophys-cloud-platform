@@ -17,6 +17,7 @@ Aether is the Knowledge Guardian cluster of the AI Mesh.
 | `aether-guardian` | `signals.observe`, `reports.publish` | Agent compliance against role and doctrine |
 | `aether-curator` | `reports.publish`, `knowledge.propose`, `knowledge.status` | Learned-knowledge ledger; a person approves every item |
 | `aether-calibrator` | `reports.publish`, `knowledge.propose`, `knowledge.status` | Parameter candidates for shadow tests; the owner promotes by PR |
+| `knowledge-council` | `consensus.propose` (doctrine amendments only), `doctrine.status`, `reports.publish` | The Knowledge Council (migration 0045, owner 2026-11-11): proposes doctrine amendments; Cerebrum executes them |
 
 They publish `knowledge_audit` reports, `info` or `warning` only, advisory, never with price levels.
 
@@ -55,3 +56,18 @@ The curator and the calibrator draft learned-knowledge candidates. A person deci
 **Approval means "approved for shadow testing" only.** It never changes a live agent, a prompt or a parameter. Promotion stays an owner PR in `cryptophys-adm/xauusd-ai-trading-assistant`.
 
 **Storage:** the proposals live in D1 `knowledge_proposals` (migration 0029). Aether keeps its own ledger and exports the approved pack.
+
+## Doctrine amendments by the Knowledge Council (owner 2026-11-11, migration 0045)
+
+Owner: "autonomous doctrine protocol harus dilakukan oleh knowledge council, dilakukan harian dan di
+propose ke cerebrum untuk eksekusinya". The protocol itself is in the Aether repository, in
+`docs/DOCTRINE_PROTOCOL.md`.
+
+| Step | Where | What |
+|---|---|---|
+| Review | Aether, 03:52 UTC daily | The council's Nexus, Omega and Aether seats compare the doctrine's anchored facts with the facts the xauusd AI Worker reports every hour. A difference that the reporting seat measured twice from the same deployed version, and that the Aether seat validated, becomes a proposal. |
+| Propose | `consensus.propose` as `knowledge-council` | `amend_doctrine` (routine): only the operational facts in `control-plane-shared/src/doctrine.ts` `DOCTRINE_BOUNDS`, each inside its hard bound. `amend_constitution` (critical): any other fact or a constitutional rule. Only this agent may propose these actions, and it may propose nothing else. |
+| Vote | Cerebrum council | Every voter re-checks the amendment (`doctrineProblem`); the Policy Engine can veto it as usual. |
+| Execute | kernel | `amend_doctrine` executes after the vote, in mode `routine` or higher. `amend_constitution` executes after one owner approval click on the Consensus page, in mode `critical`. Each execution writes `doctrine_amendments` and the audit event `doctrine.amended`. |
+| Apply | Aether, hourly | `doctrine.status` (tier 0) returns the executed amendments. Aether applies only these, re-renders the rule and re-indexes its canon. The Console Knowledge page shows the session, the differences and the proposals. |
+
