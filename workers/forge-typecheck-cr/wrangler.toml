@@ -8,7 +8,12 @@ name = "cryptophys-forge-typecheck-cr"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 workers_dev = false
-preview_urls = true
+# No public URL for any version or Preview: change-request code is never served (owner 2026-11-11).
+preview_urls = false
 
 [observability]
 enabled = false
+
+# `wrangler preview` (the Preview command of cr/<n> builds) requires this block. It stays empty: a Preview
+# gets no binding, variable or secret.
+[previews]

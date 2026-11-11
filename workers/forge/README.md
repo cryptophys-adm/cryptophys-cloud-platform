@@ -29,6 +29,7 @@ It needs no GitHub at any step.
 6. **Type-check.** `tsc --noEmit -p workers/control-plane-tsconfig.json` runs on Workers Builds from the Artifacts repository (`../forge-typecheck`), because the compiler needs about 190 MB and an isolate has 128 MB (owner, 2026-11-08). The build reports to `POST /v1/forge/typecheck-report` (`src/typecheck.ts`, migration 0035).
    - The check of the same commit takes the report as its `typecheck` step; until it arrives the step is `pending`.
    - A type error fails the check, also when the report arrives after the check ran.
+   - Change requests (`cr/<number>`) are type-checked by a second project with no build secrets, `../forge-typecheck-cr` (root directory `workers/forge-typecheck-cr` in both the Production and the Previews Base build settings, which Workers Builds keeps apart; ADR-0012 §5d, owner 2026-11-11). Its build prints the result as one log line, and each tick reads it through the Workers Builds API (`src/cr-builds.ts`, Forge secret `CF_BUILDS_API_TOKEN`). The line counts only when its commit is the change request's head. Without the secret the step is skipped, and change requests stay `pending` on the type-check.
 7. **Record.** The result goes to D1 `forge_check_runs` (with `steps` and `guard_status`) and the audit chain.
 
 - **Shim imports.** `src/runner/assets.js` holds the wasm toolchain. Only `src/worker.ts` imports it, so the Node tests never load it. Wrangler imports the shims as Text (`[[rules]]`). The globs match the import specifiers as written there, so keep those import paths.
