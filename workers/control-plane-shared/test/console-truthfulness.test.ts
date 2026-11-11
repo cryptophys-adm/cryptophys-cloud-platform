@@ -60,5 +60,10 @@ test("T5. hardening 2026-11-11: one metabolism view (Organism), no unmeasured st
     assert.doesNotMatch(s, /animate-ping/, `${name}: no always-on pulsing indicator`);
   }
   assert.doesNotMatch(cmd, /#\/metabolism/);
+  // Owner 2026-11-11: the treasury placeholder is labelled wherever the reserve is shown.
+  assert.match(org, /treasury_source === "placeholder"/);
+  assert.match(org, /treasury reserve\{placeholder \? " · placeholder" : ""\}/);
+  assert.match(org, /c\.treasury_placeholder \?/);
+  assert.match(cmd, /treasury_source === "placeholder" \? " \(placeholder\)"/);
 });
 

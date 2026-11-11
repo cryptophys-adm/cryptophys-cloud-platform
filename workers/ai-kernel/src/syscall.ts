@@ -545,13 +545,26 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
 
   const effectivePowerMode = (["survival", "homeostasis", "growth"].includes(powerOverride) ? powerOverride : powerMode) as "survival" | "homeostasis" | "growth";
 
-  let treasuryReserve = 500.0;
+  // The treasury is measured only once the owner has recorded a ledger entry. The genesis seed of
+  // migration 0043 (source "genesis:*") is a placeholder (owner 2026-11-10: "itu masih placeholder"):
+  // its balance is reported as such, and no runway is derived from it.
+  let treasuryReserve: number | null = null;
+  let treasurySource: "ledger" | "placeholder" | "none" = "none";
   try {
-    const latestTrz = await env.DB.prepare(
-      "SELECT balance_after_usd FROM treasury_ledger ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    const measured = await env.DB.prepare(
+      "SELECT balance_after_usd FROM treasury_ledger WHERE source NOT LIKE 'genesis:%' ORDER BY created_at DESC, rowid DESC LIMIT 1"
     ).first<{ balance_after_usd: number }>();
-    if (latestTrz && typeof latestTrz.balance_after_usd === "number") {
-      treasuryReserve = latestTrz.balance_after_usd;
+    if (measured && typeof measured.balance_after_usd === "number") {
+      treasuryReserve = measured.balance_after_usd;
+      treasurySource = "ledger";
+    } else {
+      const seed = await env.DB.prepare(
+        "SELECT balance_after_usd FROM treasury_ledger WHERE source LIKE 'genesis:%' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+      ).first<{ balance_after_usd: number }>();
+      if (seed && typeof seed.balance_after_usd === "number") {
+        treasuryReserve = seed.balance_after_usd;
+        treasurySource = "placeholder";
+      }
     }
   } catch {}
 
@@ -593,7 +606,7 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
   } catch {}
 
   const metabolicRatio = infraBurn24h > 0 ? Math.round((tradingNetPnl24h / infraBurn24h) * 100) / 100 : null;
-  const runwayDays = infraBurn24h > 0 ? Math.round((treasuryReserve / infraBurn24h) * 10) / 10 : null;
+  const runwayDays = treasurySource === "ledger" && treasuryReserve !== null && infraBurn24h > 0 ? Math.round((treasuryReserve / infraBurn24h) * 10) / 10 : null;
 
   return {
     source: "cryptophys-digital-metabolism",
@@ -603,6 +616,7 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     power_mode_override: powerOverride,
     auto_adaptation_enabled: autoAdaptation,
     treasury_reserve_usd: treasuryReserve,
+    treasury_source: treasurySource,
     runway_days: runwayDays,
     infra_burn_cost_24h: infraBurn24h,
     trading_net_pnl_24h: tradingNetPnl24h,

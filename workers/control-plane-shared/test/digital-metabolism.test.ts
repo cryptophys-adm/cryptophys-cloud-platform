@@ -39,11 +39,36 @@ test("P2-M4 observeMetabolism returns treasury balance, burn rate, and ratio", a
   const obs: any = await observeMetabolism(env, Date.now());
   assert.equal(obs.source, "cryptophys-digital-metabolism");
   assert.equal(obs.power_mode, "homeostasis");
-  assert.equal(obs.treasury_reserve_usd, 500.0, "genesis buffer seeded");
+  // Owner 2026-11-11: the genesis seed is a placeholder; it is reported as such and yields no runway.
+  assert.equal(obs.treasury_reserve_usd, 500.0, "the migration's placeholder");
+  assert.equal(obs.treasury_source, "placeholder");
   assert.ok(obs.infra_burn_cost_24h > 0);
   assert.equal(obs.trading_net_pnl_24h, 48.0);
   assert.ok(obs.metabolic_ratio !== null);
-  assert.ok(obs.runway_days !== null && obs.runway_days > 100);
+  assert.equal(obs.runway_days, null, "no runway from a placeholder reserve");
+});
+
+test("P2-M8 an owner ledger entry makes the treasury measured; cycles before it stay marked placeholder", async () => {
+  const { metabolismView } = await import("../../ai-kernel/src/metabolism-view.ts");
+  const db = migratedDb();
+  const env: any = { ...baseEnv("cryptophys-ai-kernel", db) };
+  const t0 = Date.UTC(2026, 10, 10, 14, 0, 0);
+  const first: any = await evaluateMetabolismState(env, t0);
+  assert.equal(first.runway_days, null);
+  assert.doesNotMatch(String(first.reason), /runway: \d/, "no runway figure in the reason");
+  (db as any).raw.prepare(`INSERT INTO treasury_ledger (entry_id, entry_type, source, amount_usd, balance_after_usd, metadata_json, created_at)
+    VALUES ('trz_owner_1', 'capital_injection', 'owner:reserve', 120, 120, '{}', ?)`).run(new Date(t0 + 60_000).toISOString());
+  const obs: any = await observeMetabolism(env, t0 + 120_000);
+  assert.equal(obs.treasury_source, "ledger");
+  assert.equal(obs.treasury_reserve_usd, 120);
+  assert.equal(obs.runway_days, Math.round((120 / obs.infra_burn_cost_24h) * 10) / 10);
+  await evaluateMetabolismState(env, t0 + 180_000);
+  const v: any = await metabolismView(env, t0 + 240_000);
+  const [later, earlier] = v.cycles;
+  assert.equal(later.treasury_placeholder, false);
+  assert.equal(typeof later.runway_days, "number");
+  assert.equal(earlier.treasury_placeholder, true);
+  assert.equal(earlier.runway_days, null, "a cycle of the placeholder period shows no runway");
 });
 
 test("P2-M4 policy engine throttles non-essential capabilities during Survival Mode", async () => {

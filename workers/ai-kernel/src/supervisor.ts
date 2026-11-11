@@ -141,8 +141,10 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
     const marketStatus = obs.market_status as "open" | "closed" | "holiday";
     const tradingNetPnl = (obs.trading_net_pnl_24h as number) ?? 0;
     const infraBurn = (obs.infra_burn_cost_24h as number) ?? 0.15;
-    const treasuryReserve = (obs.treasury_reserve_usd as number) ?? 500;
-    const runwayDays = (obs.runway_days as number) ?? 500;
+    // No invented values: a placeholder or missing treasury has no runway, and runway rules are skipped.
+    const treasuryReserve = typeof obs.treasury_reserve_usd === "number" ? obs.treasury_reserve_usd : 0;
+    const runwayDays = typeof obs.runway_days === "number" ? obs.runway_days : null;
+    const runwayText = runwayDays === null ? "runway unmeasured (no owner treasury entry)" : `runway: ${runwayDays}d`;
     const metabolicRatio = (obs.metabolic_ratio as number | null) ?? null;
     const override = String(obs.power_mode_override ?? "none");
     const autoAdapt = obs.auto_adaptation_enabled === true;
@@ -157,15 +159,15 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
     } else if (marketStatus === "closed") {
       targetMode = "survival";
       reason = "market closed (weekend): entering survival hibernation to conserve AI tokens and compute";
-    } else if (infraBurn > 0.20 || tradingNetPnl < -100 || runwayDays < 7) {
+    } else if (infraBurn > 0.20 || tradingNetPnl < -100 || (runwayDays !== null && runwayDays < 7)) {
       targetMode = "survival";
       reason = infraBurn > 0.20
         ? `billable infrastructure burn ($${infraBurn}/day exceeding free tier): entering survival mode to throttle compute and preserve free tier`
-        : `drawdown or low runway (net 24h: $${tradingNetPnl}, runway: ${runwayDays}d): throttling compute`;
-    } else if (tradingNetPnl > 50 && runwayDays > 90) {
+        : `drawdown or low runway (net 24h: $${tradingNetPnl}, ${runwayText}): throttling compute`;
+    } else if (tradingNetPnl > 50 && (runwayDays === null || runwayDays > 90)) {
       // Growth raises budgets, so the supervisor never enters it on its own: it only reports that
       // the owner could set the override (owner 2026-11-10).
-      reason = `growth eligible (net 24h: +$${tradingNetPnl}, runway: ${runwayDays}d); staying in homeostasis until the owner sets the growth override`;
+      reason = `growth eligible (net 24h: +$${tradingNetPnl}, ${runwayText}); staying in homeostasis until the owner sets the growth override`;
     }
 
     let modeChanged = false;
