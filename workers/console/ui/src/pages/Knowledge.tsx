@@ -21,7 +21,7 @@ const KIND_TEXT: Record<string, string> = {
 const dash = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const short = (sha?: string | null) => (sha ? String(sha).slice(0, 12) : "—");
-const TF: Record<string, string> = { "15": "15m", "60": "1H", "240": "4H", "1D": "D1" };
+const TF: Record<string, string> = { "15": "15m", "60": "1H", "240": "4H", "1D": "D1", engine: "Decision Engine witnesses" };
 const words = (s?: string | null) => (s ? String(s).replace(/_/g, " ") : "—");
 
 /** A have/need meter when both numbers came back; a dash otherwise. */
@@ -87,7 +87,7 @@ function Progress({ o }: { o: any }) {
       </>)}
       <div>
         <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Auto-tuning · quorum weighting per timeframe</h4>
-        <p className="mb-2 text-[11px] text-slate-500">XAUUSD replays each room under neighbouring weightings. A candidate is judged once its discovery slice reaches its minimum and the newest rooms fill the holdout; a better one activates by itself.</p>
+        <p className="mb-2 text-[11px] text-slate-500">XAUUSD replays each room under neighbouring weightings, and the Decision Engine's stored decisions under neighbouring witness weights. A candidate is judged once its discovery slice reaches its minimum and the newest rooms or decisions fill the holdout; a better one activates by itself.</p>
         {!w.length ? <Empty>No weighting report has reached Aether yet.</Empty> : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {w.map((t: any) => (
@@ -213,15 +213,37 @@ function Existing({ o }: { o: any }) {
             {weighting.map((t: any) => (
               <div key={t.timeframe} className="glass-inner px-3 py-2.5 text-[11px]">
                 <div className="mb-1 flex items-center justify-between"><span className="text-[12px] text-slate-200">{TF[t.timeframe] ?? dash(t.timeframe)}</span><span className="mono text-[10px] text-slate-500">{dash(t.active?.id)}</span></div>
+                {t.timeframe === "engine" ? <WitnessWeights t={t} /> : (<>
                 <ul className="space-y-0.5">
                   {(t.agents ?? []).slice(0, 6).map((a: any) => <li key={a.agent} className="flex justify-between gap-2"><span className="mono text-slate-400">{a.agent}</span><span className="mono text-slate-200">{num(a.weight) === null ? "—" : a.weight.toFixed(2)}</span></li>)}
                 </ul>
                 {!(t.agents ?? []).length && <span className="text-slate-500">—</span>}
+                </>)}
               </div>
             ))}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The Decision Engine's witness weights in force (owner 2026-11-11: "harusnya bobot itu dinamis sesuai dengan
+ * auto tune yang ada di aether"), from xauusd's report as Aether stored it: each weight, where it came from
+ * and how faithful the replay is. Only what the report holds; a dash otherwise.
+ */
+function WitnessWeights({ t }: { t: any }) {
+  const w = Object.entries((t.active?.params ?? {}) as Record<string, unknown>).filter(([, v]) => num(v) !== null).sort((a, b) => (b[1] as number) - (a[1] as number));
+  const fid = t.replay_fidelity;
+  return (
+    <div className="space-y-1">
+      <div className="text-slate-400">{words(t.active?.source)} · {dash(t.active?.change)}</div>
+      <ul className="space-y-0.5">
+        {w.map(([k, v]) => <li key={k} className="flex justify-between gap-2"><span className="mono text-slate-400">{k}</span><span className="mono text-slate-200">{((v as number) * 100).toFixed(1)}%</span></li>)}
+      </ul>
+      {!w.length && <span className="text-slate-500">—</span>}
+      <div className="text-slate-500">replay fidelity {num(fid?.share) === null ? "—" : `${Math.round(fid.share * 1000) / 10}% of ${fid.checks}`}</div>
     </div>
   );
 }
