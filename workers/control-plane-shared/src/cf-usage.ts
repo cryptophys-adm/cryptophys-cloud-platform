@@ -316,14 +316,25 @@ async function platformCounters(db: D1Database | undefined, today: string) {
   } catch { return null; }
 }
 
-async function persistBillableMetrics(db: D1Database | undefined, today: string, products: BillableProduct[], now: number) {
-  if (!db || !products.length) return;
+/**
+ * Persist the billable cost as a daily burn. The Billable Usage API returns costs accumulated over
+ * the billing cycle so far, so a day's burn is the cycle-to-date cost divided by the days observed,
+ * never the cycle total (2026-11-11: the total, $2.61, was stored as one day's burn and put the
+ * Supervisor in survival mode). Neurons come from the API's consumed quantity, likewise per day.
+ */
+async function persistBillableMetrics(db: D1Database | undefined, today: string, rows: any[], daysObserved: number, now: number) {
+  if (!db || !rows.length) return;
+  const days = Math.max(1, daysObserved);
   const costByService = new Map<string, { cost: number; neurons: number }>();
-  for (const p of products) {
-    const serviceId = /neuron/i.test(p.product) ? "cryptophys-ai-kernel" : "cryptophys-platform-api";
+  for (const r of rows) {
+    const name = String(r?.ServiceName ?? r?.service_name ?? r?.serviceName ?? r?.product ?? "");
+    const cost = Number(r?.ContractedCost ?? r?.contracted_cost ?? r?.contractedCost ?? r?.CumulatedContractedCost ?? r?.cumulated_contracted_cost ?? r?.cost ?? 0) || 0;
+    const consumed = Number(r?.ConsumedQuantity ?? r?.consumed_quantity ?? r?.consumedQuantity ?? r?.quantity ?? 0) || 0;
+    const neuron = /neuron/i.test(name);
+    const serviceId = neuron ? "cryptophys-ai-kernel" : "cryptophys-platform-api";
     const cur = costByService.get(serviceId) ?? { cost: 0, neurons: 0 };
-    cur.cost += p.usage_cost;
-    if (/neuron/i.test(p.product)) cur.neurons += 10000;
+    cur.cost += cost;
+    if (neuron) cur.neurons += consumed;
     costByService.set(serviceId, cur);
   }
 
@@ -337,7 +348,7 @@ async function persistBillableMetrics(db: D1Database | undefined, today: string,
            estimated_cost_usd = excluded.estimated_cost_usd,
            ai_neurons = excluded.ai_neurons,
            calculated_at = excluded.calculated_at`
-      ).bind(metricId, today, serviceId, data.neurons, Math.round(data.cost * 100) / 100, new Date(now).toISOString()).run();
+      ).bind(metricId, today, serviceId, Math.round(data.neurons / days), Math.round((data.cost / days) * 100) / 100, new Date(now).toISOString()).run();
     } catch {}
   }
 }
@@ -375,31 +386,11 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
     : [];
   const errorsToday = w.rows ? byDate(w.rows, (r) => r.sum?.errors).get(today) ?? 0 : null;
 
-  let { spend_summary, billable_products, orchestrator_cost_intents } = parseBillableData(billable.rows ?? [], now);
+  // Only what the Billable Usage API returned is shown. When it returns nothing, nothing is shown:
+  // no product, cost or throttling intent is rebuilt from stored rows (Console: measured data only).
+  const { spend_summary, billable_products, orchestrator_cost_intents } = parseBillableData(billable.rows ?? [], now);
   if (env.DB && billable_products.length > 0) {
-    await persistBillableMetrics(env.DB, today, billable_products, now);
-  } else if (env.DB && billable_products.length === 0) {
-    try {
-      const dbRows = (await env.DB.prepare(
-        "SELECT service_id, ai_neurons, estimated_cost_usd, period_day FROM infra_burn_metrics WHERE estimated_cost_usd > 0 ORDER BY period_day DESC"
-      ).all<{ service_id: string; ai_neurons: number; estimated_cost_usd: number; period_day: string }>()).results ?? [];
-      if (dbRows.length > 0) {
-        const fallbackRows = dbRows.map((r) => ({
-          ServiceName: r.service_id === "cryptophys-ai-kernel" ? "Regular Twitch Neurons" : "Container Memory, per GiB-hr",
-          ServiceFamilyName: r.service_id === "cryptophys-ai-kernel" ? "Workers AI" : "Compute",
-          ConsumedQuantity: r.ai_neurons || 1,
-          ConsumedUnit: r.ai_neurons ? "Neurons" : "GiB-hr",
-          ContractedCost: r.estimated_cost_usd,
-          BillingPeriodStart: r.period_day,
-        }));
-        const fallback = parseBillableData(fallbackRows, now);
-        if (fallback.billable_products.length > 0) {
-          spend_summary = fallback.spend_summary;
-          billable_products = fallback.billable_products;
-          orchestrator_cost_intents = fallback.orchestrator_cost_intents;
-        }
-      }
-    } catch {}
+    await persistBillableMetrics(env.DB, today, billable.rows ?? [], spend_summary?.days_observed ?? 1, now);
   }
 
   const body: Record<string, unknown> = {
@@ -411,7 +402,7 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
     billable_products,
     billable_error: billable.error,
     orchestrator_cost_intents,
-    free_tier_status: (spend_summary?.total_cost ?? 0) > 0 ? "overage_detected" : "compliant",
+    free_tier_status: !spend_summary ? "unknown" : spend_summary.total_cost > 0 ? "overage_detected" : "compliant",
     metrics: [
       metric("workers_requests", w.rows ? byDate(w.rows, (r) => r.sum?.requests) : null, today, dates, w.error),
       metric("d1_rows_read", d.rows ? byDate(d.rows, (r) => r.sum?.rowsRead) : null, today, dates, d.error),
