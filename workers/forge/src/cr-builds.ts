@@ -7,6 +7,10 @@
 // finished build of the request's branch, and records the line as the head's report when its commit equals
 // the head (recordTypecheckReport, the same validation as the CI route). Without the secret the step is a
 // no-op. The Forge only reads (GET); the token is never logged or stored.
+//
+// Preview builds (Worker Previews) may be listed only under their Preview, not in the Worker's build list
+// (2026-11-11: the first live tick found no cr/290 build there). When the Worker's list has no finished build
+// of a request's branch, the Forge reads that branch's Preview (GET .../previews, then .../previews/{id}/builds).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { recordTypecheckReport } from "./typecheck.ts";
 
@@ -14,12 +18,13 @@ export const CR_TYPECHECK_WORKER = "cryptophys-forge-typecheck-cr";
 export const RESULT_MARKER = "FORGE_TYPECHECK_RESULT ";
 const API = "https://api.cloudflare.com/client/v4";
 const HEX40 = /^[0-9a-f]{40}$/;
-const MAX_REQUESTS_PER_TICK = 5;
+const MAX_REQUESTS_PER_TICK = 9;
 
 export interface CrBuildsEnv { DB: D1Database; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string }
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 interface BuildRow { build_uuid?: string; status?: string; build_outcome?: string | null; created_on?: string; build_trigger_metadata?: Record<string, unknown> | null }
+interface PreviewRow { preview_id?: string; id?: string; branch?: string }
 
 /** Every string inside a JSON value (build logs come as nested arrays and objects). */
 function strings(value: unknown, out: string[] = []): string[] {
@@ -73,14 +78,34 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
   const tag = scripts?.find((s) => s.id === name)?.tag;
   if (!tag) return { outcome: "no_project", worker: name };
   const builds = (await api(fetchImpl, token, `/accounts/${account}/builds/workers/${tag}/builds?per_page=50`) as BuildRow[]) ?? [];
-  let requests = 3; // accounts, scripts and builds; then at most two logs per tick
+  let requests = 3; // accounts, scripts and builds; then Preview lookups and logs, within MAX_REQUESTS_PER_TICK
   const recorded: Array<{ number: number; commit: string; conclusion: string }> = [];
+  const sameCommit = (b: BuildRow, head: string) => !commitOf(b) || head.startsWith(commitOf(b)) || commitOf(b).startsWith(head);
+  const newestFinished = (list: BuildRow[], head: string) => list
+    .filter((b) => finished(b) && b.build_uuid && sameCommit(b, head))
+    .sort((a, b) => String(b.created_on ?? "").localeCompare(String(a.created_on ?? "")))
+    .slice(0, 1);
+  let previews: PreviewRow[] | null = null;
+  let viaPreview = 0;
   for (const cr of open) {
     if (!HEX40.test(cr.head_sha)) continue;
-    const candidates = builds
-      .filter((b) => branchOf(b) === `cr/${cr.number}` && finished(b) && b.build_uuid && (!commitOf(b) || cr.head_sha.startsWith(commitOf(b)) || commitOf(b).startsWith(cr.head_sha)))
-      .sort((a, b) => String(b.created_on ?? "").localeCompare(String(a.created_on ?? "")))
-      .slice(0, 1);
+    const branch = `cr/${cr.number}`;
+    let candidates = newestFinished(builds.filter((b) => branchOf(b) === branch), cr.head_sha);
+    if (!candidates.length && requests + 2 < MAX_REQUESTS_PER_TICK) {
+      // The branch's Preview holds its builds (Worker Previews); its builds all belong to that branch.
+      if (previews === null) {
+        requests++;
+        previews = ((await api(fetchImpl, token, `/accounts/${account}/builds/workers/${tag}/previews`)) as PreviewRow[]) ?? [];
+      }
+      const preview = previews.find((p) => p.branch === branch);
+      const previewId = String(preview?.preview_id ?? preview?.id ?? "").replace(/[^A-Za-z0-9_-]/g, "");
+      if (previewId) {
+        requests++;
+        const own = ((await api(fetchImpl, token, `/accounts/${account}/builds/workers/${tag}/previews/${previewId}/builds`)) as BuildRow[]) ?? [];
+        candidates = newestFinished(own.filter((b) => !branchOf(b) || branchOf(b) === branch), cr.head_sha);
+        if (candidates.length) viaPreview++;
+      }
+    }
     for (const b of candidates) {
       if (requests >= MAX_REQUESTS_PER_TICK) break;
       requests++;
@@ -91,5 +116,5 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
       recorded.push({ number: cr.number, commit: r.commit, conclusion: r.conclusion });
     }
   }
-  return { outcome: recorded.length ? "recorded" : "waiting", open: open.length, recorded };
+  return { outcome: recorded.length ? "recorded" : "waiting", open: open.length, recorded, builds_listed: builds.length, previews_listed: previews?.length ?? null, via_preview: viaPreview };
 }
