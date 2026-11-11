@@ -96,6 +96,16 @@ export async function postReport(fetchImpl, forgeUrl, clientId, clientSecret, bo
   return answer;
 }
 
+/**
+ * The result line the Forge reads from a build log through the Workers Builds API (ADR-0012 §5d: change
+ * requests are type-checked with no build secrets, so they cannot report). It holds no secret: commit,
+ * build id, branch, counts, file:line:code diagnostics, toolchain versions and the Console build.
+ */
+export const RESULT_MARKER = "FORGE_TYPECHECK_RESULT ";
+export function resultLine(body) {
+  return RESULT_MARKER + JSON.stringify(body);
+}
+
 async function report(body, env) {
   const url = cleanCredential(env.FORGE_URL, "");
   const id = cleanCredential(env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Id");
@@ -139,8 +149,10 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
   const consoleBuild = summarizeConsoleBuild(uiBuild.status, uiBuild.output, bytes);
   console.log(`typecheck-and-report: Console UI build ${consoleBuild.conclusion} (${consoleBuild.errors} errors)${bytes ? ` (${bytes} bytes)` : ""}`);
   for (const diagnostic of consoleBuild.diagnostics) console.log(diagnostic);
+  const body = { commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary, console_build: consoleBuild };
+  console.log(resultLine(body));
   try {
-    await report({ commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary, console_build: consoleBuild }, env);
+    await report(body, env);
   } catch (e) {
     console.error(String(e?.message ?? e));
     process.exit(3);
