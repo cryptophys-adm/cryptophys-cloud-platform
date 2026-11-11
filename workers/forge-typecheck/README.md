@@ -52,6 +52,8 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
    Production builds of `main` (reviewed, merged code) keep the build secrets. Type-checks of change
    requests need a build with **no secrets** whose result the Forge reads itself; that design waits
    for the owner (ADR-0012 §5d). Until then change requests stay `pending` on the type-check, and
-   GitHub CI type-checks every pull request as before.
+   GitHub CI type-checks every pull request as before. **Since 2026-11-11** that design is
+   `../forge-typecheck-cr` (a second project with no build secrets; the Forge reads its result line
+   through the Workers Builds API). This build also prints that line (`FORGE_TYPECHECK_RESULT`).
 
 The Console Code page then shows `types ok` / `N type errors` / `types pending` per commit.

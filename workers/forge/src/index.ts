@@ -64,6 +64,9 @@ export interface Env {
   APPROVER_IDENTITIES?: string;
   DB: D1Database;
   ARTIFACTS?: ArtifactsBinding;
+  /** ADR-0012 §5d: the owner's Workers Builds API token (Forge secret), read only by cr-builds.ts. */
+  CF_BUILDS_API_TOKEN?: string;
+  CR_TYPECHECK_WORKER?: string;
 }
 
 const HEX40 = /^[0-9a-f]{40}$/;

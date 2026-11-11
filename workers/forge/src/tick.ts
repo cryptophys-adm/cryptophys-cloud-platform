@@ -2,16 +2,18 @@
 // never stops the others, and each failure is audited (forge.tick_failed) instead of only logged:
 //   1. the deploy plan for main's head (cheap; shadow comparison with the Orchestrator);
 //   2. the check of the oldest unchecked open change request head;
-//   3. the check of the oldest unchecked commit of main (skipped when step 2 used most of the tick).
+//   3. the check of the oldest unchecked commit of main (skipped when step 2 used most of the tick);
+//   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
 import { planTick } from "./deploy-plan.ts";
 import { censusTick } from "./census.ts";
+import { crBuildsTick } from "./cr-builds.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
-export interface TickEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> } }
+export interface TickEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string }
 
 export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<Record<string, unknown>> {
   const steps: Record<string, unknown> = {};
@@ -35,6 +37,8 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
       try { return await censusTick(env.DB, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
     });
   }
+  // ADR-0012 §5d: the type-check of open change requests, read from their secret-free Workers Builds (no-op without the token).
+  if (env.CF_BUILDS_API_TOKEN) await step("cr_typecheck", () => crBuildsTick(env, nowMs()));
   const started = nowMs();
   await step("change_checks", () => tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs()), "change"));
   const change = steps.change_checks as { outcome?: string } | undefined;

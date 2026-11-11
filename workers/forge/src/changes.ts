@@ -74,6 +74,10 @@ const CRITICAL_PATHS: Array<[RegExp, string]> = [
   [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
   [/^workers\/control-plane-shared\/src\/secrets\.ts$/, "secrets"],
   [/^architecture\/adr\/00(09|12)-/, "adr_0009_0012"],
+  // ADR-0012 §5d: a change request's type-check runs its own code, so a change to the harness is the owner's.
+  [/^workers\/forge-typecheck(-cr)?\//, "typecheck_harness"],
+  [/^workers\/(control-plane-tsconfig\.json|forge\/src\/cr-builds\.ts)$/, "typecheck_harness"],
+  [/^workers\/(control-plane-shared|console\/ui)\/(package(-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[a-z]+)$/, "typecheck_harness"],
 ];
 const MIGRATION = /^workers\/control-plane-migrations\/[^/]+\.sql$/;
 const DESTRUCTIVE_SQL = /\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b/i;
