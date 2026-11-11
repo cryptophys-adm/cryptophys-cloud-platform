@@ -29,7 +29,25 @@ Repository: `cryptophys-adm/xauusd-ai-trading-assistant`. The platform orchestra
 
 ## Requirements
 
-1. **Reasoner model.** Move it off `nemotron-3-120b-a12b` before 2026-11-20, to `@cf/zai-org/glm-4.7-flash` or `@cf/google/gemma-4-26b-a4b-it`. Keep the advisory output contract and its tests.
+1. **Models (owner decision 2026-11-11):** "ganti model reasoner, carikan yang setara tapi paling murah dan layak sebagai reasoner dan bukan third party".
+   - **Reasoner:** `AI_MODEL_REASONER` changes from `@cf/nvidia/nemotron-3-120b-a12b` to **`@cf/zai-org/glm-4.7-flash`** with reasoning on.
+     - It is Cloudflare-hosted, with function calling, reasoning and a 131k context.
+     - It is not on a deprecation list, and Cloudflare names it as a replacement.
+     - It is already the analyst model and the fallback model in this repository.
+   - **Cost, at about 4k input and 1.5k output (thinking) tokens per call:**
+
+     | Model | Neurons per M input / output | ≈ neurons per call |
+     |---|---|---|
+     | nemotron-3-120b-a12b (deprecated 2026-11-20) | 45,455 / 136,364 | 387 |
+     | **glm-4.7-flash** | 5,500 / 36,400 | **77** (5× cheaper) |
+     | gemma-4-26b-a4b-it (thinking on) | 9,091 / 27,273 | 77 |
+     | gpt-oss-20b | 18,182 / 27,273 | 114 |
+     | gpt-oss-120b | 31,818 / 68,182 | 229 |
+     | deepseek-v4.1-flash-1017 | 27,273 / 109,091 | 273 |
+
+   - **Fallback if the shadow comparison fails:** use **`@cf/openai/gpt-oss-120b`**. It is the same class as nemotron (a 120B mixture-of-experts reasoner), Cloudflare-hosted, and about 40% cheaper. Do not use `qwen3-30b-a3b`, `qwq-32b`, `deepseek-r1-distill`, `deepseek-v4-flash-0731` or `deepseek-v4-pro`: they are deprecated on 2026-11-20.
+   - **Counselor and multi-agent:** `@cf/zai-org/glm-5.3-flash` (used by `AI_MODEL_COUNSELOR` and `MULTI_AGENT_MODEL`) is also deprecated on 2026-11-20. Move them to `@cf/zai-org/glm-4.7-flash`.
+   - **Shadow comparison:** before switching, run glm-4.7-flash next to nemotron for at least 24 candles. Compare the decision (BUY, SELL, WAIT or NO_TRADE), the confidence band and the schema validity. Switch when the decision agrees on at least 85% of candles and every output is schema-valid; otherwise use gpt-oss-120b. Finish before 2026-11-20.
 2. **Call the models only when something changed.** Run once per closed candle per timeframe, or when the signal changes, instead of every 15 minutes regardless. Cache the result for an unchanged input (same candle key and the same inputs), for example with AI Gateway caching.
 3. **Non-core agents.** Measure the HUD agents (`hud-*`) and the risk manager, then decide per agent: run it without a model (deterministic), merge it into the moderator round, or run it less often. The reasoner and the moderator are the core advisory; change their model and cadence, not their existence.
 4. **Per-agent budget.** Route model calls through AI Gateway, or count tokens per agent, so neurons can be attributed per agent. Stop non-core agents first when a daily budget is reached.
@@ -47,5 +65,5 @@ Repository: `cryptophys-adm/xauusd-ai-trading-assistant`. The platform orchestra
 ## Done when
 
 - Over 7 days, the account stays under 10,000 neurons, 1,000 KV writes and 5 million D1 rows read a day (Workers AI dashboard per model, D1 and KV metrics).
-- The reasoner no longer uses `nemotron-3-120b-a12b`.
+- No model deprecated on 2026-11-20 is used: not `nemotron-3-120b-a12b`, and not `glm-5.3-flash`.
 - The PR lists the measured neurons per agent before and after.
