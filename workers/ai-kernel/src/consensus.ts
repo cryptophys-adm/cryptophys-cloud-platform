@@ -20,7 +20,7 @@ import {
 } from "../../control-plane-shared/src/consensus-rules.ts";
 export { CONSENSUS_ACTIONS, VOTERS, castVote, classify, type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type Vote, type Voter };
 import { observe } from "./syscall.ts";
-import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
+import { addAgentPrincipal, retireAgent, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { executeRegistration } from "./organism.ts";
 import { isPolicyParameter, readPolicyParameter, validPolicyValue } from "../../control-plane-shared/src/policy-params.ts";
@@ -108,7 +108,7 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
 
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
-export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
+export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "retire_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
 export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
 
@@ -130,6 +130,11 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
       const status = p.action === "suspend_agent" ? "suspended" : "enabled";
       const reason = String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200);
       return { agent: await setAgentStatus(env as never, p.target, status, actor, reason) };
+    }
+    case "retire_agent": {
+      if (KERNEL_AGENTS.has(p.target)) throw new Error("kernel_agent_internal");
+      await verifyConsensusExecution(env.DB, proposalId, decisionId, p.action, p.target);
+      return await retireAgent(env as never, p.target, actor, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));
     }
     case "set_desired_version":
     case "registry_disable_service":

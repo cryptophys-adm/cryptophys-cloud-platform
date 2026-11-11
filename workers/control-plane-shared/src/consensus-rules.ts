@@ -22,6 +22,8 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   registry_enable_service: { class: "routine", target: "service", description: "Mark a disabled service registered again" },
   suspend_agent: { class: "routine", target: "agent", description: "Suspend a misbehaving agent" },
   resume_agent: { class: "routine", target: "agent", description: "Resume a suspended agent" },
+  // Owner 2026-11-11: "hardening juga untuk dismantle dan delete agent yang sudah tidak berkontribusi".
+  retire_agent: { class: "routine", target: "agent", description: "Dismantle an agent that no longer contributes: deleted when no record refers to it, otherwise suspended as retired" },
   restore_d1_bookmark: { class: "critical", target: "platform", description: "Restore D1 to a Time Travel bookmark" },
   rotate_secret: { class: "critical", target: "service", description: "Rotate a Worker secret" },
   retire_worker: { class: "critical", target: "service", description: "Retire and delete a Worker" },
@@ -52,6 +54,16 @@ export const VOTERS = [
 export type Voter = string;
 
 export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor"]);
+/**
+ * Hosts whose agents are never retired for idleness (owner 2026-11-11):
+ *  - cryptophys-aether: still under deployment;
+ *  - xauusd-ai-trading-assistant: its agents speak in its own rooms and report to the kernel only on a
+ *    change, so kernel idleness says nothing about their contribution; XAUUSD dismantles its own agents
+ *    from its room data (outcome scores, bias share), and their identities are removed by migration.
+ */
+export const RETIRE_EXEMPT_HOSTS = new Set(["cryptophys-aether", "xauusd-ai-trading-assistant"]);
+/** An agent registered this long ago with no action, report or vote in this window is proposed for retirement. */
+export const RETIRE_IDLE_DAYS = 14;
 export const HEX_VERSION = /^[0-9a-f]{7,40}$/;
 export const COMMIT = /^[0-9a-f]{40}$/;
 export const TARGET = /^[a-z0-9][a-z0-9-]{1,62}$/;
@@ -193,6 +205,14 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
         if (!a) return v("reject", "agent is not registered");
         if (KERNEL_AGENTS.has(p.target)) return v("reject", "kernel-hosted agents are not suspended by consensus");
         return v("approve", `agent is ${a.status}`);
+      }
+      if (p.action === "retire_agent") {
+        const a = e.agents[p.target];
+        if (!a) return v("reject", "agent is not registered");
+        if (KERNEL_AGENTS.has(p.target)) return v("reject", "kernel-hosted agents are not retired by consensus");
+        if (a.voter) return v("reject", "a council seat is not retired by a routine action");
+        if (RETIRE_EXEMPT_HOSTS.has(a.host_worker)) return v("reject", `agents of ${a.host_worker} are exempt from retirement`);
+        return v("approve", `agent is ${a.status} and holds no seat`);
       }
       if (DEPLOYISH.has(p.action) && svc && !svc.drifted && p.action !== "deploy_commit") return v("reject", "target is healthy and in sync");
       return v("approve", "consistent with supervisor observations");

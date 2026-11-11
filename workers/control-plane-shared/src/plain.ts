@@ -103,6 +103,7 @@ const ACTION_TEXT: Record<string, string> = {
   observe_drift: "check for drift on",
   suspend_agent: "pause the agent",
   resume_agent: "resume the agent",
+  retire_agent: "dismantle the idle agent",
   register_principal: "register an external agent for",
   register_agent: "register the new agent",
   register_privileged_agent: "register the new privileged agent",

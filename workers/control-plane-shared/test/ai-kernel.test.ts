@@ -43,20 +43,19 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
   }>;
   // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32,
   // plus the 4 Aether agents of 0027 (TP-027, tested in register-aether-tp027.test.ts) = 36, plus the
-  // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37 total.
-  assert.equal(rows.length, 37);
+  // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37, minus the
+  // seven idle agents 0047 dismantles (signal-engine, 2 XAUUSD desks, 4 HUD agents) = 30.
+  assert.equal(rows.length, 30);
   assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 5);
   const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
-  assert.equal(xauusdAgents.length, 21);
+  assert.equal(xauusdAgents.length, 15);
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
-  assert.equal(hudAgents.length, 14);
+  assert.equal(hudAgents.length, 10);
+  for (const gone of ["signal-engine", "xauusd-news-analyst", "xauusd-technical-analyst", "hud-gabfx-price-action", "hud-grid-bot-protocol", "hud-playbook-execution", "hud-r37-funnel"]) {
+    assert.ok(!rows.some((r) => r.agent_id === gone), `${gone} is dismantled by 0047`);
+  }
   for (const r of rows) {
-    if (r.agent_id === "signal-engine") {
-      assert.equal(r.status, "suspended");
-      assert.match(r.status_reason ?? "", /retired/);
-    } else {
-      assert.equal(r.status, "enabled");
-    }
+    assert.equal(r.status, "enabled");
     if (r.agent_id !== "supervisor") {
       assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
       const caps = JSON.parse(r.capabilities_json) as string[];
