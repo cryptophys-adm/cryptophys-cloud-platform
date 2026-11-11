@@ -18,6 +18,7 @@ import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from 
 import { expireOwnerProposals } from "./consensus.ts";
 import { latestCensusRow, proposalFor } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
+import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS } from "../../control-plane-shared/src/consensus-rules.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -291,6 +292,31 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         report.actions.push(r);
         report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
       }
+    }
+    // Owner 2026-11-11 ("dismantle dan delete agent yang sudah tidak berkontribusi"): one enabled agent per
+    // cycle that has done nothing for RETIRE_IDLE_DAYS (no action, report or vote, registered before the
+    // window) is proposed for retirement; at most once a week per agent. Kernel agents, council seats and
+    // the exempt hosts are never proposed (consensus-rules.ts RETIRE_EXEMPT_HOSTS).
+    const idleSince = new Date(now - RETIRE_IDLE_DAYS * 86_400_000).toISOString();
+    const exempt = [...KERNEL_AGENTS, ...RETIRE_EXEMPT_HOSTS];
+    const idle = await env.DB.prepare(
+      `SELECT g.agent_id FROM agents g
+       WHERE g.status = 'enabled' AND g.created_at < ?1
+         AND g.agent_id NOT IN (${[...KERNEL_AGENTS].map((_, i) => `?${i + 3}`).join(", ")})
+         AND g.host_worker NOT IN (${[...RETIRE_EXEMPT_HOSTS].map((_, i) => `?${i + 3 + KERNEL_AGENTS.size}`).join(", ")})
+         AND g.voter = 0
+         AND NOT EXISTS (SELECT 1 FROM agent_actions a WHERE a.agent_id = g.agent_id AND a.created_at >= ?1)
+         AND NOT EXISTS (SELECT 1 FROM agent_reports r WHERE r.agent_id = g.agent_id AND r.created_at >= ?1)
+         AND NOT EXISTS (SELECT 1 FROM consensus_proposals p WHERE p.action = 'retire_agent' AND p.target = g.agent_id AND p.created_at >= ?2)
+       ORDER BY g.created_at, g.agent_id LIMIT 1`,
+    ).bind(idleSince, new Date(now - 7 * 86_400_000).toISOString(), ...exempt).first<{ agent_id: string }>();
+    if (idle) {
+      const r = await syscall(env, AGENT_ID, "consensus.propose", {
+        action: "retire_agent", target: idle.agent_id,
+        params: { reason: `no action, report or vote for ${RETIRE_IDLE_DAYS} days` },
+      });
+      report.actions.push(r);
+      report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${RETIRE_IDLE_DAYS} days: retire_agent` });
     }
     // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
     // an engine, a council seat) is proposed for registration, one per cycle, each action and

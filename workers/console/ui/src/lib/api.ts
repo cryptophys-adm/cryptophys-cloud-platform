@@ -64,6 +64,15 @@ export function call(routeId: string, params?: string | string[], body?: unknown
   return api(route.method, `${MOUNT}/api/${route.service}${path}`, body);
 }
 
+/**
+ * Owner 2026-11-11 ("tombol confirm tidak aktif"): a typed phrase is compared without surrounding or
+ * repeated spaces and without letter case, so a phone keyboard's capitalisation or a pasted trailing
+ * space does not keep Confirm disabled. The words and the id still have to match.
+ */
+export const normalizePhrase = (s: string): string => String(s ?? "").trim().replace(/\s+/g, " ").toUpperCase();
+/** {id13}: the first 13 characters of the id without a trailing separator ("knw_1a2b3c4d-" read as "knw_1a2b3c4d"). */
+const shortId = (id: string): string => id.slice(0, 13).replace(/[-_.:]+$/, "");
+
 /** The typed confirmation phrase of a route, from its UI_ROUTES template. */
 export function phraseFor(routeId: string, params?: string | string[], body?: Json): string | null {
   const route = ROUTES[routeId];
@@ -71,5 +80,5 @@ export function phraseFor(routeId: string, params?: string | string[], body?: Js
   const first = Array.isArray(params) ? params[0] : params;
   const id = first === undefined ? "" : String(first);
   const sha = typeof body?.commit_sha === "string" ? body.commit_sha : "";
-  return route.confirm.split("{id13}").join(id.slice(0, 13)).split("{id}").join(id).split("{sha12}").join(sha.slice(0, 12));
+  return route.confirm.split("{id13}").join(shortId(id)).split("{id}").join(id).split("{sha12}").join(sha.slice(0, 12));
 }

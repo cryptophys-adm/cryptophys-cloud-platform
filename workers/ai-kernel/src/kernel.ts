@@ -1,8 +1,9 @@
 /** Kernel operations shared by the HTTP API and the MCP tools (ADR-0007). */
-import type { SendEmailBinding } from "./owner-notices.ts";
+import type { OwnerTelegramBinding, SendEmailBinding } from "./owner-notices.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS } from "../../control-plane-shared/src/consensus-rules.ts";
 import { CAPABILITIES, agentsEnabled, getAgent, type AgentPrincipalRow, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";
 import { AGENT_ID, type CycleReport, type KernelEnv } from "./supervisor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
@@ -18,6 +19,8 @@ export interface KernelHttpEnv extends KernelEnv {
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
   OWNER_EMAIL?: SendEmailBinding;
+  /** Owner 2026-11-11: the owner's Telegram, through the xauusd AI Worker's OwnerNotifier (it holds the bot). */
+  OWNER_TELEGRAM?: OwnerTelegramBinding;
   NOTIFY_FROM?: string;
 }
 
@@ -186,6 +189,42 @@ export async function setAgentStatus(env: KernelHttpEnv, agentId: string, status
   if ((res.meta.changes ?? 0) !== 1) throw new Error("agent not found");
   await appendAuditEvent(env.DB, { event_type: status === "enabled" ? "agent.resumed" : "agent.suspended", actor, subject: `agent:${agentId}`, outcome: status, payload: { reason } });
   return present((await getAgent(env.DB, agentId))!);
+}
+
+/** Every table that refers to an agent id (migrations 0010-0029); a referenced agent is kept as a tombstone. */
+export const AGENT_REFERENCES: ReadonlyArray<readonly [string, string]> = [
+  ["agent_actions", "agent_id"], ["agent_syscall_consumptions", "agent_id"], ["agent_reports", "agent_id"],
+  ["agent_memories", "agent_id"], ["agent_principals", "agent_id"], ["consensus_proposals", "proposer_agent_id"],
+  ["consensus_votes", "voter_agent_id"], ["knowledge_proposals", "proposer_agent_id"],
+];
+
+/**
+ * Dismantles an agent (owner 2026-11-11: "dismantle dan delete agent yang sudah tidak berkontribusi"). An agent
+ * no record refers to is deleted; one with history is suspended with a "retired:" reason, so the audit trail
+ * and every row that names it stay intact, and resume_agent can still bring it back.
+ */
+export async function retireAgent(env: KernelHttpEnv, agentId: string, actor: string, reason: string): Promise<JsonObject> {
+  if (!AGENT_ID_RE.test(agentId)) throw new Error("invalid agent_id");
+  const agent = await getAgent(env.DB, agentId);
+  if (!agent) throw new Error("agent not found");
+  // Enforced here, whatever the vote: kernel agents, council seats and the exempt hosts are never retired.
+  const row = agent as unknown as { host_worker?: string; voter?: number };
+  if (KERNEL_AGENTS.has(agentId)) throw new Error("kernel_agent_internal");
+  if (Number(row.voter ?? 0) === 1) throw new Error("council_seat_not_retired");
+  if (RETIRE_EXEMPT_HOSTS.has(String(row.host_worker ?? ""))) throw new Error("host_exempt_from_retirement");
+  let referenced = false;
+  for (const [table, column] of AGENT_REFERENCES) {
+    if (await env.DB.prepare(`SELECT 1 AS x FROM ${table} WHERE ${column} = ? LIMIT 1`).bind(agentId).first()) { referenced = true; break; }
+  }
+  const why = `retired: ${reason}`.slice(0, 300);
+  if (referenced) {
+    const kept = await setAgentStatus(env, agentId, "suspended", actor, why);
+    return { agent_id: agentId, outcome: "suspended", reason: why, agent: kept };
+  }
+  const res = await env.DB.prepare("DELETE FROM agents WHERE agent_id = ?").bind(agentId).run();
+  if ((res.meta.changes ?? 0) !== 1) throw new Error("agent not found");
+  await appendAuditEvent(env.DB, { event_type: "agent.retired", actor, subject: `agent:${agentId}`, outcome: "deleted", payload: { reason: why, host_worker: row.host_worker ?? null } });
+  return { agent_id: agentId, outcome: "deleted", reason: why };
 }
 
 export async function setAgentsEnabled(env: KernelHttpEnv, enabled: boolean, actor: string): Promise<JsonObject> {

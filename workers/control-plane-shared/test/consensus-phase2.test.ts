@@ -53,6 +53,7 @@ const service = (db: Db, id: string) => (db.raw.prepare("SELECT status, desired_
 
 test("1. the phase 2 executable set is routine, reversible, and has no deploy", () => {
   assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["amend_doctrine", "observe_drift", "register_agent", "register_engine", "registry_disable_service", "registry_enable_service", "resume_agent", "set_desired_version", "set_policy_parameter", "suspend_agent"]);
+  // retire_agent is critical (owner 2026-11-11, ADR-0013 §3): retirement keeps the owner click.
   for (const a of PHASE2_EXECUTABLE) assert.doesNotMatch(a, /deploy|rollback|restore|secret|retire|access/);
 });
 

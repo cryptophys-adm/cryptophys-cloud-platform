@@ -12,7 +12,7 @@ import type { ArtifactsReader, ArtifactsTreeEntry } from "../../forge/src/checks
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
 const MAIN = "9".repeat(40);
-const DIRS = ["ai-kernel", "audit-ledger", "console", "deployment-orchestrator", "drift-detector", "forge", "forge-typecheck", "home", "platform-api", "platform-registry", "policy-engine", "recovery-manager"];
+const DIRS = ["ai-kernel", "audit-ledger", "console", "deployment-orchestrator", "drift-detector", "forge", "forge-typecheck", "forge-typecheck-cr", "home", "platform-api", "platform-registry", "policy-engine", "recovery-manager"];
 
 /** An Artifacts repo whose main head holds workers/<dir>/organism.json files. */
 function repoWith(files: Record<string, string>, head = MAIN): ArtifactsReader {
@@ -42,13 +42,14 @@ test("C1. the repository's own DNA matches the migrated registries: a consistent
   const db = migratedDb();
   const repo = repoWith({ ...realDna(), "workers/control-plane-shared/package.json": "{}", "README.md": "x" });
   const { genome, files } = await readGenome(repo, MAIN);
-  assert.equal(files, 12);
-  assert.equal(genome.size, 12);
+  // 13 since 2026-11-11: the change-request type-check stub (forge-typecheck-cr, a build-stub like forge-typecheck).
+  assert.equal(files, 13);
+  assert.equal(genome.size, 13);
   assert.deepEqual(await compare(db as never, genome), []);
   assert.deepEqual(await censusTick(db as never, repo), { outcome: "recorded", main_sha: MAIN, status: "consistent", findings: 0 });
   assert.equal((await censusTick(db as never, repo)).outcome, "up_to_date", "once per main commit");
   const row = (await latestCensus(db as never)).census[0];
-  assert.deepEqual([row.status, row.organs, row.agents, row.voters, row.engines], ["consistent", 12, 10, 9, 9]);
+  assert.deepEqual([row.status, row.organs, row.agents, row.voters, row.engines], ["consistent", 13, 10, 9, 9]);
 });
 
 test("C2. findings: an unregistered organ and agent (with its council request), an undeclared agent, host and capability changes", async () => {
@@ -94,7 +95,7 @@ test("C4. GET /v1/forge/census for operators; migration 0040 required; the tick 
   await censusTick(db as never, repoWith(realDna()));
   const env = baseEnv("cryptophys-forge", db);
   const r = await call(forge, env, req("GET", "/v1/forge/census?limit=1", undefined, OPERATOR_JWT));
-  assert.deepEqual([r.status, r.body.census[0].status, r.body.census[0].genome.length], [200, "consistent", 12]);
+  assert.deepEqual([r.status, r.body.census[0].status, r.body.census[0].genome.length], [200, "consistent", 13]);
   assert.equal((await call(forge, env, req("GET", "/v1/forge/census", undefined, OUTSIDER_JWT))).status, 403);
   assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0040_forge_organism_census.sql"));
   assert.match(read("workers/forge/src/tick.ts"), /step\("census"/);

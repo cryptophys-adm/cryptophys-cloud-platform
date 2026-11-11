@@ -15,9 +15,9 @@ test("TP-018 migration", async () => {
   const db = migratedDb();
   const reg = db.raw.prepare("SELECT status FROM service_registry WHERE service_id='cryptophys-signal-engine'").get() as any;
   assert.equal(reg.status, "disabled");
-  const agent = db.raw.prepare("SELECT status, status_reason, tier_max FROM agents WHERE agent_id='signal-engine'").get() as any;
-  assert.equal(agent.status, "suspended");
-  assert.match(agent.status_reason, /retired/);
+  // 0020 suspended the agent; 0047 (owner 2026-11-11: "hapus yang sudah suspended") deleted it.
+  const agent = db.raw.prepare("SELECT status FROM agents WHERE agent_id='signal-engine'").get() as any;
+  assert.equal(agent, undefined);
   const sup = db.raw.prepare("SELECT capabilities_json, tier_max FROM agents WHERE agent_id='supervisor'").get() as any;
   assert.equal(sup.tier_max, 1);
   const caps = JSON.parse(sup.capabilities_json);

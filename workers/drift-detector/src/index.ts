@@ -308,11 +308,13 @@ export default {
         return json(response);
       }
       if (path === "/v1/drift" && request.method === "GET") {
+        // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
         const rows = await env.DB.prepare(
           `SELECT o.service_id, o.observation_id, o.drifted, o.evidence_json, o.observed_at
-           FROM drift_observations o
-           WHERE o.observed_at = (SELECT MAX(i.observed_at) FROM drift_observations i WHERE i.service_id = o.service_id)
-           ORDER BY o.service_id`,
+           FROM service_registry r
+           JOIN drift_observations o ON o.observation_id = (
+             SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
+           ORDER BY r.service_id`,
         ).all<{ service_id: string; observation_id: string; drifted: number; evidence_json: string; observed_at: string }>();
         return json({ services: rows.results.map((r) => ({ ...r, drifted: r.drifted === 1, evidence_json: undefined, evidence: JSON.parse(r.evidence_json) })) });
       }

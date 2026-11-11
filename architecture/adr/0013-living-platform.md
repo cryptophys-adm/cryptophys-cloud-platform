@@ -67,7 +67,7 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 
 - **No Sybil council.** There is one seat per Worker. A seat needs a vote binding in reviewed code and an owner click.
 - **Capabilities are fixed at registration.** Changing them means re-registering the agent, which goes through the same gate.
-- **Critical actions keep the owner click.** These are Access, secrets, policy, consensus rules, destructive migrations, retirement and trading. Trading stays prohibited.
+- **Critical actions keep the owner click.** These are Access, secrets, policy, consensus rules, destructive migrations, retirement (`retire_worker`, and `retire_agent` since 2026-11-11) and trading. Trading stays prohibited.
 - **The kill switch and the `shadow` mode still stop everything.**
 
 ### 4. Phase 2 as built (2026-11-09)

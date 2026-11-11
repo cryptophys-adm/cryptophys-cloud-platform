@@ -74,6 +74,10 @@ const CRITICAL_PATHS: Array<[RegExp, string]> = [
   [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
   [/^workers\/control-plane-shared\/src\/secrets\.ts$/, "secrets"],
   [/^architecture\/adr\/00(09|12)-/, "adr_0009_0012"],
+  // ADR-0012 §5d: a change request's type-check runs its own code, so a change to the harness is the owner's.
+  [/^workers\/forge-typecheck(-cr)?\//, "typecheck_harness"],
+  [/^workers\/(control-plane-tsconfig\.json|forge\/src\/cr-builds\.ts)$/, "typecheck_harness"],
+  [/^workers\/(control-plane-shared|console\/ui)\/(package(-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[a-z]+)$/, "typecheck_harness"],
 ];
 const MIGRATION = /^workers\/control-plane-migrations\/[^/]+\.sql$/;
 const DESTRUCTIVE_SQL = /\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b/i;
@@ -277,10 +281,14 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
 }
 
 /** The head of the oldest open change request that has no check yet (or whose run was lost). */
+/**
+ * The next open change request head to check: the newest first (owner 2026-11-11). Pull requests are often
+ * merged minutes after they open; oldest-first left most of them unchecked at their outcome.
+ */
 export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
-     WHERE c.status = 'open' ORDER BY c.updated_at ASC LIMIT 20`,
+     WHERE c.status = 'open' ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
   ).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
   for (const r of rows) {
     if (r.status && !(r.status === "running" && Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS)) continue;

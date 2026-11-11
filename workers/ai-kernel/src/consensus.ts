@@ -20,7 +20,7 @@ import {
 } from "../../control-plane-shared/src/consensus-rules.ts";
 export { CONSENSUS_ACTIONS, VOTERS, castVote, classify, type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type Vote, type Voter };
 import { observe } from "./syscall.ts";
-import { addAgentPrincipal, setAgentStatus } from "./kernel.ts";
+import { addAgentPrincipal, retireAgent, setAgentStatus } from "./kernel.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { executeRegistration } from "./organism.ts";
 import { isPolicyParameter, readPolicyParameter, validPolicyValue } from "../../control-plane-shared/src/policy-params.ts";
@@ -283,12 +283,14 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  * Executors exist only where the platform already owns the operation:
  *  - register_principal: the kernel's own principal registry (params.access_identity);
  *  - retire_worker: the Deployment Orchestrator dispatches the narrow Retire Worker workflow,
- *    which deletes only Workers in its RETIRABLE list whose source is gone from main.
+ *    which deletes only Workers in its RETIRABLE list whose source is gone from main;
+ *  - retire_agent (owner 2026-11-11, ADR-0013 §3): the kernel deletes an agent no row refers to, or
+ *    suspends it as retired; kernel agents, council seats and exempt hosts are refused.
  * Restoring D1, rotating secrets, changing Access and turning agents back on stay manual:
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -306,6 +308,9 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "retire_worker") {
     if (!env.DEPLOY) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.retireForConsensus(proposalId, decisionId, p.target);
+  }
+  if (p.action === "retire_agent") {
+    return await retireAgent(env as never, p.target, `owner:${approver} via consensus:${proposalId}`, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));
   }
   if (p.action === "amend_constitution") {
     return await recordDoctrineAmendment(env, proposalId, decisionId, { ...p, class: "critical" }, `owner:${approver} via consensus:${proposalId}`);

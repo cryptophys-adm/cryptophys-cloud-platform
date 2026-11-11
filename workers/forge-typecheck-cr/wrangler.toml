@@ -1,0 +1,19 @@
+# ADR-0012 §5d (owner 2026-11-11, "langkah B"): the type-check of change requests (cr/<n> branches) on a
+# Workers Builds project with NO build secrets. A build runs the branch's own code, so it must hold nothing
+# of the platform's. The build command runs the same type-check as ../forge-typecheck and prints its result
+# on one log line (FORGE_TYPECHECK_RESULT); the Forge reads that line itself through the Workers Builds API
+# with its own token (CF_BUILDS_API_TOKEN). This stub serves nothing: it exists because Workers Builds deploys
+# a Worker (production on main, Previews on cr/<n>).
+name = "cryptophys-forge-typecheck-cr"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = false
+# No public URL for any version or Preview: change-request code is never served (owner 2026-11-11).
+preview_urls = false
+
+[observability]
+enabled = false
+
+# `wrangler preview` (the Preview command of cr/<n> builds) requires this block. It stays empty: a Preview
+# gets no binding, variable or secret.
+[previews]

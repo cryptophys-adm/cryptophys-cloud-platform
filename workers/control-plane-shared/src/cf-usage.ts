@@ -362,7 +362,7 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
   const account = env.CF_ACCOUNT_ID?.trim().toLowerCase();
   if (!token || !account || !ACCOUNT.test(account)) {
     return {
-      configured: false, observed_at: new Date(now).toISOString(), plan: "Workers Free", limits: FREE_LIMITS, platform,
+      configured: false, observed_at: new Date(now).toISOString(), allowance: "Workers Free daily allowances (the account plan is not read)", limits: FREE_LIMITS, platform,
       spend_summary: null, billable_products: [], orchestrator_cost_intents: [], free_tier_status: "unknown",
       setup: "Owner: create an API token with Account > Account Analytics > Read and Billing > Billing > Read, then set the secrets CF_ANALYTICS_TOKEN (or CF_BILLING_TOKEN) and CF_ACCOUNT_ID (32 hex) on cryptophys-platform-api.",
     };
@@ -396,7 +396,7 @@ export async function cloudflareUsage(env: UsageEnv, now = Date.now(), fetcher: 
   const body: Record<string, unknown> = {
     configured: true,
     observed_at: new Date(now).toISOString(),
-    plan: "Workers Free",
+    allowance: "Workers Free daily allowances (the account plan is not read)",
     window: { from: dates[0], to: today, resets: "00:00 UTC" },
     spend_summary,
     billable_products,

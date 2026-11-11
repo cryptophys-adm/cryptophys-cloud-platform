@@ -43,20 +43,20 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
   }>;
   // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32,
   // plus the 4 Aether agents of 0027 (TP-027, tested in register-aether-tp027.test.ts) = 36, plus the
-  // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37 total.
-  assert.equal(rows.length, 37);
+  // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37, minus the
+  // seven idle agents 0047 dismantles (signal-engine, 2 XAUUSD desks, 4 HUD agents) = 30, minus the
+  // H1 chain's unused Analyst and Counselor identities of 0048 = 28.
+  assert.equal(rows.length, 28);
   assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 5);
   const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
-  assert.equal(xauusdAgents.length, 21);
+  assert.equal(xauusdAgents.length, 13);
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
-  assert.equal(hudAgents.length, 14);
+  assert.equal(hudAgents.length, 10);
+  for (const gone of ["signal-engine", "xauusd-news-analyst", "xauusd-technical-analyst", "hud-gabfx-price-action", "hud-grid-bot-protocol", "hud-playbook-execution", "hud-r37-funnel", "xauusd-analyst", "xauusd-counselor"]) {
+    assert.ok(!rows.some((r) => r.agent_id === gone), `${gone} is dismantled by 0047/0048`);
+  }
   for (const r of rows) {
-    if (r.agent_id === "signal-engine") {
-      assert.equal(r.status, "suspended");
-      assert.match(r.status_reason ?? "", /retired/);
-    } else {
-      assert.equal(r.status, "enabled");
-    }
+    assert.equal(r.status, "enabled");
     if (r.agent_id !== "supervisor") {
       assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
       const caps = JSON.parse(r.capabilities_json) as string[];
@@ -428,14 +428,14 @@ test("AgentRpc (no token): a Worker acts only as agents it hosts, at tier_max <=
   // The caller identity comes only from binding props; missing or malformed props are refused.
   assert.equal(callerHostWorker(undefined), null);
   assert.equal(callerHostWorker({ host_worker: "Bad Name!" }), null);
-  assert.deepEqual(await rpcWhoami(env as never, undefined, "xauusd-analyst"), { error: "caller_identity_missing" });
+  assert.deepEqual(await rpcWhoami(env as never, undefined, "xauusd-reasoner"), { error: "caller_identity_missing" });
 
   const me = await rpcWhoami(env as never, xau, "hud-prophet");
   assert.equal(me.agent_id, "hud-prophet");
   assert.equal(me.access_identity, "rpc:xauusd-ai-trading-assistant");
 
   // A Worker cannot impersonate another Worker's agent, nor the tier 2 supervisor.
-  assert.deepEqual(await rpcWhoami(env as never, api, "xauusd-analyst"), { error: "agent_not_hosted_by_caller" });
+  assert.deepEqual(await rpcWhoami(env as never, api, "xauusd-reasoner"), { error: "agent_not_hosted_by_caller" });
   assert.equal((await rpcSyscall(env as never, xau, "platform-api", "platform.observe", {})).reason, "agent_not_hosted_by_caller");
   assert.equal((await rpcSyscall(env as never, { host_worker: "cryptophys-ai-kernel" }, "supervisor", "platform.observe", {})).reason, "kernel_agent_internal");
   assert.equal((await rpcWhoami(env as never, xau, "nope")).error, "agent_not_registered");
