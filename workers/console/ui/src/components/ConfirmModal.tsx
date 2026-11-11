@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { ShieldAlert } from "lucide-react";
+import { normalizePhrase } from "../lib/api";
 
-/** Typed confirmation: the button enables only on the exact phrase; Tab is trapped, Esc cancels. */
+/**
+ * Typed confirmation: the button enables only on the phrase (its words and id; letter case and extra
+ * spaces do not matter); Enter confirms once it matches; Tab is trapped, Esc cancels.
+ */
 export default function ConfirmModal({ title, lines, phrase, onCancel, onConfirm }: {
   title: string; lines: string[]; phrase: string; onCancel: () => void; onConfirm: () => void;
 }) {
@@ -15,10 +19,11 @@ export default function ConfirmModal({ title, lines, phrase, onCancel, onConfirm
     const prev = previous.current;
     return () => { (prev as HTMLElement | null)?.focus?.(); };
   }, []);
-  const ok = typed === phrase;
+  const ok = normalizePhrase(typed) === normalizePhrase(phrase);
 
   function onKey(e: React.KeyboardEvent) {
     if (e.key === "Escape") { onCancel(); return; }
+    if (e.key === "Enter" && ok) { e.preventDefault(); onConfirm(); return; }
     if (e.key !== "Tab" || !box.current) return;
     const f = box.current.querySelectorAll<HTMLElement>("button:not([disabled]), input");
     if (!f.length) return;
@@ -40,8 +45,9 @@ export default function ConfirmModal({ title, lines, phrase, onCancel, onConfirm
         <p className="mt-3 text-[12px] text-slate-400">Type <span className="mono rounded bg-white/5 px-1.5 py-0.5 text-cyan-200">{phrase}</span> to continue.</p>
         <label className="mt-2 block">
           <span className="label">Confirmation phrase</span>
-          <input ref={input} className="field mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
+          <input ref={input} className="field mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} aria-invalid={typed.length > 0 && !ok} />
         </label>
+        {typed.length > 0 && !ok && <p className="mt-1 text-[11px] text-slate-500">Not matching yet.</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="btn" onClick={onCancel}>Cancel</button>
           <button type="button" className="btn btn-danger" disabled={!ok} onClick={() => ok && onConfirm()}>Confirm</button>
