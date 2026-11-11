@@ -13,7 +13,7 @@ import type { ArtifactsReader } from "./checks.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
-export type FindingKind = "invalid_dna" | "unregistered_service" | "disabled_service" | "unregistered_agent" | "undeclared_agent" | "agent_host_changed" | "agent_capabilities_changed"
+export type FindingKind = "invalid_dna" | "unregistered_service" | "disabled_service" | "unregistered_agent" | "undeclared_agent" | "agent_host_changed" | "agent_capabilities_changed" | "agent_tier_changed"
   | "unregistered_engine" | "undeclared_engine" | "voter_seat_requested" | "voter_seat_vacated";
 export interface Finding { kind: FindingKind; subject: string; detail: string }
 
@@ -43,17 +43,23 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
   const services = new Map(((await db.prepare("SELECT service_id, status FROM service_registry").all<{ service_id: string; status: string }>()).results ?? []).map((r) => [r.service_id, r.status]));
   // Seats and engines arrive with migration 0041; before it the census compares what exists.
   let phase3 = true;
-  let agents: Array<{ agent_id: string; host_worker: string; capabilities_json: string; voter?: number }>;
+  let agents: Array<{ agent_id: string; host_worker: string; capabilities_json: string; tier_max: number; voter?: number }>;
   try {
-    agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json, voter FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string; voter: number }>()).results ?? [];
-  } catch {
+    agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json, tier_max, voter FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string; tier_max: number; voter: number }>()).results ?? [];
+  } catch (error) {
+    // Only the pre-0041 schema is a supported legacy mode. Transient DB errors must fail closed.
+    const message = String((error as Error)?.message ?? error);
+    if (!/no such column:\s*voter\b/i.test(message)) throw error;
+    const enginesTable = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'engines'").first<{ name: string }>();
+    if (enginesTable) throw new Error("partial_phase3_schema: engines exists without agents.voter");
     phase3 = false;
-    agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string }>()).results ?? [];
+    agents = (await db.prepare("SELECT agent_id, host_worker, capabilities_json, tier_max FROM agents").all<{ agent_id: string; host_worker: string; capabilities_json: string; tier_max: number }>()).results ?? [];
   }
-  let engines: Array<{ service_id: string; task: string }> = [];
-  if (phase3) {
-    try { engines = (await db.prepare("SELECT service_id, task FROM engines WHERE status = 'enabled'").all<{ service_id: string; task: string }>()).results ?? []; } catch { phase3 = false; }
-  }
+  // If voter exists, migration 0041 should also have created engines. Any failure here is a
+  // partial/failed phase-3 schema, not a reason to silently downgrade the census.
+  const engines: Array<{ service_id: string; task: string }> = phase3
+    ? (await db.prepare("SELECT service_id, task FROM engines WHERE status = 'enabled'").all<{ service_id: string; task: string }>()).results ?? []
+    : [];
   const byId = new Map(agents.map((a) => [a.agent_id, a]));
   const declared = new Set<string>();
   for (const dna of genome.values()) {
@@ -70,6 +76,7 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
       let caps: string[] = [];
       try { const c = JSON.parse(row.capabilities_json ?? "[]"); if (Array.isArray(c)) caps = c.map(String); } catch { caps = []; }
       if (!sameSet(caps, gene.capabilities)) findings.push({ kind: "agent_capabilities_changed", subject: gene.id, detail: `agent ${gene.id}: registered [${[...caps].sort().join(", ")}], DNA [${[...gene.capabilities].sort().join(", ")}]` });
+      if (row.tier_max !== gene.tier_max) findings.push({ kind: "agent_tier_changed", subject: gene.id, detail: `agent ${gene.id}: registered tier_max ${row.tier_max}, DNA tier_max ${gene.tier_max}` });
       if (phase3 && gene.voter && row.voter !== 1 && row.host_worker === dna.service) findings.push({ kind: "voter_seat_requested", subject: gene.id, detail: `agent ${gene.id} on ${dna.service} asks for a council seat (consensus and the owner's click)` });
       if (phase3 && !gene.voter && row.voter === 1) findings.push({ kind: "voter_seat_vacated", subject: gene.id, detail: `agent ${gene.id} holds a council seat its DNA no longer asks for` });
     }
@@ -89,9 +96,14 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
 /** A census of an unchanged head is retaken this often, so registrations by consensus show up in it. */
 export const CENSUS_REFRESH_MS = 30 * 60_000;
 
+/** The head of canonical main, read from the Artifacts repository now (never cached), or null. */
+export async function canonicalMainHead(repo: ArtifactsReader): Promise<string | null> {
+  return (await repo.log({ ref: "main", limit: 1 })).map((c) => (typeof c.hash === "string" ? c.hash : "")).find((h) => HEX40.test(h)) ?? null;
+}
+
 /** One census per main head (retaken every CENSUS_REFRESH_MS): read the DNA, compare, record, and audit when the findings changed. */
 export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now()): Promise<{ outcome: "recorded" | "refreshed" | "up_to_date" | "no_main"; main_sha?: string; status?: string; findings?: number }> {
-  const head = (await repo.log({ ref: "main", limit: 1 })).map((c) => (typeof c.hash === "string" ? c.hash : "")).find((h) => HEX40.test(h));
+  const head = await canonicalMainHead(repo);
   if (!head) return { outcome: "no_main" };
   const existing = await db.prepare("SELECT taken_at FROM forge_organism_census WHERE main_sha = ?").bind(head).first<{ taken_at: string }>();
   if (existing && nowMs - Date.parse(existing.taken_at) < CENSUS_REFRESH_MS) return { outcome: "up_to_date", main_sha: head };
@@ -104,7 +116,7 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
     status = findings.length ? "changes" : "consistent";
   } catch (e) {
     status = "invalid";
-    findings = [{ kind: "invalid_dna", subject: head.slice(0, 12), detail: `the DNA could not be read: ${String((e as Error)?.message ?? e).slice(0, 300)}` }];
+    findings = [{ kind: "invalid_dna", subject: head.slice(0, 12), detail: `the census could not be completed: ${String((e as Error)?.message ?? e).slice(0, 300)}` }];
   }
   const dnas = [...genome.values()];
   const summary = dnas.map((d) => ({

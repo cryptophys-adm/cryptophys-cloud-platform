@@ -98,6 +98,7 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 - **Execution** (`ai-kernel/src/organism.ts`).
   - Each executor re-verifies the passed proposal and its Policy Engine decision.
   - It takes the gene from the latest census, not from the proposal: a proposal whose host or capabilities differ from the DNA fails.
+  - The census must be current (owner 2026-11-11, #262): the proposal names the latest census head, the census is valid and holds the authorizing finding, and that head is still canonical main in Artifacts at execution time. The Forge answers through `CanonicalMainRpc.mainHead()`, bound in the kernel as `CANONICAL_MAIN`. A push to main after the last census tick stops every registration (`census_stale_main_moved`) until the census of the new head is taken and voted on. Without the binding, or when the Forge cannot answer, nothing is registered (`canonical_main_unavailable`).
   - A new agent is registered enabled and without a seat. The audit events are `agent.registered`, `engine.registered` and `consensus.voter_admitted`.
   - A seat also needs a vote binding in reviewed code that is bound in the deployment (or a founding seat's own rule). Without one, the admission fails even after the owner's click.
 - **Critical actions run only in mode `critical`.** In mode `deploy`, `register_privileged_agent` and `admit_voter` are recorded and do not reach the owner. Raising the mode stays the owner's decision.
