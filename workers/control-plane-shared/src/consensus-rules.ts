@@ -70,6 +70,7 @@ export function councilSeats(e: Pick<Evidence, "agents">): string[] {
 }
 const REGISTRATION = new Set(["register_agent", "register_privileged_agent"]);
 const ENGINE_TASK = /^[a-z][a-z0-9_]{2,62}$/;
+const ACTIVE_SERVICE_STATUSES = new Set(["registered", "healthy", "degraded"]);
 
 /** Votes on ADR-0013 registrations, shared by every voter: the facts each one can check. */
 function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote["vote"]; reason: string } | null {
@@ -77,7 +78,7 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     if (e.agents[p.target]) return { vote: "reject", reason: "agent is already registered" };
     const host = String(p.params.service ?? "");
     const reg = e.registry[host];
-    if (!reg || reg.status === "disabled") return { vote: "reject", reason: `host Worker ${host || "(none)"} is not an active registered service` };
+    if (!reg || !ACTIVE_SERVICE_STATUSES.has(reg.status)) return { vote: "reject", reason: `host Worker ${host || "(none)"} is not an active registered service` };
     const caps = Array.isArray(p.params.capabilities) ? p.params.capabilities.map(String) : null;
     if (!caps) return { vote: "reject", reason: "capabilities must be a list" };
     const forbidden = forbiddenCapabilities(caps);
@@ -88,7 +89,9 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
   }
   if (p.action === "register_engine") {
     if (!ENGINE_TASK.test(String(p.params.task ?? ""))) return { vote: "reject", reason: "task must be a lowercase identifier" };
-    return null; // the registry rule (target service registered and active) and the others apply
+    const reg = e.registry[p.target];
+    if (!reg || !ACTIVE_SERVICE_STATUSES.has(reg.status)) return { vote: "reject", reason: `host Worker ${p.target} is not an active registered service` };
+    return null;
   }
   if (DOCTRINE_ACTIONS.has(p.action)) {
     const problem = doctrineProblem(p.action, p.target, p.params);
@@ -106,6 +109,8 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     if (!a) return { vote: "reject", reason: "agent is not registered" };
     if (a.status !== "enabled") return { vote: "reject", reason: `agent is ${a.status}` };
     if (a.voter) return { vote: "reject", reason: "agent already holds a seat" };
+    const host = e.registry[a.host_worker];
+    if (!host || !ACTIVE_SERVICE_STATUSES.has(host.status)) return { vote: "reject", reason: `host Worker ${a.host_worker} is not an active registered service` };
     const sameHost = Object.entries(e.agents).find(([id, o]) => id !== p.target && o.voter && o.host_worker === a.host_worker);
     if (sameHost) return { vote: "reject", reason: `one seat per Worker: ${sameHost[0]} already holds ${a.host_worker}'s seat` };
     return { vote: "approve", reason: "agent is registered, enabled and its Worker has no seat" };
