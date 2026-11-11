@@ -88,6 +88,22 @@ Object.assign(MOCK, {
   "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", observed_at: at(i * 3) })) },
   "/api/recovery/v1/plans": { plans: Array.from({ length: 14 }, (_, i) => ({ plan_id: `plan_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, service_id: SVC[i % 5], title: `Recover ${SVC[i % 5]} from version mismatch`, status: ["draft", "approved", "executing", "completed", "failed", "disabled"][i % 6], created_by: "agent:supervisor", created_at: at(i * 90), steps: [{}, {}] })) },
 });
+{
+  const ids = MOCK["/api/kernel/v1/agents"].agents;
+  const caps = ["platform.observe", "consensus.propose", "reports.publish", "memory.recall", "signals.observe"];
+  const activity = Array.from({ length: 140 }, (_, i) => ({ agent_id: ids[(i * 7) % ids.length].agent_id, capability: caps[i % caps.length], tier: 1, outcome: i % 13 === 0 ? "denied" : i % 29 === 0 ? "failed" : "succeeded", created_at: at(i * 9) }));
+  MOCK["/api/kernel/v1/mesh"] = { observed_at: at(0), window: { hours: 24 },
+    agents: ids.map((a, i) => ({ agent_id: a.agent_id, display_name: a.display_name, host_worker: a.host_worker, tier_max: a.tier_max, status: a.status, voter: i < 10,
+      actions_24h: activity.filter((x) => x.agent_id === a.agent_id).length, last_action_at: i % 5 === 4 ? null : at(i * 11), last_capability: caps[i % caps.length], last_outcome: "succeeded",
+      votes_24h: i < 10 ? 14 : 0, last_vote_at: i < 10 ? at(8) : null, reports_24h: i % 3, last_report_at: i % 3 ? at(i * 20) : null,
+      last_seen_at: i % 5 === 4 ? null : at(i * 11), liveness: a.status !== "enabled" ? "suspended" : i % 5 === 4 ? "idle" : i * 11 <= 60 ? "active" : "recent" })),
+    activity: activity.slice(0, 60), activity_24h: activity,
+    census: Array.from({ length: 8 }, (_, i) => ({ main_sha: `${i}`.repeat(40), status: i === 2 ? "changes" : "consistent", organs: 12, agents: 10, engines: 9, voters: 9, taken_at: at(i * 45),
+      findings: i === 2 ? [{ kind: "unregistered_engine", subject: "cryptophys-forge:summarize_checks", detail: "declared in the DNA, not in the engines table" }] : [] })),
+    registrations: [{ proposal_id: "cns_00000000-0000-4000-8000-00000000r001", action: "register_engine", target: "cryptophys-forge", class: "routine", status: "executed", approvals: 8, rejections: 0, eligible: 8, created_at: at(95), decided_at: at(94), outcome: { executed: true } }],
+    engines: [{ service_id: "cryptophys-ai-kernel", task: "draft_audit_digest", status: "enabled", registered_by: "migration:0041", updated_at: at(900) }],
+    protocol: ["Self-awareness: the Forge takes a census of DNA versus the live registries on each main commit.", "Self-registration: a census finding makes the Supervisor propose its registration; the council votes.", "No finding means there is nothing to register."] };
+}
 MOCK["/api/kernel/v1/metabolism"] = {
   live: { source: "cryptophys-digital-metabolism", observed_at: at(1), market_status: "open", power_mode: "homeostasis", power_mode_override: "none", auto_adaptation_enabled: true,
     treasury_reserve_usd: 500, runway_days: 3333.3, infra_burn_cost_24h: 0.15, trading_net_pnl_24h: -12.5, metabolic_ratio: -83.33 },

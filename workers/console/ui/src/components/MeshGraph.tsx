@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 
-export interface MeshAgent { agent_id: string; host_worker: string; status: string; tier_max: number }
+export interface MeshAgent { agent_id: string; host_worker: string; status: string; tier_max: number; liveness?: string; last_capability?: string | null; actions_24h?: number }
 
 const HOST_COLOR = (h: string) => h === "cryptophys-ai-kernel" ? "#bc8cff" : h.startsWith("xauusd") ? "#d29922" : "#39d0d8";
 
@@ -32,15 +32,22 @@ export default function MeshGraph({ agents, onSelect }: { agents: MeshAgent[]; o
               const spread = group.length === 1 ? 0 : group.length > 8 ? Math.PI * 1.15 : Math.PI * 0.8;
               const ang = p.ang + (group.length === 1 ? 0 : (i / (group.length - 1) - 0.5) * spread);
               const x = p.x + r * Math.cos(ang), y = p.y + r * Math.sin(ang);
-              const on = a.status === "enabled";
+              // Liveness is measured (GET /v1/mesh): active = acted in the last hour, recent = in 24 h.
+              // Without liveness data an enabled agent is drawn as "recent", never as active.
+              const live = a.status !== "enabled" ? "suspended" : a.liveness ?? "recent";
+              const color = live === "suspended" ? "#484f58" : HOST_COLOR(h);
+              const active = live === "active";
               return (
-                <g key={a.agent_id} className="cursor-pointer" onClick={() => onSelect(a.agent_id)} role="button" tabIndex={0} aria-label={`${a.agent_id}, ${a.status}`}
+                <g key={a.agent_id} className="cursor-pointer" onClick={() => onSelect(a.agent_id)} role="button" tabIndex={0} aria-label={`${a.agent_id}, ${live}`}
                   onKeyDown={(e) => { if (e.key === "Enter") onSelect(a.agent_id); }}>
-                  <line x1={p.x} y1={p.y} x2={x} y2={y} stroke={HOST_COLOR(h)} strokeOpacity={0.15} />
-                  <motion.circle cx={x} cy={y} r={4} fill={on ? HOST_COLOR(h) : "#484f58"}
-                    animate={on ? { opacity: [0.55, 1, 0.55] } : { opacity: 0.6 }} transition={{ duration: 2.4 + (i % 5) * 0.4, repeat: Infinity, delay: (hi + i) * 0.13 }}
-                    style={{ filter: on ? `drop-shadow(0 0 4px ${HOST_COLOR(h)})` : undefined }} />
-                  <title>{`${a.agent_id} · ${a.status} · tier ${a.tier_max}`}</title>
+                  <motion.line x1={p.x} y1={p.y} x2={x} y2={y} stroke={color} strokeOpacity={active ? 0.5 : 0.12}
+                    animate={active ? { strokeOpacity: [0.15, 0.6, 0.15] } : undefined} transition={active ? { duration: 1.6, repeat: Infinity, delay: (hi + i) * 0.1 } : undefined} />
+                  {active && <motion.circle cx={x} cy={y} r={4} fill="none" stroke={color} strokeWidth={1}
+                    animate={{ r: [4, 10], opacity: [0.7, 0] }} transition={{ duration: 1.8, repeat: Infinity, delay: (hi + i) * 0.15 }} />}
+                  <motion.circle cx={x} cy={y} r={active ? 4.5 : 4} fill={live === "idle" ? "#0b0f18" : color} stroke={color} strokeWidth={live === "idle" ? 1.2 : 0}
+                    animate={active ? { opacity: [0.7, 1, 0.7] } : { opacity: live === "recent" ? 0.75 : 0.55 }} transition={active ? { duration: 1.4 + (i % 5) * 0.2, repeat: Infinity, delay: (hi + i) * 0.13 } : undefined}
+                    style={{ filter: active ? `drop-shadow(0 0 5px ${color})` : undefined }} />
+                  <title>{`${a.agent_id} · ${live}${a.actions_24h ? ` · ${a.actions_24h} actions in 24 h` : ""}${a.last_capability ? ` · last: ${a.last_capability}` : ""}`}</title>
                 </g>
               );
             })}
