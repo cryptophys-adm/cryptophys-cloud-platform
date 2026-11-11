@@ -32,10 +32,33 @@ test("T3. no dollar amounts written into the UI: money values are formatted from
 });
 
 test("T4. the metabolism and usage views read the live endpoints and default to a dash, not a number or a mode", () => {
-  for (const f of ["pages/Organism.tsx", "pages/Metabolism.tsx", "pages/Command.tsx"]) {
+  // The Metabolism page duplicated Organism and was removed (owner 2026-11-11); Organism and Command read the endpoint.
+  for (const f of ["pages/Organism.tsx", "pages/Command.tsx"]) {
     const s = read(f);
     assert.match(s, /call\("kernel\.metabolism"\)/, `${f} reads GET /v1/metabolism`);
     assert.doesNotMatch(s, /power_mode \?\? "(growth|survival|homeostasis)"/, `${f}: an unknown power mode must not default to a mode`);
   }
   assert.match(read("components/CloudflareUsage.tsx"), /call\("platform\.usage"\)/);
 });
+
+test("T5. hardening 2026-11-11: one metabolism view (Organism), no unmeasured status, no default mode, no browser-computed quota", () => {
+  // One view: no Metabolism page and no nav entry; an old #/metabolism link lands on Organism.
+  assert.ok(!files.some((f) => /pages[\\/]Metabolism\.tsx$/.test(String(f))), "pages/Metabolism.tsx is gone");
+  assert.doesNotMatch(read("components/AppShell.tsx"), /#\/metabolism|label: "Metabolism"/);
+  assert.match(read("App.tsx"), /case "metabolism": page = <Organism \/>/);
+  const org = read("pages/Organism.tsx"), cmd = read("pages/Command.tsx");
+  // No status claimed without a reading (a hardcoded green status or a fallback state).
+  for (const phrase of ["SELF-SUSTAINING", "OPEN (ACTIVE)", "15m Heartbeat", "15m SSOT Awareness", "Days Autonomous", "Genesis Liquidity Buffer"]) {
+    assert.ok(!org.includes(phrase), `Organism must not claim "${phrase}"`);
+  }
+  // A mode the kernel did not report is unknown, never homeostasis; the AI quota is not computed in the browser.
+  assert.doesNotMatch(org, /: "homeostasis"\);/, "modeKey must not default to homeostasis");
+  assert.doesNotMatch(org, /mode === "survival" \? 25/, "no browser-computed AI quota");
+  assert.doesNotMatch(org, /cost_usd \?\? 0/, "a missing burn is left out, never drawn as 0");
+  // The pulsing green dots follow the reported power mode.
+  for (const [name, s] of [["Organism", org], ["Command", cmd]] as const) {
+    assert.doesNotMatch(s, /animate-ping/, `${name}: no always-on pulsing indicator`);
+  }
+  assert.doesNotMatch(cmd, /#\/metabolism/);
+});
+

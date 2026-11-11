@@ -71,12 +71,10 @@ export default function Command() {
       </div>
 
       {/* Living Organism Metabolism Banner */}
-      <div className="glass p-4 flex flex-wrap items-center justify-between gap-3 border border-emerald-500/20 bg-emerald-500/5">
+      <div className={`glass p-4 flex flex-wrap items-center justify-between gap-3 border ${mtb.power_mode ? "border-emerald-500/20 bg-emerald-500/5" : "border-white/10"}`}>
         <div className="flex items-center gap-3">
-          <span className="relative flex h-3 w-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-          </span>
+          {/* Green and pulsing only while the kernel reports a power mode (measured data only). */}
+          <Dot tone={mtb.power_mode ? "green" : "slate"} pulse={Boolean(mtb.power_mode)} />
           <div>
             <div className="text-xs font-bold text-white flex items-center gap-2">
               Autonomous Living Organism · Digital Metabolism
@@ -92,9 +90,6 @@ export default function Command() {
         <div className="flex items-center gap-2">
           <a href="#/organism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">
             Organism Hub →
-          </a>
-          <a href="#/metabolism" className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 transition">
-            Metabolism Ledger →
           </a>
         </div>
       </div>
