@@ -38,7 +38,27 @@ test("D2. migration 0046 indexes the time-window and event-type reads", () => {
   for (const n of ["idx_agent_actions_created", "idx_agent_reports_created", "idx_consensus_votes_created", "idx_audit_events_type_created"]) assert.ok(idx.has(n), n);
   const plan = (sql: string) => (db.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as any[]).map((r) => r.detail).join(" | ");
   assert.match(plan("SELECT agent_id FROM agent_reports WHERE created_at >= '2026-11-10'"), /idx_agent_reports_created/);
+  assert.match(plan("SELECT agent_id, capability, tier, outcome, created_at FROM agent_actions WHERE created_at >= '2026-11-10' ORDER BY created_at DESC LIMIT 500"), /idx_agent_actions_created/);
+  assert.match(plan("SELECT voter_agent_id, COUNT(*) AS n, MAX(created_at) AS last_at FROM consensus_votes WHERE created_at >= '2026-11-10' GROUP BY voter_agent_id"), /idx_consensus_votes_created/);
   assert.match(plan("SELECT actor FROM audit_events WHERE event_type = 'metabolism.power_mode_changed' ORDER BY created_at DESC LIMIT 20"), /idx_audit_events_type_created/);
   assert.match(plan(`SELECT o.service_id FROM service_registry r JOIN drift_observations o ON o.observation_id = (
     SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)`), /idx_drift_service_observed/);
+});
+
+test("D3. without migration 0046 the same reads return the same rows (indexes change cost, not results)", async () => {
+  const { meshView } = await import("../../ai-kernel/src/mesh-view.ts");
+  const seed = (db: any) => {
+    const services = (db.raw.prepare("SELECT service_id FROM service_registry ORDER BY service_id").all() as any[]).map((r) => r.service_id);
+    for (let i = 0; i < 6; i++) obs(db, `obs_${i}`, services[i % 2], i % 3 === 0, new Date(Date.UTC(2026, 10, 10, 0, i)).toISOString());
+    const act = db.raw.prepare(`INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at) VALUES (?, 'supervisor', 'platform.observe', 0, NULL, 'succeeded', '{}', '{}', ?)`);
+    for (let i = 0; i < 5; i++) act.run(`act_${i}`, new Date(Date.UTC(2026, 10, 10, 1, i)).toISOString());
+  };
+  const withIdx = migratedDb();
+  const without = migratedDb();
+  for (const n of ["idx_agent_actions_created", "idx_agent_reports_created", "idx_consensus_votes_created", "idx_audit_events_type_created"]) without.raw.prepare(`DROP INDEX ${n}`).run();
+  seed(withIdx); seed(without);
+  const now = Date.UTC(2026, 10, 10, 2, 0);
+  const strip = (v: any) => ({ ...v, observed_at: undefined });
+  assert.deepEqual(strip(await meshView({ DB: without } as never, now)), strip(await meshView({ DB: withIdx } as never, now)));
+  assert.deepEqual((await observe({ DB: without } as never, now) as any).services, (await observe({ DB: withIdx } as never, now) as any).services);
 });

@@ -21,9 +21,10 @@ API_CONTRACT_VERSION = "v1"
 AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 # Per-service and coordinated account-wide daily request caps (Workers AI Free allocation).
 AI_DAILY_REQUEST_LIMIT = "80"
-# 75 (owner 2026-11-11, "high usage excess free tier"): the free 10k neurons/day are shared with every
-# Worker on the account (XAUUSD, Aether). At the worst case (~34 neurons a request) the platform can use
-# at most ~2.6k of them; it used about 15 requests a day in the week before.
+# 75 (owner 2026-11-11, "high usage excess free tier"): a request cap for the platform Workers together,
+# counted in this repository's D1 (ai_usage). It is not a Cloudflare neuron meter and does not cover
+# XAUUSD or Aether (TP-029). At the task bounds (~34 neurons a request, an estimate) it allows ~2.6k of
+# the account's shared 10k free neurons a day. Measured 2026-11-04..10: 20.4 requests a day, peak 42.
 AI_ACCOUNT_DAILY_REQUEST_LIMIT = "75"
 
 # The account-specific database_id is kept out of Git (ADR-0001). The deploy workflow

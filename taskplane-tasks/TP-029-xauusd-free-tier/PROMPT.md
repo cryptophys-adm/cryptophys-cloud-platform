@@ -7,7 +7,11 @@ Repository: `cryptophys-adm/xauusd-ai-trading-assistant`. The platform orchestra
 ## Findings (platform side, 2026-11-11)
 
 - **The account is billed.** The Billable Usage API reports Workers AI neurons ($1.41) and Containers memory and disk ($1.20) for the current cycle. On Workers Free neither could accrue, so the account is on Workers Paid and every neuron above 10,000 a day is charged. The 10,000 free neurons a day are shared by every Worker on the account.
-- **The platform's own AI use is small:** about 15 requests a day, roughly 600 neurons. Its cap is now 75 requests a day (at most ~2.6k neurons).
+- **The platform's own AI use is small.**
+  - It made 20.4 AI requests a day from 2026-11-04 to 11-10 (peak 42 on 11-06). These are request reservations in `ai_usage`, not measured neurons.
+  - The new cap of 75 requests a day applies to the platform Workers together and is counted in the control-plane D1. It is not a Cloudflare account neuron meter, and it does not cover XAUUSD or Aether or their databases.
+  - At the task bounds (~34 neurons a request, an estimate) it allows ~2.6k of the shared 10k.
+  - That is why the work below is still needed to keep the whole account inside the allowance.
 - **The XAUUSD reasoner uses `@cf/nvidia/nemotron-3-120b-a12b`** (45,455 neurons per million input tokens, 136,364 per million output tokens). That is 5× `gemma-4-26b`. Cloudflare plans to **deprecate it on 2026-11-20**, so the reasoner stops working then unless it moves.
 - **Cadence:** the main Worker runs on `10-59/15 * * * *` and `6 * * * *`, and `market-data-ingestion` every 5 minutes. Reports in the last 7 days (shared D1 `agent_reports`):
 
