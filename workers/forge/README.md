@@ -30,6 +30,7 @@ It needs no GitHub at any step.
    - The check of the same commit takes the report as its `typecheck` step; until it arrives the step is `pending`.
    - A type error fails the check, also when the report arrives after the check ran.
    - Change requests (`cr/<number>`) are type-checked by a second project with no build secrets, `../forge-typecheck-cr` (root directory `workers/forge-typecheck-cr` in both the Production and the Previews Base build settings, which Workers Builds keeps apart; ADR-0012 §5d, owner 2026-11-11). Its build prints the result as one log line, and each tick reads it through the Workers Builds API (`src/cr-builds.ts`, Forge secret `CF_BUILDS_API_TOKEN`). The line counts only when its commit is the change request's head. Without the secret the step is skipped, and change requests stay `pending` on the type-check.
+     A Preview build may be listed only under its Preview, so when the Worker's build list has none for the branch, the tick reads the branch's Preview. The `forge.tick` log line reports the step under `cr_typecheck`: `outcome`, `open`, `recorded`, `builds_listed`, `previews_listed` and `via_preview`.
 7. **Record.** The result goes to D1 `forge_check_runs` (with `steps` and `guard_status`) and the audit chain.
 
 - **Shim imports.** `src/runner/assets.js` holds the wasm toolchain. Only `src/worker.ts` imports it, so the Node tests never load it. Wrangler imports the shims as Text (`[[rules]]`). The globs match the import specifiers as written there, so keep those import paths.
