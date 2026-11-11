@@ -1,5 +1,6 @@
 // Owner 2026-11-11: "hardening juga untuk dismantle dan delete agent yang sudah tidak berkontribusi".
-// Migration 0047 dismantles the seven idle agents; retire_agent and the Supervisor's idle rule do it from now on.
+// Migration 0047 dismantles the seven idle agents; retire_agent (critical: one owner click) and the
+// Supervisor's idle rule do it from now on.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +12,7 @@ import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
+import { ownerDecide } from "../../ai-kernel/src/consensus.ts";
 import { RETIRE_IDLE_DAYS } from "../src/consensus-rules.ts";
 
 const MIGRATIONS = new URL("../../control-plane-migrations/", import.meta.url);
@@ -58,18 +60,33 @@ test("A2. 0047 never deletes an agent that any row refers to", () => {
   assert.deepEqual(left, ["hud-r37-funnel"]);
 });
 
-test("A3. retire_agent by consensus: an agent nothing refers to is deleted and audited; one with history is kept, suspended as retired", async () => {
+const proposalOf = (db: ReturnType<typeof migratedDb>, target: string) => db.raw.prepare("SELECT proposal_id, status, outcome_json FROM consensus_proposals WHERE action = 'retire_agent' AND target = ? ORDER BY rowid DESC LIMIT 1").get(target) as any;
+
+test("A3. retire_agent is critical (owner 2026-11-11, ADR-0013 §3): outside mode critical it is only recorded; in mode critical it waits for the owner's click", async () => {
   const { env, db } = kernelEnv();
-  setMode(db, "routine");
+  addAgent(db, "idle-helper");
+  setMode(db, "deploy");
+  await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "idle-helper", params: { reason: "idle" } });
+  assert.equal(proposalOf(db, "idle-helper").status, "shadow_passed", "deploy mode never retires");
+  assert.equal(agent(db, "idle-helper").status, "enabled");
+  setMode(db, "critical");
+  await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "idle-helper", params: { reason: "idle" } });
+  assert.equal(proposalOf(db, "idle-helper").status, "pending_owner", "it reaches the owner");
+  assert.equal(agent(db, "idle-helper").status, "enabled", "nothing happens before the click");
+});
+
+test("A4. after the owner's click: an agent nothing refers to is deleted and audited; one with history is kept, suspended as retired", async () => {
+  const { env, db } = kernelEnv();
+  setMode(db, "critical");
   addAgent(db, "idle-helper");
   addAgent(db, "busy-helper");
   act(db, "busy-helper", daysAgo(30));
-  await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "idle-helper", params: { reason: "idle" } });
-  await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "busy-helper", params: { reason: "idle" } });
-  const [a, b] = retireProposals(db);
-  assert.equal(a.status, "executed", a.outcome_json);
+  for (const id of ["idle-helper", "busy-helper"]) {
+    await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: id, params: { reason: "idle" } });
+    await ownerDecide(env as never, proposalOf(db, id).proposal_id, "approve", APPROVER_EMAIL, "idle for weeks");
+    assert.equal(proposalOf(db, id).status, "executed", proposalOf(db, id).outcome_json);
+  }
   assert.equal(agent(db, "idle-helper"), undefined, "deleted");
-  assert.equal(b.status, "executed", b.outcome_json);
   assert.equal(agent(db, "busy-helper").status, "suspended");
   assert.match(agent(db, "busy-helper").status_reason, /^retired: /);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_actions WHERE agent_id = 'busy-helper'").get() as any).n, 1, "its history stays");
@@ -78,20 +95,25 @@ test("A3. retire_agent by consensus: an agent nothing refers to is deleted and a
   assert.equal((await verifyAuditChain(db as never)).valid, true);
 });
 
-test("A4. kernel agents, council seats and agents of the exempt hosts are never retired (the vote and the executor both refuse)", async () => {
+test("A4b. kernel agents, council seats and the exempt XAUUSD host are never retired, even with the owner's click; Aether agents are no longer exempt", async () => {
   const { env, db } = kernelEnv();
-  setMode(db, "routine");
+  setMode(db, "critical");
   addAgent(db, "seat-helper", { voter: 1 });
-  for (const target of ["supervisor", "seat-helper", "hud-prophet", "aether-curator"]) {
+  for (const target of ["supervisor", "seat-helper", "hud-prophet"]) {
     await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target, params: { reason: "test" } });
+    const p = proposalOf(db, target);
+    if (p?.status === "pending_owner") await ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, null).catch(() => null);
+    assert.notEqual(proposalOf(db, target)?.status, "executed", target);
+    assert.equal(agent(db, target)?.status, "enabled", target);
   }
-  assert.ok(retireProposals(db).every((p) => p.status !== "executed"), JSON.stringify(retireProposals(db)));
-  for (const id of ["supervisor", "seat-helper", "hud-prophet", "aether-curator"]) assert.equal(agent(db, id)?.status, "enabled", id);
+  // Owner 2026-11-11: "aether sudah operasional". An Aether agent goes through the same gate as any other.
+  await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "aether-curator", params: { reason: "test" } });
+  assert.equal(proposalOf(db, "aether-curator").status, "pending_owner");
 });
 
 test("A5. the Supervisor proposes one idle agent per cycle, at most once a week; active, young and exempt agents are not proposed", async () => {
   const { env, db, memory } = kernelEnv();
-  addAgent(db, "idle-helper");
+  addAgent(db, "idle-helper", { createdDaysAgo: 3650 });
   addAgent(db, "young-helper", { createdDaysAgo: RETIRE_IDLE_DAYS - 2 });
   addAgent(db, "active-helper");
   act(db, "active-helper", daysAgo(1));

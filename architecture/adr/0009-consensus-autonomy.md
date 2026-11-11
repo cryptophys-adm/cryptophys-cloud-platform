@@ -140,7 +140,7 @@ No proposals yet is expected: the supervisor proposes only on persistent drift. 
 
 The execution code ships ahead of the promotion so that pi and agy can audit it during the shadow window. **`consensus_controls.mode` stays `shadow` in production.** Every path below is a no-op until a separate reviewed change sets the mode to `routine`, which needs the phase 1 criteria (earliest review 2026-11-13).
 
-- **Executable in phase 2** (`PHASE2_EXECUTABLE` in `workers/ai-kernel/src/consensus.ts`): `observe_drift`, `set_desired_version`, `registry_disable_service`, `registry_enable_service`, `suspend_agent`, `resume_agent`, and since 2026-11-11 `retire_agent` (it deletes only an agent that no row refers to and otherwise suspends it as retired). All are reversible by the opposite action or lose no history.
+- **Executable in phase 2** (`PHASE2_EXECUTABLE` in `workers/ai-kernel/src/consensus.ts`): `observe_drift`, `set_desired_version`, `registry_disable_service`, `registry_enable_service`, `suspend_agent`, `resume_agent`. All are reversible by the opposite action. (`retire_agent`, added 2026-11-11, is critical: it executes in phase 4 after the owner click, ADR-0013 §3.)
 - **Not executed in phase 2.** `redeploy_desired_version`, `rollback_worker_version` and `deploy_commit` pass or fail the vote as before but stay unexecuted, with the outcome "no executor in this phase". They move to phase 3 with a per-Worker deploy path and automatic rollback. Critical actions go to `pending_owner` (phase 4 adds the approval click).
 - **Flow.** If the mode is not `shadow`, the class is routine, the vote passed and the Policy Engine allowed `consensus.execute`, the kernel stores the proposal as `executing`, runs it, then sets `executed` or `failed` with the outcome, and appends `consensus.executed` to the audit chain.
 - **Owning paths:**
@@ -280,8 +280,9 @@ The phase 4 code ships ahead of its promotion, for audit by pi and agy. **`conse
 - **Executors:**
   - `register_principal`: the kernel's own principal registry (`params.access_identity`).
   - `retire_worker`: the Deployment Orchestrator (`DeployRpc.retireForConsensus`) dispatches the existing Retire Worker workflow (`DELETE`). It does so only for a Worker that is disabled in the registry and is not an active deploy unit. The workflow keeps its own gates: the owner-curated `RETIRABLE` list, source gone from `main`, and the production Environment. D1 is never touched.
+  - `retire_agent` (owner 2026-11-11, ADR-0013 §3): the kernel deletes an agent that no row refers to, or suspends it with a `retired:` reason. It refuses kernel agents, council seats and the exempt XAUUSD host. The supervisor proposes it for an agent idle 14 days.
 - **Manual only:** `restore_d1_bookmark`, `rotate_secret`, `change_access` and `agents_enable`. They need credentials no Worker holds, or already have a direct approver control. The Console shows them in the queue with "carry it out by its runbook, then reject this proposal to close it", and the approve call returns `manual_only`.
-- **Proposals:** the supervisor proposes no critical action automatically yet. When a supervisor rule or an agent proposes one in mode `critical`, it appears in the queue.
+- **Proposals:** the supervisor proposes one critical action automatically, `retire_agent` for an idle agent (2026-11-11); no other. When a supervisor rule or an agent proposes one in mode `critical`, it appears in the queue.
 - **Console.** The Consensus screen has an **Owner Approval Queue**, with Approve and Reject buttons for approvers. Both use typed confirmations (`APPROVE <id13>`, `REJECT <id13>`). Two allow-list rows were added (37 in total), and the route table has 38 ids.
 - **Deploy order:** the control plane first (it applies migration 0024, which every service's readiness now requires), then the Deployment Orchestrator (it adds `retireForConsensus`), then the Console.
 - **Tests:** `test/consensus-phase4.test.ts`, 9 criteria:
