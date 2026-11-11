@@ -110,6 +110,13 @@ entrypoint = "VoteRpc"
 binding = "XAUUSD_AI"
 service = "xauusd-ai-trading-assistant"
 
+# Owner 2026-11-11: the owner's Telegram for what waits for the owner's approval (owner_attention). The
+# xauusd AI Worker's OwnerNotifier holds the bot; the platform holds no Telegram credential.
+[[services]]
+binding = "OWNER_TELEGRAM"
+service = "xauusd-ai-trading-assistant"
+entrypoint = "OwnerNotifier"
+
 # Agent processes: SQLite-backed Durable Objects (Workers Paid included usage).
 [[durable_objects.bindings]]
 name = "SUPERVISOR"

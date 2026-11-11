@@ -1,5 +1,5 @@
 /** Kernel operations shared by the HTTP API and the MCP tools (ADR-0007). */
-import type { SendEmailBinding } from "./owner-notices.ts";
+import type { OwnerTelegramBinding, SendEmailBinding } from "./owner-notices.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -19,6 +19,8 @@ export interface KernelHttpEnv extends KernelEnv {
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
   OWNER_EMAIL?: SendEmailBinding;
+  /** Owner 2026-11-11: the owner's Telegram, through the xauusd AI Worker's OwnerNotifier (it holds the bot). */
+  OWNER_TELEGRAM?: OwnerTelegramBinding;
   NOTIFY_FROM?: string;
 }
 

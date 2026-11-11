@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
-import { collectNotices, emailConfigured, reconcileNotices, STALE_MS } from "../../ai-kernel/src/owner-notices.ts";
+import { collectNotices, emailConfigured, reconcileNotices, STALE_MS, telegramConfigured } from "../../ai-kernel/src/owner-notices.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const NOW = Date.parse("2026-11-08T03:22:00Z");
@@ -169,3 +169,39 @@ test("O5. wiring: kernel schedule, kernel route, Console route and panel", () =>
   assert.ok(toml.includes('allowed_destination_addresses = ["owner-notify-placeholder@example.invalid"]'), "source config fails closed; deploy rendering injects protected approver identities");
   assert.ok(toml.includes('allowed_sender_addresses = ["alerts@notify.cryptophys.work"]'), "binding restricts the sender as well as recipients");
 });
+
+test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too, and owner_attention reaches the owner's Telegram (only that topic)", async () => {
+  const db = migratedDb();
+  healthy(db);
+  const now = at(0);
+  const tg: any[] = [];
+  let fail = true;
+  const env = { DB: db, OWNER_TELEGRAM: { notify: async (n: any) => { tg.push(n); if (fail) { fail = false; return { sent: false, reason: "rate_limited" }; } return { sent: true }; } } };
+  assert.equal(telegramConfigured(env as never, "owner_attention"), true);
+  assert.equal(telegramConfigured(env as never, "drift"), false, "drift and the other topics stay in the Console and the email");
+  db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
+    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-curator', 'k-role-risk-calibration-talk', 1, 'role_reminder', '{}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), now);
+  let r = await reconcileNotices(env as never, NOW);
+  assert.deepEqual([r[0].topic, r[0].change, r[0].delivery], ["owner_attention", "opened", "failed: rate_limited"]);
+  assert.equal(tg[0].change, "opened");
+  assert.equal(tg[0].title, "1 item(s) wait for your approval");
+  assert.match(tg[0].lines[0], /^Knowledge proposal k-role-risk-calibration-talk@1 \(role reminder, by aether-curator\): review at .*#\/knowledge$/);
+  assert.match(tg[0].link, /#\/knowledge$/, "one kind: the link opens its page");
+  r = await reconcileNotices(env as never, NOW);
+  assert.deepEqual([r[0].change, r[0].delivery], ["delivery_retry", "sent"], "a failed Telegram send is retried");
+  r = await reconcileNotices(env as never, NOW);
+  assert.equal(r[0].change, "unchanged");
+  assert.equal(tg.length, 2);
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved'").run();
+  r = await reconcileNotices(env as never, NOW);
+  assert.deepEqual([r[0].change, r[0].delivery], ["closed", "sent"]);
+  assert.equal(tg.at(-1).change, "closed");
+  // With email too, the delivery is "sent" only when both sent.
+  const mail: any[] = [];
+  const both = { ...env, APPROVER_IDENTITIES: "owner@example.com", NOTIFY_FROM: "alerts@notify.example.com", OWNER_EMAIL: { send: async (m: any) => { mail.push(m); return {}; } }, OWNER_TELEGRAM: { notify: async () => ({ sent: false, reason: "telegram_not_configured" }) } };
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'pending'").run();
+  r = await reconcileNotices(both as never, NOW);
+  assert.equal(r[0].delivery, "email: sent; telegram: failed: telegram_not_configured");
+  assert.equal(mail.length, 1);
+});
+
