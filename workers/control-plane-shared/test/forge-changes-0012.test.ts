@@ -250,3 +250,12 @@ test("CR8. checks record their source; earlier change request heads never appear
   assert.deepEqual(sources, { 1: "main", 2: "main", 3: "change", 4: "main" });
   assert.deepEqual((await listChecks(db as never, 10)).checks.map((c) => c.commit[0]).sort(), ["1", "2", "4"]);
 });
+
+test("CR10. the newest unchecked change request is checked first (owner 2026-11-11: pull requests often merge minutes after they open)", async () => {
+  const db = migratedDb();
+  const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "a.md": "1" }, [HEAD2]: { ...BASE_FILES, "b.md": "2" } });
+  await registerChange(db as never, repo, REG, CI_CLIENT_ID);
+  await new Promise((r) => setTimeout(r, 5));
+  await registerChange(db as never, repo, { ...REG, number: REG.number + 1, head_sha: HEAD2 }, CI_CLIENT_ID);
+  assert.equal(await nextChangeHead(db as never, repo, Date.now()), HEAD2, "the request opened last");
+});

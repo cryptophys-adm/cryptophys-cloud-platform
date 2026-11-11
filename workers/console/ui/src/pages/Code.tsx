@@ -19,6 +19,8 @@ export default function Code() {
   const checks = usePoll(() => call("forge.checks", undefined, undefined, { limit: "20" }), 60_000);
   const changes = usePoll(() => call("forge.changes", undefined, undefined, { limit: "15" }), 60_000);
   const crs = listOf(changes.data, "changes");
+  const openCrs = crs.filter((c: any) => c.status === "open");
+  const noVerdict = crs.filter((c: any) => c.status !== "open" && (c.verdict === "pending" || !c.verdict)).length;
   const mergeParity = changes.data?.parity;
   const plans = usePoll(() => call("forge.deploy_plans", undefined, undefined, { limit: "8" }), 60_000);
   const planRows = listOf(plans.data, "plans");
@@ -54,16 +56,20 @@ export default function Code() {
       <Panel title="Change requests · shadow" icon={<GitPullRequest className="h-3.5 w-3.5 text-violet-300" />}
         right={<Badge tone={mergeParity && mergeParity.consecutive >= mergeParity.target ? "green" : "slate"}>{mergeParity ? `merge parity ${mergeParity.consecutive}/${mergeParity.target}` : "—"}</Badge>}>
         {changes.loading && !changes.data ? <Skeleton /> : (<>
-          {crs.length > 0 && <StatusBar className="mb-3" segments={[
-            { key: "would_merge", label: "would merge", value: crs.filter((c: any) => c.verdict === "would_merge").length, color: STATUS.good },
-            { key: "needs_owner", label: "needs owner", value: crs.filter((c: any) => c.verdict === "needs_owner").length, color: STATUS.owner },
-            { key: "blocked", label: "blocked", value: crs.filter((c: any) => c.verdict === "blocked").length, color: STATUS.critical },
-            { key: "pending", label: "pending", value: crs.filter((c: any) => !["would_merge", "needs_owner", "blocked"].includes(c.verdict)).length, color: STATUS.neutral },
+          {/* Owner 2026-11-11: the bar counts only open requests. A merged or closed request keeps the
+              verdict frozen at its outcome, shown in the table (and "no verdict at merge" when the
+              Forge had not decided by then). */}
+          {openCrs.length > 0 && <StatusBar className="mb-3" segments={[
+            { key: "would_merge", label: "would merge", value: openCrs.filter((c: any) => c.verdict === "would_merge").length, color: STATUS.good },
+            { key: "needs_owner", label: "needs owner", value: openCrs.filter((c: any) => c.verdict === "needs_owner").length, color: STATUS.owner },
+            { key: "blocked", label: "blocked", value: openCrs.filter((c: any) => c.verdict === "blocked").length, color: STATUS.critical },
+            { key: "pending", label: "pending", value: openCrs.filter((c: any) => !["would_merge", "needs_owner", "blocked"].includes(c.verdict)).length, color: STATUS.neutral },
           ]} />}
+          {crs.length > 0 && <p className="mb-3 text-[11px] text-slate-500">{openCrs.length} open · {crs.length - openCrs.length} merged or closed{noVerdict ? ` · ${noVerdict} merged or closed before the Forge reached a verdict` : ""}</p>}
           <DataTable rows={crs} rowKey={(c) => c.cr_id} initialSort={{ key: "when", dir: "desc" }} maxHeight={420} empty="No pull request has been mirrored to the Forge yet." columns={[
             { key: "number", header: "PR", sort: (c) => c.number, cell: (c) => <span className="mono text-[11px] text-violet-200">#{c.number}</span> },
             { key: "title", header: "title", className: "wrap", sort: (c) => c.title, cell: (c) => <span className="text-slate-200">{c.title}</span> },
-            { key: "verdict", header: "Forge verdict", sort: (c) => c.verdict, cell: (c) => { const v = VERDICT[c.verdict] ?? { tone: "slate", label: c.verdict ?? "—" }; return <span className="inline-flex flex-wrap gap-1"><Badge tone={v.tone}>{c.status === "open" ? v.label : `${v.label} at ${c.status}`}</Badge>{c.critical?.length ? <Badge tone="amber">owner path</Badge> : null}</span>; } },
+            { key: "verdict", header: "Forge verdict", sort: (c) => c.verdict, cell: (c) => { const v = VERDICT[c.verdict] ?? { tone: "slate", label: c.verdict ?? "—" }; return <span className="inline-flex flex-wrap gap-1"><Badge tone={v.tone}>{c.status === "open" ? v.label : c.verdict === "pending" || !c.verdict ? `no verdict at ${c.status === "merged" ? "merge" : "close"}` : `${v.label} at ${c.status}`}</Badge>{c.critical?.length ? <Badge tone="amber">owner path</Badge> : null}</span>; } },
             { key: "check", header: "check", sort: (c) => c.check?.status ?? "", cell: (c) => c.check ? <span className="text-[11px]"><span className={c.check.status === "passed" ? "text-emerald-300" : c.check.status === "failed" ? "text-rose-300" : "text-slate-400"}>{c.check.status}</span> <span className="mono text-slate-500">{c.check.pass ?? "—"}/{(c.check.pass ?? 0) + (c.check.fail ?? 0)}</span></span> : <span className="text-slate-600">not checked</span> },
             { key: "github", header: "GitHub CI", sort: (c) => c.github_ci, cell: (c) => <span className="text-[11px] text-slate-400">{c.github_ci ?? "—"}</span> },
             { key: "agrees", header: "agrees", sort: (c) => (c.agrees === true ? 2 : c.agrees === false ? 0 : 1), cell: (c) => c.status === "merged" ? <Badge tone={c.agrees === true ? "green" : c.agrees === false ? "red" : "slate"}>{c.agrees === true ? "yes" : c.agrees === false ? "no" : "late"}</Badge> : <span className="text-slate-600">—</span> },

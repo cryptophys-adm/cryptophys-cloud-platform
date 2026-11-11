@@ -277,10 +277,14 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
 }
 
 /** The head of the oldest open change request that has no check yet (or whose run was lost). */
+/**
+ * The next open change request head to check: the newest first (owner 2026-11-11). Pull requests are often
+ * merged minutes after they open; oldest-first left most of them unchecked at their outcome.
+ */
 export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
-     WHERE c.status = 'open' ORDER BY c.updated_at ASC LIMIT 20`,
+     WHERE c.status = 'open' ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
   ).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
   for (const r of rows) {
     if (r.status && !(r.status === "running" && Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS)) continue;
