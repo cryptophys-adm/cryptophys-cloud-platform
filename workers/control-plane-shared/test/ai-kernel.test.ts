@@ -42,9 +42,10 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
     status_reason: string | null;
   }>;
   // 3 kernel agents + 8 platform worker AI agents + 7 active XAUUSD agents + 14 XAUUSD HUD agents = 32,
-  // plus the 4 Aether agents of 0027 (TP-027, tested in register-aether-tp027.test.ts) = 36 total.
-  assert.equal(rows.length, 36);
-  assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 4);
+  // plus the 4 Aether agents of 0027 (TP-027, tested in register-aether-tp027.test.ts) = 36, plus the
+  // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37 total.
+  assert.equal(rows.length, 37);
+  assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 5);
   const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
   assert.equal(xauusdAgents.length, 21);
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
@@ -459,7 +460,8 @@ test("TP-027 Aether: four tier-1 agents hosted by cryptophys-aether, reachable o
   const { rpcWhoami, rpcSyscall } = await import("../../ai-kernel/src/agent-rpc.ts");
   const { REPORT_KINDS } = await import("../../ai-kernel/src/reports.ts");
   const { env, db } = kernelEnv();
-  const rows = db.raw.prepare("SELECT agent_id, tier_max, capabilities_json, status FROM agents WHERE host_worker = 'cryptophys-aether' ORDER BY agent_id").all() as Array<{ agent_id: string; tier_max: number; capabilities_json: string; status: string }>;
+  // The Knowledge Council (0045) is also hosted by cryptophys-aether; knowledge-council-0045.test.ts covers it.
+  const rows = db.raw.prepare("SELECT agent_id, tier_max, capabilities_json, status FROM agents WHERE host_worker = 'cryptophys-aether' AND agent_id <> 'knowledge-council' ORDER BY agent_id").all() as Array<{ agent_id: string; tier_max: number; capabilities_json: string; status: string }>;
   assert.deepEqual(rows.map((r) => r.agent_id), ["aether-auditor", "aether-calibrator", "aether-curator", "aether-guardian"]);
   for (const r of rows) {
     assert.equal(r.tier_max, 1);

@@ -6,6 +6,7 @@
 import type { JsonObject } from "./http.ts";
 import { CAPABILITIES, PROHIBITED_CAPABILITY } from "./capabilities.ts";
 import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy-params.ts";
+import { DOCTRINE_ACTIONS, doctrineProblem } from "./doctrine.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -34,6 +35,9 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   admit_voter: { class: "critical", target: "agent", description: "Give a registered agent a council seat (one per Worker)" },
   // Owner 2026-11-10: the council may change Policy Engine parameters by consensus alone, inside hard bounds in code.
   set_policy_parameter: { class: "routine", target: "platform", description: "Change a council-adjustable Policy Engine parameter within its hard bounds" },
+  // Owner 2026-11-11: the Knowledge Council's daily doctrine amendments (control-plane-shared/src/doctrine.ts).
+  amend_doctrine: { class: "routine", target: "platform", description: "Amend an operational doctrine rule of the Aether Canon to the measured state, inside its hard bounds" },
+  amend_constitution: { class: "critical", target: "platform", description: "Amend a constitutional doctrine rule, or a fact without bounds; one owner approval click" },
 };
 
 /**
@@ -85,6 +89,11 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
   if (p.action === "register_engine") {
     if (!ENGINE_TASK.test(String(p.params.task ?? ""))) return { vote: "reject", reason: "task must be a lowercase identifier" };
     return null; // the registry rule (target service registered and active) and the others apply
+  }
+  if (DOCTRINE_ACTIONS.has(p.action)) {
+    const problem = doctrineProblem(p.action, p.target, p.params);
+    if (problem) return { vote: "reject", reason: problem };
+    return { vote: "approve", reason: p.action === "amend_doctrine" ? "every amended fact is inside its hard bounds" : "the amendment is well formed; the owner decides" };
   }
   if (p.action === "set_policy_parameter") {
     if (!isPolicyParameter(p.target)) return { vote: "reject", reason: `${p.target} is not a council-adjustable policy parameter` };
