@@ -2,7 +2,8 @@
 // owner-attention.yml and drift-alert.yml workflows, which kept GitHub issues open and closed.
 //
 // Four topics are computed from D1:
-//   owner_attention  - recovery plans in draft and critical proposals in pending_owner (a click is needed);
+//   owner_attention  - recovery plans in draft, critical proposals in pending_owner and pending knowledge
+//                      proposals (a click is needed);
 //   drift            - a service drifted, unhealthy, never observed, or not observed for 45 minutes;
 //   critical_reports - an agent published a critical report in the last 24 hours;
 //   organism         - the Forge's census (ADR-0013) found the DNA and the live registries apart:
@@ -12,6 +13,10 @@
 // needs no table of its own. When the send_email binding OWNER_EMAIL and the var NOTIFY_FROM are
 // configured, it also emails the owners (the people in APPROVER_IDENTITIES). The Console shows
 // the live notices at GET /v1/notices.
+// Telegram (owner 2026-11-11: "buat notif telegram jika ada yang perlu approve owner di semua
+// cerebrum"): owner_attention also goes to the owner's Telegram through the Service Binding
+// OWNER_TELEGRAM (the xauusd AI Worker's OwnerNotifier, which holds the bot; the platform holds no
+// Telegram credential). The other topics stay in the Console and the email.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
@@ -34,12 +39,18 @@ export interface Notice {
 export interface SendEmailBinding {
   send(message: { to: string | string[]; from: string; subject: string; text: string }): Promise<unknown>;
 }
+export interface OwnerTelegramBinding {
+  notify(input: { change: string; title: string; lines: string[]; link: string }): Promise<{ sent?: boolean; reason?: string }>;
+}
 export interface NoticeEnv {
   DB: D1Database;
   APPROVER_IDENTITIES?: string;
   OWNER_EMAIL?: SendEmailBinding;
   NOTIFY_FROM?: string;
+  OWNER_TELEGRAM?: OwnerTelegramBinding;
 }
+/** The topics that reach the owner's Telegram: only what waits for the owner's click. */
+export const TELEGRAM_TOPICS: readonly Topic[] = ["owner_attention"];
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const fp = async (parts: string[]) => (parts.length ? (await sha256Hex([...parts].sort().join("\n"))).slice(0, 32) : "");
@@ -49,16 +60,26 @@ async function ownerAttention(db: D1Database): Promise<Notice> {
     .all<{ plan_id: string; service_id: string; created_by: string }>();
   const critical = await db.prepare("SELECT proposal_id, action, target, proposer_agent_id FROM consensus_proposals WHERE status = 'pending_owner' ORDER BY created_at LIMIT 50")
     .all<{ proposal_id: string; action: string; target: string; proposer_agent_id: string }>();
+  // Learned-knowledge proposals wait for an approver too (TP-028); before migration 0029 there are none.
+  let knowledge: { proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string }[] = [];
+  try {
+    knowledge = (await db.prepare("SELECT proposal_id, item_id, item_version, kind, proposer_agent_id FROM knowledge_proposals WHERE status = 'pending' ORDER BY created_at LIMIT 50")
+      .all<{ proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string }>()).results;
+  } catch { knowledge = []; }
   const lines = [
     ...plans.results.map((p) => `Recovery plan for ${serviceName(p.service_id)} (by ${p.created_by}): review at ${CONSOLE_URL}#/recovery/${p.plan_id}`),
     ...critical.results.map((c) => `Critical action: ${describeAction(c.action, c.target)} (proposed by ${c.proposer_agent_id}): decide at ${CONSOLE_URL}#/consensus`),
+    ...knowledge.map((k) => `Knowledge proposal ${k.item_id}@${k.item_version} (${String(k.kind).replace(/_/g, " ")}, by ${k.proposer_agent_id}): review at ${CONSOLE_URL}#/knowledge`),
   ];
   const n = lines.length;
+  // The link goes to the one page that holds every item when it is a single kind.
+  const kinds = [plans.results.length > 0, critical.results.length > 0, knowledge.length > 0].filter(Boolean).length;
+  const link = kinds !== 1 ? `${CONSOLE_URL}#/` : plans.results.length ? `${CONSOLE_URL}#/recovery` : critical.results.length ? `${CONSOLE_URL}#/consensus` : `${CONSOLE_URL}#/knowledge`;
   return {
     topic: "owner_attention", active: n > 0,
-    fingerprint: await fp([...plans.results.map((p) => p.plan_id), ...critical.results.map((c) => c.proposal_id)]),
+    fingerprint: await fp([...plans.results.map((p) => p.plan_id), ...critical.results.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id)]),
     title: n ? `${n} item(s) wait for your approval` : "Nothing waits for your approval",
-    lines, link: `${CONSOLE_URL}#/`,
+    lines, link,
   };
 }
 
@@ -137,8 +158,32 @@ export function emailConfigured(env: NoticeEnv): boolean {
   return Boolean(env.OWNER_EMAIL && env.NOTIFY_FROM && owners(env).length);
 }
 
+export function telegramConfigured(env: NoticeEnv, topic: Topic): boolean {
+  return typeof env.OWNER_TELEGRAM?.notify === "function" && TELEGRAM_TOPICS.includes(topic);
+}
+const anyChannel = (env: NoticeEnv, topic: Topic) => emailConfigured(env) || telegramConfigured(env, topic);
+
+async function deliverTelegram(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
+  try {
+    const r = await env.OWNER_TELEGRAM!.notify({ change, title: n.title, lines: n.lines.slice(0, 20), link: n.link });
+    return r?.sent === true ? "sent" : `failed: ${String(r?.reason ?? "not sent").slice(0, 120)}`;
+  } catch (err) {
+    return `failed: ${String((err as Error)?.message ?? err).slice(0, 120)}`;
+  }
+}
+
+/** Every configured channel; "sent" only when each one sent. */
 async function deliver(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
-  if (!emailConfigured(env)) return "not_configured";
+  const results: string[] = [];
+  if (emailConfigured(env)) results.push(await deliverEmail(env, change, n));
+  if (telegramConfigured(env, n.topic)) results.push(await deliverTelegram(env, change, n));
+  if (!results.length) return "not_configured";
+  if (results.length === 1 || results.every((r) => r === "sent")) return results.length === 1 ? results[0] : "sent";
+  const names = [emailConfigured(env) ? "email" : null, telegramConfigured(env, n.topic) ? "telegram" : null].filter(Boolean);
+  return names.map((c, i) => `${c}: ${results[i]}`).join("; ").slice(0, 300);
+}
+
+async function deliverEmail(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
   const subject = `[Cryptophys] ${change === "closed" ? "Resolved: " : ""}${n.title}`;
   const text = [
     change === "closed" ? "This is resolved; nothing more is needed." : n.title + ".",
@@ -180,7 +225,7 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
     const last = await lastState(env.DB, n.topic);
     const change = n.active && !last.open ? "opened" : n.active && last.fingerprint !== n.fingerprint ? "changed" : !n.active && last.open ? "closed" : null;
     if (!change) {
-      const retryChange = emailConfigured(env) && last.delivery !== "sent"
+      const retryChange = anyChannel(env, n.topic) && last.delivery !== "sent"
         && ((n.active && last.open && last.fingerprint === n.fingerprint) || (!n.active && !last.open && last.eventType !== ""))
         ? (n.active ? "opened" : "closed") : null;
       if (!retryChange) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
