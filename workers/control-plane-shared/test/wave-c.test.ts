@@ -68,7 +68,10 @@ test("C3/C4. wiring: nightly D1 backup to a private R2 bucket, UI render smoke i
   assert.match(backup, /tokens\/verify/, "a refused token is identified by its (non-secret) token ID");
   assert.match(readFileSync(new URL(".github/workflows/ops-dispatch.yml", ROOT), "utf8"), /d1-backup\.yml\) ref=main ;;/, "the operator can run a backup on demand");
   const validate = readFileSync(new URL(".github/workflows/validate-control-plane.yml", ROOT), "utf8");
-  assert.match(validate, /npx playwright install --with-deps chromium\n\s+npm run render-smoke/);
+  // The full install is tried first; when the runner's apt mirrors are unreachable (2026-11-11, #295) Chromium
+  // is installed without system packages. The render check itself always runs after the install block.
+  assert.match(validate, /npx playwright install --with-deps chromium[\s\S]*?npx playwright install chromium\n\s+fi\n\s+fi\n\s+npm run render-smoke\n/);
+  assert.doesNotMatch(validate, /render-smoke[^\n]*\|\| *true/, "the render check is never optional");
   const pullRequestTrigger = validate.match(/\n  pull_request:\n([\s\S]*?)\n  push:/)?.[1] ?? "";
   const pushTrigger = validate.match(/\n  push:\n([\s\S]*?)\n  workflow_dispatch:/)?.[1] ?? "";
   assert.doesNotMatch(pullRequestTrigger, /paths:/, "every PR is validated (2026-11-08: validate.yml merged in, no path filter)");

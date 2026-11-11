@@ -22,6 +22,15 @@ export async function metabolismView(env: SyscallEnv, now = Date.now()): Promise
   const ledger = await rows(() => env.DB.prepare(
     "SELECT entry_id, entry_type, source, amount_usd, balance_after_usd, created_at FROM treasury_ledger ORDER BY created_at DESC, rowid DESC LIMIT 50",
   ).all<JsonObject>());
+  // A cycle's reserve is measured only from the owner's first non-genesis ledger entry on; before it
+  // the reserve was the migration's placeholder and its runway is not shown.
+  const firstMeasured = (await rows(() => env.DB.prepare(
+    "SELECT MIN(created_at) AS at FROM treasury_ledger WHERE source NOT LIKE 'genesis:%'",
+  ).all<{ at: string | null }>()))[0]?.at ?? null;
+  const cyclesShown = (cycles as Array<Record<string, unknown>>).map((c) => {
+    const measured = firstMeasured !== null && String(c.evaluated_at ?? "") >= firstMeasured;
+    return measured ? { ...c, treasury_placeholder: false } : { ...c, runway_days: null, treasury_placeholder: true };
+  });
   const burn = await rows(() => env.DB.prepare(
     `SELECT service_id, SUM(estimated_cost_usd) AS cost_usd, SUM(worker_requests) AS requests, SUM(ai_neurons) AS ai_neurons
      FROM infra_burn_metrics WHERE period_day >= ? GROUP BY service_id ORDER BY cost_usd DESC`,
@@ -31,7 +40,7 @@ export async function metabolismView(env: SyscallEnv, now = Date.now()): Promise
   ).all<{ actor: string; outcome: string; payload_json: string; created_at: string }>());
   return {
     live,
-    cycles: cycles as unknown as JsonObject[],
+    cycles: cyclesShown as unknown as JsonObject[],
     ledger: ledger as unknown as JsonObject[],
     burn_14d: burn as unknown as JsonObject[],
     mode_changes: changes.map((c) => {
@@ -43,6 +52,7 @@ export async function metabolismView(env: SyscallEnv, now = Date.now()): Promise
       "Survival throttles only AI spending (memory, knowledge, AI budgets at 25%); it never blocks consensus.",
       "Growth (doubled AI budgets) applies only with the owner's power_mode_override.",
       "The treasury reads deal results only; nothing places orders or moves funds.",
+      "Until the owner records a treasury entry, the reserve is the migration's placeholder and no runway is shown.",
     ] as unknown as JsonObject[],
   };
 }

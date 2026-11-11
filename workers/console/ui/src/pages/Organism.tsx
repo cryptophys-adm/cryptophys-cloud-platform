@@ -56,6 +56,9 @@ export default function Organism() {
   const isWeekend = live.market_status === "closed" || live.market_status === "holiday";
   const mode = String(live.power_mode ?? "");
   const override = live.power_mode_override && live.power_mode_override !== "none" ? String(live.power_mode_override) : null;
+  // Owner 2026-11-11: until the owner records a treasury entry, the reserve is the migration's
+  // placeholder; it is labelled so, dimmed, and no runway is shown (the kernel reports none).
+  const placeholder = live.treasury_source === "placeholder";
   const balance = usd(live.treasury_reserve_usd);
   const burnRate = typeof live.infra_burn_cost_24h === "number" ? `${usd(live.infra_burn_cost_24h)}/day` : "—";
   const runwayDays = typeof live.runway_days === "number" ? Math.floor(live.runway_days) : "—";
@@ -92,8 +95,8 @@ export default function Organism() {
         <Panel title="Treasury" icon={<Database className="h-3.5 w-3.5 text-emerald-400" />}>
           <div className="space-y-3">
             <div className="flex items-baseline justify-between">
-              <span className="mono text-2xl font-bold text-emerald-400">{balance}</span>
-              <span className="text-xs text-slate-400">treasury reserve</span>
+              <span className={`mono text-2xl font-bold ${placeholder ? "text-slate-500" : "text-emerald-400"}`}>{balance}</span>
+              <span className="text-xs text-slate-400">treasury reserve{placeholder ? " · placeholder" : ""}</span>
             </div>
             <div className="glass-inner p-2.5 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-400">
@@ -102,7 +105,7 @@ export default function Organism() {
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Survival Runway:</span>
-                <span className="mono text-cyan-300">{runwayDays === "—" ? "—" : `${runwayDays} days`}</span>
+                <span className="mono text-cyan-300">{runwayDays === "—" ? (placeholder ? "— (treasury not set by the owner)" : "—") : `${runwayDays} days`}</span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Deal result 24 h:</span>
@@ -197,7 +200,7 @@ export default function Organism() {
           { key: "market", header: "market", sort: (c) => c.market_status, cell: (c) => <span className="text-[11px] text-slate-400">{c.market_status}</span> },
           { key: "pnl", header: "deal result 24 h", align: "right", sort: (c) => c.trading_net_pnl_24h, cell: (c) => <span className="mono">{usd(c.trading_net_pnl_24h)}</span> },
           { key: "burn", header: "burn 24 h", align: "right", sort: (c) => c.infra_burn_cost_24h, cell: (c) => <span className="mono">{usd(c.infra_burn_cost_24h)}</span> },
-          { key: "reserve", header: "reserve", align: "right", sort: (c) => c.treasury_reserve_usd, cell: (c) => <span className="mono">{usd(c.treasury_reserve_usd)}</span> },
+          { key: "reserve", header: "reserve", align: "right", sort: (c) => c.treasury_reserve_usd, cell: (c) => c.treasury_placeholder ? <span className="mono text-slate-500" title="the migration's placeholder, not a measured reserve">{usd(c.treasury_reserve_usd)} · placeholder</span> : <span className="mono">{usd(c.treasury_reserve_usd)}</span> },
           { key: "runway", header: "runway", align: "right", sort: (c) => c.runway_days, cell: (c) => <span className="mono">{num(c.runway_days, " d")}</span> },
           { key: "reason", header: "reason", className: "wrap", cell: (c) => <span className="text-slate-400">{c.mode_reason}</span> },
           { key: "when", header: "when", sort: (c) => Date.parse(c.evaluated_at) || 0, cell: (c) => <span className="text-slate-500" title={c.evaluated_at}>{ago(c.evaluated_at)}</span> },
@@ -211,7 +214,7 @@ export default function Organism() {
             { key: "type", header: "entry", sort: (e) => e.entry_type, cell: (e) => <span className="text-[11px]">{String(e.entry_type).replace(/_/g, " ")}</span> },
             { key: "amount", header: "amount", align: "right", sort: (e) => e.amount_usd, cell: (e) => <span className={`mono ${Number(e.amount_usd) < 0 ? "text-rose-300" : "text-slate-200"}`}>{usd(e.amount_usd)}</span> },
             { key: "balance", header: "balance", align: "right", sort: (e) => e.balance_after_usd, cell: (e) => <span className="mono">{usd(e.balance_after_usd)}</span> },
-            { key: "source", header: "source", cell: (e) => <span className="mono text-[10px] text-slate-500">{e.source}</span> },
+            { key: "source", header: "source", cell: (e) => <span className="mono text-[10px] text-slate-500">{e.source}{String(e.source ?? "").startsWith("genesis:") ? " · placeholder" : ""}</span> },
             { key: "when", header: "when", sort: (e) => Date.parse(e.created_at) || 0, cell: (e) => <span className="text-slate-500">{ago(e.created_at)}</span> },
           ]} />
         </Panel>
