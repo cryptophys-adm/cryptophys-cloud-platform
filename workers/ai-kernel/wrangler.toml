@@ -27,8 +27,10 @@ AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 # 80 (was 40; owner 2026-11-07): the hourly Auditor digest alone needs 24, and on 2026-11-06 the
 # 40 cap was reached by 12:37, leaving the rest of the day's digests without AI text.
 AI_DAILY_REQUEST_LIMIT = "80"
-# 250 keeps the worst case (6k-char input, 600 output tokens, ~34 neurons) under the free 10k neurons/day (2026-11-07).
-AI_ACCOUNT_DAILY_REQUEST_LIMIT = "250"
+# 75 (owner 2026-11-11, "high usage excess free tier"): the free 10k neurons/day are shared with every
+# Worker on the account (XAUUSD, Aether). At the worst case (~34 neurons a request) the platform can use
+# at most ~2.6k of them; it used about 15 requests a day in the week before.
+AI_ACCOUNT_DAILY_REQUEST_LIMIT = "75"
 # ADR-0012 phase 2: sender of owner notices (Email Service, sending subdomain notify.cryptophys.work).
 NOTIFY_FROM = "alerts@notify.cryptophys.work"
 

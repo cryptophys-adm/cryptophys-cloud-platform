@@ -49,7 +49,7 @@ test("P3. AI: Gemma 4 by default, thinking off, the plain-English style in every
     try { toml = readFileSync(new URL(`workers/${dir}/wrangler.toml`, ROOT), "utf8"); } catch { continue; }
     if (!/^AI_MODEL/m.test(toml)) continue;
     assert.match(toml, /^AI_MODEL = "@cf\/google\/gemma-4-26b-a4b-it"$/m, dir);
-    assert.match(toml, /^AI_ACCOUNT_DAILY_REQUEST_LIMIT = "250"$/m, `${dir}: the account cap keeps the worst case inside the free 10k neurons`);
+    assert.match(toml, /^AI_ACCOUNT_DAILY_REQUEST_LIMIT = "75"$/m, `${dir}: the account cap keeps the platform's worst case to about a quarter of the shared free 10k neurons`);
   }
   const ai = fakeAi({ choices: [{ message: { content: '{"text":"The Policy Engine refused it."}' } }] } as never);
   const e = new AiEngine({ service: "cryptophys-policy-engine", ai, db: migratedDb() as never, allowedModels: ALLOWED_TEXT_MODELS, allowedTasks: ["t"] });

@@ -72,7 +72,7 @@ export default function CloudflareUsage() {
           </div>
           {d.platform && (
             <div>
-              <div className="mb-1.5 text-[10px] uppercase tracking-widest text-slate-500">Measured by the platform itself · AI requests today (cap 250/day across services)</div>
+              <div className="mb-1.5 text-[10px] uppercase tracking-widest text-slate-500">Measured by the platform itself · AI requests today across platform services</div>
               <BarList items={(d.platform.ai_requests_by_service ?? []).map((r: any) => ({ label: String(r.service_id).replace(/^cryptophys-/, ""), value: Number(r.requests ?? 0) }))} empty="No AI request today." />
             </div>
           )}

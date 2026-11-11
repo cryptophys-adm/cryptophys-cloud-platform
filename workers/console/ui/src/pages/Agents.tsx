@@ -10,7 +10,8 @@ import { ActivityChart, BarList, DataTable, STATUS, Stat, StatusBar, bucketize, 
 /**
  * AI Mesh (owner 2026-11-11: "masih statis belum autonomous dan dinamis"). The graph, the activity and
  * the roster come from GET /v1/mesh: what each agent did in the last 24 h (syscalls, council votes,
- * reports), the Forge census (self-awareness) and the self-registration proposals. Polled every 30 s.
+ * reports), the Forge census (self-awareness) and the self-registration proposals. Polled every 60 s
+ * while the tab is visible.
  */
 const TIER_RAMP = ["#86b6ef", "#3987e5", "#1c5cab"];
 const LIVENESS = [
@@ -71,7 +72,7 @@ const REGISTRATIONS: Column<any>[] = [
 
 export default function Agents() {
   const { data, loading, error } = usePoll(() => call("kernel.agents"), 60_000);
-  const mesh = usePoll(() => call("kernel.mesh"), 30_000);
+  const mesh = usePoll(() => call("kernel.mesh"), 60_000);
   const registry = listOf(data, "agents");
   const live = new Map(listOf(mesh.data, "agents").map((a: any) => [a.agent_id, a]));
   const agents = registry.map((a: any) => ({ ...a, ...(live.get(a.agent_id) ?? {}) }));
@@ -137,7 +138,7 @@ export default function Agents() {
         </Panel>
       </div>
 
-      <Panel title="Live activity stream" icon={<Radio className="h-3.5 w-3.5 text-emerald-300" />} right={<Badge tone="slate">refreshes every 30 s</Badge>}>
+      <Panel title="Live activity stream" icon={<Radio className="h-3.5 w-3.5 text-emerald-300" />} right={<Badge tone="slate">refreshes every 60 s</Badge>}>
         {mesh.loading && !mesh.data ? <Skeleton rows={5} /> : (
           <DataTable rows={stream} columns={STREAM} rowKey={(x, i) => `${x.agent_id}:${x.created_at}:${i}`} initialSort={{ key: "when", dir: "desc" }} maxHeight={360} dense empty="No agent syscall in the last 24 h." />
         )}

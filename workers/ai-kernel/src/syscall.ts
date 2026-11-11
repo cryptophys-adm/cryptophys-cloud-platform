@@ -63,10 +63,12 @@ async function sha256Hex(value: string): Promise<string> {
 
 /** Tier 0: a consistent read of the platform state the agents reason about. */
 export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
+  // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
   const latest = await env.DB.prepare(
-    `SELECT o.service_id, o.drifted, o.evidence_json, o.observed_at FROM drift_observations o
-     WHERE o.observed_at = (SELECT MAX(i.observed_at) FROM drift_observations i WHERE i.service_id = o.service_id)
-     ORDER BY o.service_id`,
+    `SELECT o.service_id, o.drifted, o.evidence_json, o.observed_at FROM service_registry r
+     JOIN drift_observations o ON o.observation_id = (
+       SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
+     ORDER BY r.service_id`,
   ).all<{ service_id: string; drifted: number; evidence_json: string; observed_at: string }>();
   const services = [];
   for (const r of latest.results) {
