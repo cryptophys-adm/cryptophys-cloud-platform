@@ -140,7 +140,7 @@ No proposals yet is expected: the supervisor proposes only on persistent drift. 
 
 The execution code ships ahead of the promotion so that pi and agy can audit it during the shadow window. **`consensus_controls.mode` stays `shadow` in production.** Every path below is a no-op until a separate reviewed change sets the mode to `routine`, which needs the phase 1 criteria (earliest review 2026-11-13).
 
-- **Executable in phase 2** (`PHASE2_EXECUTABLE` in `workers/ai-kernel/src/consensus.ts`): `observe_drift`, `set_desired_version`, `registry_disable_service`, `registry_enable_service`, `suspend_agent`, `resume_agent`. All are reversible by the opposite action.
+- **Executable in phase 2** (`PHASE2_EXECUTABLE` in `workers/ai-kernel/src/consensus.ts`): `observe_drift`, `set_desired_version`, `registry_disable_service`, `registry_enable_service`, `suspend_agent`, `resume_agent`, and since 2026-11-11 `retire_agent` (it deletes only an agent that no row refers to and otherwise suspends it as retired). All are reversible by the opposite action or lose no history.
 - **Not executed in phase 2.** `redeploy_desired_version`, `rollback_worker_version` and `deploy_commit` pass or fail the vote as before but stay unexecuted, with the outcome "no executor in this phase". They move to phase 3 with a per-Worker deploy path and automatic rollback. Critical actions go to `pending_owner` (phase 4 adds the approval click).
 - **Flow.** If the mode is not `shadow`, the class is routine, the vote passed and the Policy Engine allowed `consensus.execute`, the kernel stores the proposal as `executing`, runs it, then sets `executed` or `failed` with the outcome, and appends `consensus.executed` to the audit chain.
 - **Owning paths:**

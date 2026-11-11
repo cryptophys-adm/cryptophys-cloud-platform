@@ -11,6 +11,8 @@ const iso = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOStr
 
 test("M1. liveness per agent comes from actions, votes and reports in the last 24 h", async () => {
   const db = migratedDb();
+  // A suspended agent (signal-engine was the seeded one until 0047 dismantled it).
+  db.raw.prepare("UPDATE agents SET status = 'suspended' WHERE agent_id = 'hud-prophet'").run();
   const action = db.raw.prepare(`INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at) VALUES (?, ?, ?, 1, NULL, ?, '{}', '{}', ?)`);
   action.run("act_1", "supervisor", "platform.observe", "succeeded", iso(10));
   action.run("act_2", "supervisor", "consensus.propose", "succeeded", iso(5));
@@ -29,7 +31,7 @@ test("M1. liveness per agent comes from actions, votes and reports in the last 2
   assert.equal(byId.auditor.liveness, "recent");
   assert.equal(byId["policy-engine"].votes_24h, 1);
   assert.equal(byId["policy-engine"].liveness, "active");
-  assert.equal(byId["signal-engine"].liveness, "suspended");
+  assert.equal(byId["hud-prophet"].liveness, "suspended");
   assert.ok(v.agents.some((a: any) => a.liveness === "idle"), "an agent with no activity is idle, not active");
   assert.equal(v.activity.length, 3);
   assert.equal(v.activity[0].capability, "consensus.propose");
