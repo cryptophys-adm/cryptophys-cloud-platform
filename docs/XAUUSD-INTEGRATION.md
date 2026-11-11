@@ -22,7 +22,7 @@ Migration 0016 registered **21 agents**. Every one has these properties:
 
 | Group | agent_id |
 |---|---|
-| H1 synthesis chain | `xauusd-analyst`, `xauusd-counselor`, `xauusd-reasoner` |
+| H1 synthesis chain | `xauusd-reasoner` (`xauusd-analyst` and `xauusd-counselor`, never used, were deleted by 0048) |
 | Bus, room and news threads | `xauusd-risk-manager`, `xauusd-moderator` (`xauusd-technical-analyst` and `xauusd-news-analyst`, never used, were deleted by 0047) |
 | Pine HUD (10) | `hud-prophet`, `hud-trade-management`, `hud-interstellar-eyes`, `hud-kinetic-engine-tva`, `hud-fabio-amt-sensors`, `hud-chronos-matrix`, `hud-aegis-footprint-matrix`, `hud-tactical-muscles`, `hud-macro-aether-sensors`, `hud-decision-matrix` (R37 Funnel, GabFx Price Action, Playbook Execution and Grid Bot Protocol were dismantled on 2026-11-11) |
 

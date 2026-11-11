@@ -41,10 +41,10 @@ const agent = (db: ReturnType<typeof migratedDb>, id: string) => db.raw.prepare(
 const setMode = (db: ReturnType<typeof migratedDb>, mode: string) => db.raw.prepare("UPDATE consensus_controls SET value = ? WHERE control = 'mode'").run(mode);
 const retireProposals = (db: ReturnType<typeof migratedDb>) => db.raw.prepare("SELECT target, status, outcome_json FROM consensus_proposals WHERE action = 'retire_agent' ORDER BY rowid").all() as any[];
 
-test("A1. 0047 dismantles the seven idle agents and keeps the Aether agents, the Analyst and the Counselor", () => {
+test("A1. 0047 and 0048 dismantle the nine idle agents and keep the Aether agents and the active XAUUSD agents", () => {
   const db = migratedDb();
-  for (const id of DISMANTLED) assert.equal(agent(db, id), undefined, id);
-  for (const id of ["xauusd-analyst", "xauusd-counselor", "xauusd-reasoner", "xauusd-moderator", "hud-prophet", "aether-curator", "aether-calibrator"]) assert.equal(agent(db, id)?.status, "enabled", id);
+  for (const id of [...DISMANTLED, "xauusd-analyst", "xauusd-counselor"]) assert.equal(agent(db, id), undefined, id);
+  for (const id of ["xauusd-reasoner", "xauusd-risk-manager", "xauusd-moderator", "hud-prophet", "aether-curator", "aether-calibrator"]) assert.equal(agent(db, id)?.status, "enabled", id);
 });
 
 test("A2. 0047 never deletes an agent that any row refers to", () => {
