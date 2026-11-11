@@ -45,6 +45,7 @@ export default function CloudflareUsage() {
   const products: any[] = Array.isArray(d.billable_products) ? d.billable_products : [];
   const intents: any[] = Array.isArray(d.orchestrator_cost_intents) ? d.orchestrator_cost_intents : [];
   const isOverage = typeof spend?.total_cost === "number" && spend.total_cost > 0;
+  const hasSpend = typeof spend?.total_cost === "number";
 
   return (
     <Panel
@@ -154,12 +155,9 @@ export default function CloudflareUsage() {
             </div>
           ) : !d.billable_error ? (
             <div className="glass-inner p-3 space-y-1 text-[11px]">
-              <div className="flex items-center gap-1.5 font-semibold text-slate-200">
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Zero Billable Overage · Free Tier In Effect</span>
-              </div>
+              <div className="font-semibold text-slate-200">No billable cost records returned</div>
               <p className="text-[10px] text-slate-400 leading-relaxed">
-                Resource consumption is currently within Workers Free plan limits, or awaiting Cloudflare daily usage-based billing aggregation (updated once daily at 00:00 UTC).
+                The Billable Usage API returned no cost record for this cycle. Cloudflare aggregates usage-based billing once a day.
               </p>
             </div>
           ) : null}
@@ -168,15 +166,15 @@ export default function CloudflareUsage() {
           <div className="glass-inner p-3 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
-                {isOverage ? <ShieldAlert className="h-3.5 w-3.5 text-amber-400" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
-                <span>Supervisor &amp; Orchestrator Free Tier Throttling Pipeline</span>
+                {isOverage ? <ShieldAlert className="h-3.5 w-3.5 text-amber-400" /> : hasSpend ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : null}
+                <span>Billable cost and the Supervisor</span>
               </div>
-              <Badge tone={isOverage ? "amber" : "green"}>
-                {isOverage ? "OVERAGE DETECTED · THROTTLING ACTIVE" : "FREE TIER MAINTAINED"}
+              <Badge tone={isOverage ? "amber" : hasSpend ? "green" : "slate"}>
+                {isOverage ? "billable cost this cycle" : hasSpend ? "no billable cost this cycle" : "no billing data"}
               </Badge>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Usage cost is reported directly to the AI Kernel Supervisor and Deployment Orchestrator. When billable overage occurs, the system initiates automated throttling directives to lower runtime boundaries and return within the Cloudflare Free Tier.
+              The Supervisor records the cycle's billable cost as a daily burn (cycle-to-date cost ÷ days observed). Above $0.20 a day it enters survival mode, which pauses non-essential AI spending (memory and knowledge proposals); consensus is never blocked. The intents below are advisories: nothing else is changed automatically.
             </p>
             {intents.length > 0 && (
               <div className="space-y-1.5 pt-1">
