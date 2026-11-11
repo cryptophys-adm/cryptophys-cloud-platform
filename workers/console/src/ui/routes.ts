@@ -30,6 +30,7 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.status", "kernel", "GET", "/v1/status", false, null),
   r("kernel.notices", "kernel", "GET", "/v1/notices", false, null),
   r("kernel.metabolism", "kernel", "GET", "/v1/metabolism", false, null),
+  r("kernel.mesh", "kernel", "GET", "/v1/mesh", false, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   r("kernel.agents", "kernel", "GET", "/v1/agents", false, null),
   r("kernel.agent", "kernel", "GET", "/v1/agents/{id}", false, null),
