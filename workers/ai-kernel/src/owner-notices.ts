@@ -65,10 +65,11 @@ async function ownerAttention(db: D1Database): Promise<Notice> {
 async function drift(db: D1Database, now: number): Promise<Notice> {
   const services = await db.prepare("SELECT service_id, desired_version FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
     .all<{ service_id: string; desired_version: string | null }>();
+  // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
   const latest = await db.prepare(
-    `SELECT d.service_id, d.drifted, d.evidence_json, d.observed_at FROM drift_observations d
-     JOIN (SELECT service_id, MAX(observed_at) AS m FROM drift_observations GROUP BY service_id) x
-       ON x.service_id = d.service_id AND x.m = d.observed_at`,
+    `SELECT d.service_id, d.drifted, d.evidence_json, d.observed_at FROM service_registry r
+     JOIN drift_observations d ON d.observation_id = (
+       SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)`,
   ).all<{ service_id: string; drifted: number; evidence_json: string; observed_at: string }>();
   const byService = new Map(latest.results.map((r) => [r.service_id, r]));
   const problems: { service: string; code: string; line: string }[] = [];
