@@ -52,9 +52,9 @@ const agentStatus = (db: Db, id: string) => ({ ...(db.raw.prepare("SELECT status
 const service = (db: Db, id: string) => (db.raw.prepare("SELECT status, desired_version FROM service_registry WHERE service_id = ?").get(id) as any);
 
 test("1. the phase 2 executable set is routine, reversible, and has no deploy", () => {
-  assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["amend_doctrine", "observe_drift", "register_agent", "register_engine", "registry_disable_service", "registry_enable_service", "resume_agent", "retire_agent", "set_desired_version", "set_policy_parameter", "suspend_agent"]);
-  // retire_agent (owner 2026-11-11) deletes only an agent no row refers to, otherwise it suspends it: no history is lost.
-  for (const a of PHASE2_EXECUTABLE) assert.doesNotMatch(a, /deploy|rollback|restore|secret|retire_worker|access/);
+  assert.deepEqual([...PHASE2_EXECUTABLE].sort(), ["amend_doctrine", "observe_drift", "register_agent", "register_engine", "registry_disable_service", "registry_enable_service", "resume_agent", "set_desired_version", "set_policy_parameter", "suspend_agent"]);
+  // retire_agent is critical (owner 2026-11-11, ADR-0013 §3): retirement keeps the owner click.
+  for (const a of PHASE2_EXECUTABLE) assert.doesNotMatch(a, /deploy|rollback|restore|secret|retire|access/);
 });
 
 test("2. shadow mode (production): a passed routine action is recorded and never executed", async () => {

@@ -108,7 +108,7 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
 
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
-export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "retire_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
+export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
 export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
 
@@ -130,11 +130,6 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
       const status = p.action === "suspend_agent" ? "suspended" : "enabled";
       const reason = String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200);
       return { agent: await setAgentStatus(env as never, p.target, status, actor, reason) };
-    }
-    case "retire_agent": {
-      if (KERNEL_AGENTS.has(p.target)) throw new Error("kernel_agent_internal");
-      await verifyConsensusExecution(env.DB, proposalId, decisionId, p.action, p.target);
-      return await retireAgent(env as never, p.target, actor, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));
     }
     case "set_desired_version":
     case "registry_disable_service":
@@ -288,12 +283,14 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  * Executors exist only where the platform already owns the operation:
  *  - register_principal: the kernel's own principal registry (params.access_identity);
  *  - retire_worker: the Deployment Orchestrator dispatches the narrow Retire Worker workflow,
- *    which deletes only Workers in its RETIRABLE list whose source is gone from main.
+ *    which deletes only Workers in its RETIRABLE list whose source is gone from main;
+ *  - retire_agent (owner 2026-11-11, ADR-0013 §3): the kernel deletes an agent no row refers to, or
+ *    suspends it as retired; kernel agents, council seats and exempt hosts are refused.
  * Restoring D1, rotating secrets, changing Access and turning agents back on stay manual:
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -311,6 +308,9 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "retire_worker") {
     if (!env.DEPLOY) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.retireForConsensus(proposalId, decisionId, p.target);
+  }
+  if (p.action === "retire_agent") {
+    return await retireAgent(env as never, p.target, `owner:${approver} via consensus:${proposalId}`, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));
   }
   if (p.action === "amend_constitution") {
     return await recordDoctrineAmendment(env, proposalId, decisionId, { ...p, class: "critical" }, `owner:${approver} via consensus:${proposalId}`);
