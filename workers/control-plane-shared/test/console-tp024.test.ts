@@ -262,13 +262,23 @@ test("12. audit export defers object URL revocation until after the click task",
   assert.match(read("src/pages/Ledger.tsx"), /window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\)/);
 });
 
-test("13. confirmation dialog traps Tab focus, cancels on Escape and enables only on the exact phrase", () => {
+test("13. confirmation dialog traps Tab focus, cancels on Escape and enables only on the phrase (case and spaces aside)", async () => {
   const m = read("src/components/ConfirmModal.tsx");
   assert.match(m, /e\.key === "Escape"/);
   assert.match(m, /e\.shiftKey && document\.activeElement === first/);
   assert.match(m, /document\.activeElement === last/);
-  assert.match(m, /const ok = typed === phrase/);
+  // Owner 2026-11-11: Confirm stayed disabled on a phone (auto-capitalisation) and on the id's trailing "-".
+  assert.match(m, /const ok = normalizePhrase\(typed\) === normalizePhrase\(phrase\)/);
   assert.match(m, /disabled=\{!ok\}/);
+  assert.match(m, /autoCapitalize="none" autoCorrect="off"/);
+  assert.match(m, /e\.key === "Enter" && ok/);
+  const api = read("src/lib/api.ts");
+  assert.match(api, /id\.slice\(0, 13\)\.replace\(\/\[-_\.:\]\+\$\/, ""\)/, "{id13} drops a trailing separator");
+  // The normaliser keeps the words and the id: only case and spaces are ignored.
+  const normalize = (s: string) => String(s ?? "").trim().replace(/\s+/g, " ").toUpperCase();
+  assert.equal(normalize("  approve   knw_1a2b3c4d "), normalize("APPROVE knw_1a2b3c4d"));
+  assert.notEqual(normalize("APPROVE knw_1a2b3c4e"), normalize("APPROVE knw_1a2b3c4d"));
+  assert.notEqual(normalize("REJECT knw_1a2b3c4d"), normalize("APPROVE knw_1a2b3c4d"));
 });
 
 test("14. Observe now stays disabled until its request settles, with no lock timer", () => {
