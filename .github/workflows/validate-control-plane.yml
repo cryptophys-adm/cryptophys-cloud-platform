@@ -38,7 +38,18 @@ jobs:
         working-directory: workers/console/ui
         run: |
           set -euo pipefail
-          npx playwright install --with-deps chromium
+          # The runner's apt mirrors can stop resolving (2026-11-11, #295: "Temporary failure resolving
+          # 'security.ubuntu.com'" on two runs) while npm and the Playwright CDN still work. Retry the
+          # full install, then install Chromium without the apt packages: the hosted image already has
+          # the libraries headless Chromium needs. The render check itself always runs.
+          if ! npx playwright install --with-deps chromium; then
+            echo "::warning::playwright --with-deps failed; retrying in 30 s"
+            sleep 30
+            if ! npx playwright install --with-deps chromium; then
+              echo "::warning::apt mirrors unreachable; installing Chromium without system packages"
+              npx playwright install chromium
+            fi
+          fi
           npm run render-smoke
       - name: Type-check six Control Plane Workers and shared library
         run: npm run typecheck
