@@ -48,6 +48,9 @@ test("B1. the build prints one secret-free result line; the CR build script stri
   const toml = read("workers/forge-typecheck-cr/wrangler.toml");
   assert.match(toml, /^name = "cryptophys-forge-typecheck-cr"$/m);
   assert.match(toml, /^workers_dev = false$/m);
+  assert.match(toml, /^preview_urls = false$/m, "no Preview or version of change-request code gets a public URL");
+  assert.match(toml, /^\[previews\]\s*$/m, "wrangler preview needs the block");
+  assert.doesNotMatch(toml, /^\[\[?previews\./m, "the previews block stays empty: no binding, variable or secret");
   assert.doesNotMatch(toml, /\[\[(d1_databases|kv_namespaces|services|r2_buckets)\]\]|\[vars\]/, "the stub has no binding and no variable");
   assert.equal(JSON.parse(read("workers/forge-typecheck-cr/package.json")).scripts.build, "node typecheck-and-report.mjs");
 });

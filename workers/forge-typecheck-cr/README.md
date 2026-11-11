@@ -27,12 +27,14 @@ unreviewed code next to the token. This project type-checks them with **no build
 1. **Workers & Pages → Create application → Continue with Artifacts.** Namespace `cryptophys`, repository
    `platform`.
 2. Project name `cryptophys-forge-typecheck-cr` (it must match `name` in `wrangler.toml`).
-3. **Root directory:** `workers/forge-typecheck-cr`. **Build command:** `node typecheck-and-report.mjs`.
+3. **Root directory:** `workers/forge-typecheck-cr`, in both **Production** and **Previews Base** (Workers Builds keeps them apart). **Build command:** `node typecheck-and-report.mjs`.
    **Deploy command:** `npx wrangler deploy`.
 4. **API token:** create a new token for this project only.
 5. **Build variables and secrets: none**, for production and for Previews.
 6. **Settings → Builds → Previews Base:** turn on **Builds for Preview branches**; Preview command
-   `npx wrangler preview`; no variables, secrets or bindings in the Preview settings.
+   `npx wrangler preview`; no variables, secrets or bindings in the Preview settings. `wrangler.toml` has an
+   empty `[previews]` block (the command requires one) and `preview_urls = false`, so a Preview has no URL
+   and change-request code is never served; leave **Preview URLs** disabled.
 7. The Forge's reader token: a user API token with `Account · Workers Builds Configuration · Edit` (the
    Builds API documents no read-only level) and `Account · Workers Scripts · Read`, for this account only,
    stored as the Forge secret `CF_BUILDS_API_TOKEN` (**Workers & Pages → cryptophys-forge → Settings →
