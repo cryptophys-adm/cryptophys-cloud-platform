@@ -13,6 +13,7 @@
 //     the CI service token only (forge-ci-report.yml), while GitHub is still the source of truth.
 //   - POST /v1/forge/typecheck-report {confirm: "REPORT"}: the type-check result of a commit from
 //     Workers Builds (workers/forge-typecheck), CI service token only (ADR-0012 §5c).
+//   - POST /v1/forge/console-dist {confirm: "UPLOAD"}: the built Console UI of a commit, to R2, CI service token only (console-dist.ts, §5l).
 //   - Change requests (phase 4, shadow; changes.ts): POST /v1/forge/changes {confirm: "REGISTER"} and
 //     POST /v1/forge/changes/outcome {confirm: "REPORT"} from the CI service token only;
 //     GET /v1/forge/changes lists them with the Forge's merge verdict and the merge parity.
@@ -40,6 +41,7 @@ import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { mergeSpike, trustedRemoteFor } from "./merge.ts";
 import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
 import { ensureWorkRepo } from "./work-repo.ts";
+import { handleConsoleDist } from "./console-dist.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
@@ -242,6 +244,7 @@ export default {
     const operator = await requireOperator(request, env as never);
     if (!operator.ok) return operator.response;
     try {
+      if (request.method === "POST" && url.pathname === "/v1/forge/console-dist") return await handleConsoleDist(request, env as never, operator.identity);
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));

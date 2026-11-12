@@ -546,6 +546,114 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
   - The Console's static assets (`assets`).
   - The deploy-time settings the workflows render (Access identities, `--var`).
 
+### 5l. Step G2c-2 (modules): configuration, bindings and Console assets without GitHub (2026-11-12)
+
+G2c-2 builds, as standalone modules with their own tests, the two pieces G2b left on GitHub: a changed wrangler.toml (`config_changed`) and the Console's static assets (`assets`). Nothing is wired into the deploy path yet; eligibility and execution stay as in §5g until the integration steps below (they follow G2c-1, which rewrites `native-deploy.ts`, `bundles.ts` and the Orchestrator's executor).
+
+- **What was built.**
+  - `deployment-orchestrator/src/config-diff.ts`, pure functions:
+    - `parseToml`: a strict TOML subset that parses every `workers/*/wrangler.toml` (tables, arrays of tables, nested `[workflows.default_retention]`, strings, numbers, booleans, multi-line inline arrays, inline tables, comments). Multi-line strings, dates, dotted keys, duplicate keys and redefined tables return null (`config_unparsed`).
+    - `bindingsFromToml`: the bindings as Workers API metadata records. Supported: `[vars]` (`plain_text`), `d1_databases` (`d1`, `id`), `services` (`service`, with `entrypoint`, `environment`, `props`), `durable_objects.bindings` (`durable_object_namespace`), `r2_buckets`, `kv_namespaces`, `[ai]`, `vectorize`, `workflows` (`workflow`), `artifacts`, `worker_loaders` (`worker_loader`), `[version_metadata]`, `secrets_store_secrets`, `send_email`, `analytics_engine_datasets` (`analytics_engine`), `queues.producers` (`queue`), `[browser]` and the `[assets]` binding (`assets`). Wrangler-only fields (`database_name`, `migrations_dir`, `preview_*`) are ignored; any other field or key is refused.
+    - `planConfigChange(runningToml, targetToml, activeBindings)`: the active version's full binding records with the toml diff applied. A removed binding is dropped, an added one is built from the target, a changed one is replaced. A binding the diff does not name is kept verbatim: the deploy-time `--var` values (`ACCESS_*`, `OPERATOR_IDENTITIES`, `APPROVER_IDENTITIES`, `DEPLOY_ALLOWED_IDENTITIES`, `CF_ACCOUNT_ID`) and anything else the API returns. Secrets (`secret_text`, `secret_key`) are never in the plan; they stay through `keep_bindings`.
+    - `verifyPlannedBindings` and `verifyVersionSettings`: the checks after the upload, before traffic (below).
+  - `deployment-orchestrator/src/assets-upload.ts`: the manifest, the upload session, the bucket uploads and the completion token for `assets: { jwt, config }`. It also reads a commit's stored Console build back from R2 (`readConsoleDist`) and checks each file's SHA-256 and size. It is a client with an injectable `fetch`, tested against a fake Workers API.
+  - `forge/src/console-dist.ts` and one route line in the Forge: `POST /v1/forge/console-dist` (`confirm: "UPLOAD"`, `commit`, `files: [{ path, content_base64, content_type }]`). It accepts the CI service token only, authorized like `/v1/forge/typecheck-report`. Limits:
+    - paths are relative, with no `..`, `.`, empty or absolute segment, at most 512 characters;
+    - at most 25 MiB per file and 20,000 files (the Workers Free asset limits), and 36 MiB per request;
+    - `index.html` is required.
+
+    The files are written to `bundles/<sha>/console-dist/<path>`, then `bundles/<sha>/console-dist.json` last (path, sha256, size, content type). The event is audited as `forge.console_dist_stored`. A commit's build is written once: the same files again are accepted unchanged, different files get 409. These objects are pruned with the rest of `bundles/` after 14 days.
+- **Placeholders.** The committed configs carry two deploy-time placeholders, rendered by `.github/scripts/render-d1-config.sh`:
+  - `__CONTROL_PLANE_D1_DATABASE_ID__` in every `database_id`, which becomes the D1 id resolved by name;
+  - `owner-notify-placeholder@example.invalid` in the AI Kernel's `send_email` recipients, which becomes `APPROVER_IDENTITIES`.
+
+  The plan resolves a placeholder field from the active binding of the same type and name, and only when the field's text is the same in the running config. Otherwise the reason is `unresolved_placeholder:<placeholder>`. A new binding carrying a placeholder therefore stays on GitHub.
+- **Settings that are not bindings.**
+  - The version metadata always carries the full target values: `compatibility_date`, `compatibility_flags`, `limits` and `placement`.
+  - `[triggers] crons` becomes a plan step: `PUT /accounts/{a}/workers/scripts/{name}/schedules`, body `[{cron}]`, with the running crons as its restore body.
+  - `[observability]` becomes a plan step as well: `PATCH …/script-settings` `{observability}`. This deviates from putting it in the version metadata. Cloudflare's multipart-metadata page lists `main_module`, `assets`, `keep_assets`, `bindings`, `placement`, `compatibility_date` and `compatibility_flags` for version uploads, not `observability`, and observability is a script setting.
+  - `limits` is not on that list either. So `verifyVersionSettings` requires the uploaded version's `resources.script_runtime` to show the planned `cpu_ms`; a version without it never receives traffic.
+- **Every ineligibility reason** (the Worker stays on its GitHub workflow):
+  - Parsing:
+    - `config_unparsed`;
+    - `active_bindings_unreadable`;
+    - `unsupported_key:<key>`, for example `hyperdrive`, or a `[triggers]` key other than `crons`;
+    - `unsupported_binding_field:<path>`;
+    - `binding_unreadable:<path>`;
+    - `var_not_string:<name>`;
+    - `duplicate_binding_name:<name>`;
+    - `compatibility_date_missing`.
+  - Changes a version upload cannot apply:
+    - `identity_changed` (`name`, `main`);
+    - `routing_changed` (`routes`, `route`, custom domains, `workers_dev`, `preview_urls`);
+    - `do_migration` (`[[migrations]]`; only a deploying script upload applies them);
+    - `assets_config_changed` (the `[assets]` table, Part B below);
+    - `build_rules_changed` (`[[rules]]`);
+    - `previews_changed`;
+    - `workflow_changed` (wrangler registers workflows separately on deploy);
+    - `queue_consumer_changed`;
+    - `tail_consumers_changed` and `logpush_changed` (not available on version uploads);
+    - `observability_removed_or_added`.
+  - Evidence that does not agree:
+    - `active_binding_missing:<type:name>` (the running config declares it, but the active version lacks it);
+    - `active_differs_from_config:<type:name>` (a changed or removed binding whose active record is not what the running config says, such as a `--var` override);
+    - `binding_set_outside_config:<type:name>` (adding to the config a binding the active version got elsewhere);
+    - `binding_name_conflict:<name>` (a config binding named like a secret);
+    - `unresolved_placeholder:<placeholder>`.
+- **Constructs that keep Workers ineligible today:**
+  - Any change to the Forge's `[[rules]]` or to its `[[migrations]]`. The Orchestrator, the AI Kernel and the Forge have `[[migrations]]`; it is unchanged by ordinary edits.
+  - Any change to the Recovery Manager's `[[workflows]]`.
+  - Any route, custom-domain or `workers_dev` change: the Console, the Orchestrator and Home have routes.
+  - Any `[assets]` change in the Console.
+  - A new `d1_databases` binding, because of its placeholder.
+- **The check after upload.** This is the same principle as G2b: the new version must bind exactly the plan, or traffic never moves.
+  - The non-secret `type:name` set must be equal.
+  - A record kept from the active version must be equal field for field.
+  - A record built from config may differ only by the fields the API adds: a service's `environment: "production"` and a Durable Object's `namespace_id`. `uploadBindings` drops `namespace_id` from what it sends.
+  - Secrets must match by type and name.
+  - The settings must match too (`verifyVersionSettings`).
+- **The asset hash rule (Part B).**
+  - **Rule:** the first 32 hex characters of `SHA-256(base64(content) + extension)`, where the extension has no dot (Node's `path.extname(p).substring(1)`). Manifest keys are `/<path>`; `size` is the byte length.
+  - **Verified:** read from Cloudflare's "Static Assets: Direct Upload" page, in its programmatic `createManifest` example, on 2026-11-12. The API itself only requires "a 32 hexadecimal character hash", stable across uploads.
+  - **Where it lives:** in one function, `assetHash`, with a test against an independent `node:crypto` computation.
+  - **Fail closed:**
+    - a bucket that names a hash outside the manifest, or names one twice, aborts;
+    - a completion token before the last bucket, or a missing or non-201 completion, aborts;
+    - a stored file whose SHA-256 or size differs from `console-dist.json` aborts.
+  - **The upload calls:**
+    - the session (`POST …/scripts/{name}/assets-upload-session`) uses the deploy token;
+    - each bucket upload (`POST …/workers/assets/upload?base64=true`, multipart, one part per hash with the file's content type) uses only the session JWT;
+    - with no buckets, the session JWT is the completion token.
+- **Integration steps left** (after G2c-1 lands):
+  1. **Keep the configs.** `storeBundles` must also write each Worker's wrangler.toml text, for example `bundles/<sha>/config/<worker>.toml` (the `BuiltModule` already holds it). The manifest names it, so eligibility can read the running and target configs. Today the manifest holds only `config_sha256`.
+  2. **Read full version records.** `CloudflareWorkers` needs a call that returns a version's full `result`: the raw `resources.bindings` and `resources.script_runtime`, not only the digest.
+  3. **Eligibility.** In `nativeDeployEligible`, replace `config_changed` with `planConfigChange(running, target, activeBindings)` read at execution time. An ineligible plan keeps its reason in the `native_deploy` audit payload. The plan is computed again in the executor right before the upload, because the active bindings can change between queueing and execution.
+  4. **Upload.**
+     - The version metadata is `main_module`, `plan.metadata`, `bindings: uploadBindings(plan)` and `keep_bindings: plan.keep_bindings` (secrets only).
+     - A Worker with assets also sends `keep_assets: true` when its assets did not change, or `assets: assetsMetadata(jwt, config)` from `AssetsUploader.upload(script, await readConsoleDist(BUNDLES, sha))` when they did. An explicit upload without either would drop the assets.
+     - Then `verifyPlannedBindings` and `verifyVersionSettings` run before the deploy call, replacing the G2b digest check for config changes. The code-only path keeps the G2b check.
+  5. **Order of the steps.**
+     1. capture;
+     2. upload (assets first);
+     3. verify bindings and settings;
+     4. deploy;
+     5. verify live;
+     6. apply `plan.steps` in order: `PUT schedules`, then `PATCH script-settings`;
+     7. record the desired version.
+
+     Schedules go after the live check because crons fire against the active deployment: new cron expressions must not reach the old code. On any failure after a step was applied, each step's `restore` body is applied first (newest first), then the captured deployment is restored. `CF_DEPLOY_TOKEN` (Workers Scripts Edit) covers schedules, script settings and asset uploads.
+  6. **The Console.**
+     - `assets` becomes eligible when `bundles/<sha>/console-dist.json` exists and the `[assets]` table is unchanged.
+     - Before the upload, the native path must repeat the workflow's checks on the stored `index.html`: no inline script (CSP `script-src 'self'`).
+     - The Nexus route `nexus.cryptophys.work/console*` is attached by `ensure-zone-route.sh` with a zone token the Orchestrator does not hold. So the native path verifies, read-only, that the route exists, or stays ineligible.
+  7. **The build script (owner-visible change).** `workers/forge-typecheck/typecheck-and-report.mjs` is an owner-only harness path and is not edited here. When the Console build passed and `WORKERS_CI_BRANCH` is `main` (or empty for an Artifacts build of main), the script must post the dist before it posts the report:
+     1. walk `workers/console/ui/dist`;
+     2. for each file, take its relative `/`-separated path, its base64 content, and a content type from its extension: `.html` `text/html; charset=utf-8`, `.js` `text/javascript`, `.css` `text/css`, `.svg` `image/svg+xml`, `.json` `application/json`, `.png` `image/png`, `.woff2` `font/woff2`, else `application/octet-stream`;
+     3. `POST new URL("/v1/forge/console-dist", FORGE_URL)` with the same headers as `postReport` (`content-type: application/json`, `CF-Access-Client-Id`, `CF-Access-Client-Secret`, `redirect: "manual"`) and the body `{ confirm: "UPLOAD", commit, files }`;
+     4. treat a 3xx as a refused token, and treat anything but a JSON 200 whose `commit` equals the build's commit as a failure (exit 3, as for the report).
+
+     The Forge test `FD4` asserts the script does not post yet, so that change must update that assertion.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).
