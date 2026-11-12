@@ -192,7 +192,7 @@ async function deliverEmail(env: NoticeEnv, change: "opened" | "changed" | "clos
     "",
     `Open the Cerebrum Console: ${n.link}`,
     "",
-    "Sent by the Cryptophys AI Kernel (ADR-0012). Advisory only; no trading.",
+    "Sent by the Cryptophys AI Kernel (ADR-0012). It moves no funds; a trading action needs your click.",
   ].join("\n");
   try {
     await env.OWNER_EMAIL!.send({ to: owners(env), from: env.NOTIFY_FROM!, subject: subject.slice(0, 200), text: text.slice(0, 8000) });

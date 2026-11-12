@@ -122,7 +122,9 @@ The census covered only this repository's Workers. The XAUUSD Workers, Omega amo
   - Every voter's rule and the kernel's executor check the ceiling again.
 - **What registers.**
   - A new external agent within the ceiling is a routine `register_agent`, by consensus alone.
-  - External AI tasks are declared in the census genome and counted, but not proposed for the engines registry. The `register_engine` resource names the external service, and the Policy Engine's trading guard refuses every resource naming trading (`xauusd-ai-trading-assistant`). Changing that guard is the owner's decision.
+  - External AI tasks register like main's: one routine `register_engine` per task, at most one per Worker per hour (the Policy Engine's limit per action and target).
+  - Until 2026-11-12 they were only declared and counted. The `register_engine` resource names the external service, and the Policy Engine's trading guard refused every resource naming trading (`xauusd-ai-trading-assistant`).
+  - The owner then lifted the trading prohibition, keeping fund movement prohibited (ADR-0009 amendment of 2026-11-12). The guard now reads only the action's name.
 - **When the DNA is missing.**
   - An origin that does not answer within 5 s, or answers with another schema, is an `external_dna_unavailable` finding.
   - Its organs are left out of that census. Their registered agents are never read as undeclared.

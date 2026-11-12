@@ -122,10 +122,11 @@ test("4. safety gate: an open critical report or a broken audit chain makes ever
   assert.equal(p.policy_decision, "deny", "the Policy Engine also refuses an unpassed consensus");
 });
 
-test("5. prohibited and unknown actions: trading never passes; unknown actions are refused", async () => {
+test("5. prohibited and unknown actions: fund movement never passes; unknown actions (trading included) are refused", async () => {
   const { env, db } = kernelEnv();
   assert.equal(classify("transfer_funds"), "prohibited");
-  assert.equal(classify("place_order"), "prohibited");
+  assert.equal(classify("withdraw_profit"), "prohibited");
+  assert.equal(classify("place_order"), null, "owner 2026-11-12: trading is not prohibited; with no reviewed action it is unknown, so refused");
   assert.equal(classify("make_coffee"), null);
   const bad = await syscall(env as never, "supervisor", "consensus.propose", { action: "transfer_funds", target: "cryptophys-platform-api" });
   assert.equal(bad.outcome, "succeeded");

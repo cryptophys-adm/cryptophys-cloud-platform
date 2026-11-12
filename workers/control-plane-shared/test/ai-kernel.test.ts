@@ -173,7 +173,12 @@ test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and r
   assert.equal(CAPABILITIES["signals.reingest"], undefined);
   assert.ok((await failed(SUB, "deploy.release")).includes("not_human_only"));
   assert.ok((await failed(SUB, "deploy.release")).includes("capability_granted"));
-  assert.ok((await failed(SUB, "trade.execute_order")).includes("capability_not_prohibited"));
+  // Owner 2026-11-12: fund movement stays prohibited; trading is no longer prohibited, but no trading
+  // capability is in the catalog, and one would have to be tier 2 or above.
+  assert.ok((await failed(SUB, "wallet.withdraw")).includes("capability_not_prohibited"));
+  assert.ok((await failed(SUB, "funds.transfer")).includes("capability_not_prohibited"));
+  const trade = await failed(SUB, "trade.execute_order");
+  assert.ok(trade.includes("capability_known") && trade.includes("trading_capability_privileged") && !trade.includes("capability_not_prohibited"));
   assert.ok((await failed(SUB, "__proto__")).includes("capability_known"));
   assert.ok((await failed("agent:ghost", "platform.observe")).includes("agent_registered"));
   assert.ok((await failed(OPERATOR_EMAIL, "platform.observe")).includes("subject_is_agent"));

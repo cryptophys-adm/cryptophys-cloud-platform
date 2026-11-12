@@ -7,7 +7,11 @@
  *  Tier 1 propose   creates a draft that a human must approve (e.g. a recovery plan).
  *  Tier 2 act       reversible, bounded action; allowed by policy with a rate limit and kill switch.
  *  Tier 3 human     irreversible (deploy, secrets, data deletion); never allowed for an agent.
- * Trading, orders, wallets and fund movements are prohibited at every tier (ADR-0005 §3).
+ * Fund movements (wallets, withdrawals, transfers, signing transactions, swaps) are prohibited at every
+ * tier. Trading (orders, brokers, exchange accounts) is no longer prohibited (owner 2026-11-12, "larangan
+ * trading harus dicabut karena kita sudah masuk fase production"; ADR-0009 amendment): a trading
+ * capability must be tier 2 or above, so registering it needs the owner's click, and a trading consensus
+ * action is always critical. No trading capability is in the catalog yet; one arrives only by reviewed code.
  */
 import type { D1Database } from "./types.ts";
 
@@ -32,8 +36,10 @@ export const CAPABILITIES: Record<string, Capability> = {
   "data.delete": { tier: 3, reversible: false, description: "Delete or rewrite stored data (human only)" },
 };
 
-/** Prohibited at every tier, whatever an agent's registry entry says. */
-export const PROHIBITED_CAPABILITY = /trad(e|ing)|order|broker|exchange[._-]?account|wallet|withdraw|transfer|sign[._-]?tx|swap|mev/i;
+/** Fund movement: prohibited at every tier, whatever an agent's registry entry, a vote or an owner click says. */
+export const PROHIBITED_CAPABILITY = /wallet|withdraw|transfer|sign[._-]?tx|swap|mev|deposit|payout/i;
+/** Trading (owner 2026-11-12): allowed, but only at tier 2 or above and, as a consensus action, only as critical. */
+export const TRADING_CAPABILITY = /trad(e|ing)|order|broker|exchange[._-]?account/i;
 
 export const AGENT_SUBJECT = /^agent:([a-z0-9-]{2,40})$/;
 
@@ -92,7 +98,8 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
   add("agents_enabled", await agentsEnabled(db), "the global agent kill switch must be on");
   const cap = Object.hasOwn(CAPABILITIES, capability) ? CAPABILITIES[capability] : undefined;
   add("capability_known", Boolean(cap), "capability must be in the catalog");
-  add("capability_not_prohibited", !PROHIBITED_CAPABILITY.test(capability), "trading, orders, wallets and fund movements are prohibited");
+  add("capability_not_prohibited", !PROHIBITED_CAPABILITY.test(capability), "wallets and fund movements are prohibited");
+  add("trading_capability_privileged", !TRADING_CAPABILITY.test(capability) || (Boolean(cap) && cap!.tier >= 2), "a trading capability must be tier 2 or above (registered with the owner's click)");
   let granted: unknown = [];
   try { granted = JSON.parse(agent?.capabilities_json ?? "[]"); } catch { granted = []; }
   add("capability_granted", Array.isArray(granted) && granted.includes(capability), "capability must be granted to this agent");
