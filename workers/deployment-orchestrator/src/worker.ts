@@ -2,7 +2,7 @@
 // Runtime entry point: the Access-gated HTTP handler, the DeploymentLock Durable Object,
 // and the RPC health entrypoint used by the Drift Detector.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
+import worker, { DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import { resolveSecrets } from "../../control-plane-shared/src/secrets.ts";
@@ -45,6 +45,10 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   }
   async runStatus(workflow: string, commitSha: string) {
     return runStatus(await resolved(this.env), workflow, commitSha);
+  }
+  /** ADR-0012 G2c-1: a native deploy or rollback the recovery step queued, followed by request id. */
+  async requestStatus(requestId: string) {
+    return requestStatus(await resolved(this.env), requestId);
   }
   /** Wave B: roll back to the previous recorded version, for a recovery step or a consensus action. */
   async rollbackForRecovery(planId: string, decisionId: string, serviceId: string) {

@@ -11,7 +11,7 @@ G6 runs only when every gate below is met. Each gate is measured, not assumed. U
 | 1 | Deploy decisions read the Forge (G1) | compare and CI lookups | done: merged in #301 |
 | 2 | Forge keeps built modules (G2a) | Actions build | done: merged in #301 |
 | 3 | Native deploy of code-only changes (G2b) | `deploy-*.yml` for code changes | built in #302; the owner confirmed the credentials are set |
-| 4 | Native deploy of every other change: configuration and bindings, D1 migrations, Console assets, the multi-module Forge, recovery redeploys | `deploy-*.yml` for all changes | **open (G2c)** |
+| 4 | Native deploy of every other change: configuration and bindings, D1 migrations, Console assets, the multi-module Forge, recovery redeploys | `deploy-*.yml` for all changes | **partly built (G2c-1, ADR-0012 §5k):** additive D1 migrations, multi-module Workers and recovery redeploys. **Open (G2c-2):** configuration and binding changes, `[limits]` (so the Forge stays on its workflow), Console assets |
 | 5 | The Forge merges with a fast-forward (G3a), and `merge_change` runs by consensus (G3b) | the merge button and branch protection | G3a in progress; G3b is enabled at step 4 of the procedure |
 | 6 | Contributors push to `platform-work`; the Forge registers change requests from Artifacts (G4) | pull requests | **open**: G4 starts after G3a; the owner provides a repo-scoped write token for `platform-work` through the session's secure credential form |
 | 7 | Dependency audit and secret scan (G5) | Dependabot, secret scanning | secret scan done (phase 3); dependency audit in progress |
