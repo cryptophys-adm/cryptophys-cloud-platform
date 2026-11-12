@@ -25,7 +25,7 @@
 | Grows organs | Supervisor proposes registrations; council votes | 5 XAUUSD engines registered on 2026-11-12, one an hour |
 | Deploys itself | `deploy_commit` by consensus after CI | 3 deploys on 2026-11-12, all verified live |
 | Heals itself | automatic rollback; recovery plans | ADR-0009 phase 3 |
-| Tunes its own limits | `set_policy_parameter` within hard bounds | `daily-deploy-limit` 20 |
+| Tunes its own limits | `set_policy_parameter` within hard bounds | `daily-deploy-limit` 40 |
 | Watches its own costs | power mode; Workers Builds minutes | #300 |
 
 **What it cannot do.**

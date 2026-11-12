@@ -456,6 +456,14 @@ Owner: "naikkan ke 10, buatkan PR, dan Policy Engine boleh dimodifikasi oleh cer
 - Each change is written together with a `policy.parameter_changed` audit event.
 - Everything else stays code and outside the council's reach: no trading or funds, the owner click for critical actions, the kill switch, mode shadow, Access, and the list of adjustable parameters itself.
 
+## Amendment 2026-11-12: daily deploy bound raised to 40
+
+Owner: "naikkan batas deploy harian". The limit already stood at its hard bound of 20, so moving the platform off GitHub (ADR-0012) waited hours for deploy slots: every Forge change has to be deployed before the next change can be checked by it.
+
+- The hard bound of `daily-deploy-limit` rises from 1–20 to **1–40** (`control-plane-shared/src/policy-params.ts`). The default stays 10.
+- Migration 0050 rebuilds `policy_parameters` with the table bound `value BETWEEN 1 AND 40` (it was 1–20) and keeps every row. The owner's value of **40** is then written in production with the owner as `updated_by`; fresh databases keep the seeded 10.
+- Unchanged: one executed action per action and target per hour, deploys only at SAFE minutes, the Policy Engine veto, the owner click for critical actions, and the council's right to change the value by consensus, now within 1–40.
+
 ## Amendment 2026-11-12: trading allowed with the owner's click; fund movement still prohibited
 
 Owner 2026-11-12: "larangan trading harus dicabut karena kita sudah masuk fase production". Asked which layers to lift, the owner chose "Trading boleh, dana tidak": trading is allowed, and every trading execution needs the owner's click; fund movement stays prohibited outright.

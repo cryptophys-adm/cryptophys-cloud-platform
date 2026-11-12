@@ -10,7 +10,7 @@
 import type { D1Database } from "./types.ts";
 
 export const POLICY_PARAMETERS = {
-  "daily-deploy-limit": { default: 10, min: 1, max: 20, description: "Executed deploys or rollbacks per 24 h across the platform" },
+  "daily-deploy-limit": { default: 10, min: 1, max: 40, description: "Executed deploys or rollbacks per 24 h across the platform" },
   "target-actions-per-hour": { default: 1, min: 1, max: 3, description: "Executed actions per action and target per hour" },
 } as const;
 export type PolicyParameter = keyof typeof POLICY_PARAMETERS;

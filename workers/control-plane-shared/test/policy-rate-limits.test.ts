@@ -65,12 +65,17 @@ test("R4. the council changes a policy parameter by consensus; values outside th
   const { POLICY_PARAMETERS, readPolicyParameter } = await import("../src/policy-params.ts");
   const { castVote } = await import("../src/consensus-rules.ts");
   const db = migratedDb();
-  assert.equal(await readPolicyParameter(db as never, "daily-deploy-limit"), 10, "migration 0044 seeds 10");
+  assert.equal(await readPolicyParameter(db as never, "daily-deploy-limit"), 10, "migration 0044 seeds 10; 0050 widens the bound only");
   assert.equal(await readPolicyParameter(db as never, "target-actions-per-hour"), 1);
   const ev: any = { agents_enabled: true, audit_valid: true, services: {}, registry: {}, agents: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0 };
   const vote = (target: string, value: unknown) => castVote("policy-engine", { action: "set_policy_parameter", target, params: { value }, class: "routine" } as any, ev);
   assert.equal(vote("daily-deploy-limit", 12).vote, "approve");
+  assert.equal(POLICY_PARAMETERS["daily-deploy-limit"].max, 40, "owner 2026-11-12: bound raised from 20 to 40");
+  assert.equal(vote("daily-deploy-limit", 40).vote, "approve");
   assert.equal(vote("daily-deploy-limit", POLICY_PARAMETERS["daily-deploy-limit"].max + 1).vote, "reject");
+  db.raw.prepare("UPDATE policy_parameters SET value = 40 WHERE name = 'daily-deploy-limit'").run();
+  assert.equal(await readPolicyParameter(db as never, "daily-deploy-limit"), 40, "the owner's value is read, not clamped");
+  assert.throws(() => db.raw.prepare("UPDATE policy_parameters SET value = 41 WHERE name = 'daily-deploy-limit'").run(), /CHECK constraint/, "migration 0050: the table refuses a value above 40");
   assert.equal(vote("daily-deploy-limit", 2.5).vote, "reject");
   assert.equal(vote("kill-switch", 0).vote, "reject", "only listed parameters are adjustable");
   // A value that bypassed consensus outside the bounds is clamped, never trusted.
