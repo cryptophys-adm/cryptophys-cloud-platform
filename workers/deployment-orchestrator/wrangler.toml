@@ -70,3 +70,9 @@ entrypoint = "DriftRpc"
 binding = "REGISTRY"
 service = "cryptophys-platform-registry"
 entrypoint = "RegistryRpc"
+
+# ADR-0012 G2b: the Forge's bundles (the Worker modules of every passed main commit and their manifest).
+# Read only: a code-only deploy uploads the Forge's module as a new Worker version (native-deploy.ts).
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "cryptophys-forge-bundles"

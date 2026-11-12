@@ -7,9 +7,10 @@ import { accessConfigured, actorOf, authenticate, identityAllowed, requireOperat
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
-import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitForService, unitRegistryState, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
+import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitForService, unitRegistryState, type DeployUnit, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
 import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
+import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedService } from "./native-deploy.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -50,6 +51,8 @@ export interface Env extends NativeRollbackEnv {
   AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  /** ADR-0012 G2b: the Forge's bundles (R2 cryptophys-forge-bundles), read only. */
+  BUNDLES?: BundleReader;
 }
 
 const SERVICE = "cryptophys-deployment-orchestrator";
@@ -213,17 +216,34 @@ export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
 
 /**
  * The deploy gate of a commit (ADR-0012 G1): it is main's head as the Forge planned it, and the Forge's checks
- * are ready. Until G2, the unit's GitHub workflow deploys only GitHub's main head, so the dispatch also needs
- * GitHub's main to be the same commit (the mirror may lag by a push).
+ * are ready. The native deploy (G2b) needs nothing more.
  */
-async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: string; conclusion: string | null }[] }> {
+async function forgeDecision(env: Env, sha: string): Promise<{ workflows: { name: string; conclusion: string | null }[] }> {
   const head = await forgeMainHead(env.DB);
   if (!head.sha) throw new Error(head.reason);
   if (head.sha !== sha) throw new Error("commit_not_current_main");
   const gate = await forgeReady(env.DB, sha);
   if (!gate.ready) throw new Error("ci_not_green");
-  if (await mainSha(env.GH_ACTIONS_TOKEN!) !== sha) throw new Error("github_main_not_mirrored");
   return { workflows: [{ name: "Forge checks", conclusion: "success" }] };
+}
+
+/**
+ * The GitHub path's gate: the Forge's decision, and GitHub's main is the same commit, because the unit's GitHub
+ * workflow deploys only GitHub's main head (the mirror may lag by a push).
+ */
+async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: string; conclusion: string | null }[] }> {
+  const decision = await forgeDecision(env, sha);
+  if (await mainSha(env.GH_ACTIONS_TOKEN!) !== sha) throw new Error("github_main_not_mirrored");
+  return decision;
+}
+
+type NativeChoice = { eligible: true; services: PlannedService[] } | { eligible: false; reason: string; service?: string };
+
+/** G2b: whether this unit can deploy `sha` natively; the reason when not (recorded with the GitHub dispatch). */
+async function nativeDeployChoice(env: Env, unit: DeployUnit, sha: string): Promise<NativeChoice> {
+  if (!nativeDeployConfigured(env)) return { eligible: false, reason: "not_configured" };
+  const e = await nativeDeployEligible(env, unit, sha);
+  return e.eligible ? { eligible: true, services: e.services } : { eligible: false, reason: e.reason, ...(e.service ? { service: e.service } : {}) };
 }
 
 /**
@@ -231,6 +251,9 @@ async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: st
  * its fresh Policy Engine allow, then requires the commit to be current main with green CI,
  * claims a per-workflow-and-commit lock, records the request and dispatches the unit's
  * workflow. The workflow keeps all its own gates and rolls back automatically on failure.
+ *
+ * ADR-0012 G2b: when the native deploy is configured and the change is code only for every Worker of the
+ * unit, the request is queued for the Orchestrator's own executor instead, and GitHub is not involved.
  */
 export async function deployForConsensus(env: Env, proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
   await verifyConsensusExecution(env.DB, proposalId, decisionId, "deploy_commit", target);
@@ -238,8 +261,24 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
   if (!unit) throw new Error("no_deploy_unit_for_target");
   const sha = typeof params.commit_sha === "string" ? params.commit_sha : "";
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("invalid_commit_sha");
-  if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const native = nativeDeployConfigured(env);
+  if (!env.DEPLOYMENT_LOCK || (!native && !env.GH_ACTIONS_TOKEN)) throw new Error("not_configured");
   const actor = `consensus:${proposalId}`;
+  let nativeChoice: NativeChoice = { eligible: false, reason: "not_configured" };
+  if (native) {
+    await forgeDecision(env, sha);
+    nativeChoice = await nativeDeployChoice(env, unit, sha);
+    if (nativeChoice.eligible) {
+      // The same lock as the GitHub path: a commit is either queued here or dispatched there, once.
+      const lockName = `consensus:${unit.workflow}:${sha}`;
+      const nativeLock = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(lockName))
+        .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+      const claimed = await nativeLock.json() as { claimed?: boolean };
+      if (!nativeLock.ok || !claimed.claimed) return { dispatched: false, reason: "already_dispatched", executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha };
+      return queueNativeDeploy(env, proposalId, decisionId, target, unit, sha, nativeChoice.services, lockName);
+    }
+    if (!env.GH_ACTIONS_TOKEN) throw new Error("not_configured");
+  }
   const ci = await forgeGate(env, sha);
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`consensus:${unit.workflow}:${sha}`))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
@@ -257,7 +296,8 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: target, outcome: status,
-    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, proposal_id: proposalId },
+    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, proposal_id: proposalId,
+      native_deploy: nativeChoice.eligible ? null : { reason: nativeChoice.reason, ...(nativeChoice.service ? { service: nativeChoice.service } : {}) } },
   });
   if (dispatch.status !== 204) { await releaseLock(env, `consensus:${unit.workflow}:${sha}`, sha); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
@@ -390,10 +430,46 @@ async function dispatchRollback(env: Env, actor: string, serviceId: string, tag:
 }
 
 const NATIVE_ROLLBACK_MAX_AGE_MS = 3 * 3_600_000;
+/** A queued native deploy runs within 45 minutes or never: the Registry records it only within the hour. */
+export const NATIVE_DEPLOY_MAX_AGE_MS = 45 * 60_000;
 /** A claimed executor that has not completed after this window is terminally failed, never replayed. */
 export const NATIVE_ROLLBACK_EXECUTION_LEASE_MS = 30 * 60_000;
 
-type NativeRollbackSignedRow = {
+/**
+ * The Orchestrator's own executors (no GitHub). Both queue a signed deployment_requests row and run it from this
+ * Worker's cron at a SAFE minute under a one-time Durable Object claim; they differ in what they run. The queue
+ * and claim prefixes keep the two signatures apart; the rollback ones are unchanged since phase 2.
+ */
+interface NativeExecutorSpec {
+  executor: string;
+  label: string;
+  reasonPrefix: string;
+  queuePrefix: string;
+  claimPrefix: string;
+  maxAgeMs: number;
+  succeededEvent: string;
+  failedEvent: string;
+}
+const NATIVE_EXECUTORS: Record<string, NativeExecutorSpec> = {
+  [NATIVE_EXECUTOR]: {
+    executor: NATIVE_EXECUTOR, label: "native rollback", reasonPrefix: "native_rollback",
+    queuePrefix: "cryptophys.native-rollback.queue.v1|", claimPrefix: "cryptophys.native-rollback.execution.v1|",
+    maxAgeMs: NATIVE_ROLLBACK_MAX_AGE_MS, succeededEvent: "deployment.rollback_succeeded", failedEvent: "deployment.rollback_failed",
+  },
+  [NATIVE_DEPLOY_EXECUTOR]: {
+    executor: NATIVE_DEPLOY_EXECUTOR, label: "native deploy", reasonPrefix: "native_deploy",
+    queuePrefix: "cryptophys.native-deploy.queue.v1|", claimPrefix: "cryptophys.native-deploy.execution.v1|",
+    maxAgeMs: NATIVE_DEPLOY_MAX_AGE_MS, succeededEvent: "deployment.native_deploy_succeeded", failedEvent: "deployment.native_deploy_failed",
+  },
+};
+/** The spec of a stored row: from its parsed details, else from its raw text (for an unreadable row). */
+function executorSpecOf(details: Record<string, unknown> | null, raw: string): NativeExecutorSpec {
+  const named = typeof details?.executor === "string" && Object.hasOwn(NATIVE_EXECUTORS, details.executor) ? NATIVE_EXECUTORS[details.executor] : undefined;
+  if (named) return named;
+  return raw.includes('"executor":"' + NATIVE_DEPLOY_EXECUTOR + '"') ? NATIVE_EXECUTORS[NATIVE_DEPLOY_EXECUTOR] : NATIVE_EXECUTORS[NATIVE_EXECUTOR];
+}
+
+type NativeSignedRow = {
   request_id: string;
   service_id: string;
   requested_version: string;
@@ -414,34 +490,31 @@ function canonicalRollbackJson(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
-function nativeRollbackPayload(row: NativeRollbackSignedRow, details: Record<string, unknown>): string {
-  return "cryptophys.native-rollback.queue.v1|" + canonicalRollbackJson({ ...row, details });
+function nativeQueuePayload(spec: NativeExecutorSpec, row: NativeSignedRow, details: Record<string, unknown>): string {
+  return spec.queuePrefix + canonicalRollbackJson({ ...row, details });
 }
 
-async function signNativeRollbackRequest(secret: string, row: NativeRollbackSignedRow, details: Record<string, unknown>): Promise<string> {
+async function signNativeRequest(spec: NativeExecutorSpec, secret: string, row: NativeSignedRow, details: Record<string, unknown>): Promise<string> {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signed = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(nativeRollbackPayload(row, details)));
+  const signed = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(nativeQueuePayload(spec, row, details)));
   return Array.from(new Uint8Array(signed), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function verifyNativeRollbackRequest(secret: string, row: NativeRollbackSignedRow, details: Record<string, unknown>, signature: unknown): Promise<boolean> {
+async function verifyNativeRequest(spec: NativeExecutorSpec, secret: string, row: NativeSignedRow, details: Record<string, unknown>, signature: unknown): Promise<boolean> {
   if (typeof signature !== "string" || !/^[0-9a-f]{64}$/.test(signature)) return false;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
   const bytes = new Uint8Array(signature.match(/../g)!.map((part) => Number.parseInt(part, 16)));
-  return crypto.subtle.verify("HMAC", key, bytes, new TextEncoder().encode(nativeRollbackPayload(row, details)));
+  return crypto.subtle.verify("HMAC", key, bytes, new TextEncoder().encode(nativeQueuePayload(spec, row, details)));
 }
 
-type NativeRollbackClaimState = { claimed: boolean; claimedAt: number | null };
+type NativeClaimState = { claimed: boolean; claimedAt: number | null };
 
-async function nativeRollbackExecutionSha(requestId: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode("cryptophys.native-rollback.execution.v1|" + requestId),
-  );
+async function nativeExecutionSha(spec: NativeExecutorSpec, requestId: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(spec.claimPrefix + requestId));
   return Array.from(new Uint8Array(digest).slice(0, 20), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function presentNativeRollbackClaim(result: { claimed?: unknown; claimed_at?: unknown }, claimResponse: boolean): NativeRollbackClaimState {
+function presentNativeClaim(result: { claimed?: unknown; claimed_at?: unknown }, claimResponse: boolean): NativeClaimState {
   const claimedAt = typeof result.claimed_at === "string" ? Date.parse(result.claimed_at) : Number.NaN;
   return {
     claimed: claimResponse && result.claimed === true,
@@ -450,25 +523,25 @@ function presentNativeRollbackClaim(result: { claimed?: unknown; claimed_at?: un
 }
 
 /** Read the one-time claim without consuming it; used to distinguish an active executor from an abandoned one. */
-async function readNativeRollbackExecutionClaim(env: Env, requestId: string, idempotencyKey: string): Promise<NativeRollbackClaimState> {
-  const sha = await nativeRollbackExecutionSha(requestId);
+async function readNativeExecutionClaim(env: Env, spec: NativeExecutorSpec, requestId: string, idempotencyKey: string): Promise<NativeClaimState> {
+  const sha = await nativeExecutionSha(spec, requestId);
   const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(idempotencyKey))
     .fetch("https://lock.internal/status", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sha }),
     });
-  if (!response.ok) throw new Error("native_rollback_claim_status_http_" + response.status);
+  if (!response.ok) throw new Error(spec.reasonPrefix + "_claim_status_http_" + response.status);
   const result = await response.json() as { claimed?: unknown; claimed_at?: unknown };
-  return presentNativeRollbackClaim(result, true);
+  return presentNativeClaim(result, true);
 }
 
 /**
  * Claim execution outside shared D1. The HMAC authenticates the immutable request; this
  * request-scoped Durable Object claim prevents a restored signed D1 row from executing twice.
  */
-async function claimNativeRollbackExecution(env: Env, requestId: string, idempotencyKey: string): Promise<NativeRollbackClaimState> {
-  const sha = await nativeRollbackExecutionSha(requestId);
+async function claimNativeExecution(env: Env, spec: NativeExecutorSpec, requestId: string, idempotencyKey: string): Promise<NativeClaimState> {
+  const sha = await nativeExecutionSha(spec, requestId);
   const response = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(idempotencyKey))
     .fetch("https://lock.internal/claim", {
       method: "POST",
@@ -476,18 +549,32 @@ async function claimNativeRollbackExecution(env: Env, requestId: string, idempot
       body: JSON.stringify({ sha }),
     });
   const result = await response.json() as { claimed?: unknown; claimed_at?: unknown };
-  if (!response.ok && response.status !== 409) throw new Error("native_rollback_claim_http_" + response.status);
-  return presentNativeRollbackClaim(result, response.ok);
+  if (!response.ok && response.status !== 409) throw new Error(spec.reasonPrefix + "_claim_http_" + response.status);
+  return presentNativeClaim(result, response.ok);
 }
 
-async function failNativeRollbackRequest(env: Env, row: NativeRollbackSignedRow, details: Record<string, unknown>, reason: string, now: number): Promise<void> {
+async function failNativeRequest(env: Env, spec: NativeExecutorSpec, row: NativeSignedRow, details: Record<string, unknown>, reason: string, now: number): Promise<void> {
   await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status IN ('approved', 'running')")
     .bind(JSON.stringify({ ...details, outcome: { reason } }), new Date(now).toISOString(), row.request_id).run();
   await auditQuietly(env, {
-    event_type: "deployment.rollback_failed", actor: "agent:deployment-orchestrator", subject: row.service_id, outcome: "failed",
-    payload: { request_id: row.request_id, executor: NATIVE_EXECUTOR, version_tag: row.requested_version, reason },
+    event_type: spec.failedEvent, actor: "agent:deployment-orchestrator", subject: row.service_id, outcome: "failed",
+    payload: { request_id: row.request_id, executor: spec.executor, version_tag: String(row.requested_version ?? "").slice(0, 12), reason },
   });
 }
+
+/**
+ * Insert one signed native request. D1 is shared by several Workers: the HMAC, keyed by the Orchestrator-only
+ * deploy secret, covers the complete immutable queue identity, so another D1-bound Worker cannot forge one.
+ */
+async function insertSignedNativeRequest(env: Env, spec: NativeExecutorSpec, row: NativeSignedRow, unsignedDetails: Record<string, unknown>): Promise<void> {
+  const signature = await signNativeRequest(spec, env.CF_DEPLOY_TOKEN!, row, unsignedDetails);
+  const details = { ...unsignedDetails, signature };
+  await env.DB.prepare(
+    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`
+  ).bind(row.request_id, row.service_id, row.requested_version, row.requested_by, row.approval_id, row.idempotency_key, JSON.stringify(details), row.created_at, row.created_at).run();
+}
+
 /**
  * ADR-0012 phase 2: queue a rollback for the Orchestrator's own executor (no GitHub). The same
  * idempotency lock as the workflow path makes a replay a no-op. The cron runs it at the next
@@ -503,16 +590,8 @@ async function queueNativeRollback(env: Env, actor: string, serviceId: string, t
   const requestId = "dep_" + crypto.randomUUID();
   const at = new Date().toISOString();
   const approvalId = Object.values(link)[0] ?? null;
-  const row: NativeRollbackSignedRow = { request_id: requestId, service_id: serviceId, requested_version: tag, requested_by: actor, approval_id: approvalId, idempotency_key: key, created_at: at };
-  const unsignedDetails = { executor: NATIVE_EXECUTOR, version_tag: tag, ...link };
-  // D1 is shared by several Workers. Sign the complete immutable queue identity with the
-  // Orchestrator-only deploy secret so another D1-bound Worker cannot forge a rollback request.
-  const signature = await signNativeRollbackRequest(env.CF_DEPLOY_TOKEN!, row, unsignedDetails);
-  const details = { ...unsignedDetails, signature };
-  await env.DB.prepare(
-    `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`
-  ).bind(row.request_id, row.service_id, row.requested_version, row.requested_by, row.approval_id, row.idempotency_key, JSON.stringify(details), row.created_at, row.created_at).run();
+  const row: NativeSignedRow = { request_id: requestId, service_id: serviceId, requested_version: tag, requested_by: actor, approval_id: approvalId, idempotency_key: key, created_at: at };
+  await insertSignedNativeRequest(env, NATIVE_EXECUTORS[NATIVE_EXECUTOR], row, { executor: NATIVE_EXECUTOR, version_tag: tag, ...link });
   await appendAuditEvent(env.DB, {
     event_type: "deployment.rollback_queued", actor, subject: serviceId, outcome: "approved",
     payload: { request_id: requestId, executor: NATIVE_EXECUTOR, version_tag: tag, ...link },
@@ -521,92 +600,168 @@ async function queueNativeRollback(env: Env, actor: string, serviceId: string, t
 }
 
 /**
- * ADR-0012 phase 2: run queued native rollbacks (oldest first, at most 3 per run). Only at a
- * SAFE minute. Every request expires after three hours, including when credentials are restored later.
+ * ADR-0012 G2b: queue a consensus deploy_commit for the Orchestrator's own executor. The caller holds the same
+ * per-workflow-and-commit lock the GitHub path claims, so a commit is never both dispatched and queued.
  */
-export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: typeof fetch = fetch, opts: { delayMs?: number } = {}): Promise<{ executed: number; succeeded: number }> {
+async function queueNativeDeploy(env: Env, proposalId: string, decisionId: string, target: string, unit: DeployUnit, sha: string, running: PlannedService[], lockName: string): Promise<Record<string, unknown>> {
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  const actor = `consensus:${proposalId}`;
+  const row: NativeSignedRow = {
+    request_id: requestId, service_id: target, requested_version: sha, requested_by: actor, approval_id: proposalId,
+    idempotency_key: `consensus:${unit.workflow}:${sha}`, created_at: at,
+  };
+  try {
+    await insertSignedNativeRequest(env, NATIVE_EXECUTORS[NATIVE_DEPLOY_EXECUTOR], row, {
+      executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha, version_tag: sha.slice(0, 12), services: [...unit.services],
+      proposal_id: proposalId, policy_decision_id: decisionId, workflows: [{ name: "Forge checks", conclusion: "success" }],
+    });
+  } catch (err) {
+    // Nothing was queued: free the commit's lock so a later proposal can try again.
+    await releaseLock(env, lockName, sha);
+    throw err;
+  }
+  await appendAuditEvent(env.DB, {
+    event_type: "deployment.native_deploy_queued", actor, subject: target, outcome: "approved",
+    payload: { request_id: requestId, executor: NATIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, running: running.map((s) => `${s.service}@${s.running_tag}`), proposal_id: proposalId },
+  });
+  return { dispatched: true, executor: NATIVE_DEPLOY_EXECUTOR, request_id: requestId, unit: unit.unit, commit_sha: sha };
+}
+
+/** Is this stored row exactly what the queue wrote for its executor? */
+function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, details: Record<string, unknown>): boolean {
+  if (!/^dep_[0-9a-f-]{36}$/.test(r.request_id)) return false;
+  const unit = unitForService(r.service_id);
+  if (!unit) return false;
+  const planId = typeof details.plan_id === "string" ? details.plan_id : null;
+  const proposalId = typeof details.proposal_id === "string" ? details.proposal_id : null;
+  const fromProposal = proposalId !== null && planId === null && r.requested_by === "consensus:" + proposalId && r.approval_id === proposalId;
+  if (spec.executor === NATIVE_DEPLOY_EXECUTOR) {
+    return fromProposal
+      && /^[0-9a-f]{40}$/.test(r.requested_version)
+      && details.commit_sha === r.requested_version
+      && details.unit === unit.unit
+      && r.idempotency_key === `consensus:${unit.workflow}:${r.requested_version}`;
+  }
+  const sourceValid = (planId !== null && proposalId === null && r.requested_by === "recovery:" + planId && r.approval_id === planId) || fromProposal;
+  const linkId = planId ?? proposalId;
+  return /^[0-9a-f]{12}$/.test(r.requested_version)
+    && details.version_tag === r.requested_version
+    && sourceValid
+    && linkId !== null
+    && r.idempotency_key === "rollback:" + r.service_id + ":" + r.requested_version + ":" + linkId;
+}
+
+/**
+ * Run queued native requests, rollbacks and deploys (oldest first, at most 3 per run, at most one deploy). Only
+ * at a SAFE minute. Every request expires (a rollback after 3 hours, a deploy after 45 minutes), including when
+ * credentials are restored later.
+ */
+export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: typeof fetch = fetch, opts: { delayMs?: number } = {}): Promise<{ executed: number; succeeded: number }> {
   if (!env.DB || !SAFE_MINUTES.includes(new Date(now).getUTCMinutes())) return { executed: 0, succeeded: 0 };
-  const pattern = '%"executor":"' + NATIVE_EXECUTOR + '"%';
+  const pattern = '%"executor":"native:%';
   const recoveryCutoff = new Date(now - NATIVE_ROLLBACK_EXECUTION_LEASE_MS).toISOString();
+  type Row = NativeSignedRow & { details_json: string; updated_at: string; status: "approved" | "running" };
   const [approvedRows, abandonedRows] = await Promise.all([
     env.DB.prepare(
       "SELECT request_id, service_id, requested_version, requested_by, approval_id, idempotency_key, details_json, created_at, updated_at, status FROM deployment_requests WHERE status = 'approved' AND details_json LIKE ? ORDER BY created_at LIMIT 3",
-    ).bind(pattern).all<NativeRollbackSignedRow & { details_json: string; updated_at: string; status: "approved" }>(),
+    ).bind(pattern).all<Row>(),
     env.DB.prepare(
       "SELECT request_id, service_id, requested_version, requested_by, approval_id, idempotency_key, details_json, created_at, updated_at, status FROM deployment_requests WHERE status = 'running' AND COALESCE(updated_at, created_at) <= ? AND details_json LIKE ? ORDER BY COALESCE(updated_at, created_at) LIMIT 3",
-    ).bind(recoveryCutoff, pattern).all<NativeRollbackSignedRow & { details_json: string; updated_at: string; status: "running" }>(),
+    ).bind(recoveryCutoff, pattern).all<Row>(),
   ]);
   const rows = [...approvedRows.results, ...abandonedRows.results]
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
     .slice(0, 3);
   let executed = 0;
   let succeeded = 0;
+  let deploysRun = 0;
   for (const r of rows) {
+    let details: Record<string, unknown> | null = null;
+    try {
+      const parsed = JSON.parse(r.details_json || "{}");
+      details = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch { details = null; }
+    const spec = executorSpecOf(details, r.details_json ?? "");
+
     // A running row is considered only after the execution lease. A recent durable claim means
     // another invocation is still within its execution window; do not interfere with it.
     if (r.status === "running") {
-      let prior: NativeRollbackClaimState;
+      let prior: NativeClaimState;
       try {
-        prior = await readNativeRollbackExecutionClaim(env, r.request_id, r.idempotency_key);
+        prior = await readNativeExecutionClaim(env, spec, r.request_id, r.idempotency_key);
       } catch {
-        await failNativeRollbackRequest(env, r, {}, "native_rollback_claim_state_unavailable", now);
+        await failNativeRequest(env, spec, r, {}, spec.reasonPrefix + "_claim_state_unavailable", now);
         continue;
       }
       if (prior.claimed) {
         if (prior.claimedAt !== null && now - prior.claimedAt <= NATIVE_ROLLBACK_EXECUTION_LEASE_MS) continue;
-        await failNativeRollbackRequest(env, r, {}, "native_rollback_execution_claim_expired", now);
+        await failNativeRequest(env, spec, r, {}, spec.reasonPrefix + "_execution_claim_expired", now);
         continue;
       }
     }
 
-    let details: Record<string, unknown>;
-    try { details = JSON.parse(r.details_json || "{}"); } catch {
-      await failNativeRollbackRequest(env, r, {}, "invalid_queue_details", now);
+    if (!details) {
+      await failNativeRequest(env, spec, r, {}, "invalid_queue_details", now);
       continue;
     }
-    if (details.executor !== NATIVE_EXECUTOR) continue;
+    if (details.executor !== spec.executor) continue;
 
-    // Enforce the three-hour expiry even if credentials are later restored. A delayed
-    // rollback must never become executable merely because the secret was re-added.
+    // Enforce the expiry even if credentials are later restored. A delayed request must never
+    // become executable merely because the secret was re-added.
     const created = Date.parse(r.created_at);
     const age = now - created;
-    if (!Number.isFinite(created) || age < 0 || age > NATIVE_ROLLBACK_MAX_AGE_MS) {
-      await failNativeRollbackRequest(env, r, details, "stale: native rollback request expired", now);
+    if (!Number.isFinite(created) || age < 0 || age > spec.maxAgeMs) {
+      await failNativeRequest(env, spec, r, details, "stale: " + spec.label + " request expired", now);
       continue;
     }
 
-    const planId = typeof details.plan_id === "string" ? details.plan_id : null;
-    const proposalId = typeof details.proposal_id === "string" ? details.proposal_id : null;
-    const sourceValid = (planId !== null && proposalId === null && r.requested_by === "recovery:" + planId && r.approval_id === planId)
-      || (proposalId !== null && planId === null && r.requested_by === "consensus:" + proposalId && r.approval_id === proposalId);
-    const linkId = planId ?? proposalId;
-    const targetValid = unitForService(r.service_id) !== null
-      && /^[0-9a-f]{12}$/.test(r.requested_version)
-      && details.version_tag === r.requested_version
-      && /^dep_[0-9a-f-]{36}$/.test(r.request_id)
-      && sourceValid
-      && linkId !== null
-      && r.idempotency_key === "rollback:" + r.service_id + ":" + r.requested_version + ":" + linkId;
-    if (!targetValid) {
-      await failNativeRollbackRequest(env, r, details, "invalid_native_rollback_request", now);
+    if (!nativeRequestValid(spec, r, details)) {
+      await failNativeRequest(env, spec, r, details, "invalid_" + spec.reasonPrefix + "_request", now);
       continue;
     }
 
     // If the token is temporarily absent, leave a fresh request queued; the unconditional
-    // expiry above ensures it cannot execute if credentials return after the three-hour window.
+    // expiry above ensures it cannot execute if credentials return after its window.
     if (!env.CF_DEPLOY_TOKEN) continue;
     const unsignedDetails = { ...details };
     delete unsignedDetails.signature;
-    const signedRow: NativeRollbackSignedRow = {
+    const signedRow: NativeSignedRow = {
       request_id: r.request_id, service_id: r.service_id, requested_version: r.requested_version,
       requested_by: r.requested_by, approval_id: r.approval_id, idempotency_key: r.idempotency_key, created_at: r.created_at,
     };
-    const signatureValid = await verifyNativeRollbackRequest(env.CF_DEPLOY_TOKEN, signedRow, unsignedDetails, details.signature);
+    const signatureValid = await verifyNativeRequest(spec, env.CF_DEPLOY_TOKEN, signedRow, unsignedDetails, details.signature);
     if (!signatureValid) {
-      await failNativeRollbackRequest(env, r, details, "invalid_native_rollback_signature", now);
+      await failNativeRequest(env, spec, r, details, "invalid_" + spec.reasonPrefix + "_signature", now);
       continue;
     }
-    if (!nativeRollbackConfigured(env)) continue;
+    const isDeploy = spec.executor === NATIVE_DEPLOY_EXECUTOR;
+    if (isDeploy ? !nativeDeployConfigured(env) : !nativeRollbackConfigured(env)) continue;
+    // A deploy uploads and verifies every Worker of a unit; one per run keeps the cron within its time.
+    if (isDeploy && deploysRun > 0) continue;
+
+    // A deploy runs only on main's current head, still ready and still code only: the evidence may have
+    // changed since it was queued. Checked before the claim; a refusal is terminal and moves nothing.
+    let plan: PlannedService[] = [];
+    if (isDeploy) {
+      let refusal: string | null = null;
+      try {
+        const head = await forgeMainHead(env.DB);
+        if (head.sha !== r.requested_version) refusal = "commit_not_current_main";
+        else if (!(await forgeReady(env.DB, r.requested_version)).ready) refusal = "ci_not_green";
+        else {
+          const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version);
+          if (e.eligible) plan = e.services;
+          else refusal = "not_eligible: " + e.reason + (e.service ? " (" + e.service + ")" : "");
+        }
+      } catch (err) {
+        refusal = "forge_unavailable: " + String((err as Error)?.message ?? err).slice(0, 100);
+      }
+      if (refusal) {
+        await failNativeRequest(env, spec, r, details, refusal, now);
+        continue;
+      }
+    }
 
     // Persist approved -> running before consuming the one-time DO claim. If D1 fails, no claim
     // is burned and the next scheduled pass can retry. If the response is ambiguous after a
@@ -617,43 +772,56 @@ export async function runNativeRollbacks(env: Env, now = Date.now(), fetcher: ty
       if ((transition.meta.changes ?? 0) !== 1) continue;
     }
 
-    let claimState: NativeRollbackClaimState;
+    let claimState: NativeClaimState;
     try {
-      claimState = await claimNativeRollbackExecution(env, r.request_id, r.idempotency_key);
+      claimState = await claimNativeExecution(env, spec, r.request_id, r.idempotency_key);
     } catch {
-      await failNativeRollbackRequest(env, r, details, "native_rollback_execution_claim_unavailable", now);
+      await failNativeRequest(env, spec, r, details, spec.reasonPrefix + "_execution_claim_unavailable", now);
       continue;
     }
     if (!claimState.claimed) {
       if (claimState.claimedAt === null) {
-        await failNativeRollbackRequest(env, r, details, "native_rollback_execution_claim_state_unknown", now);
+        await failNativeRequest(env, spec, r, details, spec.reasonPrefix + "_execution_claim_state_unknown", now);
       } else if (now - claimState.claimedAt > NATIVE_ROLLBACK_EXECUTION_LEASE_MS) {
-        await failNativeRollbackRequest(env, r, details, "native_rollback_execution_claim_expired", now);
+        await failNativeRequest(env, spec, r, details, spec.reasonPrefix + "_execution_claim_expired", now);
       }
       continue;
     }
 
     executed++;
     const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
-    const run = await executeRollback(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY! }, r.request_id, r.service_id, r.requested_version, opts);
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[] };
+    if (isDeploy) {
+      deploysRun++;
+      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES! }, r.request_id, r.requested_version, plan, opts);
+    } else {
+      run = await executeRollback(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY! }, r.request_id, r.service_id, r.requested_version, opts);
+    }
     if (run.ok) succeeded++;
     const status = run.ok ? "succeeded" : "failed";
     await env.DB.prepare("UPDATE deployment_requests SET status = ?, details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'running'")
       .bind(status, JSON.stringify({ ...details, outcome: run }), new Date().toISOString(), r.request_id).run();
     await auditQuietly(env, {
-      event_type: run.ok ? "deployment.rollback_succeeded" : "deployment.rollback_failed", actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
-      payload: { request_id: r.request_id, executor: NATIVE_EXECUTOR, version_tag: r.requested_version, ...run },
+      event_type: run.ok ? spec.succeededEvent : spec.failedEvent, actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
+      payload: isDeploy
+        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...run }
+        : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
     });
     if (!run.ok) {
       await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
         kind: "platform_digest", severity: "critical",
-        subject: "Rollback of " + serviceName(r.service_id) + " to " + r.requested_version + " failed",
-        body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps },
+        subject: isDeploy
+          ? "Deploy of " + String(details.unit) + " at " + r.requested_version.slice(0, 12) + " failed"
+          : "Rollback of " + serviceName(r.service_id) + " to " + r.requested_version + " failed",
+        body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}) },
       });
     }
   }
   return { executed, succeeded };
 }
+
+/** The phase 2 name of the executor loop, which now also runs native deploys. */
+export const runNativeRollbacks = runNativeExecutors;
 
 /** Recovery step rollback_worker_version of an approved, executing plan (same checks as deployForRecovery). */
 export async function rollbackForRecovery(env: Env, planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>> {
@@ -777,7 +945,7 @@ export function presentDeploymentRequest(r: Record<string, unknown>) {
   return {
     request_id: r.request_id, service_id: r.service_id, version: r.requested_version, status: r.status,
     requested_by: r.requested_by, origin: deploymentOrigin(r.requested_by as string),
-    workflow: text(d.workflow) ?? (d.executor ? "native rollback" : null),
+    workflow: text(d.workflow) ?? (d.executor === NATIVE_DEPLOY_EXECUTOR ? "native deploy" : d.executor ? "native rollback" : null),
     proposal_id: text(d.proposal_id), run_url: runUrl?.startsWith("https://github.com/") ? runUrl : null,
     note: text(outcome.reason) ?? text(outcome.conclusion),
     created_at: r.created_at, updated_at: r.updated_at,
@@ -840,6 +1008,8 @@ export default {
         production_dispatch_enabled: ready,
         // ADR-0012 phase 2 (informational; not a readiness gate): rollback without GitHub.
         native_rollback: nativeRollbackConfigured(env) ? "configured" : "not_configured",
+        // ADR-0012 G2b (informational): code-only deploys from the Forge's bundles.
+        native_deploy: nativeDeployConfigured(env) ? "configured" : "not_configured",
         checks
       }, ready ? 200 : 503);
     }
@@ -1026,9 +1196,9 @@ export default {
     const log = (name: string) => (err: unknown) => {
       console.error(JSON.stringify({ service: SERVICE, event: name, message: String((err as Error)?.message ?? err) }));
     };
-    // The GitHub ledger reconcile keeps its twice-an-hour cadence; native rollbacks run at every SAFE minute.
+    // The GitHub ledger reconcile keeps its twice-an-hour cadence; native rollbacks and deploys run at every SAFE minute.
     if (minute === 10 || minute === 40) ctx.waitUntil(reconcileDeployments(env).then(() => undefined, log("reconcile_failed")));
-    ctx.waitUntil(runNativeRollbacks(env, at).then(() => undefined, log("native_rollback_failed")));
+    ctx.waitUntil(runNativeExecutors(env, at).then(() => undefined, log("native_executor_failed")));
   },
 };
 

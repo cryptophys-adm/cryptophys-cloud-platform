@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
 import { tickWith, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps } from "../../forge/src/checks.ts";
-import { BUNDLE_PREFIX, BUNDLE_RETENTION_DAYS, manifestEntry, pruneBundles, storeBundles, type BundleBucket } from "../../forge/src/bundles.ts";
+import { BUNDLE_PREFIX, BUNDLE_RETENTION_DAYS, manifestEntry, migrationsOf, pruneBundles, storeBundles, type BundleBucket } from "../../forge/src/bundles.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -54,6 +54,9 @@ const FILES = {
   "workers/control-plane-shared/test/a.test.ts": "x",
   "workers/demo/wrangler.toml": TOML,
   "workers/demo/src/index.ts": "export default {}",
+  "workers/control-plane-migrations/0002_b.sql": "SELECT 2;",
+  "workers/control-plane-migrations/0001_a.sql": "SELECT 1;",
+  "workers/control-plane-migrations/test_migrations.py": "",
 };
 function deps(testStatus: "pass" | "fail") {
   return async (): Promise<CheckDeps> => ({
@@ -82,6 +85,8 @@ test("G2a-2. a passed, clean commit of main is stored; a failed one, or a change
   const manifest = JSON.parse(b.objects.get(`${BUNDLE_PREFIX}${SHA}/manifest.json`)!.value);
   assert.deepEqual([manifest.schema, manifest.commit, manifest.workers.map((w: { name: string }) => w.name)], ["forge-bundles.v1", SHA, ["cryptophys-demo"]]);
   assert.equal(b.objects.get(`${BUNDLE_PREFIX}${SHA}/cryptophys-demo.mjs`)!.value, "export default { fetch() {} };");
+  // G2b: the commit's D1 migrations, sorted, so the deploy can tell a code-only change from a migration.
+  assert.deepEqual(manifest.migrations, ["0001_a.sql", "0002_b.sql"]);
   assert.equal((db as any).raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'forge.bundles_stored'").get().n, 1);
   // The check's own record never holds module text.
   assert.doesNotMatch(String((db as any).raw.prepare("SELECT steps FROM forge_check_runs WHERE commit_sha = ?").get(SHA).steps), /fetch\(\)/);
@@ -109,4 +114,13 @@ test("G2a-3. bundles older than the retention are deleted; the manifest is writt
   assert.deepEqual([...b.objects.keys()].sort(), [`${BUNDLE_PREFIX}${"e".repeat(40)}/cryptophys-demo.mjs`, `${BUNDLE_PREFIX}${"e".repeat(40)}/manifest.json`]);
   await assert.rejects(storeBundles(b, "nope", []), /invalid_commit_sha/);
   assert.match(read("workers/forge/wrangler.toml"), /\[\[r2_buckets\]\]\nbinding = "BUNDLES"\nbucket_name = "cryptophys-forge-bundles"/);
+});
+
+test("G2b-0. the manifest's migrations are the commit's control-plane migration files, sorted; absent when not given", async () => {
+  assert.deepEqual(migrationsOf(["workers/control-plane-migrations/0010_x.sql", "workers/control-plane-migrations/0002_y.sql", "workers/control-plane-migrations/test_migrations.py", "workers/other/0001.sql", "workers/control-plane-migrations/sub/0003.sql"]), ["0002_y.sql", "0010_x.sql"]);
+  const b = bucket();
+  const without = await storeBundles(b, SHA, [{ dir: "workers/demo", text: "x", toml: TOML, external: [] }]);
+  assert.equal("migrations" in without, false, "schema v1 stays compatible: the field is new and optional");
+  const withList = await storeBundles(b, SHA, [{ dir: "workers/demo", text: "x", toml: TOML, external: [] }], Date.now(), ["0002.sql", "0001.sql"]);
+  assert.deepEqual([withList.schema, withList.migrations], ["forge-bundles.v1", ["0001.sql", "0002.sql"]]);
 });

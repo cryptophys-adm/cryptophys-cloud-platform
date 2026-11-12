@@ -8,7 +8,7 @@
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
+import { migrationsOf, storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
 import { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
@@ -230,7 +230,10 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
       counts = { pass: run.pass, fail: run.fail };
       if (built && env.BUNDLES && run.status === "passed" && run.guard_status === "clean") {
         try {
-          const manifest = await storeBundles(env.BUNDLES, commit, built, nowMs());
+          // G2b: the commit's D1 migrations, from the snapshot this check ran on.
+          const snapshot = cachedSnapshot(commit);
+          if (!snapshot) throw new Error("snapshot_unavailable");
+          const manifest = await storeBundles(env.BUNDLES, commit, built, nowMs(), migrationsOf(Object.keys(snapshot)));
           await appendAuditEvent(env.DB, { event_type: "forge.bundles_stored", actor: "system:forge-checks", subject: commit, outcome: "stored", payload: { workers: manifest.workers.length, single_module: manifest.workers.filter((w) => w.single_module).length } });
           await pruneBundles(env.BUNDLES, nowMs());
         } catch (e) {
