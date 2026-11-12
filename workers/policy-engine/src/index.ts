@@ -10,7 +10,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, requireOperator } from "../../control-plane-shared/src/access.ts";
-import { agentSyscallChecks } from "../../control-plane-shared/src/capabilities.ts";
+import { agentSyscallChecks, PROHIBITED_CAPABILITY, TRADING_CAPABILITY } from "../../control-plane-shared/src/capabilities.ts";
 
 export type Env = BaseEnv & { AGENTS?: AgentRpcBinding };
 
@@ -85,7 +85,11 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     const [act, ...rest] = resource.split(":");
     const target = rest.join(":");
     checks.push(check("class_known", cls === "routine" || cls === "critical", "class must be routine or critical"));
-    checks.push(check("not_prohibited", cls !== "prohibited" && !/trad(e|ing)|order|wallet|withdraw|transfer|swap/i.test(resource), "prohibited actions never execute"));
+    // Owner 2026-11-12 (ADR-0009 amendment): fund movement never executes, whatever the vote or a click; a
+    // trading action executes only as critical (the owner's click). Only the action names trading: a target
+    // that merely contains the word (xauusd-ai-trading-assistant) is no trading action.
+    checks.push(check("not_prohibited", cls !== "prohibited" && !PROHIBITED_CAPABILITY.test(resource), "fund movements never execute"));
+    checks.push(check("trading_is_critical", !TRADING_CAPABILITY.test(act) || cls === "critical", "a trading action executes only as critical, after the owner's click"));
     checks.push(check("consensus_passed", context.passed === true, "a simple majority of eligible voters must approve"));
     if (cls === "critical" && context.stage === "execute") {
       const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?")

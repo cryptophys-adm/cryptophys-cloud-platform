@@ -8,7 +8,7 @@ Last reviewed: 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETR
 
 These hold everywhere:
 
-- **Advisory only.** No trading, no funds, no orders, no price levels (ADR-0009, the knowledge validator).
+- **No fund movement; trading only with the owner's click.** Wallets, withdrawals, transfers and other fund movements are prohibited at every tier. Since 2026-11-12 (owner: "larangan trading harus dicabut karena kita sudah masuk fase production", "Trading boleh, dana tidak"; ADR-0009 amendment), a trading action is allowed but always critical (consensus, then one owner click), and a trading capability must be tier 2 or above. Nothing in the platform trades yet. The knowledge validator's rules for learned knowledge (no orders, no price levels) are unchanged.
 - **No containers.** Production runs on Workers and their bindings only (ADR-0005 decision 1). The Forge type-check, which does not fit in an isolate, runs on Workers Builds from the Artifacts repository (ADR-0012 §5c, owner 2026-11-08; first report passed 2026-11-09).
 - **Never weaken Access, auth or tests.** No test is skipped. A test that cannot run somewhere keeps running where it can.
 - **The owner creates every secret and credential.** None is created by an agent or stored in the repository.
@@ -68,7 +68,7 @@ These hold everywhere:
 - **Self-registration (phase 3).** The Supervisor turns census findings into consensus proposals, one per cycle:
   - `register_agent` and `register_engine` are routine: consensus only.
   - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `critical` only.
-  - The kernel takes the gene from the census, never from the proposal, so only merged DNA can register. Tier 3, unknown and trading capabilities are never registered.
+  - The kernel takes the gene from the census, never from the proposal, so only merged DNA can register. Tier 3, unknown and fund-movement capabilities are never registered; a trading capability registers only as privileged (the owner's click).
   - A new seat must vote through a reviewed vote binding; without one it is refused. A seat the DNA no longer asks for is reported, never removed by an agent.
 
 ## Autonomy (ADR-0007, ADR-0009)

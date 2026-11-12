@@ -39,7 +39,7 @@ export async function readGenome(repo: ArtifactsReader, commit: string): Promise
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
 
 /** Compare the DNA with service_registry, agents (and their seats) and engines. Read-only. */
-export async function compare(db: D1Database, genome: Genome, external: ReadonlySet<string> = new Set()): Promise<Finding[]> {
+export async function compare(db: D1Database, genome: Genome): Promise<Finding[]> {
   const findings: Finding[] = [];
   const services = new Map(((await db.prepare("SELECT service_id, status FROM service_registry").all<{ service_id: string; status: string }>()).results ?? []).map((r) => [r.service_id, r.status]));
   // Seats and engines arrive with migration 0041; before it the census compares what exists.
@@ -81,10 +81,9 @@ export async function compare(db: D1Database, genome: Genome, external: Readonly
       if (phase3 && gene.voter && row.voter !== 1 && row.host_worker === dna.service) findings.push({ kind: "voter_seat_requested", subject: gene.id, detail: `agent ${gene.id} on ${dna.service} asks for a council seat (consensus and the owner's click)` });
       if (phase3 && !gene.voter && row.voter === 1) findings.push({ kind: "voter_seat_vacated", subject: gene.id, detail: `agent ${gene.id} holds a council seat its DNA no longer asks for` });
     }
-    // An external organ's AI tasks are declared in the census genome, not proposed for the engines registry:
-    // its register_engine resource names the external service, and the Policy Engine's trading guard refuses
-    // every resource naming trading (xauusd-ai-trading-assistant), so the proposal could never pass (2026-11-12).
-    if (phase3 && !external.has(dna.service)) {
+    // An external organ's AI tasks register like main's: the Policy Engine's trading guard reads only the
+    // action's name (owner 2026-11-12), so register_engine:xauusd-ai-trading-assistant is no trading action.
+    if (phase3) {
       const live = new Set(engines.filter((e) => e.service_id === dna.service).map((e) => e.task));
       for (const e of dna.engines) if (!live.has(e.task)) findings.push({ kind: "unregistered_engine", subject: `${dna.service}:${e.task}`, detail: `AI engine ${e.task} on ${dna.service} is in the DNA but not registered` });
       const tasks = new Set(dna.engines.map((e) => e.task));
@@ -151,7 +150,7 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
     genome = (await readGenome(repo, head)).genome;
     const ext = await addExternalOrgans(genome, external);
     origins = ext.origins;
-    findings = [...await compare(db, genome, new Set(origins.keys())), ...ext.findings].sort((x, y) => (x.kind + x.subject).localeCompare(y.kind + y.subject));
+    findings = [...await compare(db, genome), ...ext.findings].sort((x, y) => (x.kind + x.subject).localeCompare(y.kind + y.subject));
     status = findings.length ? "changes" : "consistent";
   } catch (e) {
     status = "invalid";

@@ -137,28 +137,33 @@ test("X3. an origin that does not answer is a finding; main's census still runs 
   assert.equal(genome.size, 0);
 });
 
-test("X4. a new XAUUSD agent registers itself by consensus; one above the ceiling never does; AI tasks are declared in the census", async () => {
+test("X4. a new XAUUSD agent and AI task register themselves by consensus; one above the ceiling never does", async () => {
   const db = migratedDb();
   setMode(db, "deploy");
   const { env, memory } = kernelEnv(db);
-  const grow = { agents: [agent("hud-supertrend"), agent("hud-greedy", [...CAPS, "consensus.propose"])], engines: ["war_room_opening", "decision_council"] };
+  const grow = { agents: [agent("hud-supertrend"), agent("hud-greedy", [...CAPS, "consensus.propose"])], engines: ["war_room_opening"] };
   const t0 = Date.now();
   await censusTick(db as never, repoWith(realDna()), t0, reader(() => xauusdDna(db, grow)));
   const census = (await latestCensusRow({ DB: db } as never))!;
-  assert.deepEqual(census.findings.map((f) => `${f.kind} ${f.subject}`), ["external_agent_refused hud-greedy", "unregistered_agent hud-supertrend"]);
-  assert.deepEqual(census.genome.find((o) => o.service === AI)!.engines, ["war_room_opening", "decision_council"], "the AI tasks are in the census genome");
-  assert.equal((db.raw.prepare("SELECT engines FROM forge_organism_census WHERE main_sha = ?").get(MAIN) as any).engines,
-    DIRS.reduce((n, d) => n + JSON.parse(read(`workers/${d}/organism.json`)).engines.length, 0) + 2);
+  assert.deepEqual(census.findings.map((f) => `${f.kind} ${f.subject}`), [
+    "external_agent_refused hud-greedy",
+    "unregistered_agent hud-supertrend",
+    `unregistered_engine ${AI}:war_room_opening`,
+  ]);
 
   await runCycle(env as never, memory, "scheduled", t0);
-  const p = last(db);
+  let p = last(db);
   assert.equal(p.action, "register_agent");
   assert.equal(p.status, "executed", p.outcome_json);
   const a = db.raw.prepare("SELECT host_worker, tier_max, voter, capabilities_json FROM agents WHERE agent_id = 'hud-supertrend'").get() as any;
   assert.deepEqual({ ...a, capabilities_json: JSON.parse(a.capabilities_json).sort() }, { host_worker: AI, tier_max: 1, voter: 0, capabilities_json: [...CAPS].sort() });
 
+  // Owner 2026-11-12: the trading guard reads only the action's name, so the Worker's name no longer blocks it.
   await runCycle(env as never, memory, "scheduled", t0);
-  assert.equal(db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = 'register_engine'").get()!.n, 0, "no proposal the trading guard would always refuse");
+  p = last(db);
+  assert.equal(p.action, "register_engine");
+  assert.equal(p.status, "executed", p.outcome_json);
+  assert.ok(db.raw.prepare("SELECT 1 FROM engines WHERE service_id = ? AND task = 'war_room_opening' AND status = 'enabled'").get(AI));
   assert.equal(db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE agent_id = 'hud-greedy'").get()!.n, 0, "above the ceiling: never proposed, never registered");
 
   const r = await censusTick(db as never, repoWith(realDna()), t0 + CENSUS_REFRESH_MS + 1, reader(() => xauusdDna(db, grow)));

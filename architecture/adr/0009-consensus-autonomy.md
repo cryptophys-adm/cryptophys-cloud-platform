@@ -10,7 +10,7 @@
 - **Amends:**
   - ADR-0007 §2: tier 2 now covers consensus-executed actions, and tier 3 "human" becomes the *critical* class below.
   - ADR-0005 decision 3: agents may take platform actions.
-- **Unchanged:** ADR-0005's prohibition on trading. No agent, consensus or owner click can place orders, touch exchange accounts or wallets, or move funds.
+- **Unchanged:** ADR-0005's prohibition on fund movement. No agent, consensus or owner click can touch wallets or move funds. Trading (orders, brokers, exchange accounts) was prohibited too until the amendment of 2026-11-12, which makes it critical (an owner click per execution).
 
 ## Context
 
@@ -24,7 +24,7 @@ The platform runs on Cloudflare. Today the AI Kernel lets agents observe (tier 0
 |---|---|---|
 | **Routine** (consensus executes) | Observe drift; publish reports; rollback a Worker to a recorded healthy version; redeploy a commit; **deploy a new commit from `main` whose CI is green**; set a registry desired version; update registry metadata; suspend or resume an agent (not a kernel-hosted one); disable or enable a service in the registry; create, approve and execute recovery plans whose steps are all routine | Simple majority of eligible voters, plus a Policy Engine allow |
 | **Critical** (consensus, then an owner click) | Restore or delete D1 data (`restore_d1_bookmark`, retention changes); create, rotate or delete secrets and Access tokens (`rotate_secret`); retire or delete a Worker; change Cloudflare Access; turn the global kill switch back **on** after a stop; register external agent principals | Consensus as above, **and** one owner/approver click in the Console |
-| **Prohibited** | Orders, trading, exchange accounts, wallets, fund movements; disabling the kill switch mechanism itself; changing the consensus rules, voter set or action classes | Nobody. Changing the rules needs a new ADR and a reviewed code change |
+| **Prohibited** | Wallets and fund movements (orders, trading and exchange accounts are critical since 2026-11-12); disabling the kill switch mechanism itself; changing the consensus rules, voter set or action classes | Nobody. Changing the rules needs a new ADR and a reviewed code change |
 
 Anything not listed is **critical** until it is classified.
 
@@ -456,3 +456,21 @@ Owner: "naikkan ke 10, buatkan PR, dan Policy Engine boleh dimodifikasi oleh cer
 - Each change is written together with a `policy.parameter_changed` audit event.
 - Everything else stays code and outside the council's reach: no trading or funds, the owner click for critical actions, the kill switch, mode shadow, Access, and the list of adjustable parameters itself.
 
+## Amendment 2026-11-12: trading allowed with the owner's click; fund movement still prohibited
+
+Owner 2026-11-12: "larangan trading harus dicabut karena kita sudah masuk fase production". Asked which layers to lift, the owner chose "Trading boleh, dana tidak": trading is allowed, and every trading execution needs the owner's click; fund movement stays prohibited outright.
+
+- **Fund movement stays prohibited**: wallets, withdrawals, transfers, deposits, payouts, signing transactions, swaps, MEV.
+  - No agent, vote or owner click can do it.
+  - `PROHIBITED_CAPABILITY` (`control-plane-shared/src/capabilities.ts`) now holds only these.
+  - The Policy Engine vetoes any consensus resource that names them (`not_prohibited`).
+- **Trading is allowed**: orders, brokers, exchange accounts (`TRADING_CAPABILITY`).
+  - A trading consensus action is always **critical**: consensus, then one owner click. `classify` raises it to critical whatever its declared class. The Policy Engine vetoes a trading action of any other class (`trading_is_critical`).
+  - A trading capability must be tier 2 or above (`trading_capability_privileged`). Registering one is privileged, so it needs the owner's click (`privilegedCapabilities`).
+- **Only the action names trading.** The Policy Engine reads the action's name, not the target's, so a resource such as `register_engine:xauusd-ai-trading-assistant` is no trading action. This is what kept the XAUUSD AI tasks out of the engines registry (ADR-0013 §6). They now register by consensus like main's.
+- **Nothing trades yet.**
+  - The catalog has no trading capability, and `CONSENSUS_ACTIONS` has no trading action.
+  - Either arrives only through a reviewed code change, and then only as critical.
+  - Omega (the xauusd repository) keeps its own controls: the owner's settings and the EA's gates.
+- **Unchanged:** the Console still never claims the platform moves funds (`console-truthfulness.test.ts` T1). The knowledge validator's rules for learned knowledge are not changed by this amendment.
+- **Tests:** `trading-0009.test.ts` F1–F3. The updated tests are `ai-kernel.test.ts` (syscall checks), `consensus-phase1.test.ts` 5 and `organism-external-0013.test.ts` X4.

@@ -4,7 +4,7 @@
  * functions and constants only: no bindings, no I/O.
  */
 import type { JsonObject } from "./http.ts";
-import { CAPABILITIES, PROHIBITED_CAPABILITY } from "./capabilities.ts";
+import { CAPABILITIES, PROHIBITED_CAPABILITY, TRADING_CAPABILITY } from "./capabilities.ts";
 import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy-params.ts";
 import { DOCTRINE_ACTIONS, doctrineProblem } from "./doctrine.ts";
 import { EXTERNAL_ORIGINS, externalCeilingViolations } from "./organism.ts";
@@ -74,9 +74,9 @@ export const TARGET = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
 /** A capability is privileged when it is above tier 1, or lets an agent drive the platform (consensus.propose). */
 export function privilegedCapabilities(caps: string[]): string[] {
-  return caps.filter((c) => !Object.hasOwn(CAPABILITIES, c) || CAPABILITIES[c].tier >= 2 || c === "consensus.propose");
+  return caps.filter((c) => !Object.hasOwn(CAPABILITIES, c) || CAPABILITIES[c].tier >= 2 || c === "consensus.propose" || TRADING_CAPABILITY.test(c));
 }
-/** Capabilities that can never be registered: unknown, prohibited (trading, funds) or tier 3 (human only, ADR-0007). */
+/** Capabilities that can never be registered: unknown, prohibited (fund movement) or tier 3 (human only, ADR-0007). */
 export function forbiddenCapabilities(caps: string[]): string[] {
   return caps.filter((c) => !Object.hasOwn(CAPABILITIES, c) || PROHIBITED_CAPABILITY.test(c) || CAPABILITIES[c].tier >= 3);
 }
@@ -141,7 +141,9 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
 
 export function classify(action: string): ConsensusClass | null {
   if (PROHIBITED_CAPABILITY.test(action)) return "prohibited";
-  return Object.hasOwn(CONSENSUS_ACTIONS, action) ? CONSENSUS_ACTIONS[action].class : null;
+  if (!Object.hasOwn(CONSENSUS_ACTIONS, action)) return null;
+  // Owner 2026-11-12: a trading action is allowed, and always critical (consensus, then the owner's click).
+  return TRADING_CAPABILITY.test(action) ? "critical" : CONSENSUS_ACTIONS[action].class;
 }
 
 export interface ServiceState { service_id: string; drifted: boolean; persistent: boolean; desired_version: string | null; observed_version: string | null }
