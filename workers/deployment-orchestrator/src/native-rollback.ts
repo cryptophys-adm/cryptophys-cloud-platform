@@ -70,7 +70,16 @@ export interface VersionMetadata {
   /** The 12-character commit tag the Drift Detector reads back from the version metadata binding. */
   tag: string;
   message: string;
+  /**
+   * ADR-0012 G2c-2: a configuration change. The version sends exactly these bindings and keeps only
+   * `keep_bindings` (the secrets) from the previous version, with the target config's `limits` and `placement`.
+   * Absent: the code-only upload of G2b (every platform binding type kept, none sent).
+   */
+  config?: { bindings: Array<{ type: string; name: string; [field: string]: unknown }>; keep_bindings: string[]; limits?: Record<string, unknown>; placement?: Record<string, unknown> };
 }
+
+/** ADR-0012 G2c-2: a version as `GET …/scripts/{name}/versions/{id}` returns it (the API's `result`). */
+export interface VersionRecord { id?: string; resources?: { bindings?: unknown; script_runtime?: Record<string, unknown> }; [field: string]: unknown }
 
 function canonicalJson(value: unknown): string {
   const normalize = (input: unknown): unknown => {
@@ -90,7 +99,9 @@ export class CloudflareWorkers {
   constructor(token: string, account: string, fetcher: typeof fetch = fetch) {
     this.token = token;
     this.account = account;
-    this.fetcher = fetcher;
+    // Called as a plain function: the runtime's global fetch throws "Illegal invocation" when it is called as a
+    // method of another object (this.fetcher(...)), which workerd does.
+    this.fetcher = (input, init) => fetcher(input, init);
   }
 
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -138,12 +149,17 @@ export class CloudflareWorkers {
       if (!(MODULE_TYPES as readonly string[]).includes(m.type)) throw new Error("invalid_module_type");
       names.add(m.name);
     }
+    const config = metadata.config;
+    if (config && (!Array.isArray(config.bindings) || !config.keep_bindings.every((t) => t === "secret_text" || t === "secret_key"))) throw new Error("invalid_config_upload");
     const form = new FormData();
     form.append("metadata", new Blob([JSON.stringify({
       main_module: metadata.main_module,
       compatibility_date: metadata.compatibility_date,
       compatibility_flags: metadata.compatibility_flags,
-      keep_bindings: [...KEEP_BINDINGS],
+      // G2c-2: a planned configuration sends its bindings and keeps only the secrets; G2b keeps every type.
+      ...(config
+        ? { bindings: config.bindings, keep_bindings: [...config.keep_bindings], ...(config.limits ? { limits: config.limits } : {}), ...(config.placement ? { placement: config.placement } : {}) }
+        : { keep_bindings: [...KEEP_BINDINGS] }),
       annotations: { "workers/tag": metadata.tag, "workers/message": metadata.message.slice(0, 100) },
     })], { type: "application/json" }));
     form.append(moduleName, new Blob([moduleText], { type: "application/javascript+module" }), moduleName);
@@ -160,8 +176,7 @@ export class CloudflareWorkers {
    * versions bind the same resources only when both are equal. Unreadable or empty fails closed.
    */
   async versionBindingSet(script: string, versionId: string): Promise<{ names: string[]; digest: string }> {
-    if (!UUID.test(versionId)) throw new Error("invalid_version_id");
-    const r = await this.call<{ resources?: { bindings?: unknown }; bindings?: unknown }>(`${script}/versions/${versionId}`);
+    const r = await this.version(script, versionId) as VersionRecord & { bindings?: unknown };
     const list = Array.isArray(r?.resources?.bindings) ? r.resources!.bindings as unknown[] : Array.isArray(r?.bindings) ? r.bindings as unknown[] : null;
     if (!list) throw new Error("version_bindings_unreadable");
     const records = list.map((b) => b as { type?: unknown; name?: unknown });
@@ -170,6 +185,26 @@ export class CloudflareWorkers {
     const canonical = records.map((b) => canonicalJson(b)).sort().join("\n");
     const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
     return { names, digest: [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("") };
+  }
+
+  /**
+   * ADR-0012 G2c-2: one version's full record as the API returns it: the raw `resources.bindings` (secrets by
+   * type and name only) and `resources.script_runtime` (compatibility, limits). Unreadable fails closed.
+   */
+  async version(script: string, versionId: string): Promise<VersionRecord> {
+    if (!UUID.test(versionId)) throw new Error("invalid_version_id");
+    const r = await this.call<VersionRecord>(`${script}/versions/${versionId}`);
+    if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("version_unreadable");
+    return r;
+  }
+
+  /**
+   * ADR-0012 G2c-2: a script-level setting a version upload cannot carry: `PUT schedules` (the cron triggers, a
+   * JSON array of `{ cron }`) or `PATCH script-settings` (`{ observability }`). Returns the API's `result`.
+   */
+  async scriptSetting(script: string, step: { method: "PUT"; path: "schedules"; body: Array<{ cron: string }> } | { method: "PATCH"; path: "script-settings"; body: Record<string, unknown> }): Promise<unknown> {
+    if (!(step.method === "PUT" && step.path === "schedules") && !(step.method === "PATCH" && step.path === "script-settings")) throw new Error("invalid_script_setting");
+    return this.call<unknown>(`${script}/${step.path}`, { method: step.method, body: JSON.stringify(step.body) });
   }
 
   /** The bindings of one version as sorted `type:name` strings. */

@@ -19,6 +19,9 @@
 //     to `./<name>`, the name the Orchestrator uploads it under. When any one cannot be resolved, the Worker has
 //     `modules_error` instead and stays multi-module (the GitHub workflow);
 //   - per Worker, `limits`: whether its wrangler.toml has `[limits]`, a setting a version upload does not carry.
+// G2c-2 (still schema v1): per Worker, `config`: the path, under `bundles/<sha>/`, of its wrangler.toml text
+// (`config/<worker>.toml`, whose SHA-256 is `config_sha256`), so the Orchestrator can plan a configuration change
+// from the running and target configs. A manifest without it reads as "config unknown" (the GitHub workflow).
 // Old bundles are deleted after BUNDLE_RETENTION_DAYS; Workers keep their own uploaded versions for rollback.
 import { moduleRules } from "./runner/core.ts";
 import type { ExternalSource } from "./externals.ts";
@@ -67,12 +70,17 @@ export interface ManifestWorker {
   modules?: ManifestModule[];
   /** G2c-1: why `modules` is absent for a Worker with external files. */
   modules_error?: string;
+  /** G2c-2: where its wrangler.toml text is stored, relative to `bundles/<sha>/` (`config/<name>.toml`). */
+  config?: string;
 }
 
 export interface MigrationFile { file: string; sha256: string }
 
 /** `migrations` was added in G2b and `migration_files` in G2c-1 (still schema v1: a reader treats a missing field as unknown). */
 export interface BundleManifest { schema: "forge-bundles.v1"; commit: string; built_at: string; workers: ManifestWorker[]; migrations?: string[]; migration_files?: MigrationFile[] }
+
+/** G2c-2: the stored wrangler.toml of one Worker, relative to `bundles/<sha>/`. */
+export const configPath = (worker: string) => `config/${worker}.toml`;
 
 export const MIGRATIONS_PATH = /^workers\/control-plane-migrations\/([^/]+\.sql)$/;
 
@@ -199,10 +207,16 @@ export async function storeBundles(bucket: BundleBucket, commit: string, built: 
       if ("error" in r) extra = { modules_error: r.error };
       else { source = { ...m, text: r.text }; extra = { modules: r.modules }; }
     }
-    const entry = { ...(await manifestEntry(source)), ...extra };
+    const entry: ManifestWorker = { ...(await manifestEntry(source)), ...extra };
     await bucket.put(`${BUNDLE_PREFIX}${commit}/${entry.module}`, source.text, {
       httpMetadata: { contentType: "application/javascript+module" },
       customMetadata: { sha256: entry.sha256, commit },
+    });
+    // G2c-2: the wrangler.toml exactly as hashed into config_sha256 (the source file, never a rendered one).
+    entry.config = configPath(entry.name);
+    await bucket.put(`${BUNDLE_PREFIX}${commit}/${entry.config}`, m.toml, {
+      httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      customMetadata: { sha256: entry.config_sha256, commit },
     });
     workers.push(entry);
   }
