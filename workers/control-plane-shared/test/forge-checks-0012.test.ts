@@ -110,20 +110,46 @@ test("FC4. one test Worker per group, without network access, with the bundler c
     },
   };
   const r = await runSuite(deps, snapshot);
-  assert.equal(loaded.length, 3, "10 files: three Workers (3, 4, 2); one file did not bundle");
+  assert.equal(loaded.length, 3 + 2, "10 files: three Workers (3, 4, 2), one file did not bundle; the crashed group reruns alone");
   for (const code of loaded) {
     assert.equal(code.globalOutbound, null, "tests have no network access");
     assert.deepEqual(code.env, { BUNDLER: "BUNDLER-STUB" });
     assert.equal(code.mainModule, "entry.js");
     assert.equal((code.modules["snapshot.json.txt"] as { text: string }).text, JSON.stringify(snapshot));
   }
+  assert.deepEqual(loaded.slice(3).map((c) => (c.modules["files.json"] as { json: string[] }).json.length), [1, 1]);
   assert.equal(r.files, 10);
-  assert.equal(r.pass, 7);
-  assert.equal(r.skip, 6);
-  assert.equal(r.fail, 1 + 1 + 2, "one failed test, one bundle error, two files of a Worker that crashed");
+  assert.equal(r.pass, 8, "t08 passes once it runs without t09");
+  assert.equal(r.skip, 7);
+  assert.equal(r.fail, 1 + 1 + 1, "one failed test, one bundle error, the file whose own Worker crashed");
+  assert.equal(r.isolated, 2);
   assert.ok(r.failures.some((f) => f.startsWith("t03.test.ts: BUNDLE")));
   assert.ok(r.failures.some((f) => f.startsWith("t09.test.ts: RUN Worker exceeded CPU limit")));
+  assert.ok(!r.failures.some((f) => f.startsWith("t08.test.ts")));
   assert.ok(r.failures.some((f) => f === "t00.test.ts :: b: boom"));
+});
+
+test("FC4b. a group whose Worker exceeds the memory limit reruns each file alone; every test still runs", async () => {
+  const snapshot: Record<string, string> = {};
+  for (let i = 0; i < 4; i++) snapshot[`workers/control-plane-shared/test/h${i}.test.ts`] = "x";
+  const sizes: number[] = [];
+  const deps: SuiteDeps = {
+    esbuild: { async build() { return { outputFiles: [{ text: "x", contents: new Uint8Array() }], errors: [], warnings: [] }; } },
+    shims: {} as ShimSources, sqlJs: "", sqlWasm: null,
+    async runWorker(code) {
+      const files = (code.modules["files.json"] as { json: string[] }).json;
+      sizes.push(files.length);
+      if (files.length > 2) throw new Error("Worker exceeded memory limit.");
+      return { files: files.map((file) => ({ file, results: [{ name: "t", status: file.endsWith("h2.test.ts") ? "fail" : "pass", error: "real" }] })) };
+    },
+  };
+  const r = await runSuite(deps, snapshot);
+  assert.deepEqual(sizes, [4, 1, 1, 1, 1]);
+  assert.deepEqual({ files: r.files, pass: r.pass, fail: r.fail, isolated: r.isolated }, { files: 4, pass: 3, fail: 1, isolated: 4 });
+  assert.deepEqual(r.failures, ["h2.test.ts :: t: real"], "a real failure still fails; the memory error is gone");
+  const single: SuiteDeps = { ...deps, async runWorker() { throw new Error("Worker exceeded memory limit."); } };
+  const one = await runSuite(single, { "workers/control-plane-shared/test/solo.test.ts": "x" });
+  assert.deepEqual({ fail: one.fail, isolated: one.isolated }, { fail: 1, isolated: undefined }, "a single file is not retried");
 });
 
 test("FC5b. a SQL.js database left open by a file fails the suite", () => {

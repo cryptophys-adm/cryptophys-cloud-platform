@@ -96,7 +96,7 @@ export function cachedSnapshot(commit: string): Snapshot | null {
  * gate of phase 4 requires both.
  */
 export interface CheckSteps {
-  tests: { files: number; pass: number; fail: number; skip: number };
+  tests: { files: number; pass: number; fail: number; skip: number; isolated?: number };
   bundles: { workers: number; failed: BundleStep["failed"]; bundles: BundleStep["bundles"] };
   secrets: { files: number; findings: SecretFinding[] };
   /** Absent in runs recorded before the type-check step; `pending` until the build of the commit reports. */
@@ -130,7 +130,7 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
     status: result.fail === 0 && bundles.failed.length === 0 && typecheck.status !== "failed" ? "passed" : "failed",
     guard_status: secrets.findings.length === 0 ? "clean" : "findings",
     steps: {
-      tests: { files: result.files, pass: result.pass, fail: result.fail, skip: result.skip },
+      tests: { files: result.files, pass: result.pass, fail: result.fail, skip: result.skip, ...(result.isolated ? { isolated: result.isolated } : {}) },
       bundles: { workers: bundles.workers, failed: bundles.failed, bundles: bundles.bundles },
       secrets,
       typecheck,
