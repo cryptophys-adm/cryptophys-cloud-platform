@@ -387,8 +387,8 @@ test("G4-8. checks read forge-sourced heads from platform-work and GitHub ones f
   for (const blob of [...auditOf(db).map((a: any) => a.payload_json), JSON.stringify(t1), JSON.stringify(t2)]) assert.doesNotMatch(blob, /SECRET|art_v1|expires=/);
 });
 
-test("G4-9. migration 0051: source admits forge with repo platform-work only; existing rows keep repo platform; the Forge requires it", () => {
-  assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0051_forge_work_change_requests.sql"));
+test("G4-9. migration 0052: source admits forge with repo platform-work only; existing rows keep repo platform; the Forge requires it", () => {
+  assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0052_forge_work_change_requests.sql"));
   const db = migratedDb();
   const ins = (id: string, source: string, repo: string, ci: string | null, blocked: string | null) => () => db.raw.prepare(
     `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, created_at, updated_at, repo, blocked_reason)
@@ -402,7 +402,7 @@ test("G4-9. migration 0051: source admits forge with repo platform-work only; ex
   db.raw.prepare(`INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, status, created_at, updated_at)
     VALUES ('gh-3', 'github', 3, 'cr/3', 'b', 't', 'a', ?, ?, 'open', 'n', 'n')`).run(A, M1);
   assert.deepEqual({ ...(db.raw.prepare("SELECT repo, blocked_reason FROM forge_change_requests WHERE cr_id = 'gh-3'").get() as any) }, { repo: "platform", blocked_reason: null });
-  const sql = readFileSync(new URL("workers/control-plane-migrations/0051_forge_work_change_requests.sql", ROOT), "utf8");
+  const sql = readFileSync(new URL("workers/control-plane-migrations/0052_forge_work_change_requests.sql", ROOT), "utf8");
   assert.match(sql, /INSERT INTO forge_change_requests_new[\s\S]+SELECT[\s\S]+FROM forge_change_requests;/, "every existing row is copied");
   assert.match(read("workers/forge/src/tick.ts"), /step\("work_branches"/);
 });

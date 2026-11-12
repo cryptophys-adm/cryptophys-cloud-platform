@@ -1,4 +1,4 @@
--- 0051 (ADR-0012 G4, §5j): change requests pushed to the Forge's work repository cryptophys/platform-work.
+-- 0052 (ADR-0012 G4, §5j): change requests pushed to the Forge's work repository cryptophys/platform-work.
 -- Contributors push branches (cr/…, claude/…, agent/…) there instead of opening GitHub pull requests; the
 -- Forge discovers each branch and registers it as change request fg-<branch slug> with source 'forge'.
 -- The table is rebuilt because SQLite cannot change a CHECK constraint in place:

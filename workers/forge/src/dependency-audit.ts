@@ -8,7 +8,7 @@
 //      and versions are sent, never a path, a token or anything else of the repository;
 //   4. re-checks each advisory's vulnerable_versions against each installed version, so a finding names the
 //      exact affected version;
-//   5. records one run row and one row per finding (migration 0050), kept 90 days, and audits a changed set.
+//   5. records one run row and one row per finding (migration 0051), kept 90 days, and audits a changed set.
 // A lockfile is `runtime` when it belongs to a Worker (workers/<dir> with a wrangler.toml, the Console UI build
 // under workers/console/ui included); any other lockfile is tooling. Failures are recorded, never thrown.
 // GitHub secret scanning is replaced by the Forge's secret scan of every checked commit (runner/core.ts,

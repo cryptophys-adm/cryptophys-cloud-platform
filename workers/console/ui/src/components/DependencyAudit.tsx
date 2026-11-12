@@ -27,7 +27,7 @@ export default function DependencyAudit({ data, loading }: { data: any; loading:
   return (
     <Panel title="npm dependencies · advisories" icon={<ShieldAlert className="h-3.5 w-3.5 text-rose-300" />}
       right={<Badge tone={STATUS_TONE[a?.status] ?? "slate"}>{a ? STATUS_TEXT[a.status] ?? a.status : "—"}</Badge>}>
-      {loading && !data ? <Skeleton rows={3} /> : !a ? <Empty>The Forge has not audited npm dependencies yet (migration 0050 is missing).</Empty> : (
+      {loading && !data ? <Skeleton rows={3} /> : !a ? <Empty>The Forge has not audited npm dependencies yet (migration 0051 is missing).</Empty> : (
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <Stat label="Critical · high" value={ok ? `${num(ok.critical)} · ${num(ok.high)}` : "—"}

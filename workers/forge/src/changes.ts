@@ -13,7 +13,7 @@
 //
 // ADR-0012 G4 (§5j): change requests also come from branches pushed to the work repository
 // cryptophys/platform-work (work-repo.ts), as fg-<branch slug> with source 'forge'. Each row names the
-// repository its head is read from (`repo`, migration 0051): 'platform' for gh-<number>, 'platform-work'
+// repository its head is read from (`repo`, migration 0052): 'platform' for gh-<number>, 'platform-work'
 // for fg-<slug>. A forge-sourced head that does not contain canonical main has blocked_reason
 // not_based_on_main and is not checked until the contributor updates the branch.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
@@ -24,7 +24,7 @@ const HEX40 = /^[0-9a-f]{40}$/;
 export const MERGE_PARITY_TARGET = 10;
 export const MAX_CHANGED_PATHS = 2_000;
 export const MAX_PATHS_STORED = 500;
-/** The repository a change request's head is read from (migration 0051). */
+/** The repository a change request's head is read from (migration 0052). */
 export type ChangeRepo = "platform" | "platform-work";
 
 export type Verdict = "would_merge" | "needs_owner" | "blocked" | "pending";
@@ -170,7 +170,7 @@ export interface ChangeRow {
   head_sha: string; base_sha: string; github_ci: string | null; status: "open" | "merged" | "closed";
   changed_paths: string | null; critical: string | null; verdict_at_outcome: Verdict | null; merge_sha: string | null; agrees: number | null;
   created_at: string; updated_at: string; outcome_at: string | null;
-  /** Migration 0051 (G4): the Artifacts repository the head is read from, and why the Forge will not check it. */
+  /** Migration 0052 (G4): the Artifacts repository the head is read from, and why the Forge will not check it. */
   repo: ChangeRepo; blocked_reason: "not_based_on_main" | null;
 }
 export interface ChangeInput { number?: unknown; source_branch?: unknown; title?: unknown; author?: unknown; head_sha?: unknown; base_sha?: unknown; github_ci?: unknown }

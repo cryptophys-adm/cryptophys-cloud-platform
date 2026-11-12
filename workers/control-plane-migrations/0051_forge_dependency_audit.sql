@@ -1,4 +1,4 @@
--- 0050 (ADR-0012 G5): the replacement for GitHub's Dependabot alerts. Once a day per head of main, the Forge
+-- 0051 (ADR-0012 G5): the replacement for GitHub's Dependabot alerts. Once a day per head of main, the Forge
 -- reads every package-lock.json of the commit from the Artifacts repository and asks the npm registry's bulk
 -- advisory endpoint (the one `npm audit` uses) which of the installed versions are affected. Only package names
 -- and versions are sent. Each run is one row; each affected package version and advisory is one finding.

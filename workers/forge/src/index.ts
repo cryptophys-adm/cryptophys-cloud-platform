@@ -46,7 +46,7 @@ export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql", "0041_organism_registration.sql", "0051_forge_work_change_requests.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql", "0041_organism_registration.sql", "0052_forge_work_change_requests.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {

@@ -437,7 +437,7 @@ The Consequences below require replacements for GitHub's Dependabot and secret s
   - credential formats without a fixed prefix, such as Cloudflare API tokens.
 
   The Forge also has no push protection: it sees a commit only once it is on main, or on a change request.
-- **Dependabot's alerts, replaced** (`forge/src/dependency-audit.ts`, migration 0050):
+- **Dependabot's alerts, replaced** (`forge/src/dependency-audit.ts`, migration 0051):
   - **When.** A Forge tick step, `dependency_audit`, runs at most once a day per head of main, or an hour after a failed run.
   - **What it reads.** It walks main's tree in the Artifacts repository and reads every `package-lock.json`:
     - lockfileVersion 2 and 3 through the `packages` map, nested installs included;
@@ -458,7 +458,7 @@ The Consequences below require replacements for GitHub's Dependabot and secret s
 
 ### 5j. Step G4: contributors push to Artifacts (2026-11-12)
 
-Contributors (Claude Code sessions, other agents) push their branches to the work repository `cryptophys/platform-work` instead of opening GitHub pull requests. The Forge registers each pushed branch as a change request and checks it with the same pipeline as the GitHub-sourced ones of §5d (`workers/forge/src/work-repo.ts`, migration 0051).
+Contributors (Claude Code sessions, other agents) push their branches to the work repository `cryptophys/platform-work` instead of opening GitHub pull requests. The Forge registers each pushed branch as a change request and checks it with the same pipeline as the GitHub-sourced ones of §5d (`workers/forge/src/work-repo.ts`, migration 0052).
 
 - **The work repository.** `POST /v1/forge/work-repo {confirm: "CREATE"}`, approvers only (operators and service tokens get 403), forks `platform` into `platform-work` with the binding's `fork` (default branch only), the same helper the G3a spike uses. It is idempotent: 202 while the fork is in progress, 200 once it is ready. It reports the repository name and its remote host, never a token; anything `fork` returns is dropped. Each outcome (`ready`, `forking`, `failed`) is audited as `forge.work_repo`. The Forge only reads `platform-work`; it never writes it.
 - **Discovery.** A Forge tick step (`work_branches`, after `cr_typecheck`, only with the Artifacts binding) does the following:

@@ -1,5 +1,5 @@
 // ADR-0012 G5: Dependabot and secret scanning off GitHub. The Forge audits main's npm lockfiles against the npm
-// registry's bulk advisory endpoint once a day per head (forge/src/dependency-audit.ts, migration 0050), the
+// registry's bulk advisory endpoint once a day per head (forge/src/dependency-audit.ts, migration 0051), the
 // Console Code page shows the latest run, and the owner notice `dependencies` opens for a high or critical
 // advisory in a Worker's or the Console UI's lockfile, or a stale audit. The secret scan of every checked commit
 // (runner/core.ts) replaces GitHub secret scanning.
@@ -218,7 +218,7 @@ test("G5-4. the tick records a run and its findings, with the runtime flag; once
   assert.equal(runs(db).filter((x: any) => x.main_sha === MAIN).length, 0);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM forge_dependency_findings f LEFT JOIN forge_dependency_audits a ON a.run_id = f.run_id WHERE a.run_id IS NULL").get() as any).n, 0);
 
-  // Before migration 0050 the tick reports a failure and throws nothing.
+  // Before migration 0051 the tick reports a failure and throws nothing.
   const bare = migratedDb();
   bare.raw.prepare("DROP TABLE forge_dependency_findings").run();
   bare.raw.prepare("DROP TABLE forge_dependency_audits").run();

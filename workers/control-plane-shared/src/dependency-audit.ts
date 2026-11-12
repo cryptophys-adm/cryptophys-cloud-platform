@@ -1,6 +1,6 @@
 // ADR-0012 G5: the read side of the Forge's dependency audit (workers/forge/src/dependency-audit.ts,
-// migration 0050), shared by the Forge's GET /v1/forge/dependency-audit and the AI Kernel's owner notice
-// `dependencies`. Read-only. Before migration 0050 exists it returns null.
+// migration 0051), shared by the Forge's GET /v1/forge/dependency-audit and the AI Kernel's owner notice
+// `dependencies`. Read-only. Before migration 0051 exists it returns null.
 import type { D1Database } from "./types.ts";
 
 export const SEVERITIES = ["critical", "high", "moderate", "low", "info"] as const;
@@ -38,7 +38,7 @@ export interface DependencyAudit {
 const RUN_COLUMNS = "run_id, main_sha, ran_at, status, lockfiles, packages, advisories, critical, high, moderate, low, info, error";
 const SEVERITY_RANK: Record<string, number> = Object.fromEntries(SEVERITIES.map((s, i) => [s, i]));
 
-/** The latest dependency audit, for the Console and the owner notice. Null before migration 0050. */
+/** The latest dependency audit, for the Console and the owner notice. Null before migration 0051. */
 export async function dependencyAudit(db: D1Database, nowMs = Date.now()): Promise<DependencyAudit | null> {
   let latest: DependencyAuditRun | null; let lastOk: DependencyAuditRun | null; let oldest: { ran_at: string } | null;
   let rows: Array<Omit<DependencyFinding, "lockfiles" | "runtime"> & { lockfiles: string; runtime: number }> = [];
