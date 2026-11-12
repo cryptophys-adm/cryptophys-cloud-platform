@@ -7,6 +7,7 @@ import type { JsonObject } from "./http.ts";
 import { CAPABILITIES, PROHIBITED_CAPABILITY } from "./capabilities.ts";
 import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy-params.ts";
 import { DOCTRINE_ACTIONS, doctrineProblem } from "./doctrine.ts";
+import { EXTERNAL_ORIGINS, externalCeilingViolations } from "./organism.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -100,6 +101,11 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
     const privileged = privilegedCapabilities(caps);
     if (p.action === "register_agent" && privileged.length) return { vote: "reject", reason: `privileged capabilities need register_privileged_agent: ${privileged.join(", ")}` };
+    // An external organ's agent (its DNA came over RPC) stays within the external ceiling (owner 2026-11-12).
+    if (EXTERNAL_ORIGINS.some((o) => o.services.includes(host))) {
+      const over = externalCeilingViolations({ tier_max: Number(p.params.tier_max), capabilities: caps });
+      if (over.length || p.action !== "register_agent") return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ") || "privileged registration"}` };
+    }
     return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
   }
   if (p.action === "register_engine") {

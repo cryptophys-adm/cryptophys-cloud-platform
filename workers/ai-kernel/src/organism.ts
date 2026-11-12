@@ -15,6 +15,7 @@ import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEventWithMutation, AuditMutationConflictError } from "../../control-plane-shared/src/audit.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { forbiddenCapabilities, privilegedCapabilities } from "../../control-plane-shared/src/consensus-rules.ts";
+import { EXTERNAL_ORIGINS, externalCeilingViolations } from "../../control-plane-shared/src/organism.ts";
 import type { SyscallEnv } from "./syscall.ts";
 
 /** One organ of the census genome summary (forge/src/census.ts). */
@@ -23,6 +24,8 @@ export interface CensusOrgan {
   kind: string;
   agents: Array<{ id: string; display_name?: string; capabilities?: string[]; tier_max?: number; voter: boolean; vote_binding?: string }>;
   engines: string[];
+  /** Set for an external organ (EXTERNAL_ORIGINS): its DNA came over RPC, held to the external ceiling. */
+  origin?: string;
 }
 export interface CensusRow { main_sha: string; status: "consistent" | "changes" | "invalid"; findings: Array<{ kind: string; subject: string; detail: string }>; genome: CensusOrgan[] }
 
@@ -38,10 +41,10 @@ export async function latestCensusRow(env: Pick<SyscallEnv, "DB">): Promise<Cens
 }
 
 /** The gene the DNA declares for an agent, with its host, from the latest census. */
-export function findAgentGene(census: CensusRow | null, agentId: string): { service: string; gene: CensusOrgan["agents"][number] } | null {
+export function findAgentGene(census: CensusRow | null, agentId: string): { service: string; gene: CensusOrgan["agents"][number]; origin?: string } | null {
   for (const organ of census?.genome ?? []) {
     const gene = organ.agents.find((a) => a.id === agentId);
-    if (gene) return { service: organ.service, gene };
+    if (gene) return { service: organ.service, gene, ...(organ.origin ? { origin: organ.origin } : {}) };
   }
   return null;
 }
@@ -91,6 +94,12 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
   if (!Array.isArray(p.params.capabilities) || !sameSet(p.params.capabilities.map(String), caps)) throw new Error("capabilities_differ_from_dna");
   if (Number(p.params.tier_max) !== gene.tier_max) throw new Error("tier_max_differs_from_dna");
   if (forbiddenCapabilities(caps).length) throw new Error("forbidden_capability");
+  // An external organ's gene came over RPC, not from reviewed code: it is held to the ceiling again here.
+  if (declared.origin !== undefined) {
+    const origin = EXTERNAL_ORIGINS.find((o) => o.origin === declared.origin);
+    if (!origin || !origin.services.includes(service)) throw new Error("external_origin_unknown");
+    if (externalCeilingViolations(gene).length) throw new Error("external_ceiling");
+  }
   const privileged = privilegedCapabilities(caps).length > 0;
   if (privileged !== (p.action === "register_privileged_agent")) throw new Error(privileged ? "privileged_needs_owner" : "not_privileged");
   await requireActiveHost(env, service);

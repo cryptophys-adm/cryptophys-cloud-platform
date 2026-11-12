@@ -34,6 +34,14 @@ namespace = "cryptophys"
 [triggers]
 crons = ["4,19,34,49 * * * *"]
 
+# Owner 2026-11-12 ("DNA untuk XAUUSD dan Omega dengan auto-register"): the XAUUSD organs' DNA for the
+# organism census. The xauusd AI Worker's OrganismDna has one read-only method, dna(); what it declares is held
+# to the external ceiling (control-plane-shared/src/organism.ts) and registered only by consensus.
+[[services]]
+binding = "EXT_ORGANISM_XAUUSD"
+service = "xauusd-ai-trading-assistant"
+entrypoint = "OrganismDna"
+
 # The test suite runs in Dynamic Workers, with no network access.
 [[worker_loaders]]
 binding = "LOADER"
