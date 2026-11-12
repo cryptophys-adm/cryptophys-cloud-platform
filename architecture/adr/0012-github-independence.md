@@ -381,6 +381,31 @@ Owner, 2026-11-12: "lanjutkan G2 sambil menunggu deploy".
 
   Until these are set, every deploy stays on GitHub. `GET /ready` reports `native_deploy` for information; it is not a readiness gate.
 
+### 5h. Step G3a: the Forge can merge (fast-forward) (2026-11-12)
+
+This is the first half of G3 and the spike that phase 1 listed ("fast-forward/merge from a Worker into Artifacts").
+
+- **The constraint.** The Artifacts Workers binding reads commits, trees and history, and mints repo-scoped tokens. It cannot create commits or move refs. Refs move only through the Git smart-HTTP protocol at the repository's `remote`, authenticated with `Authorization: Bearer <write token>`.
+- **What was built** (`workers/forge/src/merge.ts`).
+  - `fastForward` speaks just enough of `git-receive-pack`:
+    1. ref discovery (`GET <remote>/info/refs?service=git-receive-pack`), which reads the branch and the server's capabilities;
+    2. it refuses, without sending the update, unless the discovered value equals the expected old value;
+    3. `POST <remote>/git-receive-pack`: one command pkt-line `<old> <new> refs/heads/<branch>` with `report-status` (and `delete-refs` for a delete), a flush, and, unless the command is a delete, an empty packfile (`PACK`, version 2, no objects, SHA-1 trailer);
+    4. it reads `report-status`: `unpack ok` and `ok <ref>` are success; `ng <ref> <reason>` and unpack errors are refusals.
+
+    The old value sent is the one just discovered, which receive-pack compares under the ref lock, so a push that lands in between fails instead of being overwritten. Redirects are not followed.
+  - `isAncestor` walks parents through the binding (`readCommit`), at most 500 commits; anything unreadable or deeper answers false.
+  - `forgeMerge(binding, repo, { head, base, branch })` refuses unless `base` is the branch's current head (`base_not_current`) and `head` descends from it (`not_fast_forward`). It then mints a write token with a 120 s TTL, calls `fastForward`, and reads the branch back through the binding; it must equal `head` (`verify_mismatch`).
+  - The token is sent only in the header (the `?expires=` suffix is stripped). It is never logged, stored, audited or returned.
+- **Why fast-forward only.** A fast-forward needs no new objects, so the Forge never builds commits, trees or packs, and the merged SHA is exactly the SHA the checks passed. receive-pack does not refuse a non-fast-forward unless the server is configured to (git's client does that), so the Forge's own ancestry check is the guard. A change request whose head does not contain the current `main` is `not_fast_forward`: the contributor updates the branch (a rebase, or a merge commit of their own), and the checks run again on the new head. Merge commits made by the Forge are not planned.
+- **The spike** (`POST /v1/forge/merge-spike {confirm: "SPIKE"}`, approvers only; operators and service tokens get 403).
+  - It forks `platform` once into the scratch repository `merge-spike` (`fork`, default branch only) and reuses it afterwards. While the fork is in progress it answers 202. The `import` fallback was not built: it would put a read token into the import's recorded source URL.
+  - On `merge-spike` it takes main's head H and its first parent P, removes a leftover `spike` branch, creates `refs/heads/spike` at P, fast-forwards it P → H with `forgeMerge`, checks through the binding that it resolves to H, deletes it, and checks that `main` did not move. It always tries to delete the branch, even after a failed step.
+  - Every push goes to the remote of `merge-spike`, which must be this account's Artifacts host and that exact path; `forgeMerge` refuses the repository `platform` (`canonical_not_enabled`).
+  - The audit event `forge.merge_spike` records the outcome and every step (ref, old, new, reason), without the token.
+- **Not verified against the live service.** The protocol details (capability names, the empty pack accepted for a create or an update, a `report-status` without side-band, the `delete-refs` capability) follow the Git protocol and Cloudflare's statement that Artifacts speaks standard smart HTTP. The spike is the test. If any of them is wrong, a step records `ok: false` with the reason (`capability_missing:…`, `push_http_…`, `rejected:…`, `unpack_failed:…`, `verify_mismatch`), the route answers 502, and nothing outside `merge-spike` is touched.
+- **Next, G3b.** `merge_change` (§2.4) on canonical `main` waits for the cut-over (G6). While GitHub is canonical and `mirror-to-forge.yml` pushes GitHub's main to `platform`, a Forge merge would diverge from the mirror: the next mirror push would be a non-fast-forward. Until then the Forge computes its verdict (§5d) and GitHub merges.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):
