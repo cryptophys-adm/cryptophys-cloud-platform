@@ -137,6 +137,14 @@ async function criticalReports(db: D1Database, now: number): Promise<Notice> {
   };
 }
 
+/**
+ * Findings the Supervisor turns into routine registrations by itself, one an hour per Worker (ADR-0013 phase 3).
+ * They stay in the notice's lines, but not in its fingerprint: the owner gets one email when they appear and one
+ * when they are all registered, not one per registration (owner 2026-11-12, 23 XAUUSD engines). A finding that
+ * needs the owner (a seat, a privileged agent, a refused external organ, a changed host) still changes it.
+ */
+export const SELF_REGISTERING_FINDINGS: ReadonlySet<string> = new Set(["unregistered_engine", "unregistered_agent"]);
+
 async function organism(db: D1Database): Promise<Notice> {
   let row: { main_sha: string; status: string; findings: string } | null = null;
   try { row = await db.prepare("SELECT main_sha, status, findings FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first<{ main_sha: string; status: string; findings: string }>(); } catch { row = null; }
@@ -144,8 +152,13 @@ async function organism(db: D1Database): Promise<Notice> {
   try { const f = JSON.parse(row?.findings ?? "[]"); if (Array.isArray(f)) findings = f; } catch { findings = []; }
   return {
     topic: "organism", active: findings.length > 0,
-    fingerprint: await fp(findings.map((f) => `${f.kind}:${f.subject}`)),
-    title: findings.length ? `The platform's DNA and its registries differ: ${findings.length} item(s)` : "Every organ and agent in the DNA is registered",
+    fingerprint: await fp([
+      ...findings.filter((f) => !SELF_REGISTERING_FINDINGS.has(f.kind)).map((f) => `${f.kind}:${f.subject}`),
+      ...(findings.some((f) => SELF_REGISTERING_FINDINGS.has(f.kind)) ? ["self-registering"] : []),
+    ]),
+    title: findings.length
+      ? `The platform's DNA and its registries differ: ${findings.length} item(s)${findings.every((f) => SELF_REGISTERING_FINDINGS.has(f.kind)) ? ", all being registered automatically" : ""}`
+      : "Every organ and agent in the DNA is registered",
     lines: findings.slice(0, 10).map((f) => f.detail), link: `${CONSOLE_URL}#/agents`,
   };
 }

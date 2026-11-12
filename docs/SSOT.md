@@ -64,7 +64,7 @@ These hold everywhere:
 ## The living platform (ADR-0013)
 
 - **DNA.** Every Worker declares itself in `workers/<dir>/organism.json`: service, deploy unit, Access, rollback, drift probe, hosted agents (voter or not), AI engines. CI fails when a static list (deploy units, drift probes, Access, rollback, council, kernel agents, vote bindings, engines, names) disagrees with the DNA.
-- **Census (phase 2).** The Forge compares the DNA of each main commit with `service_registry`, `agents` (and their seats) and `engines` (`forge_organism_census`, retaken every 30 min). Differences become the owner notice `organism` and appear on the Console Agents page.
+- **Census (phase 2).** The Forge compares the DNA of each main commit with `service_registry`, `agents` (and their seats) and `engines` (`forge_organism_census`, retaken every 30 min). Differences become the owner notice `organism` and appear on the Console Agents page. Findings the Supervisor registers by itself (an unregistered engine or agent) send one email when they appear and one when all are registered, not one per registration (owner 2026-11-12).
 - **Self-registration (phase 3).** The Supervisor turns census findings into consensus proposals, one per cycle:
   - `register_agent` and `register_engine` are routine: consensus only.
   - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `critical` only.
