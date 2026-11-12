@@ -506,7 +506,7 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
     - When any file cannot be resolved or typed, the Worker gets `modules_error` and no `modules`.
   - Per Worker, `limits`: whether its wrangler.toml has `[limits]`.
 - **Eligibility changes** (`native-deploy.ts`). Everything else is as in §5g.
-  - `limits` (new): a Worker with `[limits]` is ineligible, because a version upload does not carry it. This keeps the Forge (`cpu_ms = 300000`) on its workflow until G2c-2.
+  - `limits` (new): a Worker with `[limits]` is ineligible, because a version upload does not carry it. This keeps the Forge (`cpu_ms = 300000`) on its workflow until G2c-2. (Lifted by the G2c-2 wiring, §5l: such a Worker now deploys only through the verified configuration plan.)
   - `multi_module` now means only that the manifest has no `modules`.
     - A multi-module Worker is eligible when every external file is a stored module and the bundle imports each one by its name.
     - Each module's bytes must match its sha256 and size. Otherwise it is ineligible with `module_missing`, `module_hash_mismatch` or `module_not_imported`.
@@ -548,7 +548,7 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
 
 ### 5l. Step G2c-2 (modules): configuration, bindings and Console assets without GitHub (2026-11-12)
 
-G2c-2 builds, as standalone modules with their own tests, the two pieces G2b left on GitHub: a changed wrangler.toml (`config_changed`) and the Console's static assets (`assets`). Nothing is wired into the deploy path yet; eligibility and execution stay as in §5g until the integration steps below (they follow G2c-1, which rewrites `native-deploy.ts`, `bundles.ts` and the Orchestrator's executor).
+G2c-2 builds, as standalone modules with their own tests, the two pieces G2b left on GitHub: a changed wrangler.toml (`config_changed`) and the Console's static assets (`assets`). Integration steps 1–5 below are now wired for Workers without static assets (see "Wired" at the end of this section); the Console's assets (step 6) and the build script (step 7) are still open, so `assets` keeps its §5g answer.
 
 - **What was built.**
   - `deployment-orchestrator/src/config-diff.ts`, pure functions:
@@ -624,7 +624,7 @@ G2c-2 builds, as standalone modules with their own tests, the two pieces G2b lef
     - the session (`POST …/scripts/{name}/assets-upload-session`) uses the deploy token;
     - each bucket upload (`POST …/workers/assets/upload?base64=true`, multipart, one part per hash with the file's content type) uses only the session JWT;
     - with no buckets, the session JWT is the completion token.
-- **Integration steps left** (after G2c-1 lands):
+- **Integration steps** (1–5 done, see "Wired" below; 6 and 7 left):
   1. **Keep the configs.** `storeBundles` must also write each Worker's wrangler.toml text, for example `bundles/<sha>/config/<worker>.toml` (the `BuiltModule` already holds it). The manifest names it, so eligibility can read the running and target configs. Today the manifest holds only `config_sha256`.
   2. **Read full version records.** `CloudflareWorkers` needs a call that returns a version's full `result`: the raw `resources.bindings` and `resources.script_runtime`, not only the digest.
   3. **Eligibility.** In `nativeDeployEligible`, replace `config_changed` with `planConfigChange(running, target, activeBindings)` read at execution time. An ineligible plan keeps its reason in the `native_deploy` audit payload. The plan is computed again in the executor right before the upload, because the active bindings can change between queueing and execution.
@@ -653,6 +653,27 @@ G2c-2 builds, as standalone modules with their own tests, the two pieces G2b lef
      4. treat a 3xx as a refused token, and treat anything but a JSON 200 whose `commit` equals the build's commit as a failure (exit 3, as for the report).
 
      The Forge test `FD4` asserts the script does not post yet, so that change must update that assertion.
+- **Wired: steps 1–5, for Workers without static assets (2026-11-12).** Tests: `control-plane-shared/test/native-deploy-g2c2-wire.test.ts`.
+  - **Step 1, the Forge keeps the configs** (`forge/src/bundles.ts`). `storeBundles` writes each Worker's wrangler.toml, the committed source exactly as hashed into `config_sha256`, to `bundles/<sha>/config/<worker>.toml`, before the manifest. The manifest names it per Worker as `config: "config/<worker>.toml"`. The schema stays `forge-bundles.v1`: a manifest without `config` (built before this step) reads as "config unknown", and a `config` that is not exactly that path makes the manifest unreadable.
+  - **Step 2, full version records** (`native-rollback.ts`). `CloudflareWorkers.version(script, id)` returns the API's whole `result` (the raw `resources.bindings` and `resources.script_runtime`); `versionBindingSet` now reads through it. `scriptSetting` makes the two script-level calls (`PUT …/schedules`, `PATCH …/script-settings`). A version upload with a plan sends `bindings`, `keep_bindings` (only `secret_text` and `secret_key`) and the target's `limits`; without a plan it is the G2b upload, unchanged.
+    - The client now calls its fetcher as a plain function. Called as a method (`this.fetcher(…)`), the runtime's global `fetch` throws `Illegal invocation` in workerd (checked locally with the repository's workerd). Reproduced locally: with the default `fetch`, the native rollback and deploy calls would fail at their first API call before this fix; the tests inject plain fake fetchers, which hid it. The Console assets client (`assets-upload.ts`) has the same pattern and is not wired yet.
+  - **Step 3, eligibility** (`nativeDeployEligible`). A Worker needs a configuration plan when its `config_sha256` differs from the running version's, or when either side has `[limits]` (a code-only upload would not carry them). For such a Worker, in two passes:
+    1. without Cloudflare, for every Worker of the unit: both configs are named in their manifests (`config_not_stored`), present in R2 (`config_missing`) and match `config_sha256` (`config_hash_mismatch`); the R2 key is recorded in `file`. Then everything the two configs alone decide (`configRefusal`, split out of `planConfigChange` unchanged), and two fail-closed checks of this path: `limits_removed` (the running config has `[limits]`, the target has none, so the version's limits would be unknown) and `placement_unverified` (either config has `[placement]`, which is sent but never read back; no platform Worker has one);
+    2. then, read only with the deploy token: the active deployment must be one version at 100% (`active_deployment_split`, `active_deployment_unreadable`), its full record readable (`active_bindings_unreadable`), and `planConfigChange(running, target, activeBindings)` must accept (any of its reasons, unchanged).
+
+    Every reason reaches the `native_deploy` audit payload of the GitHub dispatch, as before, and a queued deploy records the plan's changes and steps in `deployment.native_deploy_queued` (`config`). Callers without a Cloudflare reader keep the G2b and G2c-1 answers (`config_changed`, or `limits`). `assets` is still checked first and unchanged.
+  - **Step 4, upload and check** (`executeNativeDeploy`). Right before the upload, the executor reads both configs from R2 again (hashes checked) and plans again against the version it has just captured. A refusal there is `config_plan_refused: <reason>`, before any upload. The version is uploaded with `uploadBindings(plan)`, `keep_bindings: plan.keep_bindings` and `plan.metadata`. Then `verifyPlannedBindings` (`planned_bindings_differ: <reason> (<binding>)`) and `verifyVersionSettings` (`version_settings_differ: <reason>`) run before the deploy call. The code-only path keeps the G2b digest check.
+  - **Step 5, order.** Capture, plan again, upload, verify bindings and settings, deploy, verify live, apply `plan.steps` in order (`PUT schedules`, then `PATCH script-settings`), and, after every Worker, record the desired version.
+    - Each step is recorded before its call, so an ambiguous failure is restored too. Its answer must show what was sent: the schedules list equal to the crons, or the script settings containing the observability. Otherwise the deploy fails.
+    - On any failure after a step was applied, each applied step's `restore` body is applied, newest first, then every changed deployment is restored to its captured version, newest first. The request fails with the same critical report as before, which also lists `settings_applied`.
+  - **`[limits]`.** A Worker with `[limits]` is no longer refused for that alone. It deploys only through the plan (even with an unchanged wrangler.toml), and its version gets traffic only when `script_runtime.limits` shows the planned values (`limits_differ` otherwise). So the Forge can take the native path. Without a plan reader it is still `limits`.
+  - **Still on GitHub after this step:** the Console (`assets`), any change the plan refuses (above), and a change to a deploy-time `--var` value (kept verbatim from the active version, never set from here).
+  - **Not verified live.** These are assumptions, checked only against Cloudflare's documentation and the fake API in the tests:
+    - that a version upload accepts `bindings` together with `keep_bindings: ["secret_text", "secret_key"]` and keeps the secrets of the script's latest version;
+    - that it accepts `limits` in the metadata and reports it in `resources.script_runtime.limits` (if it does not, every planned deploy of the Forge fails before traffic moves, `version_settings_differ: limits_differ`);
+    - that `GET …/versions/{id}` returns the binding records in the shape a version upload takes, with only a service's `environment` and a Durable Object's `namespace_id` added (if the API adds other fields, `planned_bindings_differ` stops the deploy before traffic);
+    - that `PUT …/schedules` takes a JSON array of `{ cron }` and answers `{ schedules: [{ cron, … }] }`, and that `PATCH …/script-settings` takes JSON `{ observability }` and answers with the script's `observability` (if not, the deploy fails after the live check and everything is restored);
+    - that a failed eligibility read at execution time is terminal: the queued request fails (`not_eligible: active_deployment_unreadable`) with nothing changed, and a later proposal queues again.
 
 ### 6. Owner decisions (2026-11-08)
 
