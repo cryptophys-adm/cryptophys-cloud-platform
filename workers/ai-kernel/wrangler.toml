@@ -124,6 +124,13 @@ binding = "OWNER_TELEGRAM"
 service = "xauusd-ai-trading-assistant"
 entrypoint = "OwnerNotifier"
 
+# Owner 2026-11-12: Omega, the MT5 VPS bridge and its EA in the AI Mesh. The xauusd AI Worker's OmegaHealth
+# has one read-only method, health(); no control and no account figure (execution-hosts.ts).
+[[services]]
+binding = "XAUUSD_OMEGA_HEALTH"
+service = "xauusd-ai-trading-assistant"
+entrypoint = "OmegaHealth"
+
 # Agent processes: SQLite-backed Durable Objects (Workers Paid included usage).
 [[durable_objects.bindings]]
 name = "SUPERVISOR"

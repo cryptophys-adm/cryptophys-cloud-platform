@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Activity, BarChart3, Bot, Dna, Network, Radio, UserPlus } from "lucide-react";
 import MeshGraph from "../components/MeshGraph";
+import ExecutionHosts from "../components/ExecutionHosts";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -10,7 +11,8 @@ import { ActivityChart, BarList, DataTable, STATUS, Stat, StatusBar, bucketize, 
 /**
  * AI Mesh (owner 2026-11-11: "masih statis belum autonomous dan dinamis"). The graph, the activity and
  * the roster come from GET /v1/mesh: what each agent did in the last 24 h (syscalls, council votes,
- * reports), the Forge census (self-awareness) and the self-registration proposals. Polled every 60 s
+ * reports), the Forge census (self-awareness), the self-registration proposals and the execution hosts
+ * outside Cloudflare (Omega, the MT5 VPS bridge and its EA; owner 2026-11-12). Polled every 60 s
  * while the tab is visible.
  */
 const TIER_RAMP = ["#86b6ef", "#3987e5", "#1c5cab"];
@@ -120,6 +122,8 @@ export default function Agents() {
         </div>
         {hasLive && <StatusBar className="mt-3" segments={LIVENESS.map((l) => ({ key: l.key, label: l.label, value: count(l.key), color: l.color }))} />}
       </Panel>
+
+      <ExecutionHosts hosts={listOf(mesh.data, "execution_hosts")} loading={mesh.loading} />
 
       <div className="grid gap-3 lg:grid-cols-2">
         <Panel title={`Agent activity · 24 h · ${activity24.length} syscalls`} icon={<Activity className="h-3.5 w-3.5 text-cyan-300" />}>
