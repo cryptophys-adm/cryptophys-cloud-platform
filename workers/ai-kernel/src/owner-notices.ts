@@ -6,6 +6,8 @@
 //                      proposals (a click is needed);
 //   drift            - a service drifted, unhealthy, never observed, or not observed for 45 minutes;
 //   critical_reports - an agent published a critical report in the last 24 hours;
+//   build_minutes    - the month's measured Workers Builds minutes, or their projection, reach 80% of the
+//                      free-tier budget (owner 2026-11-12; control-plane-shared/src/build-usage.ts);
 //   organism         - the Forge's census (ADR-0013) found the DNA and the live registries apart:
 //                      a declared Worker or agent not registered, an agent no longer declared, a change.
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
@@ -20,9 +22,10 @@
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
+import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
-export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism"] as const;
+export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes"] as const;
 export type Topic = (typeof TOPICS)[number];
 /** Observations older than this (45 min, three missed Drift Detector runs) count as stale. */
 export const STALE_MS = 45 * 60_000;
@@ -147,9 +150,32 @@ async function organism(db: D1Database): Promise<Notice> {
   };
 }
 
+async function buildMinutes(db: D1Database, now: number): Promise<Notice> {
+  const u = await buildUsage(db, now);
+  const active = u !== null && (u.status === "warning" || u.status === "over");
+  // The fingerprint changes once per 10% step, so the owner hears of a rising month without one email per build.
+  const step = u ? Math.floor(Math.max(u.minutes, u.projected_minutes ?? 0) / (u.budget_minutes / 10)) : 0;
+  const lines = u && active ? [
+    `${u.month}: ${u.minutes} of ${u.budget_minutes} build minutes measured (${u.builds} builds${u.unmeasured_builds ? `, ${u.unmeasured_builds} without a measured duration` : ""})`,
+    ...(u.projected_minutes !== null ? [`At this month's pace: about ${u.projected_minutes} minutes by the end of the month`] : []),
+    ...u.by_worker.slice(0, 3).map((w) => `${w.worker}: ${w.minutes} min, ${w.builds} builds`),
+    `Budget: the Workers Builds free tier (${u.included_minutes.free} min/month); the account's Workers Paid plan includes ${u.included_minutes.paid}`,
+  ] : [];
+  return {
+    topic: "build_minutes", active,
+    fingerprint: active && u ? await fp([u.month, u.status, String(step)]) : "",
+    title: !u || u.status === "no_data" ? "Workers Builds minutes are not measured yet"
+      : u.status === "stale" ? `Workers Builds minutes: last measured at ${u.last_collection?.collected_at ?? "unknown"} (${u.minutes}/${u.budget_minutes} this month)`
+      : active
+      ? `Workers Builds minutes: ${u.status === "over" ? "over" : "near"} the free-tier budget (${u.minutes}/${u.budget_minutes} this month)`
+      : `Workers Builds minutes within the free-tier budget (${u.minutes}/${u.budget_minutes} this month)`,
+    lines, link: `${CONSOLE_URL}#/code`,
+  };
+}
+
 /** The live notices, for the Console and for reconcileNotices. Read-only. */
 export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db)];
+  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now)];
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));

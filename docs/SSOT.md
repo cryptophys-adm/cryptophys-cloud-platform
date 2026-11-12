@@ -58,7 +58,7 @@ These hold everywhere:
 - **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/`, numbered from 0001; each Worker's readiness lists the ones it needs.
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
-- **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). Other tables are kept.
+- **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). Other tables are kept.
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).
 
 ## The living platform (ADR-0013)
@@ -75,7 +75,7 @@ These hold everywhere:
 
 - **Current state.** Consensus mode is `deploy` (owner, 2026-11-07). The kill switch is on.
 - **Routine actions.** Agents propose. The council votes: the enabled agents holding a seat (`agents.voter`, ADR-0013). Migration 0041 seeded the nine founding seats; new ones come only through `admit_voter`. The Policy Engine has a veto.
-- **Limits.** One executed action per action and target per hour, and ten deploys or rollbacks per 24 hours (owner 2026-11-10, was six). Deploys run only at SAFE minutes.
+- **Limits.** One executed action per action and target per hour, and ten deploys or rollbacks per 24 hours by default (owner 2026-11-10, was six); the council has since set `daily-deploy-limit` to its bound of 20. Deploys run only at SAFE minutes.
 - **Council-adjustable policy (owner 2026-11-10).** The council may change two Policy Engine parameters by consensus alone (`set_policy_parameter`, routine): `daily-deploy-limit` (1–20) and `target-actions-per-hour` (1–3). The hard bounds live in `control-plane-shared/src/policy-params.ts`; a stored value outside them is clamped. Each change is written with a `policy.parameter_changed` audit event. Everything else in the Policy Engine stays code: no trading or funds, the owner click for critical actions, the kill switch, mode shadow and Access.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.
@@ -84,6 +84,10 @@ These hold everywhere:
   - **Growth** (doubled AI budgets) applies only when the owner sets `power_mode_override = growth`. The Supervisor only reports "growth eligible".
   - Every automatic mode change is written with a `metabolism.power_mode_changed` event in the audit chain.
 - **Cloudflare usage and billable cost (Console: Organism and Metabolism pages).** `GET /v1/usage` on the Platform API reads the GraphQL Analytics API and Billable Usage API against the Workers Free limits (Workers 100k requests/day, D1 5M rows read and 100k written/day, Workers AI 10k neurons/day, KV 100k reads and 1k writes/day) and billable product overages (Regular Twitch Neurons, Container Memory, Container Disk). It supports `CF_ANALYTICS_TOKEN` / `CF_BILLING_TOKEN` and `CF_ACCOUNT_ID`. When billable costs are observed, automated throttling intents (`INTENT_CONSERVE_AI_NEURONS`, `INTENT_REDUCE_CONTAINER_RUNTIME`) are emitted to the AI Kernel Supervisor and Deployment Orchestrator, triggering survival power mode to throttle execution limits and maintain Cloudflare Free Tier operation.
+- **Workers Builds minutes (owner 2026-11-12).** The deploy limit above is the platform's own safety limit, not a Cloudflare quota: Cloudflare sets no daily deploy limit for Workers (only rollback to the last 100 versions), and deploys run on GitHub Actions, so they use no build minutes. Only Workers Builds does: the type-check and Console UI build of each main commit (`cryptophys-forge-typecheck`), each change request (`cryptophys-forge-typecheck-cr`), and any other Worker on the account connected to Workers Builds.
+  - Allowance: 3,000 build minutes a month and 1 build at a time on Workers Free; 6,000 and 6 on Workers Paid (the account's plan). The platform holds itself to the free-tier 3,000 (`control-plane-shared/src/build-usage.ts`).
+  - Measured, not estimated: once an hour the Forge lists every Worker's builds and Previews' builds through the Workers Builds API (read only, `CF_BUILDS_API_TOKEN`) and keeps each finished build's duration, rounded up to whole minutes (migration 0049, `workers/forge/src/build-usage.ts`). A build without a start and a stop is shown as unmeasured.
+  - `GET /v1/forge/build-usage`; the Console Code page shows the month, the projection and the minutes per Worker. The owner notice `build_minutes` opens when the measured or projected month reaches 80 % of the budget, and changes once per 10 % step. The month is the UTC calendar month; Cloudflare's billing cycle may differ.
 - **CI gate for consensus deploys.** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
 
 ## Source, CI and deploy (ADR-0012)

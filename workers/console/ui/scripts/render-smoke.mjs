@@ -35,6 +35,12 @@ const MOCK = {
   ] },
   "/api/forge/v1/forge/census": { census: [{ main_sha: "6872844" + "0".repeat(33), status: "changes", organs: 12, agents: 10, engines: 9, voters: 9, taken_at: "2026-11-09T12:04:00.000Z",
     findings: [{ kind: "unregistered_agent", subject: "forge-steward", detail: "agent forge-steward on cryptophys-forge is in the DNA but not registered (asks for a council seat), which is a long line that wraps on a phone" }], genome: [] }] },
+  "/api/forge/v1/forge/build-usage": { usage: { schema: "build-usage.v1", month: "2026-11", month_start: "2026-11-01T00:00:00.000Z", budget_minutes: 3000, included_minutes: { free: 3000, paid: 6000 }, warn_ratio: 0.8,
+    minutes: 412, builds: 214, unmeasured_builds: 1, avg_minutes: 1.9, projected_minutes: 1030, status: "ok",
+    by_worker: [{ worker: "cryptophys-forge-typecheck", builds: 120, minutes: 240, unmeasured: 0 }, { worker: "cryptophys-forge-typecheck-cr", builds: 90, minutes: 166, unmeasured: 1 }, { worker: "cryptophys-aether", builds: 4, minutes: 6, unmeasured: 0 }],
+    by_day: [{ day: "2026-11-12", builds: 20, minutes: 41 }], last_collection: { collected_at: "2026-11-12T09:04:00.000Z", outcome: "collected", workers: 3, builds_seen: 60, builds_new: 4, error: null }, observed_at: "2026-11-12T09:10:00.000Z" },
+    builds: [{ build_uuid: "b-1", worker: "cryptophys-forge-typecheck-cr", branch: "cr/299", commit_sha: "b4766dc8f33efc2d8eab859314a8e2280ce6f5bf", outcome: "success", status: "stopped", created_on: "2026-11-12T07:47:50.000Z", stopped_on: "2026-11-12T07:49:40.000Z", duration_s: 104, billed_minutes: 2, queued_s: 3 },
+      { build_uuid: "b-2", worker: "cryptophys-forge-typecheck", branch: "main", commit_sha: null, outcome: null, status: "stopped", created_on: "2026-11-12T08:10:00.000Z", stopped_on: null, duration_s: null, billed_minutes: null, queued_s: null }] },
   "/api/forge/v1/forge/commits": { commits: [{ sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" }] },
   "/api/kernel/v1/notices": { email: "not_configured", notices: [
     { topic: "owner_attention", active: true, fingerprint: "f", title: "1 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor): review at https://nexus.cryptophys.work/console/#/recovery/plan_00000000-0000-4000-8000-000000000000"] },

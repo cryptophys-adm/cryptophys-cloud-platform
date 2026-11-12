@@ -16,6 +16,8 @@
 //   - Change requests (phase 4, shadow; changes.ts): POST /v1/forge/changes {confirm: "REGISTER"} and
 //     POST /v1/forge/changes/outcome {confirm: "REPORT"} from the CI service token only;
 //     GET /v1/forge/changes lists them with the Forge's merge verdict and the merge parity.
+//   - GET /v1/forge/build-usage (owner 2026-11-12): the account's measured Workers Builds minutes this month
+//     against the free-tier budget, and the newest collected builds (build-usage.ts).
 //   - GET /v1/forge/deploy-plans (phase 4, shadow; deploy-plan.ts): the Forge's deploy plan for main
 //     next to the Orchestrator's GitHub-based plan for the same inputs, and the deploy-plan parity.
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
@@ -29,6 +31,8 @@ import { recordTypecheckReport } from "./typecheck.ts";
 import { listChanges, recordOutcome, registerChange } from "./changes.ts";
 import { listDeployPlans } from "./deploy-plan.ts";
 import { latestCensus } from "./census.ts";
+import { recentBuilds } from "./build-usage.ts";
+import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
@@ -212,6 +216,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
+      if (request.method === "GET" && url.pathname === "/v1/forge/build-usage") return json({ usage: await buildUsage(env.DB, Date.now()), builds: await recentBuilds(env.DB, Number(url.searchParams.get("limit") ?? "15") || 15) });
       if (request.method === "GET" && url.pathname === "/v1/forge/census") return json(await latestCensus(env.DB, Number(url.searchParams.get("limit") ?? "5") || 5));
       if (request.method === "GET" && url.pathname === "/v1/forge/deploy-plans") return json(await listDeployPlans(env.DB, Number(url.searchParams.get("limit") ?? "10") || 10));
       if (request.method === "GET" && url.pathname === "/v1/forge/changes") return json(await listChanges(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
