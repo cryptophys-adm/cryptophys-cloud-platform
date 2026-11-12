@@ -1,10 +1,14 @@
 # ADR-0014: The evolution loop: the platform writes, merges and deploys its own improvements
 
-- **Status:** Proposed (draft for the owner's review, 2026-11-12). Nothing here is built yet.
+- **Status:** Accepted (owner, 2026-11-12). Not built yet. Building waits for the GitHub App (Q3) and the AI Gateway budget (Q2).
 - **Owner direction (2026-11-12):** "kekuatan organism ini adalah otak yang terus berkembang dan melakukan evolusi melalui auto-deployment untuk menyesuaikan dan terus meningkatkan kemampuan diri" (the organism's strength is a brain that keeps growing and evolves through auto-deployment, to adapt and keep improving its own abilities).
 - **Owner decisions (2026-11-12):** "tidak perlu shadow bisa langsung production dan merge dilakukan semua autonomous" (no shadow phase; straight to production; every merge is autonomous).
   1. **No shadow phase.** Each step goes live in production when it is built.
   2. **Merges are autonomous.** Neither the owner nor the orchestrator merges a pull request that the loop may merge.
+- **Owner answers to this draft (2026-11-12):**
+  - **Q1, guard paths: fully autonomous.** A change to the platform's own guards merges by consensus too, with no owner click (§3).
+  - **Q2, code model: a stronger model through AI Gateway**, with a daily token budget the owner sets.
+  - **Q4, quotas: 2 open evolution pull requests, 3 merged per 24 h, at most 400 changed lines per change.**
 - **Builds on:**
   - ADR-0007 (AI Worker OS, tiers);
   - ADR-0009 (consensus, the owner's click, the Policy Engine);
@@ -69,10 +73,10 @@ Every evolution runs one loop.
    - **GitHub's required checks**: branch protection is unchanged and never bypassed;
    - **the Forge's checks**: tests, bundles, type-check, Console build and secret scan.
 
-   The Forge's owner-only reasons are computed as for every change request.
+   The Forge computes its guard-path reasons and test guard as for every change request.
 4. **Decide.** The Supervisor proposes **`merge_change`**.
    - The council votes and the Policy Engine may veto.
-   - A change that touches an owner-only path is critical (§3).
+   - A change that touches a guard path needs a unanimous council and meets the other conditions of §3; a change that §3 refuses is vetoed.
 5. **Merge.** On an executed `merge_change`, the Deployment Orchestrator squash-merges through the GitHub API (§5), checking that the head SHA still equals the one that was verified.
 6. **Deploy.** This is the existing path: `deploy_commit` by consensus, in the order of the Forge's deploy plan, with automatic rollback.
 7. **Measure fitness.** For 60 minutes after the deploy, the Supervisor compares the evolution's target metric and a fixed set of guard metrics with the 24 hours before.
@@ -89,14 +93,14 @@ Every evolution runs one loop.
 | `evolver` (new agent, tier 2) | read the repository; push only to `evo/*` branches; open pull requests; `memory.recall` | merge, deploy, read secrets, touch any other branch, change its own registration or capabilities |
 | Supervisor | sense, record intents, propose `merge_change` and `revert_change`, measure fitness | write code |
 | Council | vote on `merge_change` and `revert_change` | — |
-| Policy Engine | veto (limits, owner-only paths, freeze) | — |
+| Policy Engine | veto (limits, guard-path conditions, §3 refusals, freeze) | — |
 | Deployment Orchestrator | the merge itself (head SHA re-checked), then the existing deploy path | merge a head that was not verified |
 
 `merge_change` also covers pull requests the orchestrator or a person opens. Once this is built, the orchestrator no longer merges by hand: it opens the pull request and the loop merges it.
 
-### 3. Owner-only paths: the owner's click, unless the owner decides otherwise
+### 3. Guard paths: autonomous, under stricter conditions (owner 2026-11-12)
 
-An evolution that could rewrite the Policy Engine, the consensus rules or its own limits could remove every other limit in one merge. So a change touching any of the following stays **critical**: consensus plus the owner's click, per ADR-0009.
+The owner chose to let changes to the platform's own guards merge by consensus too, with no owner click. The guard paths are:
 
 - Today's `CRITICAL_PATHS`:
   - auth and Access;
@@ -106,20 +110,33 @@ An evolution that could rewrite the Policy Engine, the consensus rules or its ow
   - ADR-0009 and ADR-0012;
   - the type-check harness.
 - Destructive migrations.
-- Removed or weakened test assertions.
 - **Added by this ADR:**
   - ADR-0014 itself;
   - the evolution limits file (`control-plane-shared/src/evolution-limits.ts`);
   - the `evolver` agent's registration and capabilities;
-  - `.github/workflows/` and `.github/scripts/`;
-  - branch protection.
-- Anything that names trading (ADR-0009 amendment 2026-11-12: a trading action is always critical).
+  - `.github/workflows/` and `.github/scripts/`.
 
-**Open question for the owner (Q1).** The owner asked that "merge dilakukan semua autonomous". This draft reads that as every change request outside these paths, which is almost every change. Making the owner-only paths autonomous too would let one bad merge disable the Policy Engine that checks every later merge. The recommendation is to keep the click there; the owner decides.
+An evolution that could rewrite the Policy Engine or the consensus rules could remove every other limit in one merge. So a guard-path change is not a click, but it meets four stricter conditions:
+
+1. **Unanimous council.** Every eligible seat approves; one rejection or abstention blocks it.
+2. **At most one guard-path merge per 24 h**, and never two guard paths in one change.
+3. **A 24-hour fitness window** instead of 60 minutes, with automatic revert.
+4. **The owner is told** of each guard-path merge by email, Telegram and the Console. The owner can still pull the brake: the kill switch, or mode `shadow`.
+
+**What stays refused: no vote can merge these, guard path or not.**
+- A diff that removes or weakens a test assertion (the Forge's test guard). Tests may only be added or strengthened.
+- A diff that weakens Access or authentication, disables TLS, or lowers a hard bound below its value in the merged code before it.
+- Fund movement, in any form (ADR-0009 amendment 2026-11-12). A trading *action* stays critical (the owner's click) whatever the code says. A code change that would let a trading action run without that click is refused.
+- Branch protection and required checks. They live in GitHub's settings, outside the repository. The merge App has no administration permission, so no merged change can alter them.
+
+These refusals are enforced in three places that one merge cannot change at the same time:
+- the Policy Engine's veto, as merged before the change;
+- the Forge's verdict;
+- GitHub's branch protection.
 
 ### 4. Hard limits
 
-These live in reviewed code (`evolution-limits.ts`) and are owner-only, like the Policy Engine's hard bounds.
+These live in reviewed code (`evolution-limits.ts`), a guard path (§3). An evolution may change them only under §3's conditions, and may never raise them above the values the owner set in Q4 without the owner.
 
 | Limit | Value |
 |---|---|
@@ -129,7 +146,8 @@ These live in reviewed code (`evolution-limits.ts`) and are owner-only, like the
 | Per Worker | one evolution in flight |
 | Quiet conditions | no merge while a deploy runs, a service is drifted, a critical report is open, or the kill switch is on |
 | Freeze | after 2 unfit evolutions in a row, or any failed revert; only the owner lifts it (`consensus_controls.evolution = on`) |
-| Model budget | the evolver's tokens per day are capped (Q2) and counted in the Metabolism page |
+| Model budget | the evolver's tokens per day are capped at the owner's AI Gateway budget and counted in the Metabolism page |
+| Guard-path merges | one per 24 h, unanimous council, 24-hour fitness window (§3) |
 
 **Never, by any evolution, vote or click** (ADR-0009, AGENTS.md):
 - move funds;
@@ -155,7 +173,7 @@ The owner chose to go straight to production. The safety that a shadow phase wou
 - **Small diffs and daily quotas** (§4).
 - **Fitness measurement with automatic rollback and revert** (§1, step 7).
 - **The freeze** after two unfit evolutions.
-- **The owner-only paths** (§3).
+- **The guard-path conditions and the refusals** (§3).
 
 ### 7. Build order (each step live in production when merged)
 
@@ -171,16 +189,13 @@ The owner chose to go straight to production. The safety that a shadow phase wou
    - Evolution history, outcomes and fitness on a Console "Evolution" page.
    - The owner notice `evolution` (frozen, or waiting for the owner's click).
 
-### 8. Open questions for the owner
+### 8. Owner decisions and what is still open
 
-- **Q1. Owner-only paths (§3).** Keep the owner's click (recommended), or make them autonomous too?
-- **Q2. The code model.** Writing correct code and tests needs a stronger model than the Workers AI free tier (250 requests a day, 10,000 neurons). There are two choices:
-  - a stronger model through AI Gateway, with a daily token budget the owner sets;
-  - Workers AI only, which means small, mechanical evolutions.
-
-  Either way, the loop counts every token against its budget.
-- **Q3. The GitHub App.** The owner creates it (dashboard steps will be provided) and shares only its id. Its key goes into the Secrets Store by the owner's own hand.
-- **Q4. Quotas.** Are 2 open, 3 merged per day and 400 lines per change the right starting limits?
+- **Q1. Guard paths:** fully autonomous, under §3's conditions (owner, 2026-11-12).
+- **Q2. Code model:** a stronger model through AI Gateway (owner, 2026-11-12).
+  - Still open: the model and the daily token budget, both the owner's. Until a budget is set, the evolver writes nothing.
+- **Q3. The GitHub App:** still open, an owner action. The owner creates it from dashboard steps that will be provided, and shares only its id. Its private key goes into the Secrets Store by the owner's own hand. Until then, E1 merges cannot run.
+- **Q4. Quotas:** 2 open, 3 merged per 24 h, 400 changed lines per change (owner, 2026-11-12).
 
 ## Consequences
 
@@ -193,9 +208,9 @@ The owner chose to go straight to production. The safety that a shadow phase wou
 | A wrong change passes both test suites | fitness measurement, revert, freeze |
 | The model writes plausible but useless code | target metric must move; 7-day memory of failed approaches |
 | Cost runs away | token budget, daily quotas, Metabolism page |
-| The loop weakens its own guards | owner-only paths (§3), test guard, invariants that no vote can change |
+| The loop weakens its own guards | unanimous council, one guard-path merge a day, 24-hour fitness window, the refusals of §3 enforced in three places, the owner's brake |
 
-- **Not changed.** Auth and Access, branch protection, required checks, the Policy Engine's veto, the kill switch, and the prohibition on moving funds.
+- **Not changed.** Branch protection and required checks (outside the repository), the kill switch, and the prohibition on moving funds. Auth and Access, the Policy Engine and the consensus rules may now evolve, by unanimous consensus, but never be weakened (§3).
 
 ## Alternatives considered
 
