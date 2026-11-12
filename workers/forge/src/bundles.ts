@@ -9,6 +9,8 @@
 //     version keeps the running version's bindings; any configuration change still goes through the full deploy.
 //   - `single_module`: false when the bundle imports files it does not inline (for example WebAssembly).
 //   - `assets`: whether the Worker serves static assets, which the module alone does not carry.
+// And, for the whole commit (G2b), `migrations`: the D1 migration files at that commit. Only the GitHub
+// Control Plane deploy applies migrations, so a native deploy requires the running and target lists to be equal.
 // Old bundles are deleted after BUNDLE_RETENTION_DAYS; Workers keep their own uploaded versions for rollback.
 export const BUNDLE_RETENTION_DAYS = 14;
 export const BUNDLE_PREFIX = "bundles/";
@@ -38,7 +40,17 @@ export interface ManifestWorker {
   assets: boolean;
 }
 
-export interface BundleManifest { schema: "forge-bundles.v1"; commit: string; built_at: string; workers: ManifestWorker[] }
+/** `migrations` was added in G2b (still schema v1: a reader treats a manifest without it as "migrations unknown"). */
+export interface BundleManifest { schema: "forge-bundles.v1"; commit: string; built_at: string; workers: ManifestWorker[]; migrations?: string[] }
+
+export const MIGRATIONS_PATH = /^workers\/control-plane-migrations\/([^/]+\.sql)$/;
+
+/** The sorted D1 migration file names of a commit's snapshot (paths relative to the repository root). */
+export function migrationsOf(paths: Iterable<string>): string[] {
+  const out: string[] = [];
+  for (const p of paths) { const m = MIGRATIONS_PATH.exec(p); if (m) out.push(m[1]); }
+  return out.sort();
+}
 
 async function sha256(text: string): Promise<string> {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -69,7 +81,7 @@ export async function manifestEntry(m: BuiltModule): Promise<ManifestWorker> {
 }
 
 /** Write a passed commit's modules and manifest. Returns the manifest written. */
-export async function storeBundles(bucket: BundleBucket, commit: string, built: BuiltModule[], nowMs = Date.now()): Promise<BundleManifest> {
+export async function storeBundles(bucket: BundleBucket, commit: string, built: BuiltModule[], nowMs = Date.now(), migrations?: string[]): Promise<BundleManifest> {
   if (!HEX40.test(commit)) throw new Error("invalid_commit_sha");
   const workers: ManifestWorker[] = [];
   for (const m of built) {
@@ -82,6 +94,7 @@ export async function storeBundles(bucket: BundleBucket, commit: string, built: 
   }
   workers.sort((a, b) => a.name.localeCompare(b.name));
   const manifest: BundleManifest = { schema: "forge-bundles.v1", commit, built_at: new Date(nowMs).toISOString(), workers };
+  if (migrations) manifest.migrations = [...migrations].sort();
   // The manifest goes last: a reader that finds it finds every module it names.
   await bucket.put(`${BUNDLE_PREFIX}${commit}/manifest.json`, JSON.stringify(manifest), { httpMetadata: { contentType: "application/json" } });
   return manifest;

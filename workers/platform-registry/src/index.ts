@@ -9,6 +9,7 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authenticate, isOwner, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
+import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
 import { disableAccount, listAccounts, resyncLogin, upsertAccount, whoAmI, type AccountsEnv } from "./accounts.ts";
 
 export type Env = AccountsEnv & { AGENTS?: AgentRpcBinding };
@@ -172,6 +173,43 @@ export async function recordRollback(env: Env, requestId: string): Promise<{ des
     payload: { previous: existing.desired_version, desired_version: version },
   });
   return { desired_version: version };
+}
+
+/**
+ * ADR-0012 G2b: the Orchestrator's native deploy records the commit it verified live, for every Worker of the
+ * request's deploy unit. Accepted only for a running native deploy request of the last hour whose requested
+ * version is a full commit sha; the desired version is its 12-character tag, as the deploy workflows record it.
+ */
+export async function recordNativeDeploy(env: Env, requestId: string): Promise<{ desired_version: string; services: string[] }> {
+  if (!/^dep_[0-9a-f-]{36}$/.test(requestId)) throw new Error("invalid_request_id");
+  const row = await env.DB.prepare("SELECT service_id, requested_version, status, details_json, created_at FROM deployment_requests WHERE request_id = ?")
+    .bind(requestId).first<{ service_id: string; requested_version: string; status: string; details_json: string; created_at: string }>();
+  if (!row) throw new Error("deploy_request_not_found");
+  let details: { executor?: unknown } = {};
+  try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
+  if (details.executor !== "native:deploy") throw new Error("not_a_native_deploy");
+  if (row.status !== "running") throw new Error("deploy_not_running");
+  const age = Date.now() - Date.parse(row.created_at);
+  if (!(age >= 0 && age <= 3_600_000)) throw new Error("deploy_request_expired");
+  if (!/^[0-9a-f]{40}$/.test(row.requested_version)) throw new Error("invalid_version");
+  const unit = unitForService(row.service_id);
+  if (!unit) throw new Error("no_deploy_unit_for_service");
+  const version = row.requested_version.slice(0, 12);
+  const services = [...unit.services] as string[];
+  const existing: ServiceRow[] = [];
+  for (const id of services) {
+    const svc = await getService(env, id);
+    if (!svc) throw new Error("service_not_registered");
+    existing.push(svc);
+  }
+  for (const svc of existing) {
+    await env.DB.prepare("UPDATE service_registry SET desired_version = ?, updated_at = ? WHERE service_id = ?").bind(version, nowIso(), svc.service_id).run();
+    await appendAuditEvent(env.DB, {
+      event_type: "registry.desired_version_set", actor: `native-deploy:${requestId}`, subject: svc.service_id, outcome: "success",
+      payload: { previous: svc.desired_version, desired_version: version },
+    });
+  }
+  return { desired_version: version, services };
 }
 
 /**

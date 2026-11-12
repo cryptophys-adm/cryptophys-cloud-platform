@@ -337,6 +337,50 @@ Owner, 2026-11-12: "lanjutkan G2 sambil menunggu deploy".
   - `assets`: whether it serves static assets.
 - **Next, G2b.** The Deployment Orchestrator uploads the stored module as a Worker version tagged with the commit, keeping the running version's bindings and assets, then deploys and verifies it. This covers a Worker whose `config_sha256` equals the running version's, which is a single module and serves no changed assets. Its first step checks the uploaded version's bindings against the running ones before any traffic moves. Any other change (configuration, D1 migrations, assets, multi-module) keeps the GitHub workflow until its own step.
 
+### 5g. Step G2b: the Orchestrator deploys code-only changes itself (2026-11-12)
+
+- **What was built.** A consensus `deploy_commit` can now deploy a unit without GitHub Actions, from the module the Forge already built (`workers/deployment-orchestrator/src/native-deploy.ts`).
+  - The Forge's manifest gained `migrations`: the sorted D1 migration file names of the commit. The schema stays `forge-bundles.v1`; a manifest without the field reads as "migrations unknown".
+  - The Orchestrator has a read-only binding `BUNDLES` to `cryptophys-forge-bundles`.
+  - The Platform Registry has `recordNativeDeploy`, on the same `RegistryRpc` entrypoint as `recordRollback`.
+- **Eligibility.** After the G1 Forge gate (main's head, `ready`), the unit deploys natively only when all of these hold. Any other answer keeps the GitHub workflow:
+  - the target commit has a manifest (else `no_bundle`) that lists its migrations (`migrations_unknown`);
+  - for every Worker of the unit, in unit order:
+    - it is in the target manifest (`service_not_in_bundle`);
+    - it serves no static assets (`assets`) and is a single module (`multi_module`);
+    - the registry knows the version it runs (`desired_version_unknown`), and the Forge's bundles hold that version's manifest, found by listing `bundles/<tag>` (`running_bundle_missing`);
+    - its `config_sha256` equals the running version's, so its wrangler.toml did not change (`config_changed`);
+    - the running manifest's migrations equal the target's (`new_migration`, or `migrations_unknown` for a G2a manifest).
+- **Queue and execution.** These follow native rollback, with one executor loop for both:
+  - The request is a `deployment_requests` row with `details.executor = "native:deploy"`, signed with an HMAC keyed by `CF_DEPLOY_TOKEN` under its own prefix.
+  - It holds the same per-workflow-and-commit lock as the GitHub dispatch, so a commit is queued or dispatched, never both.
+  - The Orchestrator's cron runs it at a SAFE minute under a one-time Durable Object claim; a queued deploy expires after 45 minutes. One deploy runs per cron run.
+  - Before the claim, the executor checks again that the commit is still the Forge's head, still `ready`, and still eligible.
+  - For each Worker, in the workflow's deploy order:
+    1. capture the active deployment, which must be one version at 100%;
+    2. upload the module, after checking its SHA-256 and size against the manifest, as a version tagged `workers/tag = <tag12>`. The version keeps every binding type the platform uses (`keep_bindings`) and sends none itself;
+    3. deploy it at 100%;
+    4. verify through the Drift Detector that it reports the tag and is healthy (the same 12 attempts as native rollback).
+  - When every Worker is verified, the Registry sets `desired_version` for every Worker of the unit, with actor `native-deploy:<request>`.
+- **The binding check.** `keep_bindings` copies bindings from the script's latest uploaded version, which need not be the active one. So after the upload, the new version's bindings are compared with the active version's before traffic moves:
+  - the sorted `type:name` lists must be equal;
+  - a digest of the full binding records as the API returns them must be equal. This catches, for example, a service binding that lost its `props`.
+
+  Any difference stops the deploy. An uploaded version that is never deployed is harmless.
+- **Failure.** On any failure, every deployment already changed is restored to its captured version, newest first. The request is failed, and the same critical report as native rollback is raised.
+- **Fallback.** When native deploy is not configured, or the unit is not eligible, the GitHub dispatch runs exactly as before. The ineligibility reason is recorded in the `deployment.dispatched` audit payload (`native_deploy`). Only the GitHub path keeps the `github_main_not_mirrored` check; the native path does not call GitHub.
+- **Not covered yet:**
+  - The Forge's own Worker is ineligible because it is multi-module (WebAssembly).
+  - The Console is ineligible because it serves assets.
+  - Recovery redeploys (`deployForRecovery`) stay on GitHub, because the Recovery Manager follows a deploy through the workflow run (`runStatus`).
+  - A version upload does not carry wrangler.toml settings that are not bindings, such as `[limits]`. Today only the Forge has `[limits]`, and the Forge is ineligible.
+- **Owner prerequisites.** These are the same as for native rollback:
+  - the Orchestrator's Worker secret `CF_DEPLOY_TOKEN`, with Workers Scripts Edit;
+  - `CF_ACCOUNT_ID`, which the deploy sets;
+  - the `BUNDLES` binding, which the next Orchestrator deploy creates.
+
+  Until these are set, every deploy stays on GitHub. `GET /ready` reports `native_deploy` for information; it is not a readiness gate.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):

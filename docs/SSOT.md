@@ -101,7 +101,7 @@ These hold everywhere:
 | Change requests (shadow) | `forge-change-request.yml` after CI on each same-repository PR: head to `cr/<n>`, registered as `gh-<n>`; Forge verdict vs GitHub outcome, merge parity towards 10 (ADR-0012 §5d) | Forge merges |
 | CI | GitHub Actions (`validate-control-plane.yml` for every PR and main push, `forge-runner-parity.yml`) | Forge checks |
 | Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan, plus the Workers Builds type-check and Console UI build; `ready` when all pass; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate (phase 4 requires `ready`) |
-| Deploy | `ops-dispatch.yml` (request files in `ops/requests/`), then `deploy-*.yml` (wait for SAFE minute, deploy, verify live, roll back on failure) | Orchestrator: Scripts API upload and Deployments API |
+| Deploy | `ops-dispatch.yml` (request files in `ops/requests/`), then `deploy-*.yml` (wait for SAFE minute, deploy, verify live, roll back on failure). **G2b (2026-11-12):** a code-only consensus deploy (same wrangler.toml and migrations as the running version, one module, no assets) is uploaded by the Orchestrator from the Forge's bundles and deployed natively once `CF_DEPLOY_TOKEN` is set; anything else stays on the workflow (ADR-0012 §5g) | Orchestrator: Scripts API upload and Deployments API |
 | Rollback | Native in the Orchestrator (`CF_DEPLOY_TOKEN`); `rollback-worker.yml` until the native path has run | native |
 
 **Owner notices** run as a cron Worker in the AI Kernel (:22/:52). They show in the Console inbox and go by email from `alerts@notify.cryptophys.work`.
