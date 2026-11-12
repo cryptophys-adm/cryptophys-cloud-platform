@@ -20,9 +20,13 @@
 //     against the free-tier budget, and the newest collected builds (build-usage.ts).
 //   - GET /v1/forge/deploy-plans (phase 4, shadow; deploy-plan.ts): the Forge's deploy plan for main
 //     next to the Orchestrator's GitHub-based plan for the same inputs, and the deploy-plan parity.
+//   - POST /v1/forge/merge-spike {confirm: "SPIKE"} (G3a, merge.ts): approvers only. Proves a fast-forward
+//     over Git smart HTTP on the scratch repo merge-spike (a fork of platform); never writes platform.
+//   - POST /v1/forge/work-repo {confirm: "CREATE"} (G4, work-repo.ts): approvers only. Forks platform once into
+//     the work repository platform-work, where contributors push their branches (registered by the tick).
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
-import { accessConfigured, accessGate, actorOf, listConfigured, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, accessGate, actorOf, listConfigured, requireApprover, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
 import { errorResponse, healthBody, json, readJsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
@@ -33,13 +37,16 @@ import { listDeployPlans } from "./deploy-plan.ts";
 import { latestCensus } from "./census.ts";
 import { recentBuilds } from "./build-usage.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
+import { mergeSpike, trustedRemoteFor } from "./merge.ts";
+import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
+import { ensureWorkRepo } from "./work-repo.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql", "0041_organism_registration.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql", "0041_organism_registration.sql", "0052_forge_work_change_requests.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -49,6 +56,8 @@ export interface ArtifactsRepo {
   readCommit: ArtifactsReader["readCommit"];
   readTree: ArtifactsReader["readTree"];
   readBlob: ArtifactsReader["readBlob"];
+  /** Documented on the binding (Workers binding: fork(name, opts?)); used only by the G3a spike. */
+  fork?(name: string, opts?: { description?: string; readOnly?: boolean; defaultBranchOnly?: boolean }): Promise<{ name: string; remote: string }>;
   [Symbol.dispose]?(): void;
 }
 export interface ArtifactsBinding {
@@ -126,19 +135,7 @@ async function withRepo<T>(env: Env, fn: (repo: ArtifactsRepo) => Promise<T>): P
 }
 
 export function trustedArtifactsRemote(remote: string): boolean {
-  try {
-    const url = new URL(remote);
-    return url.protocol === "https:"
-      && /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/.test(url.hostname)
-      && url.username === ""
-      && url.password === ""
-      && url.port === ""
-      && url.pathname === "/git/" + ARTIFACTS_NAMESPACE + "/" + REPO + ".git"
-      && url.search === ""
-      && url.hash === "";
-  } catch {
-    return false;
-  }
+  return trustedRemoteFor(remote, REPO, ARTIFACTS_NAMESPACE);
 }
 
 export async function status(env: Env) {
@@ -210,6 +207,38 @@ export default {
     if (blocked) return blocked;
     if (request.method === "GET" && url.pathname === "/health") return json(healthBody(env as never));
     if (request.method === "GET" && url.pathname === "/ready") return readiness(env);
+    // G3a spike: an approver (owner or approver account, always a person); operators and service tokens are refused.
+    if (url.pathname === "/v1/forge/merge-spike") {
+      const approver = await requireApprover(request, env as never);
+      if (!approver.ok) return approver.response;
+      if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+      const body = await readJsonObject(request);
+      if (!body.ok) return body.response;
+      if (body.value.confirm !== "SPIKE") return errorResponse(400, "confirmation_required", 'type "SPIKE" to run the merge spike on the scratch repository');
+      try {
+        const result = await mergeSpike(env, approver.actor, (input, init) => fetch(input, init));
+        return json(result, result.outcome === "succeeded" ? 200 : result.outcome === "forking" ? 202 : 502);
+      } catch (err) {
+        const e = err as Error & { status?: number };
+        return errorResponse(e.status ?? 500, e.status ? e.message : "internal_error");
+      }
+    }
+    // G4: the work repository, approvers only (a person); reports the repo name and remote host, never a token.
+    if (url.pathname === "/v1/forge/work-repo") {
+      const approver = await requireApprover(request, env as never);
+      if (!approver.ok) return approver.response;
+      if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+      const body = await readJsonObject(request);
+      if (!body.ok) return body.response;
+      if (body.value.confirm !== "CREATE") return errorResponse(400, "confirmation_required", 'type "CREATE" to create the work repository platform-work');
+      try {
+        const result = await ensureWorkRepo(env as never, approver.actor);
+        return json(result, result.outcome === "ready" ? 200 : result.outcome === "forking" ? 202 : 502);
+      } catch (err) {
+        const e = err as Error & { status?: number };
+        return errorResponse(e.status ?? 500, e.status ? e.message : "internal_error");
+      }
+    }
     const operator = await requireOperator(request, env as never);
     if (!operator.ok) return operator.response;
     try {
@@ -217,6 +246,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/build-usage") return json({ usage: await buildUsage(env.DB, Date.now()), builds: await recentBuilds(env.DB, Number(url.searchParams.get("limit") ?? "15") || 15) });
+      if (request.method === "GET" && url.pathname === "/v1/forge/dependency-audit") return json({ audit: await dependencyAudit(env.DB, Date.now()) });
       if (request.method === "GET" && url.pathname === "/v1/forge/census") return json(await latestCensus(env.DB, Number(url.searchParams.get("limit") ?? "5") || 5));
       if (request.method === "GET" && url.pathname === "/v1/forge/deploy-plans") return json(await listDeployPlans(env.DB, Number(url.searchParams.get("limit") ?? "10") || 10));
       if (request.method === "GET" && url.pathname === "/v1/forge/changes") return json(await listChanges(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));

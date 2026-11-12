@@ -103,6 +103,15 @@ export function fakeAi(reply: unknown = { response: "{}" }): FakeAi {
   return ai;
 }
 
+/**
+ * The Access settings of a test env, without a database. In the Forge's runner every migratedDb() lives in the
+ * sql.js wasm heap, which never shrinks, so building a migrated database only to read these two constants pushed
+ * console-tp023 past the Worker memory limit on its own (2026-11-12).
+ */
+export function accessEnv(): { ACCESS_TEAM_DOMAIN: string; ACCESS_AUD: string } {
+  return { ACCESS_TEAM_DOMAIN: ACCESS_TEAM, ACCESS_AUD };
+}
+
 export function baseEnv(service: string, db: FakeD1, extra: Record<string, unknown> = {}) {
   return {
     SERVICE_NAME: service,

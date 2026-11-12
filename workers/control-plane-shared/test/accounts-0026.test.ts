@@ -5,8 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT,
-  baseEnv, call, migratedDb, req, signAccessJwt,
+  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req, signAccessJwt, accessEnv,
 } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import { requireApprover, requireOperator, roleOf } from "../src/access.ts";
@@ -140,7 +139,7 @@ function consoleEnv(registryReply: (r: Request) => Promise<Response>) {
   const bindings: Record<string, unknown> = {};
   for (const name of Object.values(SERVICE_BINDINGS)) bindings[name] = { fetch: async (r: Request) => { forwarded.push(r); return Response.json({ ok: true }); } };
   bindings.REGISTRY = { fetch: async (r: Request) => { forwarded.push(r); return registryReply(r); } };
-  const access = baseEnv("x", migratedDb());
+  const access = accessEnv();
   return {
     forwarded,
     env: {

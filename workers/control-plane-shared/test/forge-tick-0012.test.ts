@@ -21,6 +21,7 @@ test("FT1. a failing change request step is audited and does not stop the deploy
   assert.deepEqual(steps, {
     deploy_plan: { outcome: "no_main" },
     census: { outcome: "no_main" },
+    dependency_audit: { outcome: "no_main" },
     change_checks: { outcome: "failed", error: "artifacts read failed" },
     main_checks: { outcome: "up_to_date" },
   });

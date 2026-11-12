@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv } from "./harness.ts";
 import { UI_ROUTES } from "../../console/src/ui/routes.ts";
 import consoleWorker, { CONSOLE_ALLOW_LIST, SERVICE_BINDINGS, type ConsoleService } from "../../console/src/index.ts";
 
@@ -25,8 +25,8 @@ function consoleEnv() {
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     CF_VERSION_METADATA: { id: "ver-console", tag: "abc1234" },
-    ACCESS_TEAM_DOMAIN: baseEnv("x", migratedDb()).ACCESS_TEAM_DOMAIN,
-    ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
+    ACCESS_TEAM_DOMAIN: accessEnv().ACCESS_TEAM_DOMAIN,
+    ACCESS_AUD: accessEnv().ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
     ASSETS: { async fetch() { return new Response('<!doctype html><script type="module" src="/assets/index-x.js"></script>', { headers: { "content-type": "text/html" } }); } },
@@ -59,6 +59,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["forge.deploy_plans", "forge", "GET", "/v1/forge/deploy-plans", false, null],
   ["forge.census", "forge", "GET", "/v1/forge/census", false, null],
   ["forge.build_usage", "forge", "GET", "/v1/forge/build-usage", false, null],
+  ["forge.dependency_audit", "forge", "GET", "/v1/forge/dependency-audit", false, null],
   ["kernel.kernel", "kernel", "GET", "/v1/kernel", false, null],
   ["kernel.status", "kernel", "GET", "/v1/status", false, null],
   ["kernel.notices", "kernel", "GET", "/v1/notices", false, null],
@@ -112,8 +113,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 59 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 59);
+test("1. route table: exactly the 60 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 60);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -122,7 +123,7 @@ test("1. route table: exactly the 59 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 59);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 60);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -208,7 +209,7 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  assert.equal(CONSOLE_ALLOW_LIST.length, 58);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 59);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

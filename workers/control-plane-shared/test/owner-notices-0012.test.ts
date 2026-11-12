@@ -29,8 +29,8 @@ test("O1. nothing open when everything is healthy and nothing waits", async () =
   const db = migratedDb();
   healthy(db);
   const n = await collectNotices(db as never, NOW);
-  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false]]);
-  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
+  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false], ["dependencies", false]]);
+  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
 });
 
 test("O2. a draft plan and a pending_owner proposal open owner_attention once; a change updates it; resolution closes it, with emails to the owners", async () => {

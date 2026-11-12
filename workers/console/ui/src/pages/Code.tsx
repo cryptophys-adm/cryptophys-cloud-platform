@@ -5,6 +5,7 @@ import { ago, listOf } from "../lib/format";
 import { usePoll } from "../lib/usePoll";
 import { BarList, DataTable, Meter, STATUS, Stat, StatusBar } from "../components/viz";
 import BuildMinutes from "../components/BuildMinutes";
+import DependencyAudit from "../components/DependencyAudit";
 
 const CHECK_TONE: Record<string, "green" | "red" | "amber" | "slate"> = { passed: "green", failed: "red", error: "amber", running: "slate" };
 const VERDICT: Record<string, { tone: "green" | "red" | "amber" | "slate" | "cyan"; label: string }> = {
@@ -25,6 +26,7 @@ export default function Code() {
   const mergeParity = changes.data?.parity;
   const plans = usePoll(() => call("forge.deploy_plans", undefined, undefined, { limit: "8" }), 60_000);
   const buildUsage = usePoll(() => call("forge.build_usage", undefined, undefined, { limit: "15" }), 300_000);
+  const depAudit = usePoll(() => call("forge.dependency_audit"), 300_000);
   const planRows = listOf(plans.data, "plans");
   const planParity = plans.data?.parity;
   const unitsText = (u: string[] | null) => (u === null ? "not computed" : u.length ? u.join(" → ") : "nothing to deploy");
@@ -68,8 +70,13 @@ export default function Code() {
             { key: "pending", label: "pending", value: openCrs.filter((c: any) => !["would_merge", "needs_owner", "blocked"].includes(c.verdict)).length, color: STATUS.neutral },
           ]} />}
           {crs.length > 0 && <p className="mb-3 text-[11px] text-slate-500">{openCrs.length} open · {crs.length - openCrs.length} merged or closed{noVerdict ? ` · ${noVerdict} merged or closed before the Forge reached a verdict` : ""}</p>}
-          <DataTable rows={crs} rowKey={(c) => c.cr_id} initialSort={{ key: "when", dir: "desc" }} maxHeight={420} empty="No pull request has been mirrored to the Forge yet." columns={[
-            { key: "number", header: "PR", sort: (c) => c.number, cell: (c) => <span className="mono text-[11px] text-violet-200">#{c.number}</span> },
+          <DataTable rows={crs} rowKey={(c) => c.cr_id} initialSort={{ key: "when", dir: "desc" }} maxHeight={420} empty="No change request has been registered on the Forge yet." columns={[
+            { key: "number", header: "request", sort: (c) => (c.source === "forge" ? c.branch : c.number), cell: (c) => (
+              <span className="inline-flex flex-wrap items-center gap-1">
+                <Badge tone={c.source === "forge" ? "cyan" : "slate"}>{c.source === "forge" ? "forge" : c.source === "github" ? "github" : "—"}</Badge>
+                <span className="mono break-all text-[11px] text-violet-200">{c.source === "forge" ? c.branch : `#${c.number}`}</span>
+              </span>
+            ) },
             { key: "title", header: "title", className: "wrap", sort: (c) => c.title, cell: (c) => <span className="text-slate-200">{c.title}</span> },
             { key: "verdict", header: "Forge verdict", sort: (c) => c.verdict, cell: (c) => { const v = VERDICT[c.verdict] ?? { tone: "slate", label: c.verdict ?? "—" }; return <span className="inline-flex flex-wrap gap-1"><Badge tone={v.tone}>{c.status === "open" ? v.label : c.verdict === "pending" || !c.verdict ? `no verdict at ${c.status === "merged" ? "merge" : "close"}` : `${v.label} at ${c.status}`}</Badge>{c.critical?.length ? <Badge tone="amber">owner path</Badge> : null}</span>; } },
             { key: "check", header: "check", sort: (c) => c.check?.status ?? "", cell: (c) => c.check ? <span className="text-[11px]"><span className={c.check.status === "passed" ? "text-emerald-300" : c.check.status === "failed" ? "text-rose-300" : "text-slate-400"}>{c.check.status}</span> <span className="mono text-slate-500">{c.check.pass ?? "—"}/{(c.check.pass ?? 0) + (c.check.fail ?? 0)}</span></span> : <span className="text-slate-600">not checked</span> },
@@ -78,14 +85,14 @@ export default function Code() {
             { key: "when", header: "updated", sort: (c) => Date.parse(c.updated_at) || 0, cell: (c) => <span className="text-slate-500">{c.updated_at ? ago(c.updated_at) : ""}</span> },
           ]} expand={(c) => (
             <div className="space-y-1 text-[11px] text-slate-300">
-              <div className="mono break-all text-slate-400">{c.source_branch} · head {String(c.head_sha).slice(0, 12)} · base {String(c.base_sha).slice(0, 12)} · {c.author}</div>
+              <div className="mono break-all text-slate-400">{c.repo ? `${c.repo} · ` : ""}{c.source_branch} · head {String(c.head_sha).slice(0, 12)} · base {String(c.base_sha).slice(0, 12)} · {c.author}</div>
               {c.check ? <div>Check: {c.check.status} · {c.check.pass ?? "—"} passed · {c.check.fail ?? "—"} failed{c.check.typecheck ? ` · types ${c.check.typecheck.status}` : ""}{c.check.typecheck?.console_build ? ` · UI build ${c.check.typecheck.console_build}` : ""}</div> : <div className="text-slate-500">Not checked yet.</div>}
               {c.reasons?.length ? <ul className="space-y-0.5">{c.reasons.map((r: string, i: number) => <li key={i} className="mono break-words text-[10px] text-amber-200">{r}</li>)}</ul> : null}
               {c.changed_paths?.length ? <div className="mono break-words text-[10px] text-slate-500">{c.changed_paths.length} paths: {c.changed_paths.slice(0, 12).join(", ")}{c.changed_paths.length > 12 ? " …" : ""}</div> : null}
             </div>
           )} />
         </>)}
-        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">ADR-0012 phase 4, shadow: each pull request is checked on the Forge and given the verdict the Forge would give. GitHub still merges; merge parity counts the merges where both agree.</p>
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">ADR-0012 phase 4, shadow: each pull request is checked on the Forge and given the verdict the Forge would give. GitHub still merges; merge parity counts the merges where both agree. Rows marked "forge" are branches pushed to the work repository platform-work (G4); they have no type-check source yet, so they stay pending.</p>
       </Panel>
       <Panel title="Deploy plan · shadow" icon={<Rocket className="h-3.5 w-3.5 text-amber-300" />}
         right={<Badge tone={planParity && planParity.consecutive >= planParity.target ? "green" : "slate"}>{planParity ? `plan parity ${planParity.consecutive}/${planParity.target}` : "—"}</Badge>}>
@@ -131,6 +138,7 @@ export default function Code() {
         <p className="mt-3 text-[11px] leading-relaxed text-slate-500">The Forge runs the control-plane tests, bundles every Worker, type-checks on Workers Builds and scans for committed credentials, on Cloudflare, for each new commit of main, from the Artifacts copy. These checks become a deploy gate after they agree with GitHub CI on {parity?.target ?? 20} commits in a row (ADR-0012).</p>
       </Panel>
       <BuildMinutes data={buildUsage.data} loading={buildUsage.loading} />
+      <DependencyAudit data={depAudit.data} loading={depAudit.loading} />
       <Panel title="History of main" icon={<GitCommitHorizontal className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone="slate">{rows.length} commits</Badge>}>
         {commits.loading && !commits.data ? <Skeleton /> : (
           <DataTable rows={rows} rowKey={(c, i) => c.sha || `${c.title}-${i}`} maxHeight={420} empty="No commits to show." columns={[

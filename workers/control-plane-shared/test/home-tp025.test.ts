@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv } from "./harness.ts";
 import homeWorker from "../../home/src/index.ts";
 import { summarize } from "../../home/src/ui/summary.ts";
 import { APP_JS } from "../../home/src/ui/app-js.ts";
@@ -24,8 +24,8 @@ function homeEnv(extra: Record<string, unknown> = {}) {
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     CF_VERSION_METADATA: { id: "ver-home", tag: "abc1234" },
-    ACCESS_TEAM_DOMAIN: baseEnv("x", migratedDb()).ACCESS_TEAM_DOMAIN,
-    ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
+    ACCESS_TEAM_DOMAIN: accessEnv().ACCESS_TEAM_DOMAIN,
+    ACCESS_AUD: accessEnv().ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
     PLATFORM: rec.binding,

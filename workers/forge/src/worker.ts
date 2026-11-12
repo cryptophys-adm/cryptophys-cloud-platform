@@ -10,6 +10,7 @@ import { canonicalMainHead } from "./census.ts";
 import { bundleWorkerDir, type WorkerBundle } from "./runner/core.ts";
 import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
+import { WORK_REPO } from "./work-repo.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
 interface RunnerCtx {
@@ -54,8 +55,14 @@ export class ForgeBundler extends WorkerEntrypoint<RunnerEnv> {
     let snapshot = cachedSnapshot(commit);
     if (!snapshot) {
       if (!this.env.ARTIFACTS) throw new Error("artifacts_not_configured");
-      const repo = await this.env.ARTIFACTS.get(REPO);
-      try { snapshot = (await snapshotFromArtifacts(repo, commit)).snapshot; } finally { repo[Symbol.dispose]?.(); }
+      // A change request head pushed to the work repository (G4) is not in platform: read it from platform-work.
+      for (const name of [REPO, WORK_REPO]) {
+        const repo = await this.env.ARTIFACTS.get(name);
+        try {
+          if (name === WORK_REPO || await repo.readCommit(commit)) { snapshot = (await snapshotFromArtifacts(repo, commit)).snapshot; break; }
+        } finally { repo[Symbol.dispose]?.(); }
+      }
+      if (!snapshot) throw new Error("commit_not_found");
     }
     const { esbuild } = await toolchain();
     return bundleWorkerDir(esbuild, snapshot, dir);

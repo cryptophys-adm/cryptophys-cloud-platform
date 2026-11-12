@@ -247,6 +247,8 @@ export const SECRET_RULES: ReadonlyArray<[string, RegExp]> = [
   ["anthropic_key", /\bsk-ant-[A-Za-z0-9_-]{32,}\b/],
   ["stripe_live_key", /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/],
   ["artifacts_token", /\bart_v1_[A-Za-z0-9]{20,}\b/],
+  // ADR-0012 G5: npm access tokens (the registry credential of an npm project), which GitHub secret scanning also knew.
+  ["npm_token", /\bnpm_[A-Za-z0-9]{36}\b/],
   ["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}\b/],
 ];
 export const MAX_SECRET_FINDINGS = 50;

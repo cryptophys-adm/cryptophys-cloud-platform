@@ -381,6 +381,31 @@ Owner, 2026-11-12: "lanjutkan G2 sambil menunggu deploy".
 
   Until these are set, every deploy stays on GitHub. `GET /ready` reports `native_deploy` for information; it is not a readiness gate.
 
+### 5h. Step G3a: the Forge can merge (fast-forward) (2026-11-12)
+
+This is the first half of G3 and the spike that phase 1 listed ("fast-forward/merge from a Worker into Artifacts").
+
+- **The constraint.** The Artifacts Workers binding reads commits, trees and history, and mints repo-scoped tokens. It cannot create commits or move refs. Refs move only through the Git smart-HTTP protocol at the repository's `remote`, authenticated with `Authorization: Bearer <write token>`.
+- **What was built** (`workers/forge/src/merge.ts`).
+  - `fastForward` speaks just enough of `git-receive-pack`:
+    1. ref discovery (`GET <remote>/info/refs?service=git-receive-pack`), which reads the branch and the server's capabilities;
+    2. it refuses, without sending the update, unless the discovered value equals the expected old value;
+    3. `POST <remote>/git-receive-pack`: one command pkt-line `<old> <new> refs/heads/<branch>` with `report-status` (and `delete-refs` for a delete), a flush, and, unless the command is a delete, an empty packfile (`PACK`, version 2, no objects, SHA-1 trailer);
+    4. it reads `report-status`: `unpack ok` and `ok <ref>` are success; `ng <ref> <reason>` and unpack errors are refusals.
+
+    The old value sent is the one just discovered, which receive-pack compares under the ref lock, so a push that lands in between fails instead of being overwritten. Redirects are not followed.
+  - `isAncestor` walks parents through the binding (`readCommit`), at most 500 commits; anything unreadable or deeper answers false.
+  - `forgeMerge(binding, repo, { head, base, branch })` refuses unless `base` is the branch's current head (`base_not_current`) and `head` descends from it (`not_fast_forward`). It then mints a write token with a 120 s TTL, calls `fastForward`, and reads the branch back through the binding; it must equal `head` (`verify_mismatch`).
+  - The token is sent only in the header (the `?expires=` suffix is stripped). It is never logged, stored, audited or returned.
+- **Why fast-forward only.** A fast-forward needs no new objects, so the Forge never builds commits, trees or packs, and the merged SHA is exactly the SHA the checks passed. receive-pack does not refuse a non-fast-forward unless the server is configured to (git's client does that), so the Forge's own ancestry check is the guard. A change request whose head does not contain the current `main` is `not_fast_forward`: the contributor updates the branch (a rebase, or a merge commit of their own), and the checks run again on the new head. Merge commits made by the Forge are not planned.
+- **The spike** (`POST /v1/forge/merge-spike {confirm: "SPIKE"}`, approvers only; operators and service tokens get 403).
+  - It forks `platform` once into the scratch repository `merge-spike` (`fork`, default branch only) and reuses it afterwards. While the fork is in progress it answers 202. The `import` fallback was not built: it would put a read token into the import's recorded source URL.
+  - On `merge-spike` it takes main's head H and its first parent P, removes a leftover `spike` branch, creates `refs/heads/spike` at P, fast-forwards it P → H with `forgeMerge`, checks through the binding that it resolves to H, deletes it, and checks that `main` did not move. It always tries to delete the branch, even after a failed step.
+  - Every push goes to the remote of `merge-spike`, which must be this account's Artifacts host and that exact path; `forgeMerge` refuses the repository `platform` (`canonical_not_enabled`).
+  - The audit event `forge.merge_spike` records the outcome and every step (ref, old, new, reason), without the token.
+- **Not verified against the live service.** The protocol details (capability names, the empty pack accepted for a create or an update, a `report-status` without side-band, the `delete-refs` capability) follow the Git protocol and Cloudflare's statement that Artifacts speaks standard smart HTTP. The spike is the test. If any of them is wrong, a step records `ok: false` with the reason (`capability_missing:…`, `push_http_…`, `rejected:…`, `unpack_failed:…`, `verify_mismatch`), the route answers 502, and nothing outside `merge-spike` is touched.
+- **Next, G3b.** `merge_change` (§2.4) on canonical `main` waits for the cut-over (G6). While GitHub is canonical and `mirror-to-forge.yml` pushes GitHub's main to `platform`, a Forge merge would diverge from the mirror: the next mirror push would be a non-fast-forward. Until then the Forge computes its verdict (§5d) and GitHub merges.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):
@@ -396,6 +421,79 @@ How notices are kept and shown:
 - **Email** goes to the people in `APPROVER_IDENTITIES`. It is sent through the kernel's `send_email` binding `OWNER_EMAIL` from `NOTIFY_FROM = alerts@notify.cryptophys.work`, and the owner onboards `notify.cryptophys.work` in Email Service → Email Sending. Onboarding a subdomain adds its own `cf-bounce` MX, SPF, DKIM and DMARC records, and leaves the mail setup of `cryptophys.work` untouched. If sending fails, the notice is retried every run until delivery succeeds.
 
 `owner-attention.yml` and `drift-alert.yml` were retired on 2026-11-08, after the first owner email was delivered (audit `delivery: sent`). Their summary scripts and script tests went with them.
+
+### 5i. Step G5: Dependabot and secret scanning off GitHub (2026-11-12)
+
+The Consequences below require replacements for GitHub's Dependabot and secret scanning before phase 5.
+
+- **Secret scanning was already replaced.** Every commit the Forge checks (each new commit of main and each change request head) is scanned in full by `scanSecrets` (`forge/src/runner/core.ts`):
+  - It covers every text file of the snapshot, outside `node_modules`, `.git`, `dist` and `.wrangler`.
+  - A finding sets `guard_status = findings`, so the commit is not `ready`: no consensus deploy takes it, and no bundle is stored.
+  - A finding records the rule, the path and the line, never the matched text.
+  - G5 adds one rule, `npm_token`. The rules now cover private keys and GitHub, AWS, Slack, Google, OpenAI, Anthropic, Stripe live, Artifacts and npm tokens, plus JWTs.
+- **What the secret scan does not cover.** Unlike GitHub's scanning, it does not cover:
+  - binary files, and files of 2 MB or more;
+  - commits the Forge never checks. A tick checks the oldest unchecked of main's five newest commits, so a secret added and removed within a longer push stays in history unscanned;
+  - credential formats without a fixed prefix, such as Cloudflare API tokens.
+
+  The Forge also has no push protection: it sees a commit only once it is on main, or on a change request.
+- **Dependabot's alerts, replaced** (`forge/src/dependency-audit.ts`, migration 0051):
+  - **When.** A Forge tick step, `dependency_audit`, runs at most once a day per head of main, or an hour after a failed run.
+  - **What it reads.** It walks main's tree in the Artifacts repository and reads every `package-lock.json`:
+    - lockfileVersion 2 and 3 through the `packages` map, nested installs included;
+    - version 1 through its nested `dependencies`;
+    - not the root entry, `link` entries, `node_modules` or build output.
+  - **What it asks.** It asks the npm registry's bulk advisory endpoint, the one `npm audit` uses (`POST https://registry.npmjs.org/-/npm/v1/security/advisories/bulk`), in batches of at most 900 names. Only package names and versions are sent.
+  - **The answer.** For each name, a list of advisories with `id`, `url`, `title`, `severity`, `vulnerable_versions`, `cwe` and `cvss`. The registry answers `{}` when nothing is affected.
+  - **Matching.** The Forge re-checks each advisory's range against each installed version, with a small semver matcher. A prerelease is compared by full precedence, which reports more rather than less. A range it cannot read counts as affected. So a finding names the exact affected version.
+  - **Where.** A finding is `runtime` when a lockfile that installs it belongs to a Worker, which is a `workers/<dir>` with a wrangler config; this includes the Console UI build under `workers/console/ui`. Any other lockfile is tooling, for example `workers/control-plane-shared`.
+  - **Records.** One row per run in `forge_dependency_audits`: the head, lockfiles, packages, advisories, counts by severity, status `ok` or `failed`, and the error. One row per finding in `forge_dependency_findings`. Both are kept 90 days. A change in the set of advisories is audited (`forge.dependency_audit`). A failure is recorded and never thrown out of the tick.
+- **Shown.**
+  - `GET /v1/forge/dependency-audit`, operators, read only, returns the latest run, the latest successful run and its findings.
+  - The Console Code page has a panel for it, and the route is on the Console's read-only allowlist.
+- **Owner notice `dependencies`.**
+  - It opens when the latest successful run has a high or critical advisory in a runtime lockfile, or when no run has succeeded for 72 hours.
+  - The fingerprint is the sorted advisory ids, so the owner gets one email per new set of advisories, not one per run. It links to `#/code`.
+- **Not replaced yet: Dependabot's upgrade pull requests.** Findings are reported, not fixed. An agent, or later the evolution loop (ADR-0014), proposes the upgrades as change requests.
+
+### 5j. Step G4: contributors push to Artifacts (2026-11-12)
+
+Contributors (Claude Code sessions, other agents) push their branches to the work repository `cryptophys/platform-work` instead of opening GitHub pull requests. The Forge registers each pushed branch as a change request and checks it with the same pipeline as the GitHub-sourced ones of §5d (`workers/forge/src/work-repo.ts`, migration 0052).
+
+- **The work repository.** `POST /v1/forge/work-repo {confirm: "CREATE"}`, approvers only (operators and service tokens get 403), forks `platform` into `platform-work` with the binding's `fork` (default branch only), the same helper the G3a spike uses. It is idempotent: 202 while the fork is in progress, 200 once it is ready. It reports the repository name and its remote host, never a token; anything `fork` returns is dropped. Each outcome (`ready`, `forking`, `failed`) is audited as `forge.work_repo`. The Forge only reads `platform-work`; it never writes it.
+- **Discovery.** A Forge tick step (`work_branches`, after `cr_typecheck`, only with the Artifacts binding) does the following:
+  1. it mints a read token with a 120 s TTL for `platform-work` and checks that its remote is this account's Artifacts host and that exact path;
+  2. it runs Git smart-HTTP ref discovery, `GET <remote>/info/refs?service=git-upload-pack` with `Authorization: Bearer <token>`, parsed by G3a's pkt-line code;
+  3. it takes `refs/heads/*` except `main`, and only names matching `^(cr|claude|agent)/[A-Za-z0-9._/-]{1,80}$` that git itself accepts. Every other ref is ignored.
+
+  Each branch becomes the change request `fg-<slug>` (the branch with `/` replaced by `-`), with `source = 'forge'`, `repo = 'platform-work'`, `number = 0` and no GitHub CI. The title is the head commit's subject, and the author is its author name, without the e-mail.
+  - At most 5 branches are (re)registered per tick; the rest wait for the next tick.
+  - When two branches give the same slug (`claude/a/b` and `claude/a-b`), the one registered first keeps the id. The other is reported as a collision and is not registered.
+  - A head the binding cannot read yet waits for the next tick.
+  - A branch that disappeared closes its change request (`status = 'closed'`), with the verdict at that moment frozen next to it (`forge.change_outcome`, reason `branch_deleted`). A branch that comes back reopens it.
+  - A failed discovery (HTTP error, not smart HTTP, untrusted remote) changes nothing, and it is audited as `forge.tick_failed`.
+- **The fast-forward requirement.** The base of a forge-sourced request is canonical `platform` main's head, and only if it is an ancestor of the branch head. Ancestry is read through `platform-work`, which holds the fork's objects and everything pushed since (`isAncestor`, at most 500 commits).
+  - When the base is not an ancestor, or main's head is not in `platform-work` at all, the request has `blocked_reason = not_based_on_main` and its verdict is `blocked`. It is not checked. The contributor merges or rebases the current main into the branch and pushes again. This keeps the later G3b merge a fast-forward (§5h).
+  - A request is evaluated again when its head changes or when main moves. So a branch that was based on the old main becomes `not_based_on_main` once main moves past it.
+  - Changed paths and the owner-only reasons of §2.4 come from the same tree diff and `criticalReasons` code as GitHub-sourced requests, read from `platform-work`.
+- **Checks read the right repository.** Each change request records the repository its head lives in (`repo`): `platform` for `gh-<n>` (heads pushed to `cr/<n>` of `platform`) and `platform-work` for `fg-<slug>`.
+  - The change-check step picks a GitHub-sourced head first, from `platform`, exactly as before. Only when none waits does it check a forge-sourced head, from `platform-work`.
+  - The bundler entrypoint falls back to `platform-work` for a commit that is not in `platform`.
+  - The check run itself is keyed by commit, as before.
+- **The type-check gap.** The secret-free change-request type-check (Workers Builds `cryptophys-forge-typecheck-cr`, §5d) builds `cr/<n>` branches of `platform` only. For a forge-sourced head, the type-check step is recorded as `not_configured`; a report that does exist for the same commit is kept. `cr-builds.ts` looks up GitHub-sourced requests only.
+  - `verdictOf` treats `not_configured` explicitly as `pending` ("no type-check source for this head"). So **a forge-sourced request cannot reach `would_merge` until a type-check source exists for `platform-work`.** G3b needs one. One option is a Workers Builds project connected to `platform-work`, under the same no-secrets rule as `forge-typecheck-cr`; that waits for the owner.
+- **Merge parity.** Forge-sourced requests are never merged by GitHub, so they never count towards the merge parity of §5d. A closed one has `agrees = NULL`.
+- **How a Claude Code session pushes.** No token is in chat or in the repository.
+  1. The owner creates a repo-scoped **write** token for `platform-work` in the dashboard: Storage & databases → Artifacts → cryptophys → platform-work → Tokens.
+  2. The owner stores it through the session's secure credential form, for the host `<account>.artifacts.cloudflare.net` (the account's Artifacts host, the host of the repository's remote), as `Authorization: Bearer`.
+  3. The session adds the remote `https://<account>.artifacts.cloudflare.net/git/cryptophys/platform-work.git` and runs a plain `git push <remote> HEAD:refs/heads/claude/<topic>`. The session's proxy injects the header.
+
+  Before pushing, the session merges or rebases the current main, so that the branch is based on main. The Forge's next tick (:04/:19/:34/:49) registers the branch. `GET /v1/forge/changes` and the Console Code page show it with the source badge "forge".
+- **Not verified against the live service.** Upload-pack ref discovery follows the Git protocol (v0/v1 advertisement, `# service=git-upload-pack`, a `HEAD` line with the capabilities, then `refs/heads/*`), like the receive-pack discovery of §5h. Two things are assumptions:
+  - a read token is accepted for `info/refs?service=git-upload-pack`;
+  - `fork` lists the new repository as `forking` and then `ready`.
+
+  If discovery fails, the tick step records `work_discovery_failed:<reason>` (`discovery_http_<status>`, `discovery_not_smart_http`, `discovery_malformed`), audits it as `forge.tick_failed`, and closes nothing. If the fork never appears, the route answers 202 with `fork_not_listed`.
 
 ### 6. Owner decisions (2026-11-08)
 

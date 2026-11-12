@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, fakeWorkflow, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, fakeWorkflow, migratedDb, accessEnv } from "./harness.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import recovery from "../../recovery-manager/src/index.ts";
 import consoleWorker, { CONSOLE_ALLOW_LIST, SERVICE_BINDINGS, type ConsoleService } from "../../console/src/index.ts";
@@ -39,8 +39,8 @@ function consoleEnv(extra: Record<string, unknown> = {}) {
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     CF_VERSION_METADATA: { id: "ver-console", tag: "abc1234" },
-    ACCESS_TEAM_DOMAIN: baseEnv("x", migratedDb()).ACCESS_TEAM_DOMAIN,
-    ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
+    ACCESS_TEAM_DOMAIN: accessEnv().ACCESS_TEAM_DOMAIN,
+    ACCESS_AUD: accessEnv().ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
     ASSETS: fakeAssets().binding,
@@ -254,7 +254,8 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   // + the read-only metabolism view and the real Cloudflare usage (owner 2026-11-10).
   // + Aether's read-only overview for the Knowledge page (owner 2026-11-10: learning progress and existing knowledge).
   // + the live AI mesh view (owner 2026-11-11: "halaman AI Mesh ... autonomous dan dinamis").
-  assert.equal(keys.length, 58);
+  // + the Forge's measured Workers Builds minutes (owner 2026-11-12) and its npm dependency audit (ADR-0012 G5).
+  assert.equal(keys.length, 59);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"].map((p) => `kernel POST ${p}`),
@@ -280,6 +281,7 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
     "forge GET /v1/forge/deploy-plans",
     "forge GET /v1/forge/census",
     "forge GET /v1/forge/build-usage",
+    "forge GET /v1/forge/dependency-audit",
     "aether GET /v1/overview",
   ];
   assert.deepEqual([...keys].sort(), [...expected].sort());
