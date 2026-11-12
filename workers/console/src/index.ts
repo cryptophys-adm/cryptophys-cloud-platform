@@ -90,7 +90,7 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("platform", "GET", ["/v1/overview", "/v1/usage"]),
   // ADR-0012 phase 1b: the Code page reads the Forge (no write route is forwarded); phase 3 adds checks, phase 4 change requests.
   ...rows("aether", "GET", ["/v1/overview"]),
-  ...rows("forge", "GET", ["/v1/forge/status", "/v1/forge/commits", "/v1/forge/checks", "/v1/forge/changes", "/v1/forge/deploy-plans", "/v1/forge/census"]),
+  ...rows("forge", "GET", ["/v1/forge/status", "/v1/forge/commits", "/v1/forge/checks", "/v1/forge/changes", "/v1/forge/deploy-plans", "/v1/forge/census", "/v1/forge/build-usage"]),
 ];
 
 const SEGMENT = /^[A-Za-z0-9._@+:-]{1,128}$/;

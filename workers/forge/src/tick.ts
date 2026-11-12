@@ -3,7 +3,8 @@
 //   1. the deploy plan for main's head (cheap; shadow comparison with the Orchestrator);
 //   2. the check of the oldest unchecked open change request head;
 //   3. the check of the oldest unchecked commit of main (skipped when step 2 used most of the tick);
-//   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts).
+//   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts)
+//   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
@@ -12,6 +13,7 @@ import { planTick } from "./deploy-plan.ts";
 import { censusTick, type ExternalDnaReader } from "./census.ts";
 import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
 import { crBuildsTick } from "./cr-builds.ts";
+import { buildUsageTick } from "./build-usage.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
 export interface TickEnv {
@@ -54,6 +56,8 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   }
   // ADR-0012 §5d: the type-check of open change requests, read from their secret-free Workers Builds (no-op without the token).
   if (env.CF_BUILDS_API_TOKEN) await step("cr_typecheck", () => crBuildsTick(env, nowMs()));
+  // Owner 2026-11-12: the account's Workers Builds minutes against the free-tier budget (hourly; read only).
+  if (env.CF_BUILDS_API_TOKEN) await step("build_usage", () => buildUsageTick(env, nowMs()));
   const started = nowMs();
   await step("change_checks", () => tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs()), "change"));
   const change = steps.change_checks as { outcome?: string } | undefined;

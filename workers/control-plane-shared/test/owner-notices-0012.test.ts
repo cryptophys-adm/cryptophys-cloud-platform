@@ -29,8 +29,8 @@ test("O1. nothing open when everything is healthy and nothing waits", async () =
   const db = migratedDb();
   healthy(db);
   const n = await collectNotices(db as never, NOW);
-  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false]]);
-  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged"]);
+  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false]]);
+  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
 });
 
 test("O2. a draft plan and a pending_owner proposal open owner_attention once; a change updates it; resolution closes it, with emails to the owners", async () => {
@@ -205,3 +205,25 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   assert.equal(mail.length, 1);
 });
 
+
+test("O9. the organism notice emails once while the Supervisor registers engines one by one, and again when something needs the owner", async () => {
+  const db = migratedDb();
+  healthy(db);
+  const census = (findings: Array<{ kind: string; subject: string; detail: string }>, sha: string) =>
+    db.raw.prepare("INSERT INTO forge_organism_census (main_sha, status, organs, agents, engines, voters, findings, genome, taken_at) VALUES (?, 'changes', 18, 23, 34, 9, ?, '[]', ?)")
+      .run(sha, JSON.stringify(findings), new Date(NOW + Number.parseInt(sha[0], 16) * 60_000).toISOString());
+  const engine = (t: string) => ({ kind: "unregistered_engine", subject: `xauusd-ai-trading-assistant:${t}`, detail: `AI engine ${t} on xauusd-ai-trading-assistant is in the DNA but not registered` });
+  const mail = emailSpy();
+  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", OWNER_EMAIL: mail.binding, NOTIFY_FROM: "alerts@notify.example.com" };
+  const organism = async () => (await reconcileNotices(env as never, NOW)).find((r) => r.topic === "organism")!.change;
+  census([engine("a"), engine("b"), engine("c")], "1".repeat(40));
+  assert.equal(await organism(), "opened");
+  assert.match(mail.sent.at(-1).subject, /3 item\(s\), all being registered automatically/);
+  census([engine("b"), engine("c")], "2".repeat(40));
+  assert.equal(await organism(), "unchanged", "one engine registered: no new email");
+  census([engine("c"), { kind: "agent_host_changed", subject: "x", detail: "agent x moved" }], "3".repeat(40));
+  assert.equal(await organism(), "changed", "a finding the Supervisor does not settle by itself reaches the owner");
+  census([], "4".repeat(40));
+  assert.equal(await organism(), "closed");
+  assert.equal(mail.sent.length, 3);
+});

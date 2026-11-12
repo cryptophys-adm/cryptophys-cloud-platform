@@ -21,7 +21,7 @@ const HEX40 = /^[0-9a-f]{40}$/;
 const MAX_REQUESTS_PER_TICK = 9;
 
 export interface CrBuildsEnv { DB: D1Database; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string }
-type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
+export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 interface BuildRow { build_uuid?: string; status?: string; build_outcome?: string | null; created_on?: string; build_trigger_metadata?: Record<string, unknown> | null }
 interface PreviewRow { preview_id?: string; id?: string; branch?: string }
@@ -54,7 +54,7 @@ const branchOf = (b: BuildRow) => String(b.build_trigger_metadata?.branch ?? "")
 const commitOf = (b: BuildRow) => String(b.build_trigger_metadata?.commit_hash ?? b.build_trigger_metadata?.commit_sha ?? "").toLowerCase();
 const finished = (b: BuildRow) => b.status === "stopped" || b.status === "completed" || (b.build_outcome != null && b.build_outcome !== "");
 
-async function api(fetchImpl: Fetch, token: string, path: string): Promise<unknown> {
+export async function api(fetchImpl: Fetch, token: string, path: string): Promise<unknown> {
   const res = await fetchImpl(`${API}${path}`, { headers: { authorization: `Bearer ${token}` } });
   const body = await res.json().catch(() => null) as { success?: boolean; result?: unknown; errors?: unknown } | null;
   if (!res.ok || !body || body.success === false) throw new Error(`builds_api_${res.status}: ${path.replace(/[0-9a-f]{32}/g, "<id>")}`);
