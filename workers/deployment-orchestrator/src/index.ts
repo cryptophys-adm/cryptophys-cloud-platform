@@ -239,10 +239,13 @@ async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: st
 
 type NativeChoice = { eligible: true; services: PlannedService[]; migrations: PlannedMigration[] } | { eligible: false; reason: string; service?: string; file?: string };
 
-/** G2b: whether this unit can deploy `sha` natively; the reason when not (recorded with the GitHub dispatch). */
+/**
+ * G2b: whether this unit can deploy `sha` natively; the reason when not (recorded with the GitHub dispatch).
+ * G2c-2: a configuration change is planned against the active versions, read (never written) with the deploy token.
+ */
 async function nativeDeployChoice(env: Env, unit: DeployUnit, sha: string): Promise<NativeChoice> {
   if (!nativeDeployConfigured(env)) return { eligible: false, reason: "not_configured" };
-  const e = await nativeDeployEligible(env, unit, sha);
+  const e = await nativeDeployEligible(env, unit, sha, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!));
   return e.eligible
     ? { eligible: true, services: e.services, migrations: e.migrations }
     : { eligible: false, reason: e.reason, ...(e.service ? { service: e.service } : {}), ...(e.file ? { file: e.file } : {}) };
@@ -677,7 +680,10 @@ async function queueNativeDeploy(env: Env, source: NativeDeploySource, target: s
   await appendAuditEvent(env.DB, {
     event_type: "deployment.native_deploy_queued", actor, subject: target, outcome: "approved",
     payload: { request_id: requestId, executor: NATIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, running: choice.services.map((s) => `${s.service}@${s.running_tag}`),
-      ...(choice.migrations.length ? { migrations: choice.migrations.map((m) => m.file) } : {}), ...(fromPlan ? { plan_id: link } : { proposal_id: link }) },
+      ...(choice.migrations.length ? { migrations: choice.migrations.map((m) => m.file) } : {}),
+      // G2c-2: what each planned configuration changes (planned again before the upload).
+      ...(choice.services.some((s) => s.config) ? { config: Object.fromEntries(choice.services.filter((s) => s.config).map((s) => [s.service, { ...s.config!.changes, steps: s.config!.steps }])) } : {}),
+      ...(fromPlan ? { plan_id: link } : { proposal_id: link }) },
   });
   return { dispatched: true, executor: NATIVE_DEPLOY_EXECUTOR, request_id: requestId, unit: unit.unit, commit_sha: sha };
 }
@@ -800,6 +806,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     // changed since it was queued. Checked before the claim; a refusal is terminal and moves nothing.
     let plan: PlannedService[] = [];
     let migrations: PlannedMigration[] = [];
+    const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher);
     if (isDeploy) {
       let refusal: string | null = null;
       try {
@@ -807,7 +814,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         if (head.sha !== r.requested_version) refusal = "commit_not_current_main";
         else if (!(await forgeReady(env.DB, r.requested_version)).ready) refusal = "ci_not_green";
         else {
-          const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version);
+          const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf);
           if (e.eligible) { plan = e.services; migrations = e.migrations; }
           else refusal = "not_eligible: " + e.reason + (e.service ? " (" + e.service + ")" : "");
         }
@@ -846,8 +853,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     }
 
     executed++;
-    const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
-    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string };
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[] };
     if (isDeploy) {
       deploysRun++;
       run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations });
@@ -871,6 +877,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
           ? "Deploy of " + String(details.unit) + " at " + r.requested_version.slice(0, 12) + " failed"
           : "Rollback of " + serviceName(r.service_id) + " to " + r.requested_version + " failed",
         body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}),
+          // G2c-2: script settings (schedules, observability) applied before the failure; restored with the Workers.
+          ...(run.settings_applied?.length ? { settings_applied: run.settings_applied } : {}),
           // G2c-1: D1 migrations are forward-only; a restore of the Workers never undoes them.
           ...(run.migrations_applied?.length || run.migration_failed ? {
             migrations_applied: run.migrations_applied ?? [], migration_failed: run.migration_failed ?? null, d1_restore_point_at: run.restore_point_at ?? null,

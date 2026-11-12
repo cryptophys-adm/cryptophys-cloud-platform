@@ -110,8 +110,9 @@ test("G2a-3. bundles older than the retention are deleted; the manifest is writt
   assert.equal(order.at(-1), `${BUNDLE_PREFIX}${SHA}/manifest.json`);
   for (const o of b.objects.values()) o.uploaded = new Date(Date.now() - (BUNDLE_RETENTION_DAYS + 1) * 86_400_000);
   await storeBundles(b, "e".repeat(40), [{ dir: "workers/demo", text: "y", toml: TOML, external: [] }]);
-  assert.equal(await pruneBundles(b), 2);
-  assert.deepEqual([...b.objects.keys()].sort(), [`${BUNDLE_PREFIX}${"e".repeat(40)}/cryptophys-demo.mjs`, `${BUNDLE_PREFIX}${"e".repeat(40)}/manifest.json`]);
+  // G2c-2: the module, its stored wrangler.toml and the manifest.
+  assert.equal(await pruneBundles(b), 3);
+  assert.deepEqual([...b.objects.keys()].sort(), [`${BUNDLE_PREFIX}${"e".repeat(40)}/config/cryptophys-demo.toml`, `${BUNDLE_PREFIX}${"e".repeat(40)}/cryptophys-demo.mjs`, `${BUNDLE_PREFIX}${"e".repeat(40)}/manifest.json`]);
   await assert.rejects(storeBundles(b, "nope", []), /invalid_commit_sha/);
   assert.match(read("workers/forge/wrangler.toml"), /\[\[r2_buckets\]\]\nbinding = "BUNDLES"\nbucket_name = "cryptophys-forge-bundles"/);
 });

@@ -527,17 +527,19 @@ function crons(config: TomlTable): string[] | null {
   return [...c as string[]];
 }
 
-/**
- * The bindings and settings a version of the target config must have, given the running config and the full
- * binding records the API returns for the active version. Ineligible (the Worker stays on its GitHub workflow)
- * with an explicit reason whenever a version upload cannot reproduce what `wrangler deploy` would do.
- */
-export function planConfigChange(runningToml: string, targetToml: string, activeBindings: unknown): ConfigPlanResult {
+interface ConfigReading {
+  runB: BindingRecord[];
+  tgtB: BindingRecord[];
+  metadata: VersionSettings;
+  steps: PlanStep[];
+  settings: string[];
+}
+
+/** Everything the two configs alone decide: the settings and steps, the declared bindings, or the refusal. */
+function readConfigs(runningToml: string, targetToml: string): ConfigReading | Ineligible {
   const run = parseToml(runningToml);
   const tgt = parseToml(targetToml);
   if (!run || !tgt) return no("config_unparsed");
-  const active = readActive(activeBindings);
-  if (!active) return no("active_bindings_unreadable");
 
   for (const k of IDENTITY_KEYS) if (!same(run[k], tgt[k])) return no("identity_changed");
   for (const k of ROUTING_KEYS) if (!same(run[k], tgt[k])) return no("routing_changed");
@@ -584,10 +586,35 @@ export function planConfigChange(runningToml: string, targetToml: string, active
     settings.push("observability");
     steps.push({ kind: "script_settings", method: "PATCH", path: "script-settings", body: { observability: tgt.observability }, restore: { observability: run.observability }, when: "after_verify" });
   }
+  return { runB: runB.bindings, tgtB: tgtB.bindings, metadata, steps, settings };
+}
+
+/**
+ * The refusal the two configs alone decide (the toml subset, identity, routing, Durable Object migrations,
+ * assets, rules, workflows, queues, tail consumers, logpush, unsupported keys and settings), or null when only
+ * the active version's bindings can decide. No Cloudflare call is needed for this; `planConfigChange` makes the
+ * same checks first.
+ */
+export function configRefusal(runningToml: string, targetToml: string): string | null {
+  const r = readConfigs(runningToml, targetToml);
+  return "eligible" in r ? r.reason : null;
+}
+
+/**
+ * The bindings and settings a version of the target config must have, given the running config and the full
+ * binding records the API returns for the active version. Ineligible (the Worker stays on its GitHub workflow)
+ * with an explicit reason whenever a version upload cannot reproduce what `wrangler deploy` would do.
+ */
+export function planConfigChange(runningToml: string, targetToml: string, activeBindings: unknown): ConfigPlanResult {
+  const read = readConfigs(runningToml, targetToml);
+  if ("eligible" in read) return read;
+  const { runB, tgtB, metadata, steps, settings } = read;
+  const active = readActive(activeBindings);
+  if (!active) return no("active_bindings_unreadable");
 
   // Bindings.
-  const runMap = new Map(runB.bindings.map((b) => [keyOf(b), b]));
-  const tgtMap = new Map(tgtB.bindings.map((b) => [keyOf(b), b]));
+  const runMap = new Map(runB.map((b) => [keyOf(b), b]));
+  const tgtMap = new Map(tgtB.map((b) => [keyOf(b), b]));
   const activeMap = new Map(active.map((b) => [keyOf(b), b]));
   const secrets = active.filter((b) => isSecret(b.type)).map(keyOf).sort();
   const planned = new Map<string, BindingRecord>();

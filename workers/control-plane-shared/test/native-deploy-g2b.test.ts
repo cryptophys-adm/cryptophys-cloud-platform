@@ -341,9 +341,11 @@ test("G2b-5. not configured, or not code only: the GitHub dispatch exactly as be
     for (const [label, configure] of [
       ["no deploy token", async (db: Db, b: ReturnType<typeof bucket>) => ({ env: nativeEnv(db, b, { GH_ACTIONS_TOKEN: "gh", CF_DEPLOY_TOKEN: undefined }).env, reason: "not_configured" })],
       ["no bundles binding", async (db: Db) => ({ env: nativeEnv(db, undefined, { GH_ACTIONS_TOKEN: "gh" }).env, reason: "not_configured" })],
-      ["a configuration change", async (db: Db, b: ReturnType<typeof bucket>) => {
-        await bundlesFor(b, NEW, { "cryptophys-console": { toml: "[vars]\nX = \"2\"\n" } });
-        return { env: nativeEnv(db, b, { GH_ACTIONS_TOKEN: "gh" }).env, reason: "config_changed" };
+      // G2c-2: a configuration change is planned natively; one the plan refuses keeps the workflow (decided from
+      // the two stored configs, before any Cloudflare call).
+      ["a configuration change the plan refuses", async (db: Db, b: ReturnType<typeof bucket>) => {
+        await bundlesFor(b, NEW, { "cryptophys-console": { toml: "workers_dev = true\n" } });
+        return { env: nativeEnv(db, b, { GH_ACTIONS_TOKEN: "gh" }).env, reason: "routing_changed" };
       }],
     ] as const) {
       const { db, b } = await scenario();
@@ -365,7 +367,7 @@ test("G2b-5. not configured, or not code only: the GitHub dispatch exactly as be
     }
     // The GitHub path keeps the mirror check; the native path does not need GitHub at all.
     const { db, b } = await scenario();
-    await bundlesFor(b, NEW, { "cryptophys-console": { toml: "[vars]\nX = \"2\"\n" } });
+    await bundlesFor(b, NEW, { "cryptophys-console": { toml: "workers_dev = true\n" } });
     const { env } = nativeEnv(db, b, { GH_ACTIONS_TOKEN: "gh" });
     const dispatched: any[] = [];
     github(dispatched, "9".repeat(40));
@@ -419,7 +421,8 @@ test("G2b-6. the executor re-checks the queue: signature, expiry, main's head an
   }), "invalid_native_deploy_signature");
   assert.equal(await run(() => undefined, nextSafeMinute(Date.now() + NATIVE_DEPLOY_MAX_AGE_MS + 60_000)), "stale: native deploy request expired");
   assert.equal(await run(async (db) => { await forgeSees(db, { main: "3".repeat(40), files: [], ready: true }); }), "commit_not_current_main");
-  assert.equal(await run(async (_db, b) => { await bundlesFor(b, NEW, { "cryptophys-console": { toml: "[vars]\nY = \"1\"\n" } }); }), "not_eligible: config_changed (cryptophys-console)");
+  // G2c-2: a configuration change the plan refuses, decided from the stored configs before any Cloudflare call.
+  assert.equal(await run(async (_db, b) => { await bundlesFor(b, NEW, { "cryptophys-console": { toml: "workers_dev = true\n" } }); }), "not_eligible: routing_changed (cryptophys-console)");
 });
 
 test("G2b-7. the Registry records a native deploy only for a running native deploy request of the last hour, for every Worker of the unit", async () => {

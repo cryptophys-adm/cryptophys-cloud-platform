@@ -667,7 +667,7 @@ test("G2c1-9. a recovery redeploy goes native when eligible, and the plan's life
 test("G2c1-10. requestStatus reports failures and only the Orchestrator's own requests; an ineligible recovery redeploy keeps the workflow", async () => {
   const { db, b } = await scenario();
   await bundlesFor(b, OLD);
-  await bundlesFor(b, NEW, { tweaks: { "cryptophys-console": { toml: "[vars]\nX = \"1\"\n" } } });
+  await bundlesFor(b, NEW, { tweaks: { "cryptophys-console": { toml: "workers_dev = true\n" } } });
   const id = (k: number) => `dep_${String(k).repeat(8)}-5555-4555-8555-555555555555`;
   const insert = (k: number, status: string, details: object) => db.raw.prepare(
     `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
@@ -679,7 +679,7 @@ test("G2c1-10. requestStatus reports failures and only the Orchestrator's own re
   assert.deepEqual(await requestStatus({ DB: db as never }, id(2)), { found: true, status: "in_progress", conclusion: null, request_id: id(2), executor: "native:rollback", reason: null });
   assert.deepEqual(await requestStatus({ DB: db as never }, id(3)), { found: false }, "a GitHub request is followed through runStatus");
   assert.deepEqual(await requestStatus({ DB: db as never }, "dep_nope"), { found: false });
-  // Ineligible (a wrangler.toml change): the recovery redeploy dispatches the unit's workflow exactly as before.
+  // Ineligible (a wrangler.toml change the G2c-2 plan refuses): the recovery redeploy dispatches the unit's workflow exactly as before.
   const plan = `plan_${"6".repeat(8)}-6666-4666-8666-666666666666`;
   const dec = `dec_${"7".repeat(8)}-7777-4777-8777-777777777777`;
   const at = new Date().toISOString();
@@ -701,7 +701,7 @@ test("G2c1-10. requestStatus reports failures and only the Orchestrator's own re
     assert.deepEqual([r.dispatched, r.workflow, r.executor], [true, "deploy-console.yml", undefined]);
     assert.deepEqual(dispatched, ["deploy-console.yml"]);
     const ev = JSON.parse((db.raw.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'deployment.dispatched'").get() as any).payload_json);
-    assert.deepEqual(ev.native_deploy, { reason: "config_changed", service: "cryptophys-console" });
+    assert.deepEqual(ev.native_deploy, { reason: "routing_changed", service: "cryptophys-console" });
     assert.equal((await runStatus(env as never, "deploy-console.yml", NEW)).conclusion, "success", "and the lifecycle follows the workflow run as before");
   } finally { globalThis.fetch = realFetch; }
 });
