@@ -112,6 +112,7 @@ These hold everywhere:
 | Worker secrets to Secrets Store | ADR-0012 phase 4 |
 | Deploy from the Forge, shadowed over 10 deploys | phase 4 |
 | GitHub archived | phase 5 |
+| Evolution loop: autonomous merge (E1), the evolver agent (E2), fitness and revert (E3), memory and Console (E4); no shadow phase (owner 2026-11-12) | ADR-0014, proposed |
 | `cryptophys-home` removed | after the redirect week |
 
 See `docs/RETROSPECTIVE-2026-11-08.md` §7 for the order of work.
