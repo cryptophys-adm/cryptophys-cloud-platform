@@ -9,7 +9,9 @@
 //   build_minutes    - the month's measured Workers Builds minutes, or their projection, reach 80% of the
 //                      free-tier budget (owner 2026-11-12; control-plane-shared/src/build-usage.ts);
 //   organism         - the Forge's census (ADR-0013) found the DNA and the live registries apart:
-//                      a declared Worker or agent not registered, an agent no longer declared, a change.
+//                      a declared Worker or agent not registered, an agent no longer declared, a change;
+//   dependencies     - the Forge's npm dependency audit (ADR-0012 G5) found a high or critical advisory in a
+//                      Worker's or the Console UI's lockfile, or has not succeeded for 72 hours.
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
 // needs no table of its own. When the send_email binding OWNER_EMAIL and the var NOTIFY_FROM are
@@ -23,9 +25,10 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
+import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
-export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes"] as const;
+export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies"] as const;
 export type Topic = (typeof TOPICS)[number];
 /** Observations older than this (45 min, three missed Drift Detector runs) count as stale. */
 export const STALE_MS = 45 * 60_000;
@@ -186,9 +189,38 @@ async function buildMinutes(db: D1Database, now: number): Promise<Notice> {
   };
 }
 
+/**
+ * ADR-0012 G5: vulnerable npm dependencies, from the Forge's daily audit (Dependabot's alerts, off GitHub). Open
+ * when the last successful audit found a high or critical advisory in a Worker's or the Console UI's lockfile, or
+ * when no audit has succeeded for 72 hours. The fingerprint is the sorted advisory ids, so the owner gets one email
+ * per new set of advisories, not one per run.
+ */
+async function dependencies(db: D1Database, now: number): Promise<Notice> {
+  const a = await dependencyAudit(db, now);
+  const ids = a?.runtime_high_ids ?? [];
+  const active = a !== null && (a.stale || ids.length > 0);
+  const serious = (a?.findings ?? []).filter((f) => f.runtime && NOTICE_SEVERITIES.has(f.severity));
+  const lines = active && a ? [
+    ...(a.stale ? [a.last_ok_run ? `The last successful dependency audit ran at ${a.last_ok_run.ran_at} (main ${a.last_ok_run.main_sha.slice(0, 12)})` : "No dependency audit has succeeded yet"] : []),
+    ...(a.stale && a.latest_run?.status === "failed" && a.latest_run.error ? [`Latest audit failed: ${a.latest_run.error}`] : []),
+    ...serious.slice(0, 10).map((f) => `${f.package}@${f.version}: ${f.severity}, ${f.title ?? f.advisory_id}${f.url ? ` (${f.url})` : ""} in ${f.lockfiles.join(", ")}`),
+    ...(serious.length > 10 ? [`and ${serious.length - 10} more`] : []),
+  ] : [];
+  const n = ids.length;
+  return {
+    topic: "dependencies", active,
+    fingerprint: active ? await fp([...ids, ...(a?.stale ? ["stale"] : [])]) : "",
+    title: !a || a.status === "no_data" ? "npm dependencies are not audited yet"
+      : n ? `Vulnerable npm dependencies: ${n} high or critical advisor${n === 1 ? "y" : "ies"} in Worker or Console builds${a.stale ? "; the audit is also stale" : ""}`
+      : a.stale ? "The npm dependency audit has not succeeded for 72 hours"
+      : `No high or critical advisory in Worker or Console builds (${a.findings.length} finding(s) in total)`,
+    lines, link: `${CONSOLE_URL}#/code`,
+  };
+}
+
 /** The live notices, for the Console and for reconcileNotices. Read-only. */
 export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now)];
+  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now)];
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));

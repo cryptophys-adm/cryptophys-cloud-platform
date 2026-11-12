@@ -4,7 +4,8 @@
 //   2. the check of the oldest unchecked open change request head;
 //   3. the check of the oldest unchecked commit of main (skipped when step 2 used most of the tick);
 //   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts)
-//   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12).
+//   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12);
+//   and, once a day per head of main, the npm dependency audit (dependency-audit.ts, ADR-0012 G5).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
@@ -14,6 +15,7 @@ import { censusTick, type ExternalDnaReader } from "./census.ts";
 import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
 import { crBuildsTick } from "./cr-builds.ts";
 import { buildUsageTick } from "./build-usage.ts";
+import { dependencyAuditTick } from "./dependency-audit.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
 export interface TickEnv {
@@ -60,6 +62,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   if (env.CF_BUILDS_API_TOKEN) await step("cr_typecheck", () => crBuildsTick(env, nowMs()));
   // Owner 2026-11-12: the account's Workers Builds minutes against the free-tier budget (hourly; read only).
   if (env.CF_BUILDS_API_TOKEN) await step("build_usage", () => buildUsageTick(env, nowMs()));
+  if (env.ARTIFACTS) {
+    // ADR-0012 G5: the npm dependency audit of main's head (once a day per head), replacing Dependabot alerts.
+    await step("dependency_audit", async () => {
+      const repo = await env.ARTIFACTS!.get(repoName);
+      try { return await dependencyAuditTick(env, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
+    });
+  }
   const started = nowMs();
   await step("change_checks", () => tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs()), "change"));
   const change = steps.change_checks as { outcome?: string } | undefined;

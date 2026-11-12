@@ -422,6 +422,40 @@ How notices are kept and shown:
 
 `owner-attention.yml` and `drift-alert.yml` were retired on 2026-11-08, after the first owner email was delivered (audit `delivery: sent`). Their summary scripts and script tests went with them.
 
+### 5i. Step G5: Dependabot and secret scanning off GitHub (2026-11-12)
+
+The Consequences below require replacements for GitHub's Dependabot and secret scanning before phase 5.
+
+- **Secret scanning was already replaced.** Every commit the Forge checks (each new commit of main and each change request head) is scanned in full by `scanSecrets` (`forge/src/runner/core.ts`):
+  - It covers every text file of the snapshot, outside `node_modules`, `.git`, `dist` and `.wrangler`.
+  - A finding sets `guard_status = findings`, so the commit is not `ready`: no consensus deploy takes it, and no bundle is stored.
+  - A finding records the rule, the path and the line, never the matched text.
+  - G5 adds one rule, `npm_token`. The rules now cover private keys and GitHub, AWS, Slack, Google, OpenAI, Anthropic, Stripe live, Artifacts and npm tokens, plus JWTs.
+- **What the secret scan does not cover.** Unlike GitHub's scanning, it does not cover:
+  - binary files, and files of 2 MB or more;
+  - commits the Forge never checks. A tick checks the oldest unchecked of main's five newest commits, so a secret added and removed within a longer push stays in history unscanned;
+  - credential formats without a fixed prefix, such as Cloudflare API tokens.
+
+  The Forge also has no push protection: it sees a commit only once it is on main, or on a change request.
+- **Dependabot's alerts, replaced** (`forge/src/dependency-audit.ts`, migration 0050):
+  - **When.** A Forge tick step, `dependency_audit`, runs at most once a day per head of main, or an hour after a failed run.
+  - **What it reads.** It walks main's tree in the Artifacts repository and reads every `package-lock.json`:
+    - lockfileVersion 2 and 3 through the `packages` map, nested installs included;
+    - version 1 through its nested `dependencies`;
+    - not the root entry, `link` entries, `node_modules` or build output.
+  - **What it asks.** It asks the npm registry's bulk advisory endpoint, the one `npm audit` uses (`POST https://registry.npmjs.org/-/npm/v1/security/advisories/bulk`), in batches of at most 900 names. Only package names and versions are sent.
+  - **The answer.** For each name, a list of advisories with `id`, `url`, `title`, `severity`, `vulnerable_versions`, `cwe` and `cvss`. The registry answers `{}` when nothing is affected.
+  - **Matching.** The Forge re-checks each advisory's range against each installed version, with a small semver matcher. A prerelease is compared by full precedence, which reports more rather than less. A range it cannot read counts as affected. So a finding names the exact affected version.
+  - **Where.** A finding is `runtime` when a lockfile that installs it belongs to a Worker, which is a `workers/<dir>` with a wrangler config; this includes the Console UI build under `workers/console/ui`. Any other lockfile is tooling, for example `workers/control-plane-shared`.
+  - **Records.** One row per run in `forge_dependency_audits`: the head, lockfiles, packages, advisories, counts by severity, status `ok` or `failed`, and the error. One row per finding in `forge_dependency_findings`. Both are kept 90 days. A change in the set of advisories is audited (`forge.dependency_audit`). A failure is recorded and never thrown out of the tick.
+- **Shown.**
+  - `GET /v1/forge/dependency-audit`, operators, read only, returns the latest run, the latest successful run and its findings.
+  - The Console Code page has a panel for it, and the route is on the Console's read-only allowlist.
+- **Owner notice `dependencies`.**
+  - It opens when the latest successful run has a high or critical advisory in a runtime lockfile, or when no run has succeeded for 72 hours.
+  - The fingerprint is the sorted advisory ids, so the owner gets one email per new set of advisories, not one per run. It links to `#/code`.
+- **Not replaced yet: Dependabot's upgrade pull requests.** Findings are reported, not fixed. An agent, or later the evolution loop (ADR-0014), proposes the upgrades as change requests.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).
