@@ -8,6 +8,7 @@ import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitForService, unitRegistryState, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
+import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 
 interface DurableObjectStorageLike {
@@ -202,48 +203,27 @@ export interface PendingDeploys {
 }
 
 /**
- * Which deploy units have changes on a CI-green main that production does not run yet.
- * Read-only: GitHub ref, runs and compare APIs plus the registry. The supervisor proposes
- * deploy_commit for each pending unit; nothing is dispatched here.
+ * Which deploy units have changes on a ready main that production does not run yet (ADR-0012 G1, owner
+ * 2026-11-12): decided by the Forge from the Artifacts repository (forge-gate.ts), not by GitHub. Read-only;
+ * the supervisor proposes deploy_commit for each pending unit; nothing is dispatched here.
  */
 export async function pendingDeploys(env: Env): Promise<PendingDeploys> {
-  const out: PendingDeploys = { main_sha: null, ci_green: false, units: [], skipped: [] };
-  if (!env.GH_ACTIONS_TOKEN) { out.skipped.push({ unit: "*", reason: "github_token_missing" }); return out; }
-  const sha = await mainSha(env.GH_ACTIONS_TOKEN);
-  out.main_sha = sha;
-  if (!sha) { out.skipped.push({ unit: "*", reason: "main_lookup_failed" }); return out; }
-  out.ci_green = (await ciGreen(env.GH_ACTIONS_TOKEN, sha)).green;
-  if (!out.ci_green) { out.skipped.push({ unit: "*", reason: "ci_not_green" }); return out; }
-  const fingerprint = await registryFingerprint(env.DB);
-  const tag = sha.slice(0, 12);
-  const pendingUnits: PlannedUnit[] = [];
-  const skipped: Skip[] = [];
-  let newMigration = false;
-  for (const unit of DEPLOY_UNITS) {
-    const state = await unitRegistryState(env.DB, unit, tag);
-    if ("skip" in state) { skipped.push({ unit: unit.unit, reason: state.skip }); continue; }
-    if (state.behind.length === 0) continue;
-    let changed = false;
-    let failed = false;
-    for (const base of state.behind) {
-      const res = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/compare/" + base + "..." + sha + "?per_page=300");
-      if (!res.ok) { failed = true; break; }
-      const cmp = await res.json() as { status?: string; files?: { filename: string }[] };
-      if (cmp.status !== "ahead") { failed = cmp.status !== "identical"; if (failed) break; continue; }
-      const files = (cmp.files ?? []).map((f) => f.filename);
-      if (files.some(isMigration)) newMigration = true;
-      // GitHub lists at most 300 files; a larger diff is treated as touching every unit.
-      if (files.length >= 300 || unitChanged(unit, files)) { changed = true; break; }
-    }
-    if (failed) { skipped.push({ unit: unit.unit, reason: "compare_failed_or_diverged" }); continue; }
-    if (changed) pendingUnits.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
-  }
-  const plan = orderPending(pendingUnits, newMigration, skipped);
-  out.units.push(...plan.units);
-  out.skipped.push(...plan.skipped);
-  // ADR-0012 phase 4, shadow: record this plan next to the Forge's plan of the same commit and inputs.
-  try { await recordPlanSide(env.DB, "github", sha, fingerprint, plan); } catch { /* the comparison never blocks a deploy decision */ }
-  return out;
+  return forgePendingDeploys(env.DB);
+}
+
+/**
+ * The deploy gate of a commit (ADR-0012 G1): it is main's head as the Forge planned it, and the Forge's checks
+ * are ready. Until G2, the unit's GitHub workflow deploys only GitHub's main head, so the dispatch also needs
+ * GitHub's main to be the same commit (the mirror may lag by a push).
+ */
+async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: string; conclusion: string | null }[] }> {
+  const head = await forgeMainHead(env.DB);
+  if (!head.sha) throw new Error(head.reason);
+  if (head.sha !== sha) throw new Error("commit_not_current_main");
+  const gate = await forgeReady(env.DB, sha);
+  if (!gate.ready) throw new Error("ci_not_green");
+  if (await mainSha(env.GH_ACTIONS_TOKEN!) !== sha) throw new Error("github_main_not_mirrored");
+  return { workflows: [{ name: "Forge checks", conclusion: "success" }] };
 }
 
 /**
@@ -260,10 +240,7 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("invalid_commit_sha");
   if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
   const actor = `consensus:${proposalId}`;
-  const current = await mainSha(env.GH_ACTIONS_TOKEN);
-  if (current !== sha) throw new Error("commit_not_current_main");
-  const ci = await ciGreen(env.GH_ACTIONS_TOKEN, sha);
-  if (!ci.green) throw new Error("ci_not_green");
+  const ci = await forgeGate(env, sha);
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`consensus:${unit.workflow}:${sha}`))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
   const lock = await lockResponse.json() as { claimed?: boolean };
@@ -319,12 +296,12 @@ export async function deployForRecovery(env: Env, planId: string, decisionId: st
   const unit = unitForService(serviceId);
   if (!unit) throw new Error("no_deploy_unit_for_service");
   if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
-  const sha = await mainSha(env.GH_ACTIONS_TOKEN);
-  if (!sha) throw new Error("main_lookup_failed");
-  // The deploy workflows deploy only the exact current main commit.
+  // ADR-0012 G1: main's head and its readiness come from the Forge. The deploy workflows deploy only the exact current main commit.
+  const head = await forgeMainHead(env.DB);
+  if (!head.sha) throw new Error(head.reason);
+  const sha = head.sha;
   if (!sha.startsWith(version)) throw new Error(`version_not_current_main: plan ${version}, main ${sha.slice(0, 12)}; a new plan is needed`);
-  const ci = await ciGreen(env.GH_ACTIONS_TOKEN, sha);
-  if (!ci.green) throw new Error("ci_not_green");
+  const ci = await forgeGate(env, sha);
   const actor = `recovery:${planId}`;
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`recovery:${unit.workflow}:${sha}`))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });

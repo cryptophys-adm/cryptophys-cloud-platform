@@ -9,6 +9,7 @@
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
+import { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
 
 /** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
@@ -300,10 +301,8 @@ function stepsTypecheck(steps: string | null): CheckSummary["typecheck"] {
   } catch { return null; }
 }
 
-/** The gate: a passed check with no secret, a passed type-check and a passed Console build. */
-export function isReady(status: string, guard: string | null, typecheck: CheckSummary["typecheck"]): boolean {
-  return status === "passed" && guard === "clean" && typecheck?.status === "passed" && typecheck.console_build === "passed";
-}
+/** The gate (control-plane-shared/src/forge-gate.ts): the Orchestrator's deploy decisions read the same one (ADR-0012 G1). */
+export { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 
 function summary(r: JoinedRow): CheckSummary {
   let failures: string[] = [];

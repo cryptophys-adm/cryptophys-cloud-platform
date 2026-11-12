@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_JWT, APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeWorkflow, migratedDb, req } from "./harness.ts";
+import { APPROVER_JWT, APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeWorkflow, forgeSees, migratedDb, req } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import recovery from "../../recovery-manager/src/index.ts";
 import { runLifecycle } from "../../recovery-manager/src/lifecycle.ts";
@@ -29,8 +29,9 @@ function lockNamespace() {
   };
 }
 
-/** Fake GitHub: current main, green CI, and a deploy run that finishes on the first poll. */
-function github(db: Db, opts: { main?: string; conclusion?: string; onPoll?: () => void } = {}) {
+/** Fake GitHub: current main and a deploy run that finishes on the first poll; the Forge planned and passed main (ADR-0012 G1). */
+async function github(db: Db, opts: { main?: string; conclusion?: string; onPoll?: () => void } = {}) {
+  await forgeSees(db, { main: opts.main ?? MAIN, files: [], ready: true });
   const dispatched: { workflow: string; body: any }[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -92,7 +93,7 @@ const stages = (db: Db, id: string) => (planRow(db, id).exec.pipeline ?? []).map
 test("1. after one approval click the AI runs the whole plan: policy, steps, verification, finish, audited", async () => {
   const { env, db, wf } = envFor();
   try {
-    const dispatched = github(db, { onPoll: () => observe(db, "cryptophys-console", false) });
+    const dispatched = await github(db, { onPoll: () => observe(db, "cryptophys-console", false) });
     observe(db, "cryptophys-console", true);
     const id = await approvedPlan(env, [
       { action: "redeploy_commit", description: "Redeploy the desired version" },
@@ -119,7 +120,7 @@ test("1. after one approval click the AI runs the whole plan: policy, steps, ver
 test("2. a stale plan never deploys an old commit: an in-sync service is skipped, nothing is dispatched", async () => {
   const { env, db, wf } = envFor();
   try {
-    const dispatched = github(db);
+    const dispatched = await github(db);
     observe(db, "cryptophys-console", false);
     const id = await approvedPlan(env, [{ action: "redeploy_commit", description: "Redeploy 59db4cf" }], "59db4cf695fa");
     await run(env, wf, id);
@@ -133,7 +134,7 @@ test("2. a stale plan never deploys an old commit: an in-sync service is skipped
 test("3. a drifted service whose plan names an old commit fails safely; later stages are cancelled", async () => {
   const { env, db, wf } = envFor();
   try {
-    const dispatched = github(db);
+    const dispatched = await github(db);
     observe(db, "cryptophys-console", true);
     const id = await approvedPlan(env, [
       { action: "redeploy_commit", description: "Redeploy 59db4cf" },
@@ -150,7 +151,7 @@ test("3. a drifted service whose plan names an old commit fails safely; later st
 test("4. a failed deploy run fails the plan (the deploy workflow rolled back itself)", async () => {
   const { env, db, wf } = envFor();
   try {
-    github(db, { conclusion: "failure" });
+    await github(db, { conclusion: "failure" });
     observe(db, "cryptophys-console", true);
     const id = await approvedPlan(env, [{ action: "redeploy_commit", description: "Redeploy" }]);
     await run(env, wf, id);

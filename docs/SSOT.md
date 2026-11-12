@@ -88,7 +88,7 @@ These hold everywhere:
   - Allowance: 3,000 build minutes a month and 1 build at a time on Workers Free; 6,000 and 6 on Workers Paid (the account's plan). The platform holds itself to the free-tier 3,000 (`control-plane-shared/src/build-usage.ts`).
   - Measured, not estimated: once an hour the Forge lists every Worker's builds and Previews' builds through the Workers Builds API (read only, `CF_BUILDS_API_TOKEN`) and keeps each finished build's duration, rounded up to whole minutes (migration 0049, `workers/forge/src/build-usage.ts`). A build without a start and a stop is shown as unmeasured.
   - `GET /v1/forge/build-usage`; the Console Code page shows the month, the projection and the minutes per Worker. The owner notice `build_minutes` opens when the measured or projected month reaches 80 % of the budget, and changes once per 10 % step. The month is the UTC calendar month; Cloudflare's billing cycle may differ.
-- **CI gate for consensus deploys.** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
+- **CI gate for consensus deploys (until 2026-11-12; since G1 the gate is the Forge's `ready`, ADR-0012 §5e).** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
 
 ## Source, CI and deploy (ADR-0012)
 
@@ -96,7 +96,7 @@ These hold everywhere:
 |---|---|---|
 | Source of truth | GitHub `cryptophys-adm/cryptophys-cloud-platform` (`main`) | Artifacts `cryptophys/platform` |
 | Mirror | `mirror-to-forge.yml` on every push (also reports pull request outcomes to the Forge) | — |
-| Deploy plan (shadow) | Forge cron computes pending deploy units for main from Artifacts; the Orchestrator records its GitHub-based plan for the same inputs (`forge_deploy_plans`); plan parity towards 10 (ADR-0012 §5d) | Forge-planned deploys |
+| Deploy decisions | **The Forge decides (G1, 2026-11-12):** main's head, readiness (the Forge checks) and the pending units come from the Forge's records (`forge-gate.ts`); the GitHub workflow still performs the deploy and requires GitHub's main to equal the Forge's head | deploy from Forge bundles (G2) |
 | Change requests (shadow) | `forge-change-request.yml` after CI on each same-repository PR: head to `cr/<n>`, registered as `gh-<n>`; Forge verdict vs GitHub outcome, merge parity towards 10 (ADR-0012 §5d) | Forge merges |
 | CI | GitHub Actions (`validate-control-plane.yml` for every PR and main push, `forge-runner-parity.yml`) | Forge checks |
 | Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan, plus the Workers Builds type-check and Console UI build; `ready` when all pass; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate (phase 4 requires `ready`) |
