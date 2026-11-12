@@ -3,10 +3,12 @@
  * autonomous dan dinamis"). Every value is read from what the agents actually did: the syscall log
  * (agent_actions), the council votes, the agent reports, the Forge census (ADR-0013 self-awareness)
  * and the self-registration proposals (ADR-0013 phase 3). Read-only; every table is optional, so the
- * view still answers on a database without one of them.
+ * view still answers on a database without one of them. Execution hosts outside Cloudflare (Omega, the MT5
+ * VPS bridge and its EA) come from the xauusd AI Worker's OmegaHealth entrypoint (execution-hosts.ts).
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { KernelHttpEnv } from "./kernel.ts";
+import { executionHosts } from "./execution-hosts.ts";
 
 const REGISTRATION_ACTIONS = ["register_agent", "register_engine", "register_privileged_agent", "admit_voter"];
 
@@ -87,6 +89,8 @@ export async function meshView(env: KernelHttpEnv, now = Date.now()): Promise<Js
       return { ...r, outcome_json: undefined, outcome };
     }),
     engines,
+    // Owner 2026-11-12: Omega, the MT5 VPS bridge and the EA (outside Cloudflare), read-only.
+    execution_hosts: await executionHosts(env, now),
     protocol: [
       "Self-awareness: every Worker declares itself in organism.json (DNA); the Forge takes a census of DNA versus the live registries on each main commit.",
       "Self-registration: a census finding (an undeclared or unregistered agent, engine or seat) makes the Supervisor propose its registration; the council votes; routine registrations run on consensus alone, privileged agents and new seats need the owner's click.",

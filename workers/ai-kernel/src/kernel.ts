@@ -1,5 +1,6 @@
 /** Kernel operations shared by the HTTP API and the MCP tools (ADR-0007). */
 import type { OwnerTelegramBinding, SendEmailBinding } from "./owner-notices.ts";
+import type { OmegaHealthBinding } from "./execution-hosts.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -22,6 +23,8 @@ export interface KernelHttpEnv extends KernelEnv {
   /** Owner 2026-11-11: the owner's Telegram, through the xauusd AI Worker's OwnerNotifier (it holds the bot). */
   OWNER_TELEGRAM?: OwnerTelegramBinding;
   NOTIFY_FROM?: string;
+  /** Owner 2026-11-12: Omega's VPS bridge and EA liveness for the AI Mesh (xauusd OmegaHealth, read-only). */
+  XAUUSD_OMEGA_HEALTH?: OmegaHealthBinding;
 }
 
 const AGENT_ID_RE = /^[a-z0-9-]{2,40}$/;
