@@ -10,6 +10,12 @@
 // When GitHub merges or closes the pull request (mirror-to-forge.yml), the verdict at that moment is
 // frozen next to the outcome. A GitHub merge agrees when the Forge would have merged it (or asked
 // the owner), and disagrees when the Forge had blocked it. The Forge merges nothing in this phase.
+//
+// ADR-0012 G4 (§5j): change requests also come from branches pushed to the work repository
+// cryptophys/platform-work (work-repo.ts), as fg-<branch slug> with source 'forge'. Each row names the
+// repository its head is read from (`repo`, migration 0051): 'platform' for gh-<number>, 'platform-work'
+// for fg-<slug>. A forge-sourced head that does not contain canonical main has blocked_reason
+// not_based_on_main and is not checked until the contributor updates the branch.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checkOf, isReady, STALE_RUN_MS, type ArtifactsReader, type ArtifactsTreeEntry, type CheckSummary } from "./checks.ts";
@@ -17,7 +23,9 @@ import { checkOf, isReady, STALE_RUN_MS, type ArtifactsReader, type ArtifactsTre
 const HEX40 = /^[0-9a-f]{40}$/;
 export const MERGE_PARITY_TARGET = 10;
 export const MAX_CHANGED_PATHS = 2_000;
-const MAX_PATHS_STORED = 500;
+export const MAX_PATHS_STORED = 500;
+/** The repository a change request's head is read from (migration 0051). */
+export type ChangeRepo = "platform" | "platform-work";
 
 export type Verdict = "would_merge" | "needs_owner" | "blocked" | "pending";
 export interface Change { path: string; change: "added" | "modified" | "deleted"; base?: string; head?: string }
@@ -125,6 +133,9 @@ export async function criticalReasons(repo: ArtifactsReader, changes: Change[], 
 // ---------------------------------------------------------------------------------------------
 // Verdict
 
+export const TYPECHECK_NOT_CONFIGURED = "no type-check source for this head: change requests pushed to platform-work have none yet (ADR-0012 §5j)";
+export const NOT_BASED_ON_MAIN = "not_based_on_main: the head does not contain canonical main; merge or rebase main into the branch and push again";
+
 export function verdictOf(check: CheckSummary | null, critical: string[] | null, nowMs = Date.now()): { verdict: Verdict; reasons: string[] } {
   if (!check || (check.status === "running" && Date.parse(check.started_at) > nowMs - STALE_RUN_MS)) return { verdict: "pending", reasons: ["checks have not finished"] };
   const reasons: string[] = [];
@@ -135,11 +146,20 @@ export function verdictOf(check: CheckSummary | null, critical: string[] | null,
   if (check.typecheck?.status === "failed") reasons.push(check.typecheck.console_build === "failed" && !check.typecheck.errors ? "the Console build failed" : "the type-check failed");
   if (check.status === "failed" && reasons.length === 0) reasons.push("the check failed");
   if (reasons.length) return { verdict: "blocked", reasons };
+  // G4: a head from platform-work has no type-check source yet (the secret-free build reads cr/<n> of platform).
+  // It stays pending, so a forge-sourced change request cannot reach would_merge until one exists (G3b needs it).
+  if (check.typecheck?.status === "not_configured") return { verdict: "pending", reasons: [TYPECHECK_NOT_CONFIGURED] };
   if (!check.typecheck || check.typecheck.status !== "passed") return { verdict: "pending", reasons: ["the type-check of this head has not reported"] };
   if (check.typecheck.console_build !== "passed") return { verdict: "pending", reasons: ["the Console build of this head has not reported"] };
   if (critical === null) return { verdict: "pending", reasons: ["changed paths not computed"] };
   if (!isReady(check.status, check.guard_status, check.typecheck)) return { verdict: "pending", reasons: ["not ready"] };
   return critical.length ? { verdict: "needs_owner", reasons: critical } : { verdict: "would_merge", reasons: [] };
+}
+
+/** The verdict of a change request: a head the Forge refused to check (G4) is blocked; otherwise verdictOf. */
+export function changeVerdict(row: { blocked_reason?: string | null }, check: CheckSummary | null, critical: string[] | null, nowMs = Date.now()): { verdict: Verdict; reasons: string[] } {
+  if (row.blocked_reason) return { verdict: "blocked", reasons: [row.blocked_reason === "not_based_on_main" ? NOT_BASED_ON_MAIN : row.blocked_reason] };
+  return verdictOf(check, critical, nowMs);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -150,6 +170,8 @@ export interface ChangeRow {
   head_sha: string; base_sha: string; github_ci: string | null; status: "open" | "merged" | "closed";
   changed_paths: string | null; critical: string | null; verdict_at_outcome: Verdict | null; merge_sha: string | null; agrees: number | null;
   created_at: string; updated_at: string; outcome_at: string | null;
+  /** Migration 0051 (G4): the Artifacts repository the head is read from, and why the Forge will not check it. */
+  repo: ChangeRepo; blocked_reason: "not_based_on_main" | null;
 }
 export interface ChangeInput { number?: unknown; source_branch?: unknown; title?: unknown; author?: unknown; head_sha?: unknown; base_sha?: unknown; github_ci?: unknown }
 
@@ -228,7 +250,7 @@ export async function recordOutcome(db: D1Database, input: { number?: unknown; m
     if (row.status === status && (!input.merged || row.merge_sha === mergeSha)) return row;
     throw bad("change_already_decided", 409);
   }
-  const { verdict } = verdictOf(await checkOf(db, row.head_sha), row.critical === null ? null : JSON.parse(row.critical), nowMs);
+  const { verdict } = changeVerdict(row, await checkOf(db, row.head_sha), row.critical === null ? null : JSON.parse(row.critical), nowMs);
   const agrees = input.merged ? mergeAgreement(verdict) : null;
   const now = new Date(nowMs).toISOString();
   await db.prepare("UPDATE forge_change_requests SET status = ?, verdict_at_outcome = ?, merge_sha = ?, agrees = ?, outcome_at = ?, updated_at = ? WHERE cr_id = ? AND status = 'open'")
@@ -264,9 +286,9 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
   for (const r of rows.slice(0, n)) {
     const critical = parseList(r.critical);
     const check = await checkOf(db, r.head_sha);
-    const live = verdictOf(check, critical, nowMs);
+    const live = changeVerdict(r, check, critical, nowMs);
     changes.push({
-      cr_id: r.cr_id, number: r.number, branch: r.branch, source_branch: r.source_branch, title: r.title, author: r.author,
+      cr_id: r.cr_id, source: r.source, repo: r.repo, blocked_reason: r.blocked_reason, number: r.number, branch: r.branch, source_branch: r.source_branch, title: r.title, author: r.author,
       head_sha: r.head_sha, base_sha: r.base_sha, github_ci: r.github_ci, status: r.status,
       changed_paths: parseList(r.changed_paths) ?? [], critical: critical ?? [],
       check: check ? { status: check.status, pass: check.pass, fail: check.fail, guard_status: check.guard_status, typecheck: check.typecheck, ready: check.ready } : null,
@@ -285,11 +307,13 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
  * The next open change request head to check: the newest first (owner 2026-11-11). Pull requests are often
  * merged minutes after they open; oldest-first left most of them unchecked at their outcome.
  */
-export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
+export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number, repoName: ChangeRepo = "platform"): Promise<string | null> {
+  // G4: only the requests whose head lives in `repo` (gh-<n> in platform, fg-<slug> in platform-work), and
+  // never a head the Forge refused (not based on main).
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
-     WHERE c.status = 'open' ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
-  ).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
+     WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
+  ).bind(repoName).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
   for (const r of rows) {
     if (r.status && !(r.status === "running" && Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS)) continue;
     if (await repo.readCommit(r.head_sha)) return r.head_sha;

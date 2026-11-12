@@ -456,6 +456,45 @@ The Consequences below require replacements for GitHub's Dependabot and secret s
   - The fingerprint is the sorted advisory ids, so the owner gets one email per new set of advisories, not one per run. It links to `#/code`.
 - **Not replaced yet: Dependabot's upgrade pull requests.** Findings are reported, not fixed. An agent, or later the evolution loop (ADR-0014), proposes the upgrades as change requests.
 
+### 5j. Step G4: contributors push to Artifacts (2026-11-12)
+
+Contributors (Claude Code sessions, other agents) push their branches to the work repository `cryptophys/platform-work` instead of opening GitHub pull requests. The Forge registers each pushed branch as a change request and checks it with the same pipeline as the GitHub-sourced ones of §5d (`workers/forge/src/work-repo.ts`, migration 0051).
+
+- **The work repository.** `POST /v1/forge/work-repo {confirm: "CREATE"}`, approvers only (operators and service tokens get 403), forks `platform` into `platform-work` with the binding's `fork` (default branch only), the same helper the G3a spike uses. It is idempotent: 202 while the fork is in progress, 200 once it is ready. It reports the repository name and its remote host, never a token; anything `fork` returns is dropped. Each outcome (`ready`, `forking`, `failed`) is audited as `forge.work_repo`. The Forge only reads `platform-work`; it never writes it.
+- **Discovery.** A Forge tick step (`work_branches`, after `cr_typecheck`, only with the Artifacts binding) does the following:
+  1. it mints a read token with a 120 s TTL for `platform-work` and checks that its remote is this account's Artifacts host and that exact path;
+  2. it runs Git smart-HTTP ref discovery, `GET <remote>/info/refs?service=git-upload-pack` with `Authorization: Bearer <token>`, parsed by G3a's pkt-line code;
+  3. it takes `refs/heads/*` except `main`, and only names matching `^(cr|claude|agent)/[A-Za-z0-9._/-]{1,80}$` that git itself accepts. Every other ref is ignored.
+
+  Each branch becomes the change request `fg-<slug>` (the branch with `/` replaced by `-`), with `source = 'forge'`, `repo = 'platform-work'`, `number = 0` and no GitHub CI. The title is the head commit's subject, and the author is its author name, without the e-mail.
+  - At most 5 branches are (re)registered per tick; the rest wait for the next tick.
+  - When two branches give the same slug (`claude/a/b` and `claude/a-b`), the one registered first keeps the id. The other is reported as a collision and is not registered.
+  - A head the binding cannot read yet waits for the next tick.
+  - A branch that disappeared closes its change request (`status = 'closed'`), with the verdict at that moment frozen next to it (`forge.change_outcome`, reason `branch_deleted`). A branch that comes back reopens it.
+  - A failed discovery (HTTP error, not smart HTTP, untrusted remote) changes nothing, and it is audited as `forge.tick_failed`.
+- **The fast-forward requirement.** The base of a forge-sourced request is canonical `platform` main's head, and only if it is an ancestor of the branch head. Ancestry is read through `platform-work`, which holds the fork's objects and everything pushed since (`isAncestor`, at most 500 commits).
+  - When the base is not an ancestor, or main's head is not in `platform-work` at all, the request has `blocked_reason = not_based_on_main` and its verdict is `blocked`. It is not checked. The contributor merges or rebases the current main into the branch and pushes again. This keeps the later G3b merge a fast-forward (§5h).
+  - A request is evaluated again when its head changes or when main moves. So a branch that was based on the old main becomes `not_based_on_main` once main moves past it.
+  - Changed paths and the owner-only reasons of §2.4 come from the same tree diff and `criticalReasons` code as GitHub-sourced requests, read from `platform-work`.
+- **Checks read the right repository.** Each change request records the repository its head lives in (`repo`): `platform` for `gh-<n>` (heads pushed to `cr/<n>` of `platform`) and `platform-work` for `fg-<slug>`.
+  - The change-check step picks a GitHub-sourced head first, from `platform`, exactly as before. Only when none waits does it check a forge-sourced head, from `platform-work`.
+  - The bundler entrypoint falls back to `platform-work` for a commit that is not in `platform`.
+  - The check run itself is keyed by commit, as before.
+- **The type-check gap.** The secret-free change-request type-check (Workers Builds `cryptophys-forge-typecheck-cr`, §5d) builds `cr/<n>` branches of `platform` only. For a forge-sourced head, the type-check step is recorded as `not_configured`; a report that does exist for the same commit is kept. `cr-builds.ts` looks up GitHub-sourced requests only.
+  - `verdictOf` treats `not_configured` explicitly as `pending` ("no type-check source for this head"). So **a forge-sourced request cannot reach `would_merge` until a type-check source exists for `platform-work`.** G3b needs one. One option is a Workers Builds project connected to `platform-work`, under the same no-secrets rule as `forge-typecheck-cr`; that waits for the owner.
+- **Merge parity.** Forge-sourced requests are never merged by GitHub, so they never count towards the merge parity of §5d. A closed one has `agrees = NULL`.
+- **How a Claude Code session pushes.** No token is in chat or in the repository.
+  1. The owner creates a repo-scoped **write** token for `platform-work` in the dashboard: Storage & databases → Artifacts → cryptophys → platform-work → Tokens.
+  2. The owner stores it through the session's secure credential form, for the host `<account>.artifacts.cloudflare.net` (the account's Artifacts host, the host of the repository's remote), as `Authorization: Bearer`.
+  3. The session adds the remote `https://<account>.artifacts.cloudflare.net/git/cryptophys/platform-work.git` and runs a plain `git push <remote> HEAD:refs/heads/claude/<topic>`. The session's proxy injects the header.
+
+  Before pushing, the session merges or rebases the current main, so that the branch is based on main. The Forge's next tick (:04/:19/:34/:49) registers the branch. `GET /v1/forge/changes` and the Console Code page show it with the source badge "forge".
+- **Not verified against the live service.** Upload-pack ref discovery follows the Git protocol (v0/v1 advertisement, `# service=git-upload-pack`, a `HEAD` line with the capabilities, then `refs/heads/*`), like the receive-pack discovery of §5h. Two things are assumptions:
+  - a read token is accepted for `info/refs?service=git-upload-pack`;
+  - `fork` lists the new repository as `forking` and then `ready`.
+
+  If discovery fails, the tick step records `work_discovery_failed:<reason>` (`discovery_http_<status>`, `discovery_not_smart_http`, `discovery_malformed`), audits it as `forge.tick_failed`, and closes nothing. If the fork never appears, the route answers 202 with `fork_not_listed`.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).

@@ -11,6 +11,9 @@
 // Preview builds (Worker Previews) may be listed only under their Preview, not in the Worker's build list
 // (2026-11-11: the first live tick found no cr/290 build there). When the Worker's list has no finished build
 // of a request's branch, the Forge reads that branch's Preview (GET .../previews, then .../previews/{id}/builds).
+//
+// Only GitHub-sourced requests (gh-<n>, head on cr/<n> of platform) have such a build. Requests pushed to
+// platform-work (G4, source 'forge') have no type-check source yet and are not looked up here (ADR-0012 §5j).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { recordTypecheckReport } from "./typecheck.ts";
 
@@ -67,7 +70,7 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
   if (!token) return { outcome: "not_configured" };
   const open = (await env.DB.prepare(
     `SELECT c.number, c.head_sha FROM forge_change_requests c LEFT JOIN forge_typecheck_reports t ON t.commit_sha = c.head_sha
-     WHERE c.status = 'open' AND t.commit_sha IS NULL ORDER BY c.updated_at DESC LIMIT 10`,
+     WHERE c.status = 'open' AND c.source = 'github' AND t.commit_sha IS NULL ORDER BY c.updated_at DESC LIMIT 10`,
   ).all<{ number: number; head_sha: string }>()).results ?? [];
   if (!open.length) return { outcome: "up_to_date" };
   const accounts = await api(fetchImpl, token, "/accounts?per_page=5") as Array<{ id?: string }>;

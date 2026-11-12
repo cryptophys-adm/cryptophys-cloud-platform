@@ -200,18 +200,21 @@ function remoteBase(remote: string): string | null {
   }
 }
 
-/** Ref discovery for receive-pack. Never follows a redirect (an Access or sign-in page is not a Git server). */
-export async function discoverRefs(remote: string, token: string, fetchImpl: Fetch): Promise<{ ok: true; adv: Advertisement } | { ok: false; reason: string }> {
+/**
+ * Ref discovery (protocol v0/v1) for receive-pack, or for upload-pack (G4: the branches of the work
+ * repository, with a read token). Never follows a redirect (an Access or sign-in page is not a Git server).
+ */
+export async function discoverRefs(remote: string, token: string, fetchImpl: Fetch, service: "git-receive-pack" | "git-upload-pack" = "git-receive-pack"): Promise<{ ok: true; adv: Advertisement } | { ok: false; reason: string }> {
   const base = remoteBase(remote);
   if (!base) return { ok: false, reason: "invalid_remote" };
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/info/refs?service=git-receive-pack`, { method: "GET", redirect: "manual", headers: gitHeaders(token) });
+    res = await fetchImpl(`${base}/info/refs?service=${service}`, { method: "GET", redirect: "manual", headers: gitHeaders(token) });
   } catch {
     return { ok: false, reason: "discovery_unreachable" };
   }
   if (res.status !== 200) return { ok: false, reason: `discovery_http_${res.status}` };
-  if (!(res.headers.get("content-type") ?? "").startsWith("application/x-git-receive-pack-advertisement")) return { ok: false, reason: "discovery_not_smart_http" };
+  if (!(res.headers.get("content-type") ?? "").startsWith(`application/x-${service}-advertisement`)) return { ok: false, reason: "discovery_not_smart_http" };
   try {
     return { ok: true, adv: parseAdvertisement(await readBounded(res)) };
   } catch {
@@ -365,7 +368,7 @@ export interface SpikeBinding {
 export interface SpikeStep { step: string; ok: boolean; ref?: string; from?: string; to?: string; reason?: string }
 export interface SpikeResult { outcome: "succeeded" | "failed" | "forking"; repo: string; main: string | null; parent: string | null; steps: SpikeStep[] }
 
-async function repoStatus(binding: SpikeBinding, name: string): Promise<string> {
+export async function repoStatus(binding: Pick<SpikeBinding, "list">, name: string): Promise<string> {
   let cursor: string | undefined;
   do {
     const page = await binding.list(cursor ? { limit: 100, cursor } : { limit: 100 });
