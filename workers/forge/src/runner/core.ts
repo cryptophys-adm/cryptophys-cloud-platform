@@ -350,7 +350,8 @@ export interface FileReport {
   sqlite_open_after?: number;
   sqlite_close_errors?: number;
 }
-export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[] }
+/** `isolated`: files rerun alone after their group's test Worker failed as a whole (absent when none). */
+export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[]; isolated?: number }
 
 export function emptyResult(): SuiteResult {
   return { files: 0, pass: 0, fail: 0, skip: 0, failures: [] };
@@ -425,12 +426,21 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
       catch (e) { result.files++; result.fail++; result.failures.push(`${file.split("/").pop()}: BUNDLE ${String((e as Error)?.message ?? e).slice(0, 300)}`); unbundled.push(file); }
     }
     if (bundled.length === 0) continue;
-    const expected = bundled.map((b) => b.file);
-    try {
-      const report = await deps.runWorker(testWorkerCode(bundled, { snapshotText, sqlJs: deps.sqlJs, sqlWasm: deps.sqlWasm }, deps.bundler ? { BUNDLER: deps.bundler } : undefined));
-      tally(result, expected, report);
-    } catch (e) {
-      tally(result, expected, null, String((e as Error)?.message ?? e).slice(0, 300));
+    const shared = { snapshotText, sqlJs: deps.sqlJs, sqlWasm: deps.sqlWasm };
+    const env = deps.bundler ? { BUNDLER: deps.bundler } : undefined;
+    const run = async (part: Array<{ file: string; code: string }>): Promise<{ report: { files?: FileReport[] } | null; error?: string }> => {
+      try { return { report: await deps.runWorker(testWorkerCode(part, shared, env)) }; }
+      catch (e) { return { report: null, error: String((e as Error)?.message ?? e).slice(0, 300) }; }
+    };
+    const whole = await run(bundled);
+    if (whole.error === undefined || bundled.length === 1) { tally(result, bundled.map((b) => b.file), whole.report, whole.error); continue; }
+    // 2026-11-12: the group's isolate died (four heavy files in one group exceeded the Worker memory limit
+    // when new test files shifted the alphabetical groups). Run each file alone, so every test still runs
+    // and a file fails only for its own reasons.
+    result.isolated = (result.isolated ?? 0) + bundled.length;
+    for (const one of bundled) {
+      const alone = await run([one]);
+      tally(result, [one.file], alone.report, alone.error);
     }
   }
   return result;
