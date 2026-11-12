@@ -9,11 +9,25 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
 import { planTick } from "./deploy-plan.ts";
-import { censusTick } from "./census.ts";
+import { censusTick, type ExternalDnaReader } from "./census.ts";
+import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
 import { crBuildsTick } from "./cr-builds.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
-export interface TickEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string }
+export interface TickEnv {
+  DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string;
+  /** Owner 2026-11-12: the XAUUSD organs' DNA (xauusd-ai-trading-assistant OrganismDna, dna() only). */
+  EXT_ORGANISM_XAUUSD?: { dna(): Promise<unknown> };
+}
+
+/** The external origins this deployment can read (EXTERNAL_ORIGINS whose binding is bound). */
+export function externalReaders(env: TickEnv): ExternalDnaReader[] {
+  const bound = env as unknown as Record<string, { dna?: () => Promise<unknown> } | undefined>;
+  return EXTERNAL_ORIGINS.flatMap((origin) => {
+    const b = bound[origin.binding];
+    return typeof b?.dna === "function" ? [{ origin, dna: () => b.dna!() }] : [];
+  });
+}
 
 export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<Record<string, unknown>> {
   const steps: Record<string, unknown> = {};
@@ -31,10 +45,11 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     });
   }
   if (env.ARTIFACTS) {
-    // ADR-0013 phase 2: the organism census of main's head (cheap: a few tree and blob reads).
+    // ADR-0013 phase 2: the organism census of main's head (cheap: a few tree and blob reads), with the
+    // external organs' DNA read over RPC (owner 2026-11-12).
     await step("census", async () => {
       const repo = await env.ARTIFACTS!.get(repoName);
-      try { return await censusTick(env.DB, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
+      try { return await censusTick(env.DB, repo, nowMs(), externalReaders(env)); } finally { repo[Symbol.dispose]?.(); }
     });
   }
   // ADR-0012 §5d: the type-check of open change requests, read from their secret-free Workers Builds (no-op without the token).

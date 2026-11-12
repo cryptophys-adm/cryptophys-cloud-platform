@@ -8,13 +8,14 @@
 // executors take the gene from here, never from a proposal's params.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { DNA_FILE, genomeFrom, type Genome } from "../../control-plane-shared/src/organism.ts";
+import { DNA_FILE, externalOrgans, genomeFrom, type ExternalOrigin, type Genome } from "../../control-plane-shared/src/organism.ts";
 import type { ArtifactsReader } from "./checks.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
 export type FindingKind = "invalid_dna" | "unregistered_service" | "disabled_service" | "unregistered_agent" | "undeclared_agent" | "agent_host_changed" | "agent_capabilities_changed" | "agent_tier_changed"
-  | "unregistered_engine" | "undeclared_engine" | "voter_seat_requested" | "voter_seat_vacated";
+  | "unregistered_engine" | "undeclared_engine" | "voter_seat_requested" | "voter_seat_vacated"
+  | "external_dna_unavailable" | "external_organ_refused" | "external_agent_refused";
 export interface Finding { kind: FindingKind; subject: string; detail: string }
 
 /** Read every workers/<dir>/organism.json at a commit. */
@@ -38,7 +39,7 @@ export async function readGenome(repo: ArtifactsReader, commit: string): Promise
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
 
 /** Compare the DNA with service_registry, agents (and their seats) and engines. Read-only. */
-export async function compare(db: D1Database, genome: Genome): Promise<Finding[]> {
+export async function compare(db: D1Database, genome: Genome, external: ReadonlySet<string> = new Set()): Promise<Finding[]> {
   const findings: Finding[] = [];
   const services = new Map(((await db.prepare("SELECT service_id, status FROM service_registry").all<{ service_id: string; status: string }>()).results ?? []).map((r) => [r.service_id, r.status]));
   // Seats and engines arrive with migration 0041; before it the census compares what exists.
@@ -80,7 +81,10 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
       if (phase3 && gene.voter && row.voter !== 1 && row.host_worker === dna.service) findings.push({ kind: "voter_seat_requested", subject: gene.id, detail: `agent ${gene.id} on ${dna.service} asks for a council seat (consensus and the owner's click)` });
       if (phase3 && !gene.voter && row.voter === 1) findings.push({ kind: "voter_seat_vacated", subject: gene.id, detail: `agent ${gene.id} holds a council seat its DNA no longer asks for` });
     }
-    if (phase3) {
+    // An external organ's AI tasks are declared in the census genome, not proposed for the engines registry:
+    // its register_engine resource names the external service, and the Policy Engine's trading guard refuses
+    // every resource naming trading (xauusd-ai-trading-assistant), so the proposal could never pass (2026-11-12).
+    if (phase3 && !external.has(dna.service)) {
       const live = new Set(engines.filter((e) => e.service_id === dna.service).map((e) => e.task));
       for (const e of dna.engines) if (!live.has(e.task)) findings.push({ kind: "unregistered_engine", subject: `${dna.service}:${e.task}`, detail: `AI engine ${e.task} on ${dna.service} is in the DNA but not registered` });
       const tasks = new Set(dna.engines.map((e) => e.task));
@@ -93,6 +97,38 @@ export async function compare(db: D1Database, genome: Genome): Promise<Finding[]
   return findings.sort((x, y) => (x.kind + x.subject).localeCompare(y.kind + y.subject));
 }
 
+/** An external origin's DNA, read over its RPC binding (owner 2026-11-12: XAUUSD and Omega). */
+export interface ExternalDnaReader { origin: ExternalOrigin; dna(): Promise<unknown> }
+export const EXTERNAL_DNA_TIMEOUT_MS = 5_000;
+
+/**
+ * Add the external origins' organs to main's genome. An origin that does not answer, or answers with another
+ * schema, is a finding and adds nothing; an organ or agent above the ceiling is a finding and is left out; an
+ * organ may never replace one of main's. Returns the organs' origins, for the census summary.
+ */
+export async function addExternalOrgans(genome: Genome, readers: ExternalDnaReader[], timeoutMs = EXTERNAL_DNA_TIMEOUT_MS): Promise<{ origins: Map<string, string>; findings: Finding[] }> {
+  const origins = new Map<string, string>(); const findings: Finding[] = [];
+  for (const r of readers) {
+    let raw: unknown;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      raw = await Promise.race([r.dna(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), timeoutMs); })]);
+      const { organs, refused } = externalOrgans(r.origin, raw);
+      findings.push(...refused);
+      for (const dna of organs) {
+        if (genome.has(dna.service)) { findings.push({ kind: "external_organ_refused", subject: dna.service, detail: `${dna.service} is declared by main; ${r.origin.origin} cannot replace it` }); continue; }
+        genome.set(dna.service, dna);
+        origins.set(dna.service, r.origin.origin);
+      }
+    } catch (e) {
+      findings.push({ kind: "external_dna_unavailable", subject: r.origin.origin, detail: `${r.origin.origin} DNA not read (${String((e as Error)?.message ?? e).slice(0, 120)}); its organs are left out of this census` });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  return { origins, findings };
+}
+
 /** A census of an unchanged head is retaken this often, so registrations by consensus show up in it. */
 export const CENSUS_REFRESH_MS = 30 * 60_000;
 
@@ -102,7 +138,7 @@ export async function canonicalMainHead(repo: ArtifactsReader): Promise<string |
 }
 
 /** One census per main head (retaken every CENSUS_REFRESH_MS): read the DNA, compare, record, and audit when the findings changed. */
-export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now()): Promise<{ outcome: "recorded" | "refreshed" | "up_to_date" | "no_main"; main_sha?: string; status?: string; findings?: number }> {
+export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now(), external: ExternalDnaReader[] = []): Promise<{ outcome: "recorded" | "refreshed" | "up_to_date" | "no_main"; main_sha?: string; status?: string; findings?: number }> {
   const head = await canonicalMainHead(repo);
   if (!head) return { outcome: "no_main" };
   const existing = await db.prepare("SELECT taken_at FROM forge_organism_census WHERE main_sha = ?").bind(head).first<{ taken_at: string }>();
@@ -110,9 +146,12 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
   let status: "consistent" | "changes" | "invalid";
   let findings: Finding[] = [];
   let genome: Genome = new Map();
+  let origins = new Map<string, string>();
   try {
     genome = (await readGenome(repo, head)).genome;
-    findings = await compare(db, genome);
+    const ext = await addExternalOrgans(genome, external);
+    origins = ext.origins;
+    findings = [...await compare(db, genome, new Set(origins.keys())), ...ext.findings].sort((x, y) => (x.kind + x.subject).localeCompare(y.kind + y.subject));
     status = findings.length ? "changes" : "consistent";
   } catch (e) {
     status = "invalid";
@@ -123,6 +162,7 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
     service: d.service, kind: d.kind,
     agents: d.agents.map((a) => ({ id: a.id, display_name: a.display_name, capabilities: [...a.capabilities].sort(), tier_max: a.tier_max, voter: a.voter, ...(a.vote_binding ? { vote_binding: a.vote_binding } : {}) })),
     engines: d.engines.map((e) => e.task),
+    ...(origins.has(d.service) ? { origin: origins.get(d.service) } : {}),
   }));
   const counts = { organs: dnas.length, agents: dnas.reduce((n, d) => n + d.agents.length, 0), engines: dnas.reduce((n, d) => n + d.engines.length, 0), voters: dnas.reduce((n, d) => n + d.agents.filter((a) => a.voter).length, 0) };
   const previous = await db.prepare("SELECT findings FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first<{ findings: string }>();

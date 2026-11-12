@@ -104,6 +104,32 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 - **Critical actions run only in mode `critical`.** In mode `deploy`, `register_privileged_agent` and `admit_voter` are recorded and do not reach the owner. Raising the mode stays the owner's decision.
 - **Founding exception.** The kernel hosts two founding seats (Supervisor and Auditor). This predates the one-seat-per-Worker rule, so no further kernel seat can be admitted.
 
+### 6. External organs (owner, 2026-11-12)
+
+Owner 2026-11-12: "saya kira semua Ai dan Engine belum terdaftar di kernel, apakah fitur auto detect dan register belum berfungsi ?" and "kerjakan B dulu lalu A" (A: "DNA untuk XAUUSD dan Omega dengan auto-register").
+
+The census covered only this repository's Workers. The XAUUSD Workers, Omega among them, live in their own repository and deploy from it. Their 13 kernel agents had been registered by hand (migration 0016), and the census never saw them.
+
+- **The DNA comes over RPC.**
+  - The XAUUSD repository keeps `organism.json` (schema `xauusd-organism.v1`). It holds one organ per Worker, the agents that report to the kernel, and every AI task of its code.
+  - Its own CI keeps that file equal to the code.
+  - The xauusd AI Worker serves the file through the read-only RPC entrypoint `OrganismDna.dna()`.
+  - The Forge binds it as `EXT_ORGANISM_XAUUSD` and reads it on each census, next to main's DNA (`forge/src/census.ts` `addExternalOrgans`).
+- **The external ceiling** (`control-plane-shared/src/organism.ts` `EXTERNAL_ORIGINS`, `EXTERNAL_CEILING`). This DNA was not reviewed here, so:
+  - Only the origin's listed services count.
+  - An organ that names another service, claims a platform deploy unit, Access entry or rollback entry, fails the DNA schema, or would replace one of main's organs is refused whole. The refusal is a finding: `external_organ_refused`.
+  - An agent above tier 1, asking for a council seat, or asking for any capability beyond `signals.observe`, `reports.publish`, `memory.recall` and `memory.remember` is dropped. The refusal is a finding: `external_agent_refused`.
+  - Every voter's rule and the kernel's executor check the ceiling again.
+- **What registers.**
+  - A new external agent within the ceiling is a routine `register_agent`, by consensus alone.
+  - External AI tasks are declared in the census genome and counted, but not proposed for the engines registry. The `register_engine` resource names the external service, and the Policy Engine's trading guard refuses every resource naming trading (`xauusd-ai-trading-assistant`). Changing that guard is the owner's decision.
+- **When the DNA is missing.**
+  - An origin that does not answer within 5 s, or answers with another schema, is an `external_dna_unavailable` finding.
+  - Its organs are left out of that census. Their registered agents are never read as undeclared.
+- **Engine registrations.**
+  - The Supervisor's once-a-day cooldown for an engine registration is now per task, not per Worker.
+  - A registration the Policy Engine vetoed is retried after an hour, as deploy proposals are.
+
 ## Consequences
 
 - Adding a Worker, agent or engine means writing its DNA. CI fails until every list agrees. From phase 2 the platform notices on its own; from phase 3 it registers the newcomer itself once consensus passes.

@@ -322,13 +322,19 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     }
     // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
     // an engine, a council seat) is proposed for registration, one per cycle, each action and
-    // target at most once a day. Seats and privileged agents are critical: they reach the owner.
+    // target (an engine: each task) at most once a day. Seats and privileged agents are critical: they reach the owner.
     const census = await latestCensusRow(env);
     for (const f of census?.findings ?? []) {
       const prop = census ? proposalFor(census, f) : null;
       if (!prop) continue;
-      const recent = await env.DB.prepare("SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ? LIMIT 1")
-        .bind(prop.action, prop.target, new Date(now - REGISTRATION_COOLDOWN_MS).toISOString()).first();
+      // An engine's target is its service, so its task is part of the key: a Worker's second new AI task is not
+      // held for a day behind its first (owner 2026-11-12). A proposal the Policy Engine vetoed (shadow_blocked,
+      // e.g. its hourly limit per action and target) is retried after an hour, as deploy proposals are.
+      const task = prop.action === "register_engine" ? String(prop.params.task ?? "") : null;
+      const recent = await env.DB.prepare(
+        `SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ?
+           AND (status <> 'shadow_blocked' OR created_at >= ?)${task !== null ? " AND json_extract(params_json, '$.task') = ?" : ""} LIMIT 1`,
+      ).bind(...[prop.action, prop.target, new Date(now - REGISTRATION_COOLDOWN_MS).toISOString(), new Date(now - 3_600_000).toISOString(), ...(task !== null ? [task] : [])]).first();
       if (recent) continue;
       const r = await syscall(env, AGENT_ID, "consensus.propose", prop);
       report.actions.push(r);

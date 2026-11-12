@@ -36,6 +36,14 @@ It needs no GitHub at any step.
 - **Shim imports.** `src/runner/assets.js` holds the wasm toolchain. Only `src/worker.ts` imports it, so the Node tests never load it. Wrangler imports the shims as Text (`[[rules]]`). The globs match the import specifiers as written there, so keep those import paths.
 - **Local run.** `node tools/forge-runner/run.mjs` runs the same checks code in local workerd. There the type-check step reads `not_configured`.
 
+## Organism census (ADR-0013)
+
+`src/census.ts` reads main's DNA (`workers/<dir>/organism.json`). It also reads the external organs' DNA over RPC: the XAUUSD Workers through `EXT_ORGANISM_XAUUSD`, the xauusd AI Worker's `OrganismDna.dna()`. Each census compares that DNA with the live registries.
+
+- External organs are held to the external ceiling (ADR-0013 §6).
+- An origin that does not answer is an `external_dna_unavailable` finding. Main's census still runs.
+- The census of an unchanged head is retaken every 30 minutes, so a new XAUUSD deploy is seen within half an hour.
+
 ## Change requests (phase 4, shadow)
 
 `src/changes.ts`, migration 0037, ADR-0012 §5d. Every same-repository pull request becomes change
