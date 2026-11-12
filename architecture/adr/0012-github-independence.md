@@ -320,6 +320,23 @@ Owner, 2026-11-12: "tunda hingga berhasil lepas dari github" (ADR-0014 waits unt
 - **Plan age.** A plan's age is not used as a freshness signal. The Forge records a plan only when main or the registry changes, and a unit can wait hours for a deploy slot under an unchanged plan.
 - **Still on GitHub until G2.** The manual `POST /v1/deployments` path (Platform API) keeps its GitHub CI gate.
 
+### 5f. Step G2a: the Forge keeps what it built (2026-11-12)
+
+Owner, 2026-11-12: "lanjutkan G2 sambil menunggu deploy".
+
+- **What is stored.** When a commit of main passes the Forge's checks with no secret found, the Forge writes to the R2 bucket `cryptophys-forge-bundles`:
+  - each Worker module it bundled, as `bundles/<sha>/<worker>.mjs`;
+  - a manifest, `bundles/<sha>/manifest.json`, written last so that every module it names already exists.
+
+  This is `workers/forge/src/bundles.ts`. Bundles are kept 14 days; Workers keep their own uploaded versions for rollback.
+- **The manifest, per Worker:**
+  - the module's SHA-256 and size;
+  - `config_sha256`, the hash of its wrangler.toml;
+  - its compatibility date and flags;
+  - `single_module`: false when the bundle imports files it does not inline, such as WebAssembly;
+  - `assets`: whether it serves static assets.
+- **Next, G2b.** The Deployment Orchestrator uploads the stored module as a Worker version tagged with the commit, keeping the running version's bindings and assets, then deploys and verifies it. This covers a Worker whose `config_sha256` equals the running version's, which is a single module and serves no changed assets. Its first step checks the uploaded version's bindings against the running ones before any traffic moves. Any other change (configuration, D1 migrations, assets, multi-module) keeps the GitHub workflow until its own step.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):
