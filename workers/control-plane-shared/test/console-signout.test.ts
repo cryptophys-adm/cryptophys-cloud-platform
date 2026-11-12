@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb, signAccessJwt } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, signAccessJwt, accessEnv } from "./harness.ts";
 import consoleWorker, { SERVICE_BINDINGS } from "../../console/src/index.ts";
 import { ACCESS_LOGOUT_PATH, CONSOLE_ACCESS_HEADER, SWITCH_DELAY_S } from "../../console/src/denied.ts";
 
@@ -28,7 +28,7 @@ function env(downstream?: (r: Request) => Response) {
       return downstream ? downstream(r) : Response.json({ ok: true });
     },
   };
-  const access = baseEnv("x", migratedDb());
+  const access = accessEnv();
   return {
     SERVICE_NAME: "cryptophys-console", SERVICE_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1",
     ACCESS_TEAM_DOMAIN: access.ACCESS_TEAM_DOMAIN, ACCESS_AUD: access.ACCESS_AUD,

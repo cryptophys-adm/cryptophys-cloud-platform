@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv } from "./harness.ts";
 import { UI_ROUTES } from "../../console/src/ui/routes.ts";
 import consoleWorker, { CONSOLE_ALLOW_LIST, SERVICE_BINDINGS, type ConsoleService } from "../../console/src/index.ts";
 
@@ -25,8 +25,8 @@ function consoleEnv() {
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     CF_VERSION_METADATA: { id: "ver-console", tag: "abc1234" },
-    ACCESS_TEAM_DOMAIN: baseEnv("x", migratedDb()).ACCESS_TEAM_DOMAIN,
-    ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
+    ACCESS_TEAM_DOMAIN: accessEnv().ACCESS_TEAM_DOMAIN,
+    ACCESS_AUD: accessEnv().ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
     ASSETS: { async fetch() { return new Response('<!doctype html><script type="module" src="/assets/index-x.js"></script>', { headers: { "content-type": "text/html" } }); } },

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, fakeWorkflow, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, fakeWorkflow, migratedDb, accessEnv } from "./harness.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import recovery from "../../recovery-manager/src/index.ts";
 import consoleWorker, { CONSOLE_ALLOW_LIST, SERVICE_BINDINGS, type ConsoleService } from "../../console/src/index.ts";
@@ -39,8 +39,8 @@ function consoleEnv(extra: Record<string, unknown> = {}) {
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     CF_VERSION_METADATA: { id: "ver-console", tag: "abc1234" },
-    ACCESS_TEAM_DOMAIN: baseEnv("x", migratedDb()).ACCESS_TEAM_DOMAIN,
-    ACCESS_AUD: baseEnv("x", migratedDb()).ACCESS_AUD,
+    ACCESS_TEAM_DOMAIN: accessEnv().ACCESS_TEAM_DOMAIN,
+    ACCESS_AUD: accessEnv().ACCESS_AUD,
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`,
     APPROVER_IDENTITIES: APPROVER_EMAIL,
     ASSETS: fakeAssets().binding,

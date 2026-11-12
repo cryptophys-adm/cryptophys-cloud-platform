@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv } from "./harness.ts";
 import consoleWorker, { MOUNT, SERVICE_BINDINGS } from "../../console/src/index.ts";
 import homeWorker from "../../home/src/index.ts";
 
@@ -16,7 +16,7 @@ function env(extra: Record<string, unknown> = {}) {
   const assets: Request[] = [];
   const bindings: Record<string, unknown> = {};
   for (const name of Object.values(SERVICE_BINDINGS)) bindings[name] = { fetch: async (r: Request) => { forwarded.push(r); return Response.json({ ok: true }); } };
-  const access = baseEnv("x", migratedDb());
+  const access = accessEnv();
   return {
     forwarded, assets,
     env: {
@@ -87,7 +87,7 @@ test("4. console.cryptophys.work redirects to the Nexus mount, keeping the path;
 });
 
 test("5. home.cryptophys.work (Cerebrum, retired) redirects to Nexus; health stays", async () => {
-  const access = baseEnv("x", migratedDb());
+  const access = accessEnv();
   const h = {
     SERVICE_NAME: "cryptophys-home", SERVICE_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1", CF_VERSION_METADATA: { id: "v", tag: "abc1234" },
     ACCESS_TEAM_DOMAIN: access.ACCESS_TEAM_DOMAIN, ACCESS_AUD: access.ACCESS_AUD, OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`,
