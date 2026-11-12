@@ -18,6 +18,8 @@ import { buildUsageTick } from "./build-usage.ts";
 export const CHECK_BUDGET_MS = 120_000;
 export interface TickEnv {
   DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string;
+  /** ADR-0012 G2a: the R2 bucket for the modules of passed main commits (bundles.ts). */
+  BUNDLES?: import("./bundles.ts").BundleBucket;
   /** Owner 2026-11-12: the XAUUSD organs' DNA (xauusd-ai-trading-assistant OrganismDna, dna() only). */
   EXT_ORGANISM_XAUUSD?: { dna(): Promise<unknown> };
 }

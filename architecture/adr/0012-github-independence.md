@@ -292,6 +292,51 @@ The owner said "lanjutkan semua" (continue everything) on 2026-11-09. Phase 4 st
   - **Plan parity:** consecutive agreements, target 10. Once it reaches the target, deploy decisions can stop depending on GitHub to say what changed. Executing deploys from Forge bundles through the Workers Versions API comes after that and needs `CF_DEPLOY_TOKEN` on the Orchestrator (§4).
   - The Console Code page shows the plans (route `forge.deploy_plans`, read-only).
 
+### 5e. Leaving GitHub, step G1: deploy decisions read the Forge (2026-11-12)
+
+Owner, 2026-11-12: "tunda hingga berhasil lepas dari github" (ADR-0014 waits until the platform is off GitHub), then "ya mulai G1, lanjutkan semua". The remaining steps are G1 to G6:
+
+| Step | What |
+|---|---|
+| G1 | deploy decisions read the Forge |
+| G2 | deploy from Forge bundles |
+| G3 | merge on the Forge |
+| G4 | contributors push to Artifacts |
+| G5 | replacements for Dependabot and secret scanning |
+| G6 | cut-over and archive |
+
+- **The parity bars were met before the switch:** deploy plans 78 of 78 against a target of 10, and checks 34 of 34 against a target of 20.
+- **Decisions.** `pendingDeploys`, consensus `deploy_commit` and recovery redeploys now decide from the Forge's records in D1 (`control-plane-shared/src/forge-gate.ts`):
+  - main's head is the newest commit the Forge planned;
+  - "CI green" is the Forge's `ready`: tests, bundles, no secret, type-check and Console build all passed;
+  - the pending units are the Forge's plan for that head under the current registry fingerprint.
+- **Removed.** The GitHub compare and CI lookups are gone from these paths, and the Orchestrator no longer records a GitHub side of the plan.
+- **Fail closed.** Every missing piece of evidence leaves nothing pending:
+  - no plan, or no plan yet for the current fingerprint;
+  - the head not yet checked;
+  - checks not ready;
+  - the Forge's tables unavailable.
+- **Until G2.** The unit's GitHub workflow still performs the deploy, and it deploys only GitHub's main head. So the dispatch also requires GitHub's main to equal the Forge's head (`github_main_not_mirrored`), which also catches a Forge that stopped mirroring.
+- **Plan age.** A plan's age is not used as a freshness signal. The Forge records a plan only when main or the registry changes, and a unit can wait hours for a deploy slot under an unchanged plan.
+- **Still on GitHub until G2.** The manual `POST /v1/deployments` path (Platform API) keeps its GitHub CI gate.
+
+### 5f. Step G2a: the Forge keeps what it built (2026-11-12)
+
+Owner, 2026-11-12: "lanjutkan G2 sambil menunggu deploy".
+
+- **What is stored.** When a commit of main passes the Forge's checks with no secret found, the Forge writes to the R2 bucket `cryptophys-forge-bundles`:
+  - each Worker module it bundled, as `bundles/<sha>/<worker>.mjs`;
+  - a manifest, `bundles/<sha>/manifest.json`, written last so that every module it names already exists.
+
+  This is `workers/forge/src/bundles.ts`. Bundles are kept 14 days; Workers keep their own uploaded versions for rollback.
+- **The manifest, per Worker:**
+  - the module's SHA-256 and size;
+  - `config_sha256`, the hash of its wrangler.toml;
+  - its compatibility date and flags;
+  - `single_module`: false when the bundle imports files it does not inline, such as WebAssembly;
+  - `assets`: whether it serves static assets.
+- **Next, G2b.** The Deployment Orchestrator uploads the stored module as a Worker version tagged with the commit, keeping the running version's bindings and assets, then deploys and verifies it. This covers a Worker whose `config_sha256` equals the running version's, which is a single module and serves no changed assets. Its first step checks the uploaded version's bindings against the running ones before any traffic moves. Any other change (configuration, D1 migrations, assets, multi-module) keeps the GitHub workflow until its own step.
+
 ### 5a. Owner notices (phase 2, implemented 2026-11-08)
 
 The AI Kernel computes three notices from D1 at `:22` and `:52` (`ai-kernel/src/owner-notices.ts`):

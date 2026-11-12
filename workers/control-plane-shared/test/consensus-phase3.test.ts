@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, fakeWorkflow, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, fakeWorkflow, forgeSees, migratedDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
@@ -24,8 +24,21 @@ interface GitHubFake {
   statusState: string;
   statusCount: number;
   omitWorkflow?: string;
+  /** GitHub's main when the mirror to the Forge lags (ADR-0012 G1); defaults to `main`. */
+  githubMain?: string;
   files: string[];
   dispatched: { workflow: string; body: any }[];
+}
+// ADR-0012 G1: the scenario the GitHub fake describes is what the Forge recorded (plan and checks in D1).
+let scenario: GitHubFake | null = null;
+const greenOf = (gh: GitHubFake) => gh.ciConclusion === "success" && gh.controlPlaneConclusion === "success"
+  && (gh.statusCount === 0 || gh.statusState === "success") && gh.omitWorkflow !== "Validate Control Plane Workers";
+async function syncForge(db: Db): Promise<void> {
+  if (scenario) await forgeSees(db, { main: scenario.main, files: scenario.files, ready: greenOf(scenario) });
+}
+async function pending(db: Db) {
+  await syncForge(db);
+  return pendingDeploys(orchestratorEnv(db) as never);
 }
 function github(state: Partial<GitHubFake> = {}): GitHubFake {
   const gh: GitHubFake = {
@@ -33,9 +46,10 @@ function github(state: Partial<GitHubFake> = {}): GitHubFake {
     statusState: "success", statusCount: 1,
     files: ["workers/console/ui/src/App.tsx"], dispatched: [], ...state
   };
+  scenario = gh;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: gh.main } });
+    if (url.endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: gh.githubMain ?? gh.main } });
     if (/\/commits\/[0-9a-f]{40}\/status$/.test(url)) return Response.json({ state: gh.statusState, total_count: gh.statusCount });
     if (url.includes("/actions/runs?head_sha=")) {
       assert.match(url, /event=push/, "only push-event CI counts for consensus deploys");
@@ -82,8 +96,8 @@ function kernelEnv(db: Db = migratedDb()) {
     RECOVERY: { propose: async (agentId: string, decisionId: string, input: Record<string, unknown>) => { await verifySyscallDecision(db, decisionId, agentId, "recovery.propose"); return proposeFromAgent(recoveryEnv as never, agentId, input); } },
     MEMORY: { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) },
     DEPLOY: {
-      pendingDeploys: () => pendingDeploys(orch as never),
-      deployForConsensus: (id: string, dec: string, target: string, params: Record<string, unknown>) => deployForConsensus(orch as never, id, dec, target, params),
+      pendingDeploys: async () => { await syncForge(db); return pendingDeploys(orch as never); },
+      deployForConsensus: async (id: string, dec: string, target: string, params: Record<string, unknown>) => { await syncForge(db); return deployForConsensus(orch as never, id, dec, target, params); },
     },
   };
   const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, structuredClone(v)); } };
@@ -130,44 +144,44 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
   behind(db);
   try {
     github();
-    let p = await pendingDeploys(orchestratorEnv(db) as never);
+    let p = await pending(db);
     assert.equal(p.ci_green, true);
     assert.deepEqual(p.units.map((u) => u.unit), ["console"]);
     github({ files: ["workers/control-plane-shared/src/http.ts"] });
-    p = await pendingDeploys(orchestratorEnv(db) as never);
+    p = await pending(db);
     // A shared-library change touches every unit; the orchestrator goes first and the rest wait a cycle.
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
     assert.deepEqual(p.skipped.filter((s) => s.reason === "deployment_orchestrator_must_complete_first").map((s) => s.unit).sort(),
       ["console", "control-plane", "forge", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
-    p = await pendingDeploys(orchestratorEnv(db) as never);
+    p = await pending(db);
     assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "forge", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
     // A new D1 migration (2026-11-07): only the Control Plane deploy applies it, and every Worker's
     // readiness needs it, so the Control Plane goes first and alone; the orchestrator follows.
     github({ files: ["workers/control-plane-migrations/0099_x.sql", "workers/control-plane-shared/src/access.ts"] });
-    p = await pendingDeploys(orchestratorEnv(db) as never);
+    p = await pending(db);
     assert.deepEqual(p.units.map((u) => u.unit), ["control-plane"]);
     assert.deepEqual(p.skipped.filter((s) => s.reason === "control_plane_migration_first").map((s) => s.unit).sort(),
       ["console", "deployment-orchestrator", "forge", "home", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id IN ('cryptophys-policy-engine','cryptophys-audit-ledger','cryptophys-platform-registry','cryptophys-recovery-manager','cryptophys-drift-detector','cryptophys-ai-kernel')").run(MAIN.slice(0, 12));
-    p = await pendingDeploys(orchestratorEnv(db) as never);
+    p = await pending(db);
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"], "after the Control Plane, the usual order resumes");
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
     const cpStatus = (db.raw.prepare("SELECT status FROM service_registry WHERE service_id = 'cryptophys-policy-engine'").get() as any).status;
     db.raw.prepare("UPDATE service_registry SET status = 'disabled' WHERE service_id = 'cryptophys-policy-engine'").run();
     github({ files: ["workers/control-plane-migrations/0099_x.sql", "workers/deployment-orchestrator/src/index.ts"] });
-    p = await pendingDeploys(orchestratorEnv(db) as never);
+    p = await pending(db);
     assert.equal(p.units.length, 0, "never deploy the Orchestrator when the migration-bearing Control Plane is unavailable");
     assert.ok(p.skipped.some((s) => s.unit === "*" && s.reason === "new_migration_control_plane_unavailable"));
     db.raw.prepare("UPDATE service_registry SET status = ? WHERE service_id = 'cryptophys-policy-engine'").run(cpStatus);
     github({ ciConclusion: "failure" });
-    p = await pendingDeploys(orchestratorEnv(db) as never);
+    p = await pending(db);
     assert.equal(p.ci_green, false);
     assert.equal(p.units.length, 0);
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(MAIN.slice(0, 12));
     github();
-    assert.equal((await pendingDeploys(orchestratorEnv(db) as never)).units.length, 0, "production already runs main");
+    assert.equal((await pending(db)).units.length, 0, "production already runs main");
   } finally { globalThis.fetch = realFetch; }
 });
 
@@ -246,6 +260,13 @@ test("7. deploy mode: a commit that is not current main, or red CI, fails withou
     assert.equal(p.status, "failed");
     assert.match(JSON.parse(p.outcome_json).error, /ci_not_green/);
     assert.deepEqual(gh.dispatched, []);
+    // ADR-0012 G1: the Forge decides, but until G2 the GitHub workflow deploys only GitHub's main head.
+    gh = github({ githubMain: "3".repeat(40) });
+    await syscall(env as never, "supervisor", "consensus.propose", { action: "deploy_commit", target: "cryptophys-forge", params: { commit_sha: MAIN } });
+    p = proposals(db).at(-1);
+    assert.equal(p.status, "failed");
+    assert.match(JSON.parse(p.outcome_json).error, /github_main_not_mirrored/);
+    assert.deepEqual(gh.dispatched, []);
   } finally { globalThis.fetch = realFetch; }
 });
 
@@ -285,9 +306,9 @@ test("10. pendingDeploys dispatches the Deployment Orchestrator before the Contr
   behind(db);
   try {
     github({ files: ["workers/deployment-orchestrator/src/index.ts", "workers/ai-kernel/src/consensus.ts"] });
-    const pending = await pendingDeploys(orchestratorEnv(db) as never);
-    assert.deepEqual(pending.units.map((u) => u.unit), ["deployment-orchestrator"]);
-    assert.ok(pending.skipped.some((u) => u.unit === "control-plane" && u.reason === "deployment_orchestrator_must_complete_first"));
+    const plan = await pending(db);
+    assert.deepEqual(plan.units.map((u) => u.unit), ["deployment-orchestrator"]);
+    assert.ok(plan.skipped.some((u) => u.unit === "control-plane" && u.reason === "deployment_orchestrator_must_complete_first"));
   } finally { globalThis.fetch = realFetch; }
 });
 

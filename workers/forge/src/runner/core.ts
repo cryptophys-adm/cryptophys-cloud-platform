@@ -188,14 +188,24 @@ export interface WorkerBundle { bytes: number; errors: number; warnings: number;
 
 /** Bundle a Worker as Wrangler would: the `main` from its wrangler.toml, ESM, runtime imports external. */
 export async function bundleWorkerDir(esbuild: EsbuildLike, snapshot: Snapshot, dir: string): Promise<WorkerBundle> {
+  const { bundle } = await bundleWorkerModule(esbuild, snapshot, dir);
+  return bundle;
+}
+
+/** The bundle and its module text (ADR-0012 G2: the Forge keeps the module of a passed main commit for the deploy). */
+export async function bundleWorkerModule(esbuild: EsbuildLike, snapshot: Snapshot, dir: string): Promise<{ bundle: WorkerBundle; text: string; toml: string }> {
   const toml = snapshot[normalizePath(dir + "/wrangler.toml")];
   if (toml === undefined) throw new Error("no wrangler.toml in " + dir);
   const main = /^main\s*=\s*"([^"]+)"/m.exec(toml)?.[1];
   if (!main) throw new Error("wrangler.toml in " + dir + " has no main");
   const external = new Set<string>();
   const r = await esbuild.build({ ...COMMON, entryPoints: [normalizePath(dir + "/" + main)], conditions: ["workerd", "worker", "browser"], plugins: [snapshotPlugin(snapshot, { worker: { rules: moduleRules(toml), external } })] });
-  return { bytes: r.outputFiles?.[0]?.contents.length ?? 0, errors: r.errors.length, warnings: r.warnings.length, external: [...external].sort() };
+  const bundle = { bytes: r.outputFiles?.[0]?.contents.length ?? 0, errors: r.errors.length, warnings: r.warnings.length, external: [...external].sort() };
+  return { bundle, text: r.outputFiles?.[0]?.text ?? "", toml };
 }
+
+/** A bundled Worker module handed to the caller of bundleAllWorkers (never stored in the check's steps). */
+export type BundleSink = (dir: string, module: { text: string; toml: string; external: string[] }) => void;
 
 /** Every Worker in the snapshot: workers/<name>/wrangler.toml. */
 export function workerDirs(snapshot: Snapshot): string[] {
@@ -205,14 +215,17 @@ export function workerDirs(snapshot: Snapshot): string[] {
 export interface BundleStep { workers: number; failed: Array<{ dir: string; error: string }>; bundles: Array<{ dir: string; bytes: number; external: string[] }> }
 
 /** The dry-run bundle of every Worker, as CI's "wrangler deploy --dry-run" loop. */
-export async function bundleAllWorkers(esbuild: EsbuildLike, snapshot: Snapshot): Promise<BundleStep> {
+export async function bundleAllWorkers(esbuild: EsbuildLike, snapshot: Snapshot, sink?: BundleSink): Promise<BundleStep> {
   const step: BundleStep = { workers: 0, failed: [], bundles: [] };
   for (const dir of workerDirs(snapshot)) {
     step.workers++;
     try {
-      const b = await bundleWorkerDir(esbuild, snapshot, dir);
+      const { bundle: b, text, toml } = await bundleWorkerModule(esbuild, snapshot, dir);
       if (b.errors > 0 || b.bytes === 0) step.failed.push({ dir, error: `${b.errors} errors, ${b.bytes} bytes` });
-      else step.bundles.push({ dir, bytes: b.bytes, external: b.external ?? [] });
+      else {
+        step.bundles.push({ dir, bytes: b.bytes, external: b.external ?? [] });
+        sink?.(dir, { text, toml, external: b.external ?? [] });
+      }
     } catch (e) {
       step.failed.push({ dir, error: String((e as Error)?.message ?? e).split("\n").slice(0, 3).join(" | ").slice(0, 300) });
     }

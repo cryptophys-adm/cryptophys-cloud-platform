@@ -64,6 +64,13 @@ function github(files: string[]) {
 }
 const behind = (db: Db) => db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD_SHA.slice(0, 12));
 const orchestratorEnv = (db: Db) => baseEnv("cryptophys-deployment-orchestrator", db, { GH_ACTIONS_TOKEN: "gh-token" });
+/** The Forge's check of a commit of main (forge_check_runs), with every gate's step. */
+function checked(db: Db, sha: string, status: "passed" | "failed") {
+  const steps = JSON.stringify({ typecheck: { status: "passed", errors: 0, console_build: { status: "passed" } } });
+  const at = new Date().toISOString();
+  db.raw.prepare(`INSERT OR REPLACE INTO forge_check_runs (commit_sha, status, runner, files, pass, fail, skip, failures, started_at, finished_at, duration_ms, steps, guard_status, source)
+    VALUES (?, ?, 'forge-runner/1', 1, 1, 0, 0, '[]', ?, ?, 1, ?, 'clean', 'main')`).run(sha, status, at, at, steps);
+}
 const row = (db: Db) => db.raw.prepare("SELECT forge_units, github_units, agrees FROM forge_deploy_plans").all().map((r: any) => ({ ...r }));
 
 test("DP1. the shared ordering rules: migration first and alone; orchestrator first; fail closed when the Control Plane is unavailable", () => {
@@ -76,31 +83,31 @@ test("DP1. the shared ordering rules: migration first and alone; orchestrator fi
   assert.equal(DEPLOY_UNITS.length, 6);
 });
 
-test("DP2. the Forge plan from Artifacts equals the Orchestrator's GitHub plan for the same changes, and they are recorded as agreeing", async () => {
-  try {
-    for (const [files, expected] of [
-      [["workers/console/ui/src/App.tsx"], ["console"]],
-      [["workers/control-plane-shared/src/http.ts"], ["deployment-orchestrator"]],
-      [["workers/control-plane-migrations/0099_x.sql", "workers/console/ui/src/App.tsx"], ["control-plane"]],
-      [["README.md"], []],
-    ] as Array<[string[], string[]]>) {
-      const db = migratedDb();
-      behind(db);
-      const repo = repoWith(files);
-      const forgeSide = await forgePlan(db as never, repo, MAIN);
-      github(files);
-      const githubSide = await pendingDeploys(orchestratorEnv(db) as never);
-      assert.deepEqual(forgeSide.units.map((x) => x.unit), expected, files.join());
-      assert.deepEqual(forgeSide.units, githubSide.units, files.join());
-      assert.deepEqual(forgeSide.skipped, githubSide.skipped, files.join());
-      // The Orchestrator recorded its side; the Forge tick records its own and compares.
-      assert.deepEqual(row(db), [{ forge_units: null, github_units: JSON.stringify(expected), agrees: null }]);
-      assert.deepEqual(await planTick(db as never, repo), { outcome: "recorded", main_sha: MAIN, units: expected });
-      assert.deepEqual(row(db), [{ forge_units: JSON.stringify(expected), github_units: JSON.stringify(expected), agrees: 1 }]);
-      assert.equal((await planTick(db as never, repo)).outcome, "up_to_date", "once per main commit and registry inputs");
-    }
-  } finally {
-    globalThis.fetch = realFetch;
+test("DP2. G1 (owner 2026-11-12): the Orchestrator's pending deploys are the Forge's plan from Artifacts, gated by the Forge's checks", async () => {
+  for (const [files, expected] of [
+    [["workers/console/ui/src/App.tsx"], ["console"]],
+    [["workers/control-plane-shared/src/http.ts"], ["deployment-orchestrator"]],
+    [["workers/control-plane-migrations/0099_x.sql", "workers/console/ui/src/App.tsx"], ["control-plane"]],
+    [["README.md"], []],
+  ] as Array<[string[], string[]]>) {
+    const db = migratedDb();
+    behind(db);
+    const repo = repoWith(files);
+    const forgeSide = await forgePlan(db as never, repo, MAIN);
+    assert.deepEqual(forgeSide.units.map((x) => x.unit), expected, files.join());
+    assert.deepEqual(await planTick(db as never, repo), { outcome: "recorded", main_sha: MAIN, units: expected });
+    // Before the Forge has checked main's head, nothing is pending.
+    let pending = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual([pending.main_sha, pending.ci_green, pending.units, pending.skipped], [MAIN, false, [], [{ unit: "*", reason: "forge_checks_pending" }]]);
+    checked(db, MAIN, "passed");
+    pending = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.equal(pending.ci_green, true);
+    assert.deepEqual(pending.units, forgeSide.units, files.join());
+    assert.deepEqual(pending.skipped, forgeSide.skipped, files.join());
+    assert.equal((await planTick(db as never, repo)).outcome, "up_to_date", "once per main commit and registry inputs");
+    checked(db, MAIN, "failed");
+    pending = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual([pending.ci_green, pending.units.length, pending.skipped], [false, 0, [{ unit: "*", reason: "forge_checks_not_ready" }]]);
   }
 });
 
@@ -134,15 +141,20 @@ test("DP4. GET /v1/forge/deploy-plans for operators; wiring: migration 0038 requ
   assert.equal((await call(forge, env, req("GET", "/v1/forge/deploy-plans", undefined, OUTSIDER_JWT))).status, 403);
   assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0038_forge_deploy_plans.sql"));
   assert.match(read("workers/console/src/index.ts"), /"\/v1\/forge\/deploy-plans"/);
-  assert.match(read("workers/deployment-orchestrator/src/index.ts"), /try \{ await recordPlanSide\(env\.DB, "github"/);
-  // Without the table (before migration 0038 is applied) the Orchestrator still answers.
+  assert.match(read("workers/deployment-orchestrator/src/index.ts"), /return forgePendingDeploys\(env\.DB\)/);
+  assert.doesNotMatch(read("workers/deployment-orchestrator/src/index.ts"), /\/compare\//, "G1: no GitHub compare in deploy decisions");
+  // Without the table the Orchestrator answers, and nothing is pending.
   const bare = migratedDb();
   behind(bare);
   bare.raw.prepare("DROP TABLE forge_deploy_plans").run();
-  try {
-    github(["workers/console/ui/src/App.tsx"]);
-    assert.deepEqual((await pendingDeploys(orchestratorEnv(bare) as never)).units.map((u) => u.unit), ["console"]);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+  assert.deepEqual(await pendingDeploys(orchestratorEnv(bare) as never), { main_sha: null, ci_green: false, units: [], skipped: [{ unit: "*", reason: "forge_unavailable" }] });
+});
+
+test("DP5. G1: the newest planned commit is main's head, however long a unit waits for a deploy slot", async () => {
+  const db = migratedDb();
+  behind(db);
+  await planTick(db as never, repoWith(["workers/console/ui/src/App.tsx"]), Date.now() - 6 * 3_600_000);
+  checked(db, MAIN, "passed");
+  const p = await pendingDeploys(orchestratorEnv(db) as never);
+  assert.deepEqual([p.main_sha, p.units.map((u) => u.unit)], [MAIN, ["console"]], "an unchanged plan from 6 h ago still decides");
 });

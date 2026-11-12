@@ -258,3 +258,28 @@ export function fakeWorkflow(opts: { failCreate?: boolean; existing?: string[] }
   };
   return wf;
 }
+
+// ADR-0012 G1: deploy decisions read the Forge's plan and checks from D1. Tests that used to fake GitHub's compare
+// and CI APIs record the same scenario as the Forge would: its plan for `main` from the changed files, under the
+// current registry fingerprint (the same rules as workers/forge/src/deploy-plan.ts), and its check of `main`.
+let forgeClock = 0;
+export async function forgeSees(db: FakeD1, s: { main: string; files: string[]; ready: boolean }): Promise<void> {
+  const { DEPLOY_UNITS, unitRegistryState, unitChanged, isMigration, orderPending, recordPlanSide, registryFingerprint } = await import("../src/deploy-units.ts");
+  const tag = s.main.slice(0, 12);
+  const pending: { unit: string; workflow: string; target: string; reason: string }[] = [];
+  const skipped: { unit: string; reason: string }[] = [];
+  let newMigration = false;
+  for (const unit of DEPLOY_UNITS) {
+    const state = await unitRegistryState(db as never, unit, tag);
+    if ("skip" in state) { skipped.push({ unit: unit.unit, reason: state.skip }); continue; }
+    if (state.behind.length === 0) continue;
+    if (s.files.some(isMigration)) newMigration = true;
+    if (unitChanged(unit, s.files)) pending.push({ unit: unit.unit, workflow: unit.workflow, target: unit.services[0], reason: `main ${tag} changes ${unit.unit}` });
+  }
+  forgeClock = Math.max(Date.now(), forgeClock + 1);
+  await recordPlanSide(db as never, "forge", s.main, await registryFingerprint(db as never), orderPending(pending, newMigration, skipped), forgeClock);
+  const steps = JSON.stringify({ typecheck: { status: s.ready ? "passed" : "failed", errors: 0, console_build: { status: "passed" } } });
+  const at = new Date().toISOString();
+  db.raw.prepare(`INSERT OR REPLACE INTO forge_check_runs (commit_sha, status, runner, files, pass, fail, skip, failures, started_at, finished_at, duration_ms, steps, guard_status, source)
+    VALUES (?, ?, 'forge-runner/1', 1, 1, ?, 0, '[]', ?, ?, 1, ?, 'clean', 'main')`).run(s.main, s.ready ? "passed" : "failed", s.ready ? 0 : 1, at, at, steps);
+}

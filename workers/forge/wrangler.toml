@@ -29,6 +29,12 @@ migrations_dir = "../control-plane-migrations"
 binding = "ARTIFACTS"
 namespace = "cryptophys"
 
+# ADR-0012 G2a (owner 2026-11-12): the Worker modules of every passed main commit, with a manifest, for
+# the Deployment Orchestrator's deploys without GitHub Actions (src/bundles.ts). Kept 14 days.
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "cryptophys-forge-bundles"
+
 # ADR-0012 phase 3: Forge checks. Each tick checks at most one new commit of main (checks.ts), off
 # the minutes the other control-plane crons use (:02/:07/:10/:13/:15/...).
 [triggers]

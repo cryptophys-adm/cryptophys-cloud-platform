@@ -59,6 +59,7 @@ These hold everywhere:
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
 - **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). Other tables are kept.
+- **Forge bundles (G2a, 2026-11-12).** The R2 bucket `cryptophys-forge-bundles` holds the Worker modules and a manifest of every passed main commit, for 14 days (`workers/forge/src/bundles.ts`).
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).
 
 ## The living platform (ADR-0013)
@@ -88,7 +89,7 @@ These hold everywhere:
   - Allowance: 3,000 build minutes a month and 1 build at a time on Workers Free; 6,000 and 6 on Workers Paid (the account's plan). The platform holds itself to the free-tier 3,000 (`control-plane-shared/src/build-usage.ts`).
   - Measured, not estimated: once an hour the Forge lists every Worker's builds and Previews' builds through the Workers Builds API (read only, `CF_BUILDS_API_TOKEN`) and keeps each finished build's duration, rounded up to whole minutes (migration 0049, `workers/forge/src/build-usage.ts`). A build without a start and a stop is shown as unmeasured.
   - `GET /v1/forge/build-usage`; the Console Code page shows the month, the projection and the minutes per Worker. The owner notice `build_minutes` opens when the measured or projected month reaches 80 % of the budget, and changes once per 10 % step. The month is the UTC calendar month; Cloudflare's billing cycle may differ.
-- **CI gate for consensus deploys.** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
+- **CI gate for consensus deploys (until 2026-11-12; since G1 the gate is the Forge's `ready`, ADR-0012 §5e).** The gate requires a green push run of `Validate Control Plane Workers` on the main commit, every other push run green, and a green combined status. Renaming a required workflow silently stops deploys: from 2026-11-08 to 2026-11-09 the gate still required the removed `Validate` workflow, and no consensus deploy ran (fixed in #251). A test now requires every name the gate needs to be an existing workflow.
 
 ## Source, CI and deploy (ADR-0012)
 
@@ -96,7 +97,7 @@ These hold everywhere:
 |---|---|---|
 | Source of truth | GitHub `cryptophys-adm/cryptophys-cloud-platform` (`main`) | Artifacts `cryptophys/platform` |
 | Mirror | `mirror-to-forge.yml` on every push (also reports pull request outcomes to the Forge) | — |
-| Deploy plan (shadow) | Forge cron computes pending deploy units for main from Artifacts; the Orchestrator records its GitHub-based plan for the same inputs (`forge_deploy_plans`); plan parity towards 10 (ADR-0012 §5d) | Forge-planned deploys |
+| Deploy decisions | **The Forge decides (G1, 2026-11-12):** main's head, readiness (the Forge checks) and the pending units come from the Forge's records (`forge-gate.ts`); the GitHub workflow still performs the deploy and requires GitHub's main to equal the Forge's head | deploy from Forge bundles (G2) |
 | Change requests (shadow) | `forge-change-request.yml` after CI on each same-repository PR: head to `cr/<n>`, registered as `gh-<n>`; Forge verdict vs GitHub outcome, merge parity towards 10 (ADR-0012 §5d) | Forge merges |
 | CI | GitHub Actions (`validate-control-plane.yml` for every PR and main push, `forge-runner-parity.yml`) | Forge checks |
 | Forge checks | Each new `main` commit: tests, bundles of every Worker, secret scan, plus the Workers Builds type-check and Console UI build; `ready` when all pass; `GET /v1/forge/checks`; parity with GitHub CI towards 20 | merge gate (phase 4 requires `ready`) |
@@ -112,6 +113,7 @@ These hold everywhere:
 | Worker secrets to Secrets Store | ADR-0012 phase 4 |
 | Deploy from the Forge, shadowed over 10 deploys | phase 4 |
 | GitHub archived | phase 5 |
+| Evolution loop: autonomous merge (E1), the evolver agent (E2), fitness and revert (E3), memory and Console (E4); no shadow phase, guard paths autonomous under unanimous consensus (owner 2026-11-12) | ADR-0014, accepted and deferred until ADR-0012 phase 5 (owner 2026-11-12); merges on the Forge, no GitHub App |
 | `cryptophys-home` removed | after the redirect week |
 
 See `docs/RETROSPECTIVE-2026-11-08.md` §7 for the order of work.

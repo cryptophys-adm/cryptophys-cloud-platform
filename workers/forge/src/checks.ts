@@ -8,7 +8,9 @@
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
+import { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
 
 /** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
@@ -106,14 +108,14 @@ export interface CheckRun extends SuiteResult {
 }
 
 /** Snapshot, bundle and run one commit. Test failures are a result; only infrastructure errors throw. */
-export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<CheckDeps>, now = () => Date.now(), only?: string[]): Promise<CheckRun> {
+export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<CheckDeps>, now = () => Date.now(), only?: string[], built?: BuiltModule[]): Promise<CheckRun> {
   const started = now();
   const snap = await snapshotFromArtifacts(repo, commit);
   lastSnapshot = { commit, snapshot: snap.snapshot };
   const suite = await deps(commit);
   const result = await runSuite(suite, snap.snapshot, only);
   if (result.files === 0) throw new Error("no_test_files");
-  const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot);
+  const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot, built ? (dir, m) => { built.push({ dir, ...m }); } : undefined);
   const secrets = scanSecrets(snap.snapshot);
   // A type error fails the check, as it fails GitHub CI. A report that has not arrived yet leaves the
   // step `pending`; recordTypecheckReport folds it into this run when it comes (phase 4's gate requires "passed").
@@ -200,7 +202,7 @@ export async function record(db: D1Database, run: CheckRun | { commit: string; s
   await applyStoredTypecheckReport(db, run.commit);
 }
 
-export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> } }
+export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; BUNDLES?: BundleBucket }
 export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number };
 
 /** One cron tick: check at most one commit of main. */
@@ -220,10 +222,22 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
     let status: string;
     let counts: { pass?: number; fail?: number } = {};
     try {
-      const run = await checkCommit(repo, commit, deps, nowMs);
+      // ADR-0012 G2a: a commit of main keeps the Worker modules its check bundled, for the deploy.
+      const built: BuiltModule[] | undefined = source === "main" && env.BUNDLES ? [] : undefined;
+      const run = await checkCommit(repo, commit, deps, nowMs, undefined, built);
       await record(env.DB, run, nowMs());
       status = run.status;
       counts = { pass: run.pass, fail: run.fail };
+      if (built && env.BUNDLES && run.status === "passed" && run.guard_status === "clean") {
+        try {
+          const manifest = await storeBundles(env.BUNDLES, commit, built, nowMs());
+          await appendAuditEvent(env.DB, { event_type: "forge.bundles_stored", actor: "system:forge-checks", subject: commit, outcome: "stored", payload: { workers: manifest.workers.length, single_module: manifest.workers.filter((w) => w.single_module).length } });
+          await pruneBundles(env.BUNDLES, nowMs());
+        } catch (e) {
+          // Storing is for the deploy; a failure never changes the check's result.
+          await appendAuditEvent(env.DB, { event_type: "forge.bundles_failed", actor: "system:forge-checks", subject: commit, outcome: "failed", payload: { error: String((e as Error)?.message ?? e).slice(0, 200) } }).catch(() => undefined);
+        }
+      }
     } catch (e) {
       status = "error";
       await record(env.DB, { commit, status: "error", error: String((e as Error)?.message ?? e).slice(0, 300), duration_ms: nowMs() - started }, nowMs());
@@ -300,10 +314,8 @@ function stepsTypecheck(steps: string | null): CheckSummary["typecheck"] {
   } catch { return null; }
 }
 
-/** The gate: a passed check with no secret, a passed type-check and a passed Console build. */
-export function isReady(status: string, guard: string | null, typecheck: CheckSummary["typecheck"]): boolean {
-  return status === "passed" && guard === "clean" && typecheck?.status === "passed" && typecheck.console_build === "passed";
-}
+/** The gate (control-plane-shared/src/forge-gate.ts): the Orchestrator's deploy decisions read the same one (ADR-0012 G1). */
+export { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 
 function summary(r: JoinedRow): CheckSummary {
   let failures: string[] = [];
