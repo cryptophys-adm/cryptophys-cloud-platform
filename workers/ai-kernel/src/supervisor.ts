@@ -336,6 +336,16 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
            AND (status <> 'shadow_blocked' OR created_at >= ?)${task !== null ? " AND json_extract(params_json, '$.task') = ?" : ""} LIMIT 1`,
       ).bind(...[prop.action, prop.target, new Date(now - REGISTRATION_COOLDOWN_MS).toISOString(), new Date(now - 3_600_000).toISOString(), ...(task !== null ? [task] : [])]).first();
       if (recent) continue;
+      // The Policy Engine executes at most one action per action and target an hour (target-actions-per-hour).
+      // A Worker's next task waits until its previous registration is an hour old instead of being proposed
+      // only to be vetoed (owner 2026-11-12: no noise in the council).
+      if (task !== null) {
+        const perHour = await readPolicyParameter(env.DB, "target-actions-per-hour");
+        const ran = await env.DB.prepare(
+          `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = ? AND target = ? AND status IN ('executing','executed') AND decided_at >= ?`,
+        ).bind(prop.action, prop.target, new Date(now - 3_600_000).toISOString()).first<{ n: number }>();
+        if ((ran?.n ?? 0) >= perHour) continue;
+      }
       const r = await syscall(env, AGENT_ID, "consensus.propose", prop);
       report.actions.push(r);
       report.findings.push({ kind: "organism", service_id: prop.target, action: "consensus.propose", outcome: r.outcome, why: `${prop.action}: ${f.detail}`.slice(0, 300) });

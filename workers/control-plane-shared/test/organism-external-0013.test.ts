@@ -171,7 +171,7 @@ test("X4. a new XAUUSD agent and AI task register themselves by consensus; one a
   assert.deepEqual((await latestCensusRow({ DB: db } as never))!.findings.map((f) => f.kind), ["external_agent_refused"]);
 });
 
-test("X4b. a Worker's second new AI task is not held a day behind its first; a Policy veto is retried after an hour", async () => {
+test("X4b. a Worker's second new AI task is not held a day behind its first, nor proposed into the Policy Engine's hourly limit", async () => {
   const db = migratedDb();
   setMode(db, "deploy");
   const { env, memory } = kernelEnv(db);
@@ -184,12 +184,15 @@ test("X4b. a Worker's second new AI task is not held a day behind its first; a P
   await runCycle(env as never, memory, "scheduled", t0);
   await runCycle(env as never, memory, "scheduled", t0);
   const rows = () => db.raw.prepare("SELECT json_extract(params_json, '$.task') AS task, status FROM consensus_proposals WHERE action = 'register_engine' ORDER BY rowid").all() as any[];
-  assert.deepEqual(rows().map((r) => `${r.task} ${r.status}`), ["explain_census executed", "summarize_census shadow_blocked"], "the second task is proposed at once; the Policy Engine's hourly limit per target holds it");
+  assert.deepEqual(rows().map((r) => `${r.task} ${r.status}`), ["explain_census executed"], "the second task waits for the hour instead of being vetoed");
   await runCycle(env as never, memory, "scheduled", t0 + 30 * 60_000);
-  assert.equal(rows().length, 2, "not retried within the hour");
+  assert.equal(rows().length, 1, "still within the hour");
+  // The Policy Engine reads the real clock: make the first registration an hour old for both of them.
+  db.raw.prepare("UPDATE consensus_proposals SET created_at = ?, decided_at = ? WHERE action = 'register_engine'")
+    .run(new Date(t0 - 61 * 60_000).toISOString(), new Date(t0 - 61 * 60_000).toISOString());
   await runCycle(env as never, memory, "scheduled", t0 + 61 * 60_000);
-  assert.equal(rows().length, 3, "retried after the hour");
-  assert.equal(rows()[2].task, "summarize_census");
+  assert.deepEqual(rows().map((r) => `${r.task} ${r.status}`), ["explain_census executed", "summarize_census executed"], "proposed and executed after the hour, not a day later");
+  assert.equal(db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE status = 'shadow_blocked'").get()!.n, 0);
 });
 
 test("X5. defence in depth: a tampered census or a proposal above the ceiling is refused by the vote and by the executor", async () => {
