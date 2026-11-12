@@ -8,7 +8,8 @@
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { migrationsOf, storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
+import { migrationSqlOf, migrationsOf, storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
+import { lockfileSource } from "./externals.ts";
 import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
 import { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
@@ -233,8 +234,9 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
           // G2b: the commit's D1 migrations, from the snapshot this check ran on.
           const snapshot = cachedSnapshot(commit);
           if (!snapshot) throw new Error("snapshot_unavailable");
-          const manifest = await storeBundles(env.BUNDLES, commit, built, nowMs(), migrationsOf(Object.keys(snapshot)));
-          await appendAuditEvent(env.DB, { event_type: "forge.bundles_stored", actor: "system:forge-checks", subject: commit, outcome: "stored", payload: { workers: manifest.workers.length, single_module: manifest.workers.filter((w) => w.single_module).length } });
+          // G2c-1: and their SQL, and the extra modules of a multi-module Worker from the packages its lockfile pins.
+          const manifest = await storeBundles(env.BUNDLES, commit, built, nowMs(), migrationsOf(Object.keys(snapshot)), { migrationSql: migrationSqlOf(snapshot), externals: lockfileSource(snapshot) });
+          await appendAuditEvent(env.DB, { event_type: "forge.bundles_stored", actor: "system:forge-checks", subject: commit, outcome: "stored", payload: { workers: manifest.workers.length, single_module: manifest.workers.filter((w) => w.single_module).length, modules_stored: manifest.workers.filter((w) => w.modules).length, modules_failed: manifest.workers.filter((w) => w.modules_error).map((w) => `${w.name}: ${w.modules_error}`) } });
           await pruneBundles(env.BUNDLES, nowMs());
         } catch (e) {
           // Storing is for the deploy; a failure never changes the check's result.

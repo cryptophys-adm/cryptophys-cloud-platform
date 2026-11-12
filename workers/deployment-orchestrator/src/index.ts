@@ -10,7 +10,7 @@ import { verifyConsensusExecution } from "../../control-plane-shared/src/consens
 import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitForService, unitRegistryState, type DeployUnit, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
 import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
-import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedService } from "./native-deploy.ts";
+import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -237,14 +237,17 @@ async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: st
   return decision;
 }
 
-type NativeChoice = { eligible: true; services: PlannedService[] } | { eligible: false; reason: string; service?: string };
+type NativeChoice = { eligible: true; services: PlannedService[]; migrations: PlannedMigration[] } | { eligible: false; reason: string; service?: string; file?: string };
 
 /** G2b: whether this unit can deploy `sha` natively; the reason when not (recorded with the GitHub dispatch). */
 async function nativeDeployChoice(env: Env, unit: DeployUnit, sha: string): Promise<NativeChoice> {
   if (!nativeDeployConfigured(env)) return { eligible: false, reason: "not_configured" };
   const e = await nativeDeployEligible(env, unit, sha);
-  return e.eligible ? { eligible: true, services: e.services } : { eligible: false, reason: e.reason, ...(e.service ? { service: e.service } : {}) };
+  return e.eligible
+    ? { eligible: true, services: e.services, migrations: e.migrations }
+    : { eligible: false, reason: e.reason, ...(e.service ? { service: e.service } : {}), ...(e.file ? { file: e.file } : {}) };
 }
+const ineligibility = (c: NativeChoice) => c.eligible ? null : { reason: c.reason, ...(c.service ? { service: c.service } : {}), ...(c.file ? { file: c.file } : {}) };
 
 /**
  * Execute a consensus-approved deploy_commit (ADR-0009 phase 3). Re-verifies the proposal and
@@ -275,7 +278,7 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
         .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
       const claimed = await nativeLock.json() as { claimed?: boolean };
       if (!nativeLock.ok || !claimed.claimed) return { dispatched: false, reason: "already_dispatched", executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha };
-      return queueNativeDeploy(env, proposalId, decisionId, target, unit, sha, nativeChoice.services, lockName);
+      return queueNativeDeploy(env, { proposal_id: proposalId, policy_decision_id: decisionId }, target, unit, sha, nativeChoice, lockName);
     }
     if (!env.GH_ACTIONS_TOKEN) throw new Error("not_configured");
   }
@@ -297,7 +300,7 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: target, outcome: status,
     payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, proposal_id: proposalId,
-      native_deploy: nativeChoice.eligible ? null : { reason: nativeChoice.reason, ...(nativeChoice.service ? { service: nativeChoice.service } : {}) } },
+      native_deploy: ineligibility(nativeChoice) },
   });
   if (dispatch.status !== 204) { await releaseLock(env, `consensus:${unit.workflow}:${sha}`, sha); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
@@ -329,18 +332,44 @@ async function verifyRecoveryExecution(env: Env, planId: string, decisionId: str
   return { plan_version: plan.plan_version };
 }
 
+/**
+ * ADR-0012 G2c-1: when the redeploy is eligible for the native path, it is queued for the Orchestrator's own
+ * executor (the same signed request as a consensus deploy, linked to the plan) and the Recovery Manager follows it
+ * by request id (`requestStatus`); otherwise the unit's GitHub workflow is dispatched exactly as before.
+ */
 export async function deployForRecovery(env: Env, planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>> {
   if (!/^[0-9a-f]{7,40}$/.test(version)) throw new Error("invalid_version");
   const plan = await verifyRecoveryExecution(env, planId, decisionId, serviceId);
   if (plan.plan_version !== version) throw new Error("plan_not_executing");
   const unit = unitForService(serviceId);
   if (!unit) throw new Error("no_deploy_unit_for_service");
-  if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const native = nativeDeployConfigured(env);
+  if (!env.DEPLOYMENT_LOCK || (!native && !env.GH_ACTIONS_TOKEN)) throw new Error("not_configured");
   // ADR-0012 G1: main's head and its readiness come from the Forge. The deploy workflows deploy only the exact current main commit.
   const head = await forgeMainHead(env.DB);
   if (!head.sha) throw new Error(head.reason);
   const sha = head.sha;
   if (!sha.startsWith(version)) throw new Error(`version_not_current_main: plan ${version}, main ${sha.slice(0, 12)}; a new plan is needed`);
+  let nativeChoice: NativeChoice = { eligible: false, reason: "not_configured" };
+  if (native) {
+    await forgeDecision(env, sha);
+    nativeChoice = await nativeDeployChoice(env, unit, sha);
+    if (nativeChoice.eligible) {
+      // The recovery path's lock, as for the workflow: a plan's commit is queued here or dispatched there, once.
+      const lockName = `recovery:${unit.workflow}:${sha}`;
+      const nativeLock = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(lockName))
+        .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+      const claimed = await nativeLock.json() as { claimed?: boolean };
+      if (!nativeLock.ok || !claimed.claimed) {
+        // A retried step finds the request it queued before, so the lifecycle can still follow it.
+        const prior = await env.DB.prepare("SELECT request_id FROM deployment_requests WHERE service_id = ? AND idempotency_key = ? AND requested_by = ? ORDER BY created_at DESC LIMIT 1")
+          .bind(serviceId, lockName, `recovery:${planId}`).first<{ request_id: string }>();
+        return { dispatched: false, reason: "already_dispatched", executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha, ...(prior ? { request_id: prior.request_id } : {}) };
+      }
+      return queueNativeDeploy(env, { plan_id: planId, policy_decision_id: decisionId }, serviceId, unit, sha, nativeChoice, lockName);
+    }
+    if (!env.GH_ACTIONS_TOKEN) throw new Error("not_configured");
+  }
   const ci = await forgeGate(env, sha);
   const actor = `recovery:${planId}`;
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`recovery:${unit.workflow}:${sha}`))
@@ -359,7 +388,8 @@ export async function deployForRecovery(env: Env, planId: string, decisionId: st
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?").bind(status, new Date().toISOString(), requestId).run();
   await appendAuditEvent(env.DB, {
     event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed", actor, subject: serviceId, outcome: status,
-    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, plan_id: planId },
+    payload: { request_id: requestId, commit_sha: sha, workflow: unit.workflow, unit: unit.unit, github_status: dispatch.status, attempts: dispatch.attempts, plan_id: planId,
+      native_deploy: ineligibility(nativeChoice) },
   });
   if (dispatch.status !== 204) { await releaseLock(env, `recovery:${unit.workflow}:${sha}`, sha); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
@@ -373,6 +403,25 @@ export async function runStatus(env: Env, workflow: string, commitSha: string): 
   const runs = ((await res.json()) as { workflow_runs?: { id: number; status: string; conclusion: string | null; html_url: string; run_number: number }[] }).workflow_runs ?? [];
   const run = runs.sort((a, b) => b.run_number - a.run_number)[0];
   return run ? { found: true, status: run.status, conclusion: run.conclusion, run_id: run.id, url: run.html_url } : { found: false };
+}
+
+/**
+ * ADR-0012 G2c-1: the state of one of the Orchestrator's own requests (native deploy or rollback), in runStatus's
+ * shape, for the Recovery Manager's lifecycle: `queued` (approved), `in_progress` (running), or `completed` with
+ * `success` or `failure` (and its reason). Read-only; any other request (a GitHub dispatch) is not found.
+ */
+export async function requestStatus(env: Pick<Env, "DB">, requestId: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; request_id?: string; executor?: string; reason?: string | null }> {
+  if (!/^dep_[0-9a-f-]{36}$/.test(requestId) || !env.DB) return { found: false };
+  const row = await env.DB.prepare("SELECT status, details_json FROM deployment_requests WHERE request_id = ?").bind(requestId).first<{ status: string; details_json: string }>();
+  if (!row) return { found: false };
+  let details: { executor?: unknown; outcome?: { reason?: unknown } } = {};
+  try { details = JSON.parse(row.details_json || "{}") ?? {}; } catch { details = {}; }
+  const executor = typeof details.executor === "string" && Object.hasOwn(NATIVE_EXECUTORS, details.executor) ? details.executor : null;
+  if (!executor) return { found: false };
+  const reason = typeof details.outcome?.reason === "string" ? details.outcome.reason.slice(0, 300) : null;
+  if (row.status === "succeeded") return { found: true, status: "completed", conclusion: "success", request_id: requestId, executor, reason: null };
+  if (row.status === "failed") return { found: true, status: "completed", conclusion: "failure", request_id: requestId, executor, reason };
+  return { found: true, status: row.status === "running" ? "in_progress" : "queued", conclusion: null, request_id: requestId, executor, reason: null };
 }
 
 /**
@@ -600,21 +649,25 @@ async function queueNativeRollback(env: Env, actor: string, serviceId: string, t
 }
 
 /**
- * ADR-0012 G2b: queue a consensus deploy_commit for the Orchestrator's own executor. The caller holds the same
- * per-workflow-and-commit lock the GitHub path claims, so a commit is never both dispatched and queued.
+ * ADR-0012 G2b: queue a consensus deploy_commit (G2c-1: or a recovery plan's redeploy) for the Orchestrator's own
+ * executor. The caller holds the same per-workflow-and-commit lock the GitHub path claims for that source, so a
+ * commit is never both dispatched and queued. Consensus rows are written exactly as in G2b.
  */
-async function queueNativeDeploy(env: Env, proposalId: string, decisionId: string, target: string, unit: DeployUnit, sha: string, running: PlannedService[], lockName: string): Promise<Record<string, unknown>> {
+type NativeDeploySource = { proposal_id: string; policy_decision_id: string } | { plan_id: string; policy_decision_id: string };
+async function queueNativeDeploy(env: Env, source: NativeDeploySource, target: string, unit: DeployUnit, sha: string, choice: Extract<NativeChoice, { eligible: true }>, lockName: string): Promise<Record<string, unknown>> {
   const requestId = "dep_" + crypto.randomUUID();
   const at = new Date().toISOString();
-  const actor = `consensus:${proposalId}`;
+  const fromPlan = "plan_id" in source;
+  const link = fromPlan ? source.plan_id : source.proposal_id;
+  const actor = fromPlan ? `recovery:${link}` : `consensus:${link}`;
   const row: NativeSignedRow = {
-    request_id: requestId, service_id: target, requested_version: sha, requested_by: actor, approval_id: proposalId,
-    idempotency_key: `consensus:${unit.workflow}:${sha}`, created_at: at,
+    request_id: requestId, service_id: target, requested_version: sha, requested_by: actor, approval_id: link,
+    idempotency_key: `${fromPlan ? "recovery" : "consensus"}:${unit.workflow}:${sha}`, created_at: at,
   };
   try {
     await insertSignedNativeRequest(env, NATIVE_EXECUTORS[NATIVE_DEPLOY_EXECUTOR], row, {
       executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha, version_tag: sha.slice(0, 12), services: [...unit.services],
-      proposal_id: proposalId, policy_decision_id: decisionId, workflows: [{ name: "Forge checks", conclusion: "success" }],
+      ...source, workflows: [{ name: "Forge checks", conclusion: "success" }],
     });
   } catch (err) {
     // Nothing was queued: free the commit's lock so a later proposal can try again.
@@ -623,7 +676,8 @@ async function queueNativeDeploy(env: Env, proposalId: string, decisionId: strin
   }
   await appendAuditEvent(env.DB, {
     event_type: "deployment.native_deploy_queued", actor, subject: target, outcome: "approved",
-    payload: { request_id: requestId, executor: NATIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, running: running.map((s) => `${s.service}@${s.running_tag}`), proposal_id: proposalId },
+    payload: { request_id: requestId, executor: NATIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, running: choice.services.map((s) => `${s.service}@${s.running_tag}`),
+      ...(choice.migrations.length ? { migrations: choice.migrations.map((m) => m.file) } : {}), ...(fromPlan ? { plan_id: link } : { proposal_id: link }) },
   });
   return { dispatched: true, executor: NATIVE_DEPLOY_EXECUTOR, request_id: requestId, unit: unit.unit, commit_sha: sha };
 }
@@ -636,14 +690,16 @@ function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, detail
   const planId = typeof details.plan_id === "string" ? details.plan_id : null;
   const proposalId = typeof details.proposal_id === "string" ? details.proposal_id : null;
   const fromProposal = proposalId !== null && planId === null && r.requested_by === "consensus:" + proposalId && r.approval_id === proposalId;
+  const fromPlan = planId !== null && proposalId === null && r.requested_by === "recovery:" + planId && r.approval_id === planId;
   if (spec.executor === NATIVE_DEPLOY_EXECUTOR) {
-    return fromProposal
+    // G2c-1: a recovery plan's redeploy is keyed like its workflow lock (recovery:<workflow>:<sha>).
+    return (fromProposal || fromPlan)
       && /^[0-9a-f]{40}$/.test(r.requested_version)
       && details.commit_sha === r.requested_version
       && details.unit === unit.unit
-      && r.idempotency_key === `consensus:${unit.workflow}:${r.requested_version}`;
+      && r.idempotency_key === `${fromPlan ? "recovery" : "consensus"}:${unit.workflow}:${r.requested_version}`;
   }
-  const sourceValid = (planId !== null && proposalId === null && r.requested_by === "recovery:" + planId && r.approval_id === planId) || fromProposal;
+  const sourceValid = fromPlan || fromProposal;
   const linkId = planId ?? proposalId;
   return /^[0-9a-f]{12}$/.test(r.requested_version)
     && details.version_tag === r.requested_version
@@ -743,6 +799,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     // A deploy runs only on main's current head, still ready and still code only: the evidence may have
     // changed since it was queued. Checked before the claim; a refusal is terminal and moves nothing.
     let plan: PlannedService[] = [];
+    let migrations: PlannedMigration[] = [];
     if (isDeploy) {
       let refusal: string | null = null;
       try {
@@ -751,7 +808,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         else if (!(await forgeReady(env.DB, r.requested_version)).ready) refusal = "ci_not_green";
         else {
           const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version);
-          if (e.eligible) plan = e.services;
+          if (e.eligible) { plan = e.services; migrations = e.migrations; }
           else refusal = "not_eligible: " + e.reason + (e.service ? " (" + e.service + ")" : "");
         }
       } catch (err) {
@@ -790,10 +847,10 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
 
     executed++;
     const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
-    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[] };
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string };
     if (isDeploy) {
       deploysRun++;
-      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES! }, r.request_id, r.requested_version, plan, opts);
+      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations });
     } else {
       run = await executeRollback(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY! }, r.request_id, r.service_id, r.requested_version, opts);
     }
@@ -813,7 +870,14 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         subject: isDeploy
           ? "Deploy of " + String(details.unit) + " at " + r.requested_version.slice(0, 12) + " failed"
           : "Rollback of " + serviceName(r.service_id) + " to " + r.requested_version + " failed",
-        body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}) },
+        body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}),
+          // G2c-1: D1 migrations are forward-only; a restore of the Workers never undoes them.
+          ...(run.migrations_applied?.length || run.migration_failed ? {
+            migrations_applied: run.migrations_applied ?? [], migration_failed: run.migration_failed ?? null, d1_restore_point_at: run.restore_point_at ?? null,
+            action_required: run.migration_failed
+              ? "A D1 migration failed during a native deploy. Its own batch was rolled back; the migrations listed as applied stay applied. The owner decides whether to fix forward or restore D1 (Time Travel) to the restore point."
+              : "D1 migrations were applied before a Worker failed and the Workers were restored; the schema stays migrated. The owner decides how to continue.",
+          } : {}) },
       });
     }
   }

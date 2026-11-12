@@ -112,7 +112,7 @@ export function moduleRules(toml: string): ModuleRule[] {
  * keeps them as separate modules, and a snapshot has no node_modules. They are recorded in
  * `external`. Imports matching the Worker's Text or Data rules load as text or bytes.
  */
-export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; importMetaUrl?: boolean; worker?: { rules: ModuleRule[]; external: Set<string> } } = {}) {
+export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; importMetaUrl?: boolean; worker?: { rules: ModuleRule[]; external: Set<string>; specifiers?: Map<string, Set<string>> } } = {}) {
   return {
     name: "forge-snapshot",
     setup(build: PluginBuild) {
@@ -131,6 +131,8 @@ export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; 
           if (rule) loader = rule.type === "Text" ? "text" : "binary";
           if (target.endsWith(".wasm") || target.startsWith("node_modules/") || target.includes("/node_modules/")) {
             worker.external.add(target);
+            // G2c-1: the specifier as written, which the bundle keeps; the Forge renames it to the stored module.
+            if (worker.specifiers) { if (!worker.specifiers.has(target)) worker.specifiers.set(target, new Set()); worker.specifiers.get(target)!.add(a.path); }
             return { path: a.path, external: true };
           }
         }
@@ -193,19 +195,22 @@ export async function bundleWorkerDir(esbuild: EsbuildLike, snapshot: Snapshot, 
 }
 
 /** The bundle and its module text (ADR-0012 G2: the Forge keeps the module of a passed main commit for the deploy). */
-export async function bundleWorkerModule(esbuild: EsbuildLike, snapshot: Snapshot, dir: string): Promise<{ bundle: WorkerBundle; text: string; toml: string }> {
+export async function bundleWorkerModule(esbuild: EsbuildLike, snapshot: Snapshot, dir: string): Promise<{ bundle: WorkerBundle; text: string; toml: string; specifiers: Record<string, string[]> }> {
   const toml = snapshot[normalizePath(dir + "/wrangler.toml")];
   if (toml === undefined) throw new Error("no wrangler.toml in " + dir);
   const main = /^main\s*=\s*"([^"]+)"/m.exec(toml)?.[1];
   if (!main) throw new Error("wrangler.toml in " + dir + " has no main");
   const external = new Set<string>();
-  const r = await esbuild.build({ ...COMMON, entryPoints: [normalizePath(dir + "/" + main)], conditions: ["workerd", "worker", "browser"], plugins: [snapshotPlugin(snapshot, { worker: { rules: moduleRules(toml), external } })] });
+  const specifierSets = new Map<string, Set<string>>();
+  const r = await esbuild.build({ ...COMMON, entryPoints: [normalizePath(dir + "/" + main)], conditions: ["workerd", "worker", "browser"], plugins: [snapshotPlugin(snapshot, { worker: { rules: moduleRules(toml), external, specifiers: specifierSets } })] });
   const bundle = { bytes: r.outputFiles?.[0]?.contents.length ?? 0, errors: r.errors.length, warnings: r.warnings.length, external: [...external].sort() };
-  return { bundle, text: r.outputFiles?.[0]?.text ?? "", toml };
+  const specifiers: Record<string, string[]> = {};
+  for (const [target, set] of specifierSets) specifiers[target] = [...set].sort();
+  return { bundle, text: r.outputFiles?.[0]?.text ?? "", toml, specifiers };
 }
 
 /** A bundled Worker module handed to the caller of bundleAllWorkers (never stored in the check's steps). */
-export type BundleSink = (dir: string, module: { text: string; toml: string; external: string[] }) => void;
+export type BundleSink = (dir: string, module: { text: string; toml: string; external: string[]; specifiers?: Record<string, string[]> }) => void;
 
 /** Every Worker in the snapshot: workers/<name>/wrangler.toml. */
 export function workerDirs(snapshot: Snapshot): string[] {
@@ -220,11 +225,11 @@ export async function bundleAllWorkers(esbuild: EsbuildLike, snapshot: Snapshot,
   for (const dir of workerDirs(snapshot)) {
     step.workers++;
     try {
-      const { bundle: b, text, toml } = await bundleWorkerModule(esbuild, snapshot, dir);
+      const { bundle: b, text, toml, specifiers } = await bundleWorkerModule(esbuild, snapshot, dir);
       if (b.errors > 0 || b.bytes === 0) step.failed.push({ dir, error: `${b.errors} errors, ${b.bytes} bytes` });
       else {
         step.bundles.push({ dir, bytes: b.bytes, external: b.external ?? [] });
-        sink?.(dir, { text, toml, external: b.external ?? [] });
+        sink?.(dir, { text, toml, external: b.external ?? [], specifiers });
       }
     } catch (e) {
       step.failed.push({ dir, error: String((e as Error)?.message ?? e).split("\n").slice(0, 3).join(" | ").slice(0, 300) });

@@ -495,6 +495,57 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
 
   If discovery fails, the tick step records `work_discovery_failed:<reason>` (`discovery_http_<status>`, `discovery_not_smart_http`, `discovery_malformed`), audits it as `forge.tick_failed`, and closes nothing. If the fork never appears, the route answers 202 with `fork_not_listed`.
 
+### 5k. Step G2c-1: migrations, multi-module Workers and recovery redeploys go native (2026-11-12)
+
+- **What the Forge stores now.** The manifest stays `forge-bundles.v1`; every new field is optional, and a reader treats a missing one as unknown.
+  - `migration_files`: each migration's `{ file, sha256 }`, with its SQL at `bundles/<sha>/migrations/<file>`. `migrations` (the names) stays.
+  - Per Worker, `modules`: each file the bundle imports but does not inline, as `{ name, type, sha256, bytes }`, stored at `bundles/<sha>/<worker>/<name>`.
+    - The bytes come from the package the commit's `package-lock.json` pins. The Forge fetches the tarball from the npm registry, checks the lockfile's sha512 integrity before reading it, and takes the file out of the tar (`workers/forge/src/externals.ts`). A snapshot has no `node_modules`, so this is how `npm ci` would get the same file.
+    - The type follows Wrangler: a Text rule gives `text/plain`, a Data rule `application/octet-stream`, `.wasm` gives `application/wasm`, and JavaScript that reads as an ES module gives `application/javascript+module`.
+    - The bundle's import of each file is renamed to `./<name>`, the name the Orchestrator uploads it under.
+    - When any file cannot be resolved or typed, the Worker gets `modules_error` and no `modules`.
+  - Per Worker, `limits`: whether its wrangler.toml has `[limits]`.
+- **Eligibility changes** (`native-deploy.ts`). Everything else is as in §5g.
+  - `limits` (new): a Worker with `[limits]` is ineligible, because a version upload does not carry it. This keeps the Forge (`cpu_ms = 300000`) on its workflow until G2c-2.
+  - `multi_module` now means only that the manifest has no `modules`.
+    - A multi-module Worker is eligible when every external file is a stored module and the bundle imports each one by its name.
+    - Each module's bytes must match its sha256 and size. Otherwise it is ineligible with `module_missing`, `module_hash_mismatch` or `module_not_imported`.
+  - `new_migration`: for the Control Plane unit, when both manifests have `migration_files`, a changed list is eligible if all of these hold:
+    - no applied file was edited or removed (`destructive_migration`, with `file`);
+    - the new files sort after the running ones (`migration_out_of_order`);
+    - the D1 table `d1_migrations` lists exactly the running manifest's files (`d1_migrations_mismatch`, or `d1_migrations_unreadable`). When it already lists the target's files, nothing is applied;
+    - for each new file: its SQL is in R2 and matches its sha256 (`migration_missing`, `migration_hash_mismatch`); it splits into statements (`migration_unreadable`); it does not match the Forge's `DESTRUCTIVE_SQL` (`destructive_migration`); and it has no statement a D1 batch cannot run, such as `BEGIN`, `COMMIT`, `PRAGMA` or `ATTACH` (`migration_unsupported_statement`).
+  - Another unit whose migration list changed is eligible once the ledger lists exactly the target's files, so the Control Plane applied them first. Otherwise it is `new_migration`, as before.
+  - A manifest without `migration_files` (G2b and older) keeps the G2b answer, `new_migration`. So the first migration after this step still goes through GitHub.
+  - The shared rules are in `control-plane-shared/src/migration-rules.ts`. A test keeps `DESTRUCTIVE_SQL` and the comment stripping equal to the Forge's (`changes.ts`).
+- **How a migration is applied.** This matches `wrangler d1 migrations apply`:
+  - The new files are applied in filename order, before the first Worker is captured, through the Orchestrator's own `DB` binding.
+  - Each file is one `DB.batch`, which D1 runs as one transaction. The batch is `INSERT INTO d1_migrations (name) VALUES (?)` followed by the file's statements.
+  - This is wrangler's row: wrangler appends `INSERT INTO "d1_migrations" (name) values ('<file>')`, and `id` and `applied_at` are the column defaults of the table wrangler creates. The insert comes first, so a file that is already recorded (UNIQUE `name`) fails before any of its statements run.
+  - The statements come from a splitter that knows quotes, comments and trigger bodies. A test applies every repository migration through it and gets the same schema as a plain `exec` of each file.
+  - Each file is audited as `deployment.native_migration_applied` (or `deployment.native_migration_failed`). The request's outcome records `migrations_applied` and `restore_point_at`, the time before migrating, for a D1 Time Travel restore.
+- **When a migration fails.** Migrations are forward-only.
+  - The request stops before any Worker is captured, and the request fails.
+  - The failed file's own batch is rolled back. The files before it stay applied.
+  - The critical report names `migration_failed` and `migrations_applied`, and says that the owner decides whether to fix forward or restore D1.
+  - A Worker that fails after the migrations were applied restores the Workers, never the schema, and the report says so.
+- **Recovery redeploys.**
+  - `deployForRecovery` takes the native path when the unit is eligible. It queues the same signed `native:deploy` request, with `requested_by = recovery:<plan>` and `idempotency_key = recovery:<workflow>:<sha>`, the recovery lock of the workflow path.
+  - `DeployRpc.requestStatus(requestId)` reports a native request as `queued`, `in_progress` or `completed` with `success` or `failure` and the reason. The Recovery Manager follows a native redeploy, and also a native rollback, which until now had no workflow run to follow, by request id, for up to 60 minutes.
+  - A retried step gets the request it queued before.
+  - Otherwise the workflow is dispatched as before, with `native_deploy` (the reason) in its audit payload.
+- **Not verified live.** These are assumptions, checked only against the documentation and the fake APIs in the tests:
+  - that D1 rolls back a whole `batch` when one of its statements fails;
+  - that D1 accepts `CREATE TRIGGER … BEGIN … END` as one prepared statement;
+  - that the Versions API accepts extra multipart parts typed `application/wasm`, `text/plain`, `application/octet-stream` and `application/javascript+module`, named with `/` (for example `workers/control-plane-shared/node_modules/esbuild-wasm/esbuild.wasm`), and resolves the main module's `./<name>` import to the part of that name.
+
+  The Forge's extraction was checked locally against the real npm tarballs of esbuild-wasm 0.28.2 and sql.js 1.13.0: each file's bytes are identical to `npm ci`'s.
+- **What G2c-1 does not do.** The GitHub path validates migrations with `test_migrations.py` before applying them. The native path relies on the Forge's passed checks instead; their harness applies every migration in every test, but the Forge does not run the Python script.
+- **Left for G2c-2.**
+  - Configuration and binding changes (`config_changed`), and `[limits]`, which also brings the Forge onto the native path.
+  - The Console's static assets (`assets`).
+  - The deploy-time settings the workflows render (Access identities, `--var`).
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).

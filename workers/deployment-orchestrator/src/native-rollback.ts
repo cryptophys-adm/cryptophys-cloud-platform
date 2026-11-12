@@ -53,6 +53,16 @@ export const KEEP_BINDINGS = [
   "analytics_engine", "queue", "browser",
 ] as const;
 
+/**
+ * ADR-0012 G2c-1: the module types of a version upload's extra parts, as Wrangler uploads them: an ES module,
+ * a Text rule (a string), a Data rule (an ArrayBuffer) and compiled WebAssembly (a WebAssembly.Module).
+ */
+export const MODULE_TYPES = ["application/javascript+module", "text/plain", "application/octet-stream", "application/wasm"] as const;
+export type ModuleType = (typeof MODULE_TYPES)[number];
+export interface ExtraModule { name: string; type: ModuleType; data: Uint8Array }
+/** A module name: a relative path of plain segments (the Forge's MODULE_NAME). */
+export const MODULE_NAME = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*$/;
+
 export interface VersionMetadata {
   main_module: string;
   compatibility_date: string;
@@ -119,9 +129,15 @@ export class CloudflareWorkers {
    * deploy-time variables are never sent from here. An uploaded version receives no traffic until `deploy`.
    * Returns the new version id.
    */
-  async uploadVersion(script: string, moduleName: string, moduleText: string, metadata: VersionMetadata): Promise<string> {
+  async uploadVersion(script: string, moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[] = []): Promise<string> {
     if (!/^[a-z0-9-]{1,63}\.mjs$/.test(moduleName) || metadata.main_module !== moduleName) throw new Error("invalid_module_name");
     if (!/^[0-9a-f]{12}$/.test(metadata.tag)) throw new Error("invalid_version_tag");
+    const names = new Set<string>([moduleName]);
+    for (const m of extra) {
+      if (!MODULE_NAME.test(m.name) || names.has(m.name)) throw new Error("invalid_module_name");
+      if (!(MODULE_TYPES as readonly string[]).includes(m.type)) throw new Error("invalid_module_type");
+      names.add(m.name);
+    }
     const form = new FormData();
     form.append("metadata", new Blob([JSON.stringify({
       main_module: metadata.main_module,
@@ -131,6 +147,8 @@ export class CloudflareWorkers {
       annotations: { "workers/tag": metadata.tag, "workers/message": metadata.message.slice(0, 100) },
     })], { type: "application/json" }));
     form.append(moduleName, new Blob([moduleText], { type: "application/javascript+module" }), moduleName);
+    // G2c-1: each extra module is its own part, named as the main module imports it ("./<name>" from the root).
+    for (const m of extra) form.append(m.name, new Blob([m.data as BlobPart], { type: m.type }), m.name);
     const r = await this.call<{ id?: string }>(`${script}/versions`, { method: "POST", body: form });
     if (typeof r?.id !== "string" || !UUID.test(r.id)) throw new Error("version_upload_unreadable");
     return r.id;

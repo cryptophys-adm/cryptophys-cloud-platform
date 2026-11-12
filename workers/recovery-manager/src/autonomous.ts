@@ -29,7 +29,14 @@ export interface RecoveryDeployBinding {
   deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>>;
   rollbackForRecovery?(planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>>;
   runStatus(workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }>;
+  /** ADR-0012 G2c-1: a request the Orchestrator runs itself (native deploy or rollback), by request id. */
+  requestStatus?(requestId: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; reason?: string | null }>;
 }
+
+/** What a recovery step follows after asking the Orchestrator: its GitHub workflow run, or its own native request. */
+type Followed = { workflow: string; commit_sha: string; executor: string; request_id: string };
+const NATIVE_REQUEST = /^dep_[0-9a-f-]{36}$/;
+const isNative = (f: Followed) => f.executor.startsWith("native:") && NATIVE_REQUEST.test(f.request_id);
 
 export interface PolicyEvaluator {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -49,6 +56,9 @@ export interface Stage { id: string; kind: string; label: string; status: StageS
 interface Plan { plan_id: string; service_id: string; plan_version: string; status: string; approved_by: string | null; steps_json: string; last_execution_json: string | null }
 
 const DEPLOY_POLLS = 40; // x 30 s = 20 min, longer than any deploy workflow
+// A native request waits for a SAFE minute and expires after 45 minutes if it never ran; a claimed one is failed
+// after its 30-minute lease. 120 x 30 s = 60 min follows it to an end in practice.
+const NATIVE_POLLS = 120;
 const VERIFY_POLLS = 6; // x 5 min = 30 min, two drift cron cycles
 const HEX = /^[0-9a-f]{7,40}$/;
 
@@ -104,12 +114,18 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       const dispatched = await step.do(`${id} dispatch deploy`, { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } }, async () => {
         try {
           const r = await env.DEPLOY!.deployForRecovery(plan.plan_id, decisionId, plan.service_id, plan.plan_version);
-          return { ok: true as const, workflow: String(r.workflow ?? ""), commit_sha: String(r.commit_sha ?? ""), error: "" };
+          return { ok: true as const, workflow: String(r.workflow ?? ""), commit_sha: String(r.commit_sha ?? ""), executor: String(r.executor ?? ""), request_id: String(r.request_id ?? ""), error: "" };
         } catch (err) {
-          return { ok: false as const, workflow: "", commit_sha: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
+          return { ok: false as const, workflow: "", commit_sha: "", executor: "", request_id: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
         }
       });
       if (!dispatched.ok) return { status: "failed", detail: `deploy not dispatched: ${dispatched.error}` };
+      // G2c-1: a native redeploy is followed by its request id, not by a workflow run.
+      if (isNative(dispatched as Followed)) {
+        return followNative(env, step, `${id} deploy`, dispatched as Followed, (ok, reason) => ok
+          ? `native deploy of ${dispatched.commit_sha.slice(0, 12)} succeeded (request ${dispatched.request_id})`
+          : `native deploy of ${dispatched.commit_sha.slice(0, 12)} failed: ${reason ?? "unknown"} (request ${dispatched.request_id}; changed Workers were restored)`);
+      }
       const { workflow, commit_sha: sha } = dispatched;
       for (let i = 1; i <= DEPLOY_POLLS; i++) {
         await sleep(step, `${id} wait deploy ${i}`, `${env.RECOVERY_DEPLOY_POLL_SECONDS ?? "30"} seconds`);
@@ -132,12 +148,18 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       const r = await step.do(`${id} dispatch rollback`, { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } }, async () => {
         try {
           const out = await env.DEPLOY!.rollbackForRecovery!(plan.plan_id, decisionId, plan.service_id);
-          return { ok: true as const, workflow: String(out.workflow ?? ""), commit_sha: String(out.commit_sha ?? ""), tag: String(out.version_tag ?? ""), error: "" };
+          return { ok: true as const, workflow: String(out.workflow ?? ""), commit_sha: String(out.commit_sha ?? ""), tag: String(out.version_tag ?? ""), executor: String(out.executor ?? ""), request_id: String(out.request_id ?? ""), error: "" };
         } catch (err) {
-          return { ok: false as const, workflow: "", commit_sha: "", tag: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
+          return { ok: false as const, workflow: "", commit_sha: "", tag: "", executor: "", request_id: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
         }
       });
       if (!r.ok) return { status: "failed", detail: `rollback not dispatched: ${r.error}` };
+      // G2c-1: a native rollback (phase 2) is followed by its request id as well; it has no workflow run.
+      if (isNative(r as Followed)) {
+        return followNative(env, step, `${id} rollback`, r as Followed, (ok, reason) => ok
+          ? `rolled back to ${r.tag} (request ${r.request_id})`
+          : `rollback to ${r.tag} failed: ${reason ?? "unknown"} (request ${r.request_id}; restored)`);
+      }
       for (let i = 1; i <= DEPLOY_POLLS; i++) {
         await sleep(step, `${id} wait rollback ${i}`, `${env.RECOVERY_DEPLOY_POLL_SECONDS ?? "30"} seconds`);
         const run = await step.do(`${id} poll rollback ${i}`, () => env.DEPLOY!.runStatus(r.workflow, r.commit_sha));
@@ -153,6 +175,17 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       // restore_d1_bookmark, rotate_secret
       return { status: "blocked", detail: `${action} needs a credential no Worker holds; the owner carries it out by runbook` };
   }
+}
+
+/** Poll one of the Orchestrator's native requests until it finishes. */
+async function followNative(env: AutonomousEnv, step: WorkflowStepLike, name: string, f: Followed, detail: (ok: boolean, reason: string | null | undefined) => string): Promise<{ status: StageStatus; detail: string }> {
+  if (!env.DEPLOY?.requestStatus) return { status: "failed", detail: `the Deployment Orchestrator binding cannot report request ${f.request_id}` };
+  for (let i = 1; i <= NATIVE_POLLS; i++) {
+    await sleep(step, `${name} wait ${i}`, `${env.RECOVERY_DEPLOY_POLL_SECONDS ?? "30"} seconds`);
+    const s = await step.do(`${name} poll ${i}`, () => env.DEPLOY!.requestStatus!(f.request_id));
+    if (s.found && s.status === "completed") return s.conclusion === "success" ? { status: "succeeded", detail: detail(true, null) } : { status: "failed", detail: detail(false, s.reason) };
+  }
+  return { status: "failed", detail: `request ${f.request_id} did not finish within ${NATIVE_POLLS * 30 / 60} minutes` };
 }
 
 /**
