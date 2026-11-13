@@ -18,6 +18,7 @@
 // not_based_on_main and is not checked until the contributor updates the branch.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { CRITICAL_PATHS } from "../../control-plane-shared/src/guard-paths.ts";
 import { checkOf, isReady, STALE_RUN_MS, type ArtifactsReader, type ArtifactsTreeEntry, type CheckSummary } from "./checks.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -73,20 +74,7 @@ export async function changedPaths(repo: ArtifactsReader, baseSha: string, headS
 // ---------------------------------------------------------------------------------------------
 // ADR §2.4: changes that stay with the owner (a merge needs the owner's click, never consensus).
 
-const CRITICAL_PATHS: Array<[RegExp, string]> = [
-  [/^workers\/control-plane-shared\/src\/access\.ts$/, "auth_access"],
-  [/^\.github\/workflows\/provision-access\.yml$/, "auth_access"],
-  [/^\.github\/scripts\/(access-[a-z-]+|resolve-access|find-service-token|find-agent-service-tokens|bootstrap-private-worker)\.sh$/, "auth_access"],
-  [/^workers\/policy-engine\//, "policy_engine"],
-  [/^workers\/control-plane-shared\/src\/consensus-(rules|exec|vote)\.ts$/, "consensus_kill_switch"],
-  [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
-  [/^workers\/control-plane-shared\/src\/secrets\.ts$/, "secrets"],
-  [/^architecture\/adr\/00(09|12)-/, "adr_0009_0012"],
-  // ADR-0012 §5d: a change request's type-check runs its own code, so a change to the harness is the owner's.
-  [/^workers\/forge-typecheck(-cr)?\//, "typecheck_harness"],
-  [/^workers\/(control-plane-tsconfig\.json|forge\/src\/cr-builds\.ts)$/, "typecheck_harness"],
-  [/^workers\/(control-plane-shared|console\/ui)\/(package(-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[a-z]+)$/, "typecheck_harness"],
-];
+// The list itself lives in control-plane-shared/src/guard-paths.ts, shared with the evolver (ADR-0014 §3).
 const MIGRATION = /^workers\/control-plane-migrations\/[^/]+\.sql$/;
 const DESTRUCTIVE_SQL = /\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b/i;
 const SECRET_OPS = /wrangler\s+secret\s+(put|delete|bulk)|secrets[_-]store/i;
