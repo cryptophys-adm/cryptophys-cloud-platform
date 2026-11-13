@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ShieldAlert, ShieldCheck, Wrench, X } from "lucide-react";
+import { Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ShieldAlert, ShieldCheck, Siren, Wrench, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { CriticalReportList } from "../components/CriticalReports";
 import { call } from "../lib/api";
@@ -11,10 +11,11 @@ import { describeAction, serviceName } from "../lib/plain";
 
 /**
  * Owner decision 2026-11-13 ("Batasi User/Owner hanya untuk critical dan permintaan approval only"): the one page
- * where the platform needs a person. Exactly two sections, both from GET /v1/owner/inbox (the same reading the
- * owner's emails and Telegram messages come from): what waits for an approval, and the open critical reports.
- * Every action reuses its existing approver-only route and typed phrase; operators and viewers see the page
- * read-only. Everything else (drift, the organism census, build minutes, dependencies) stays on the other pages.
+ * where the platform needs a person. Three sections, all from GET /v1/owner/inbox (the same reading the owner's
+ * emails and Telegram messages come from): what waits for an approval, the open critical reports, and the
+ * production problems no agent is handling. Every action reuses its existing approver-only route and typed phrase;
+ * operators and viewers see the page read-only. Everything else (drift the agents handle, the organism census,
+ * build minutes under the budget, high advisories) stays on the other pages.
  */
 
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
@@ -33,6 +34,34 @@ function Group({ title, icon, children }: { title: string; icon: ReactNode; chil
     <div>
       <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-slate-500">{icon}{title}</div>
       <div className="space-y-2">{children}</div>
+    </div>
+  );
+}
+
+const PROBLEM_LABEL: Record<string, string> = {
+  self_unhealthy: "kernel or Drift Detector",
+  observations_stale: "not observed",
+  drift_unhandled: "drift not handled",
+  recovery_failed: "recovery failed",
+  critical_advisory: "critical advisory",
+  build_minutes_exhausted: "build minutes used up",
+};
+
+/** One production problem no agent is handling: what, since when, and the page with the evidence. */
+function ProblemItem({ p }: { p: any }) {
+  const link = typeof p.link === "string" && p.link.startsWith("#/") ? p.link : "#/";
+  return (
+    <div className="glass-inner px-3 py-2 text-[12px]">
+      <div className="flex items-start gap-2">
+        <span className="mt-1.5"><Dot tone="red" pulse /></span>
+        <span className="min-w-0 flex-1 break-words text-slate-200">{p.detail ?? "—"}</span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+        <Badge tone="red">{PROBLEM_LABEL[p.code] ?? String(p.code ?? "—")}</Badge>
+        <span className="mono break-all">{p.subject}</span>
+        {p.since ? <span>since <span title={p.since}>{ago(p.since)}</span></span> : null}
+        <a href={link} className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Evidence <ExternalLink className="h-3 w-3" /></a>
+      </div>
     </div>
   );
 }
@@ -140,9 +169,10 @@ export default function Owner() {
   const proposals = arr(data?.approvals?.consensus);
   const knowledge = arr(data?.approvals?.knowledge);
   const reports = arr(data?.critical_reports);
+  const problems = arr(data?.production_problems);
   const approvals = plans.length + proposals.length + knowledge.length;
   const mode: string | null = typeof data?.consensus_mode === "string" ? data.consensus_mode : null;
-  const nothing = Boolean(data) && approvals === 0 && reports.length === 0;
+  const nothing = Boolean(data) && approvals === 0 && reports.length === 0 && problems.length === 0;
 
   return (
     <div className="flex flex-col gap-3">
@@ -155,7 +185,7 @@ export default function Owner() {
             <CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-300" />
             <div>
               <div className="text-[15px] font-semibold text-white">Nothing needs you</div>
-              <div className="text-[12px] text-slate-400">No approval waits and no critical report is open. You are contacted only when one of these appears.</div>
+              <div className="text-[12px] text-slate-400">No approval waits, no critical report is open, and every production problem is handled by an agent. You are contacted only when one of these appears.</div>
             </div>
           </div>
         </Panel>
@@ -177,10 +207,17 @@ export default function Owner() {
             <p className="mb-2 text-[11px] text-slate-500">An open critical report of the last 24 hours makes the agents reject routine actions until an approver acknowledges it as handled.</p>
             <CriticalReportList rows={reports} reload={reload} empty="No critical report is open." />
           </Panel>
+          <Panel title="Production problems no agent is handling" icon={<Siren className="h-3.5 w-3.5 text-rose-300" />}
+            right={<Badge tone={problems.length ? "red" : "slate"}>{count(data?.counts?.production_problems)}</Badge>}>
+            <p className="mb-2 text-[11px] text-slate-500">Something in production is broken or about to stop, and no recovery plan, deploy or agent is working on it. Each item links to its evidence.</p>
+            {problems.length === 0 ? <Empty>Every production problem is handled by an agent or waits for your approval.</Empty> : (
+              <div className="space-y-2">{problems.map((p, i) => <ProblemItem key={`${p.code}:${p.subject}:${i}`} p={p} />)}</div>
+            )}
+          </Panel>
         </>
       )}
       <p className="px-1 text-[11px] text-slate-500">
-        Other notices (drift, the organism census, build minutes, dependency advisories) are not sent to you; they are on <a className="text-cyan-300/80 hover:underline" href="#/">Command</a>, <a className="text-cyan-300/80 hover:underline" href="#/infrastructure">Infrastructure</a>, <a className="text-cyan-300/80 hover:underline" href="#/agents">AI Mesh</a> and <a className="text-cyan-300/80 hover:underline" href="#/code">Code</a>.
+        Other notices (drift the agents handle, the organism census, build minutes under the budget, high advisories) are not sent to you; they are on <a className="text-cyan-300/80 hover:underline" href="#/">Command</a>, <a className="text-cyan-300/80 hover:underline" href="#/infrastructure">Infrastructure</a>, <a className="text-cyan-300/80 hover:underline" href="#/agents">AI Mesh</a> and <a className="text-cyan-300/80 hover:underline" href="#/code">Code</a>.
       </p>
     </div>
   );

@@ -215,8 +215,13 @@ MOCK["/api/kernel/v1/owner/inbox"] = { schema: "owner-inbox.v1", observed_at: at
       item: { text: "Prophet's London-session breakouts on the 15 minute chart were wrong more often than its baseline; a long sentence that has to wrap." } }],
   },
   critical_reports: [{ report_id: "rpt_00000000-0000-4000-8000-000000000000", agent_id: "deployment-orchestrator", kind: "platform_digest", severity: "critical", subject: "Rollback of Cerebrum Console to 6fafa095ce3e failed, which is a long subject that wraps", created_at: at(30) }],
-  counts: { approvals: 4, critical_reports: 1 } };
-const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], counts: { approvals: 0, critical_reports: 0 } };
+  production_problems: [
+    { code: "self_unhealthy", subject: "cryptophys-ai-kernel", detail: "AI Kernel is drifted or unhealthy (version_mismatch); the agents do not recover their own Worker", since: at(50), link: "#/infrastructure" },
+    { code: "observations_stale", subject: "cryptophys-policy-engine", detail: "Policy Engine: not observed since 2026-11-13T01:00:00.000Z; the Drift Detector may have stopped", since: at(120), link: "#/infrastructure" },
+    { code: "recovery_failed", subject: "plan_00000000-0000-4000-8000-000000000009", detail: "Recovery plan for Cerebrum Console failed at 2026-11-13T02:00:00.000Z", since: at(90), link: "#/recovery/plan_00000000-0000-4000-8000-000000000009" },
+  ],
+  counts: { approvals: 4, critical_reports: 1, production_problems: 3 } };
+const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
 let OVERRIDE = {};
@@ -261,9 +266,9 @@ for (const width of [390, 1440]) {
 }
 // The Owner page: both sections with their actions for an approver, read-only for an operator, and the empty state.
 const OWNER_CHECKS = [
-  { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
-  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Waiting for your approval", "Open critical reports", "Only an approver can decide.", "Only an approver can acknowledge."], not: ["Approve…", "Reject…", "Disable…", "Acknowledge…"] },
-  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Approve…"] },
+  { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "kernel or Drift Detector", "recovery failed", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
+  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Only an approver can decide.", "Only an approver can acknowledge."], not: ["Approve…", "Reject…", "Disable…", "Acknowledge…"] },
+  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…"] },
 ];
 for (const width of [390, 1440]) {
   for (const check of OWNER_CHECKS) {

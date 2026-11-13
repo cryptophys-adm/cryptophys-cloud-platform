@@ -56,7 +56,10 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   assert.equal(Date.parse(b.approvals.consensus[0].expires_at) - Date.parse(b.approvals.consensus[0].created_at), 24 * 3_600_000, "the 24 h owner window");
   assert.deepEqual(b.approvals.knowledge.map((k: any) => [k.proposal_id, k.item.text]), [["knw_00000000-0000-4000-8000-000000000001", "Prophet is often wrong in London"]]);
   assert.deepEqual(b.critical_reports.map((x: any) => x.report_id), [open], "acknowledged, older than 24 h and warning reports are not open critical reports");
-  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1 });
+  // This database has no drift observation at all, so every registered service reads as not observed (condition 2 of
+  // production_unhandled); the conditions themselves are tested one by one in production-unhandled.test.ts.
+  assert.ok(b.production_problems.length > 0 && b.production_problems.every((p: any) => p.code === "observations_stale"));
+  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length });
   assert.equal(events(), before, "reading the inbox writes nothing");
   assert.equal((db.raw.prepare("SELECT status FROM knowledge_proposals").get() as { status: string }).status, "pending");
 
@@ -70,8 +73,10 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   // GET /v1/notices names each notice's channel.
   const n = await call(kernel, env, req("GET", "/v1/notices", undefined, OPERATOR_JWT));
   assert.equal(n.status, 200);
-  assert.deepEqual(n.body.owner_channel_topics, ["owner_attention", "critical_reports"]);
-  assert.deepEqual(n.body.notices.map((x: any) => [x.topic, x.channel]), [["owner_attention", "owner"], ["drift", "console"], ["critical_reports", "owner"], ["organism", "console"], ["build_minutes", "console"], ["dependencies", "console"]]);
+  assert.deepEqual(n.body.owner_channel_topics, ["owner_attention", "critical_reports", "production_unhandled"]);
+  assert.deepEqual(n.body.notices.map((x: any) => [x.topic, x.channel]), [["owner_attention", "owner"], ["drift", "console"], ["critical_reports", "owner"], ["organism", "console"], ["build_minutes", "console"], ["dependencies", "console"], ["production_unhandled", "owner"]]);
+  const problems = notices.find((x) => x.topic === "production_unhandled")!;
+  assert.deepEqual([problems.active, problems.lines.length, problems.link], [true, Math.min(20, b.counts.production_problems), OWNER_PANEL_URL], "the notice lists the inbox's problems");
 
   // Access still decides who reads it.
   assert.equal((await call(kernel, env, req("GET", "/v1/owner/inbox", undefined, OUTSIDER_JWT))).status, 403);
@@ -80,7 +85,7 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
 });
 
 test("I2. the Console: #/owner is the first nav item, reads only the inbox, reuses the approver-only routes and the critical-report list; the allow-list adds one read-only row", () => {
-  assert.deepEqual([...OWNER_CHANNEL_TOPICS], ["owner_attention", "critical_reports"]);
+  assert.deepEqual([...OWNER_CHANNEL_TOPICS], ["owner_attention", "critical_reports", "production_unhandled"]);
   assert.deepEqual(UI_ROUTES.find((r) => r.id === "kernel.owner_inbox"), { id: "kernel.owner_inbox", service: "kernel", method: "GET", path: "/v1/owner/inbox", approverOnly: false, confirm: null });
   assert.deepEqual(CONSOLE_ALLOW_LIST.filter((a) => a.path.startsWith("/v1/owner")), [{ service: "kernel", method: "GET", path: "/v1/owner/inbox" }]);
   const app = read("workers/console/ui/src/App.tsx");
@@ -95,7 +100,8 @@ test("I2. the Console: #/owner is the first nav item, reads only the inbox, reus
   assert.equal((page.match(/who\.approver \?/g) ?? []).length, 3, "every action group is shown to approvers only");
   assert.match(page, /Only an approver can decide\./);
   assert.match(page, /<CriticalReportList rows=\{reports\}/, "the open critical reports reuse CriticalReports.tsx (acknowledge for approvers)");
-  for (const text of ["Waiting for your approval", "Open critical reports", "Nothing needs you"]) assert.ok(page.includes(text), text);
+  for (const text of ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Nothing needs you"]) assert.ok(page.includes(text), text);
+  assert.match(page, /const problems = arr\(data\?\.production_problems\)/, "the third section reads the same inbox");
   assert.match(page, /p\.executable === true && mode === "critical"/, "approve follows the kernel's executor list and mode");
   const reports = read("workers/console/ui/src/components/CriticalReports.tsx");
   assert.match(reports, /export function CriticalReportList/);

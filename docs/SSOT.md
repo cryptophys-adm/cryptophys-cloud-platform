@@ -107,9 +107,18 @@ These hold everywhere:
 | Rollback | Native in the Orchestrator (`CF_DEPLOY_TOKEN`); `rollback-worker.yml` until the native path has run | native |
 
 **Owner notices** run as a cron Worker in the AI Kernel (:22/:52). Owner 2026-11-13 ("Batasi User/Owner hanya untuk critical dan permintaan approval only"; ADR-0009 amendment):
-- **The owner is contacted only for approvals and critical reports.** Only `owner_attention` (draft recovery plans, critical proposals in `pending_owner`, pending knowledge proposals) and `critical_reports` (open critical reports of the last 24 hours) go by email from `alerts@notify.cryptophys.work` and to the owner's Telegram (`OWNER_CHANNEL_TOPICS`), with a link to the Owner page. `drift`, `organism`, `build_minutes` and `dependencies` are console-only: audited and shown at `GET /v1/notices` with `channel: "console"`, never emailed or sent to Telegram.
-- **One panel: the Console's Owner page (`#/owner`, first in the nav).** It reads `GET /v1/owner/inbox` on the AI Kernel (operator-readable, read-only) and shows two sections: "Waiting for your approval", with each item's existing approve or reject action for approvers, and "Open critical reports", with acknowledge for approvers. Operators see it read-only. When both are empty it says "Nothing needs you".
-- **Known gaps (reported, not closed):** a drifted AI Kernel, a stopped Drift Detector, agents switched off, a refused recovery proposal, and the 24-hour re-proposal cooldown after a failed or expired recovery reach the owner through neither an approval nor a critical report (ADR-0009 amendment 2026-11-13).
+- **The owner is contacted only for approvals and critical items** (`OWNER_CHANNEL_TOPICS`). These go by email from `alerts@notify.cryptophys.work` and to the owner's Telegram, with a link to the Owner page:
+  - `owner_attention`: draft recovery plans, critical proposals in `pending_owner`, knowledge proposals that need the owner;
+  - `critical_reports`: open critical reports of the last 24 hours;
+  - `production_unhandled`: a production problem no agent is handling. That is the AI Kernel or Drift Detector itself persistently drifted or unhealthy; observations stale or missing for 45 minutes; a persistent drift with agents off, or with no recovery plan and no deploy or rollback under way (after a 30-minute grace for the Supervisor); a recovery plan failed or expired in 24 hours; a critical runtime npm advisory; or the Workers Builds budget used up.
+  - `drift`, `organism`, `build_minutes` (80%) and `dependencies` (high) are console-only: audited and shown at `GET /v1/notices` with `channel: "console"`, never emailed or sent to Telegram.
+- **One panel: the Console's Owner page (`#/owner`, first in the nav).** It reads `GET /v1/owner/inbox` on the AI Kernel (operator-readable, read-only) and shows three sections:
+  - "Waiting for your approval", with each item's existing approve or reject action for approvers;
+  - "Open critical reports", with acknowledge for approvers;
+  - "Production problems no agent is handling", with evidence links.
+
+  Operators see it read-only. When all three are empty it says "Nothing needs you".
+- **Open question for the owner:** critical proposals reach `pending_owner` only in mode `critical`, so in today's mode `deploy` an organism finding that needs the owner (a council seat, a privileged agent) is never put to the owner (ADR-0009 amendment 2026-11-13).
 
 ## Backlog that changes this page
 

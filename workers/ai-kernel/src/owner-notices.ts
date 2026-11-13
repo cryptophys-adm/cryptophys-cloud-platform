@@ -1,7 +1,7 @@
 // ADR-0012 phase 2: owner notifications without GitHub. These replace the scheduled
 // owner-attention.yml and drift-alert.yml workflows, which kept GitHub issues open and closed.
 //
-// Six topics are computed from D1:
+// Seven topics are computed from D1:
 //   owner_attention  - recovery plans in draft, critical proposals in pending_owner and pending knowledge
 //                      proposals (a click is needed);
 //   critical_reports - an open (not acknowledged) critical agent report of the last 24 hours;
@@ -11,14 +11,18 @@
 //   organism         - the Forge's census (ADR-0013) found the DNA and the live registries apart:
 //                      a declared Worker or agent not registered, an agent no longer declared, a change;
 //   dependencies     - the Forge's npm dependency audit (ADR-0012 G5) found a high or critical advisory in a
-//                      Worker's or the Console UI's lockfile, or has not succeeded for 72 hours.
+//                      Worker's or the Console UI's lockfile, or has not succeeded for 72 hours;
+//   production_unhandled - a production problem no agent is handling (owner-inbox.ts unhandledProblems: the kernel
+//                      or the Drift Detector itself unhealthy, stale observations, a persistent drift with no plan or
+//                      deploy under way or with agents off, a failed or expired recovery, a critical runtime advisory,
+//                      the Workers Builds budget used up).
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
 // needs no table of its own. The Console shows the live notices at GET /v1/notices.
 //
 // The owner channel (owner 2026-11-13: "Batasi User/Owner hanya untuk critical dan permintaan approval only"):
-// only OWNER_CHANNEL_TOPICS, the approvals (owner_attention) and the open critical reports (critical_reports),
-// reach the owner. They are emailed to the people in APPROVER_IDENTITIES when the send_email binding OWNER_EMAIL
+// only OWNER_CHANNEL_TOPICS, the approvals (owner_attention), the open critical reports (critical_reports) and the
+// production problems no agent is handling (production_unhandled), reach the owner. They are emailed to the people in APPROVER_IDENTITIES when the send_email binding OWNER_EMAIL
 // and the var NOTIFY_FROM are configured, and sent to the owner's Telegram through the Service Binding
 // OWNER_TELEGRAM (the xauusd AI Worker's OwnerNotifier, which holds the bot; the platform holds no Telegram
 // credential; owner 2026-11-11). Both link to the Console's Owner page (#/owner), which lists exactly the same
@@ -30,22 +34,23 @@ import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audi
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
-import { openCriticalReportRows, pendingApprovals } from "./owner-inbox.ts";
+import { STALE_MS, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
 /** The one Console page every owner email and Telegram message links to (owner 2026-11-13). */
 export const OWNER_PANEL_URL = `${CONSOLE_URL}#/owner`;
-export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies"] as const;
+export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies", "production_unhandled"] as const;
 export type Topic = (typeof TOPICS)[number];
 /**
- * The only topics that contact the owner, by email and by Telegram: approval requests and critical reports
- * (owner 2026-11-13). Every other topic stays in the Console.
+ * The only topics that contact the owner, by email and by Telegram: approval requests and critical items, i.e. the
+ * open critical reports and the production problems no agent is handling (owner 2026-11-13). Every other topic stays
+ * in the Console.
  */
-export const OWNER_CHANNEL_TOPICS = ["owner_attention", "critical_reports"] as const satisfies readonly Topic[];
+export const OWNER_CHANNEL_TOPICS = ["owner_attention", "critical_reports", "production_unhandled"] as const satisfies readonly Topic[];
 export type Channel = "owner" | "console";
 export const channelOf = (topic: Topic): Channel => (OWNER_CHANNEL_TOPICS as readonly Topic[]).includes(topic) ? "owner" : "console";
-/** Observations older than this (45 min, three missed Drift Detector runs) count as stale. */
-export const STALE_MS = 45 * 60_000;
+/** Observations older than this (45 min, three missed Drift Detector runs) count as stale (owner-inbox.ts). */
+export { STALE_MS };
 
 export interface Notice {
   topic: Topic;
@@ -222,9 +227,21 @@ async function dependencies(db: D1Database, now: number): Promise<Notice> {
   };
 }
 
+/** Production problems no agent is handling; one line per problem, fingerprinted by what and where, not when. */
+async function productionUnhandled(db: D1Database, now: number): Promise<Notice> {
+  const problems = await unhandledProblems(db, now);
+  const n = problems.length;
+  return {
+    topic: "production_unhandled", channel: channelOf("production_unhandled"), active: n > 0,
+    fingerprint: await fp(problems.map((p) => `${p.code}:${p.subject}`)),
+    title: n ? `A production problem no agent is handling: ${n} item(s)` : "Every production problem is handled by an agent or waits for your approval",
+    lines: problems.slice(0, 20).map((p) => p.detail), link: OWNER_PANEL_URL,
+  };
+}
+
 /** The live notices, for the Console and for reconcileNotices. Read-only. */
 export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now)];
+  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now), await productionUnhandled(db, now)];
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));

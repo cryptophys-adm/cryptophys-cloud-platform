@@ -509,35 +509,78 @@ Owner 2026-11-13, asked how to release the brake held by one handled critical re
   - The overview's own fallback (`error: "reports_unavailable"`, counts 0), which only the dashboards display; the brake reads it as one open report (above).
 - **Tests.** `report-acknowledge.test.ts` (A1–A7) and the 0053 block of `test_migrations.py`. The updated tests are `reports-overview-tp015.test.ts` (the new counter) and `console-tp023`/`console-tp024` (route counts).
 
-## Amendment 2026-11-13: one owner panel; the owner is contacted only for approvals and critical reports
+## Amendment 2026-11-13: one owner panel; the owner is contacted only for approvals and critical items
 
-Owner 2026-11-13: "Pastikan semua loop ini apakah juga perlu Human Ai Interaction Panel? Batasi User/Owner hanya untuk critical dan permintaan approval only." (Check whether each of these loops needs a human–AI interaction panel. Limit the user/owner to critical items and approval requests only.) Every loop that needs a person now surfaces in one Console panel, and the owner is contacted only for (1) critical reports and (2) approval requests.
+Owner 2026-11-13: "Pastikan semua loop ini apakah juga perlu Human Ai Interaction Panel? Batasi User/Owner hanya untuk critical dan permintaan approval only." (Check whether each of these loops needs a human–AI interaction panel. Limit the user/owner to critical items and approval requests only.) Every loop that needs a person now surfaces in one Console panel. The owner is contacted only for approval requests and critical items: open critical reports, and production problems no agent is handling.
 
 - **The human-in-the-loop items in the code today, and where they land.**
   - *Waiting for your approval* (owner notice `owner_attention`):
     - recovery plans in `draft` (Recovery Manager; approve, or disable; the author cannot approve their own plan);
-    - critical consensus proposals in `pending_owner` (§ phase 4; approve when the platform has an executor and the mode is `critical`, otherwise carry out by runbook and reject; 24-hour window);
-    - learned-knowledge proposals in `pending` (TP-028; approve for shadow testing, or reject; 14-day window).
+    - critical consensus proposals in `pending_owner` (phase 4). They can be approved when the platform has an executor and the mode is `critical`; otherwise they are carried out by runbook and rejected. The window is 24 hours;
+    - learned-knowledge proposals in `pending` that need the owner (TP-028; approve for shadow testing, or reject; 14-day window).
   - *Open critical reports* (owner notice `critical_reports`): unacknowledged critical agent reports of the last 24 hours. Each blocks routine consensus until an approver acknowledges it (amendment above).
-  - *Owner-initiated controls, not requests:* raising the consensus mode, turning agents back on after the kill switch, resuming a suspended agent, registering or revoking a principal, creating a recovery plan by hand, service records and desired versions, accounts, the Forge spikes. They stay on their pages; nothing asks the owner for them, so they are not in the panel.
-- **The owner channel.** `OWNER_CHANNEL_TOPICS = ["owner_attention", "critical_reports"]` (`ai-kernel/src/owner-notices.ts`). Only these are emailed to `APPROVER_IDENTITIES` and sent to the owner's Telegram; until now only `owner_attention` went to Telegram, and every topic was emailed.
-  - `drift`, `organism`, `build_minutes`, `dependencies`, and any topic added later, are console-only. They are still computed at :22 and :52, still recorded with the same `owner.notice_opened|changed|closed` audit events (delivery `console_only`, never retried), and still served by `GET /v1/notices`. Each notice there now carries `channel: "owner" | "console"`, and the response lists `owner_channel_topics`. The Command page shows the channel next to each notice.
+  - *Production problems no agent is handling* (owner notice `production_unhandled`, below).
+  - *Owner-initiated controls, not requests.* These stay on their pages; nothing asks the owner for them, so they are not in the panel:
+    - raising the consensus mode, turning agents back on after the kill switch, resuming a suspended agent;
+    - registering or revoking a principal, creating a recovery plan by hand;
+    - service records and desired versions, accounts, the Forge spikes.
+- **The owner channel.** `OWNER_CHANNEL_TOPICS = ["owner_attention", "critical_reports", "production_unhandled"]` (`ai-kernel/src/owner-notices.ts`). Only these are emailed to `APPROVER_IDENTITIES` and sent to the owner's Telegram. Before, only `owner_attention` went to Telegram, and every topic was emailed.
+  - `drift`, `organism`, `build_minutes`, `dependencies`, and any topic added later, are console-only:
+    - still computed at :22 and :52;
+    - still recorded with the same `owner.notice_opened|changed|closed` audit events (delivery `console_only`, never retried);
+    - still served by `GET /v1/notices`, where each notice now carries `channel: "owner" | "console"` and the response lists `owner_channel_topics`. The Command page shows the channel next to each notice.
   - A closed owner-channel notice still sends one "Resolved" message.
   - Every owner email and Telegram message links to the Owner page (`…/console/#/owner`), not to a per-kind page; the lines no longer carry per-item links.
-- **The Owner page (`#/owner`, first in the Console nav).** It reads one endpoint, `GET /v1/owner/inbox` on the AI Kernel (`ai-kernel/src/owner-inbox.ts`): operator-readable, read-only (no expiry sweep, no write), one allow-listed GET (the Console's allow-list grows to 61 rows, the UI route table to 62). The owner notices read the same functions (`pendingApprovals`, `openCriticalReportRows`), so an email, a Telegram message and the panel list the same items.
-  - Two sections only: "Waiting for your approval" (plans, critical proposals with the consensus mode and whether the platform can execute them, knowledge proposals) and "Open critical reports" (the Cognition page's list, `CriticalReportList` in `CriticalReports.tsx`, with acknowledge for approvers). When both are empty it says "Nothing needs you".
-  - Every action reuses its existing approver-only route and typed phrase (`recovery.approve`, `recovery.disable`, `kernel.consensus_approve|reject`, `kernel.knowledge_approve|reject`, `kernel.report_acknowledge`); the servers check the role again. Operators and viewers see the page read-only. Disabling a plan, which operators may do on the Recovery page, is shown here to approvers only.
+- **`production_unhandled`: a production problem no agent is handling** (`unhandledProblems` in `ai-kernel/src/owner-inbox.ts`; coordinator 2026-11-13, closing the gaps the review below found). One line per problem; the fingerprint is what and where, not when. The topic is active when any of these holds:
+  1. `self_unhealthy`: the AI Kernel or the Drift Detector itself is persistently drifted or unhealthy, by the rule of `syscall.ts:83` (its last two observations drifted). The Supervisor never plans for its own Worker.
+  2. `observations_stale`: a registered service has no observation for 45 minutes (`STALE_MS`) though it was registered at least that long ago, or its latest observation is older, unreadable or in the future. This means the Drift Detector stopped.
+  3. `drift_unhandled`: a service is persistently drifted or unhealthy, and either agents are switched off, or no recovery plan for it is `draft`, `approved` or `executing` and no deploy, redeploy or rollback proposal for it is executing or executed within 2 hours.
+     - The Supervisor's own exclusions apply: a healthy service whose only finding is a missing version tag, or one whose only finding is an unset desired version.
+     - A 30-minute grace (`HANDLING_GRACE_MS`, from the older of the two drifted observations) gives the Supervisor, which runs every 15 minutes, at least one cycle to propose a plan, so a fresh persistent drift does not email and resolve within half an hour.
+     - A drift with a draft plan does not fire: it already reaches the owner as an approval.
+  4. `recovery_failed`: a recovery plan `failed`, or was disabled as `approval_expired` or `approval_lapsed`, in the last 24 hours (`autonomous.ts:265–266`, `lifecycle.ts:100–101`). Deploy-verification plans authored by a service token are not recovery and are left out.
+  5. `critical_advisory`: an npm advisory of severity `critical` in a runtime lockfile, from the last successful audit. `high` stays in the console-only `dependencies` notice.
+  6. `build_minutes_exhausted`: the month's measured Workers Builds minutes are at or over the platform's budget (`BUILD_MINUTES_BUDGET`, 3,000). The type-check and Console UI build of each main commit, and so the Forge's `ready` verdict and the deploys, depend on those builds. The 80% warning stays in the console-only `build_minutes` notice. Note: the budget is the Workers Free allowance the platform holds itself to. The account's Workers Paid plan includes 6,000 minutes, so at 3,000 the platform's own budget is used up before Cloudflare stops a build.
+- **The Owner page (`#/owner`, first in the Console nav).** It reads one endpoint, `GET /v1/owner/inbox` on the AI Kernel (`ai-kernel/src/owner-inbox.ts`).
+  - The endpoint is operator-readable and read-only (no expiry sweep, no write). It is one allow-listed GET: the Console's allow-list grows to 61 rows, the UI route table to 62.
+  - The owner notices read the same functions (`pendingApprovals`, `openCriticalReportRows`, `unhandledProblems`), so an email, a Telegram message and the panel list the same items.
+  - Three sections:
+    - "Waiting for your approval": plans; critical proposals, with the consensus mode and whether the platform can execute them; knowledge proposals that need the owner.
+    - "Open critical reports": the Cognition page's list (`CriticalReportList` in `CriticalReports.tsx`), with acknowledge for approvers.
+    - "Production problems no agent is handling": each problem with its evidence link.
+  - When all three are empty the page says "Nothing needs you".
+  - Every action reuses its existing approver-only route and typed phrase (`recovery.approve`, `recovery.disable`, `kernel.consensus_approve|reject`, `kernel.knowledge_approve|reject`, `kernel.report_acknowledge`); the servers check the role again.
+  - Operators and viewers see the page read-only. Disabling a plan, which operators may do on the Recovery page, is shown here to approvers only. Production problems have no action on the page; their links lead to the evidence.
   - One secondary line links to the pages that show the console-only notices; the page has no other counts or alerts.
-- **Why dropping the drift, organism, build-minute and dependency emails is safe for production.** A broken service is handled by the agents, and when the handling needs a person it becomes an approval, which is on the owner channel:
+- **Why dropping the drift, organism, build-minute and dependency emails is safe for production.** A broken service is handled by the agents. When the handling needs a person it becomes an approval, and when nothing handles it, it is a `production_unhandled` problem. Both are on the owner channel:
   1. The Drift Detector observes every registered service every 15 minutes. A drifted or unhealthy service seen twice in a row is persistent (`ai-kernel/src/syscall.ts:83`).
-  2. For a persistent drift of a managed service with no open agent plan, the Supervisor proposes a recovery plan (`ai-kernel/src/supervisor.ts:233–251`, syscall `recovery.propose`, tier 1, "a human approver must approve it", `control-plane-shared/src/capabilities.ts:27`). The Recovery Manager stores it in `draft` (`recovery-manager/src/index.ts:132` `proposeFromAgent`, `:159` the insert). A draft plan opens `owner_attention`, so the owner is emailed and messaged.
-  3. In parallel the Supervisor proposes `redeploy_desired_version` to consensus (`supervisor.ts:254–261`); in mode `deploy` it executes without the owner. A failed native deploy or rollback publishes a critical report (`deployment-orchestrator/src/index.ts:875`), which is on the owner channel. An approved plan whose execution never finishes publishes a critical report (`recovery-manager/src/lifecycle.ts:84–85`). An invalid audit chain does too (`audit-ledger/src/index.ts:127`, `ai-kernel/src/auditor.ts:226`).
-- **Cases where something broken reaches the owner through neither an approval nor a critical report** (found in the code; reported, not changed by this amendment):
-  1. *The AI Kernel itself.* The Supervisor skips its own Worker (`supervisor.ts:233`, `s.service_id === SERVICE`), and the Drift Detector's report is a warning (`drift-detector/src/index.ts:254–255`). A drifted or unhealthy `cryptophys-ai-kernel` gets no plan and no critical report; it was reached only by the `drift` email. (When the kernel is down, no notice runs at all, as before.)
-  2. *A stopped Drift Detector.* Stale, missing or invalid observations are lines of the `drift` notice only. The Supervisor's evidence treats a stale in-sync observation as in sync, and the Drift Detector reports itself healthy (`drift-detector/src/index.ts:204–205`). No plan, no critical report.
-  3. *Agents off (kill switch) or a refused `recovery.propose`.* The Supervisor does not run, or the proposal is denied or the Recovery Manager is unreachable (`supervisor.ts:218`, `:246`). The drift persists with no plan and no critical report. The kill switch is a person's decision; the refused proposal is retried each cycle.
-  4. *A failed or expired recovery.* An autonomous recovery that fails publishes a warning (`recovery-manager/src/autonomous.ts:265–266`), and an expired plan a warning (`lifecycle.ts:100–101`). The Supervisor proposes again only after its 24-hour cooldown (`supervisor.ts:32`, `:238`), so a broken service can wait up to 24 hours before a new approval reaches the owner.
-  5. *Not production outages, but no longer emailed:* organism findings that need the owner (a council seat, a privileged agent) become critical proposals, which reach `pending_owner` only in mode `critical` (`ai-kernel/src/consensus.ts:214`); in today's mode `deploy` they are recorded as `shadow_passed` and the owner is not asked. High or critical npm advisories and a Workers Builds month near or over budget have no approval or critical path either. All of them stay visible in the Console.
-- **What still contacts the owner outside the two topics.** Nothing in this repository's Workers: the owner notices are the only sender (`send_email` binding `OWNER_EMAIL`, Service Binding `OWNER_TELEGRAM`). Outside it: GitHub's own notifications (workflow runs, pull requests), Cloudflare's account emails, and whatever the xauusd Worker's Telegram bot sends on its own (another repository).
-- **Unchanged.** The topics, their fingerprints and audit events; the Console pages that show the console-only notices; every approval and acknowledgement rule.
-- **Tests.** `owner-notices-0012.test.ts` (O9 now asserts no email or Telegram for `organism`; O11 the four console-only topics, audited, channel `console`, never delivered or retried; O12 `critical_reports` by email and Telegram with the Owner page link and a Resolved message; O2 and O10 the Owner page link), `owner-inbox.test.ts` (I1 the endpoint and its parity with the notices, I2 the Console wiring), `forge-build-usage` U4 and `forge-dependency-audit-g5` G5-6 (channel `console`), `console-tp023`/`console-tp024` (route counts), and the render smoke (the Owner page as approver, operator and empty).
+  2. For a persistent drift of a managed service with no open agent plan, the Supervisor proposes a recovery plan (`ai-kernel/src/supervisor.ts:233–251`). The syscall is `recovery.propose`, tier 1: "a human approver must approve it" (`control-plane-shared/src/capabilities.ts:27`).
+     - The Recovery Manager stores the plan in `draft` (`recovery-manager/src/index.ts:132` `proposeFromAgent`, `:159` the insert).
+     - A draft plan opens `owner_attention`.
+  3. In parallel the Supervisor proposes `redeploy_desired_version` to consensus (`supervisor.ts:254–261`); in mode `deploy` it executes without the owner.
+     - A failed native deploy or rollback publishes a critical report (`deployment-orchestrator/src/index.ts:875`).
+     - An approved plan whose execution never finishes publishes a critical report (`recovery-manager/src/lifecycle.ts:84–85`).
+     - So does an invalid audit chain (`audit-ledger/src/index.ts:127`, `ai-kernel/src/auditor.ts:226`).
+- **The gaps the review found, and how each is now covered.** Each case reached the owner through neither an approval nor a critical report:
+  1. *The AI Kernel itself.* The Supervisor skips its own Worker (`supervisor.ts:233`), and the Drift Detector's report is only a warning (`drift-detector/src/index.ts:254–255`). Now condition 1. When the kernel is down altogether, no notice runs, as before.
+  2. *A stopped Drift Detector.* Stale or missing observations were lines of the `drift` notice only. The agents' evidence reads a stale in-sync observation as in sync, and the Drift Detector reports itself healthy (`drift-detector/src/index.ts:204–205`). Now condition 2 (and condition 1 for a drifted detector).
+  3. *Agents off, or a refused `recovery.propose`* (`supervisor.ts:218`, `:246`). Now condition 3.
+  4. *A failed or expired recovery* (a warning, then a 24-hour re-proposal cooldown: `supervisor.ts:32`, `:238`). Now condition 4, and condition 3 while the service stays drifted with nothing under way.
+  5. *A critical runtime advisory and a used-up build budget* had no approval or critical path. Now conditions 5 and 6.
+- **Open question for the owner: owner approvals in mode `deploy`.** Organism findings that need the owner (a council seat, `admit_voter`; a privileged agent, `register_privileged_agent`) become critical consensus proposals. A critical proposal reaches `pending_owner` only in mode `critical` (`ai-kernel/src/consensus.ts:214`). In today's mode `deploy` it is recorded as `shadow_passed` and the owner is never asked: neither the Owner page nor any message shows it. The same holds for every other critical action proposed in mode `deploy`. The organism notice stays console-only, because these findings are not outages. Should critical proposals reach `pending_owner` in mode `deploy` too? That changes the mode semantics of phase 4 and is the owner's decision; nothing here changes it.
+- **What still contacts the owner outside these three topics.** Nothing in this repository's Workers: the owner notices are the only sender (`send_email` binding `OWNER_EMAIL`, Service Binding `OWNER_TELEGRAM`). Outside it:
+  - GitHub's own notifications (workflow runs, pull requests);
+  - Cloudflare's account emails;
+  - whatever the xauusd Worker's Telegram bot sends on its own (another repository).
+- **Unchanged.** The existing topics, their fingerprints and audit events; the Console pages that show the console-only notices; every approval and acknowledgement rule; the consensus modes.
+- **Tests.**
+  - `owner-notices-0012.test.ts`:
+    - O9: no email or Telegram for `organism`;
+    - O11: the four console-only topics are audited, have channel `console`, and are never delivered or retried;
+    - O12: `critical_reports` goes by email and Telegram with the Owner page link and a Resolved message;
+    - O2 and O10: the Owner page link.
+  - `production-unhandled.test.ts`: P0 the healthy baseline; P1–P6 one test per condition; P3-negative a drift with a draft plan does not fire; P7 delivery, deduplication and resolution.
+  - `owner-inbox.test.ts`: I1 the endpoint and its parity with the notices; I2 the Console wiring.
+  - `forge-build-usage` U4 and `forge-dependency-audit-g5` G5-6: channel `console`.
+  - `console-tp023`/`console-tp024`: route counts.
+  - The render smoke: the Owner page as approver, as operator and empty.

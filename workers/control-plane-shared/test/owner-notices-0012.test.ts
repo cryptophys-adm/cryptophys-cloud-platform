@@ -31,8 +31,8 @@ test("O1. nothing open when everything is healthy and nothing waits", async () =
   const db = migratedDb();
   healthy(db);
   const n = await collectNotices(db as never, NOW);
-  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false], ["dependencies", false]]);
-  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
+  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false], ["dependencies", false], ["production_unhandled", false]]);
+  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
 });
 
 test("O2. a draft plan and a pending_owner proposal open owner_attention once; a change updates it; resolution closes it, with emails to the owners", async () => {
@@ -260,7 +260,8 @@ test("O11. owner 2026-11-13: drift, organism, build minutes and dependencies are
     const n = notices.find((x) => x.topic === t)!;
     assert.deepEqual([t, n.active, n.channel, channelOf(t)], [t, true, "console", "console"], `${t} is open and console-only`);
   }
-  assert.deepEqual(notices.filter((n) => n.channel === "owner").map((n) => n.topic), ["owner_attention", "critical_reports"]);
+  assert.deepEqual(notices.filter((n) => n.channel === "owner").map((n) => n.topic), ["owner_attention", "critical_reports", "production_unhandled"]);
+  assert.equal(notices.find((n) => n.topic === "production_unhandled")!.active, false, "an 80% build month, a stale audit without a critical advisory and a census finding are not production problems");
   const mail = emailSpy();
   const tg: any[] = [];
   const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", OWNER_EMAIL: mail.binding, NOTIFY_FROM: "alerts@notify.example.com", OWNER_TELEGRAM: { notify: async (n: any) => { tg.push(n); return { sent: true }; } } };
