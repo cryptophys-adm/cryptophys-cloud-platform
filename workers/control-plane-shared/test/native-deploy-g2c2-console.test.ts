@@ -353,34 +353,21 @@ test("G2c2C-2. the Console deploys natively: assets uploaded before the version,
     assert.equal(desired(db), NEW.slice(0, 12));
     assert.equal(reports.length, 0);
 
-    // 2. The UI did not change (the same stored build): keep_assets, no upload session, after checking that the
-    //    active version is the script's latest upload (keep_assets copies from that one).
+    // 2. The UI did not change (the same stored build): keep_assets is never used, because it is not verified
+    //    that it keeps run_worker_first. The build is uploaded again with its config sent explicitly; Cloudflare
+    //    already holds every file, so no bucket is sent.
     reset(db);
     const same = bucket();
     await storeCommit(same, db, OLD, CONSOLE_TOML, dist("console.log('same')"));
     await storeCommit(same, db, NEW, CONSOLE_TOML, dist("console.log('same')"));
-    const kcf = fakeCloudflare();
+    const kcf = fakeCloudflare({ held: () => true });
     const kept = await queueAndRun(db, same, kcf);
     assert.deepEqual(kept.result, { executed: 1, succeeded: 1 });
-    assert.deepEqual(lastAudit(db, "deployment.native_deploy_queued").assets[SVC].mode, "keep");
-    assert.deepEqual(kcf.log.slice(3, 6), ["GET scripts", `GET ${SVC} versions?per_page=1`, `POST ${SVC} versions`]);
-    assert.equal(kcf.log.some((c) => c.includes("assets")), false, "no assets call at all");
-    assert.equal(kcf.uploads[0].keep_assets, true);
-    assert.equal("assets" in kcf.uploads[0], false);
-    assert.deepEqual(kcf.uploads[0].bindings, [{ type: "assets", name: "ASSETS" }]);
-    assert.equal(kcf.s.versions.get(kcf.s.active[0].version_id)!.assets?.jwt, "old.assets.jwt", "the running assets carried over");
-    assert.deepEqual(kept.outcome.assets, { [SVC]: { mode: "keep" } });
-    assert.ok(kept.outcome.steps.includes(`${SVC}:assets_kept`));
-
-    // 3. The same build, but another version was uploaded after the active one: keep_assets would copy that one's
-    //    assets, so they are uploaded instead (Cloudflare already holds them: no bucket).
-    reset(db);
-    const ncf = fakeCloudflare({ newerUpload: true, held: () => true });
-    const fresh = await queueAndRun(db, same, ncf);
-    assert.deepEqual(fresh.result, { executed: 1, succeeded: 1 });
-    assert.equal("keep_assets" in ncf.uploads[0], false);
-    assert.deepEqual(ncf.uploads[0].assets, { jwt: SESSION, config: { not_found_handling: "single-page-application", run_worker_first: true } }, "with no bucket the session JWT completes");
-    assert.deepEqual(fresh.outcome.assets, { [SVC]: { mode: "upload", uploaded: 0, buckets: 0, keep_refused: "latest_version_not_active" } });
+    assert.equal("keep_assets" in kcf.uploads[0], false, "keep_assets is never sent");
+    assert.deepEqual(kcf.uploads[0].assets, { jwt: SESSION, config: { not_found_handling: "single-page-application", run_worker_first: true } }, "run_worker_first is sent explicitly");
+    assert.deepEqual(kept.outcome.assets, { [SVC]: { mode: "upload", uploaded: 0, buckets: 0, keep_refused: "run_worker_first_unverified" } });
+    assert.ok(kept.outcome.steps.includes(`${SVC}:assets_uploaded`));
+    assert.equal(kept.outcome.steps.includes(`${SVC}:assets_kept`), false);
 
     // 4. A configuration change of the Console (a new var): the planned bindings carry the assets binding, and the
     //    assets still go first.

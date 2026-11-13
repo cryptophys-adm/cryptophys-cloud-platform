@@ -37,8 +37,8 @@
 // (`console-dist.json` and its files); the Worker is eligible only when that build is stored and every file matches
 // it, its `[assets]` table is unchanged, its `index.html` passes the deploy workflow's CSP check (no inline script),
 // and the zone route the workflow attaches with a zone token (ZONE_ROUTES) is reported for the script, read only.
-// The assets are uploaded before the version: kept (`keep_assets`) when the running build is the same and the
-// active version is the script's latest upload, otherwise uploaded and sent as `assets: { jwt, config }`.
+// The assets are uploaded before the version and sent as `assets: { jwt, config }`, also when the build is
+// unchanged: keep_assets is not used, because it is not verified that it keeps `run_worker_first`.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -704,25 +704,15 @@ export async function executeNativeDeploy(
         steps.push(`${service}:route_verified`);
         const a = await readAssetsPlan(env.BUNDLES, commit, worker, plannedAssets.running_commit);
         if ("reason" in a) throw new Error(a.reason);
-        let keepRefused: string | undefined;
-        if (a.assets.mode === "keep") {
-          // keep_assets copies the assets of the script's latest upload, which need not be the active version
-          // (as keep_bindings): keep only when the latest upload is the version production runs.
-          let latest: string | null = null;
-          try { latest = await cf.latestVersionId(service); } catch { latest = null; }
-          if (latest === null) keepRefused = "versions_unreadable";
-          else if (latest !== captured[0].version_id) keepRefused = "latest_version_not_active";
-        }
-        if (a.assets.mode === "keep" && !keepRefused) {
-          assetsPart = { keep: true, binding: a.assets.binding };
-          assetsRun[service] = { mode: "keep" };
-          steps.push(`${service}:assets_kept`);
-        } else {
-          const up = await cf.assetsUploader().upload(service, a.files);
-          assetsPart = { jwt: up.jwt, config: a.assets.config, binding: a.assets.binding };
-          assetsRun[service] = { mode: "upload", uploaded: up.uploaded, buckets: up.buckets, ...(keepRefused ? { keep_refused: keepRefused } : {}) };
-          steps.push(`${service}:assets_uploaded`);
-        }
+        // keep_assets is never used (2026-11-13): it is not verified that a kept asset set keeps the
+        // `run_worker_first = true` of the [assets] config, and without it assets would be served before the
+        // Console Worker's own checks. An unchanged build is uploaded again with its config sent explicitly; the
+        // upload session asks only for the files Cloudflare does not hold, so it costs no bucket.
+        const keepRefused = a.assets.mode === "keep" ? "run_worker_first_unverified" : undefined;
+        const up = await cf.assetsUploader().upload(service, a.files);
+        assetsPart = { jwt: up.jwt, config: a.assets.config, binding: a.assets.binding };
+        assetsRun[service] = { mode: "upload", uploaded: up.uploaded, buckets: up.buckets, ...(keepRefused ? { keep_refused: keepRefused } : {}) };
+        steps.push(`${service}:assets_uploaded`);
       }
       // An explicit upload of a Worker with assets that neither keeps nor sends them would drop them.
       if (worker.assets && !assetsPart) throw new Error("assets_upload_missing");
