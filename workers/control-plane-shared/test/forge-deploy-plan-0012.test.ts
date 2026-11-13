@@ -111,6 +111,30 @@ test("DP2. G1 (owner 2026-11-12): the Orchestrator's pending deploys are the For
   }
 });
 
+test("DP2b. a Forge built with another deploy-unit list (a unit retired or added) still drives the Orchestrator while its inputs hold (2026-11-13)", async () => {
+  const db = migratedDb();
+  behind(db);
+  const repo = repoWith(["workers/console/ui/src/App.tsx"]);
+  await planTick(db as never, repo);
+  checked(db, MAIN, "passed");
+  // As on 2026-11-13: the Forge (built before #316) wrote its fingerprint with cryptophys-home, which the
+  // Orchestrator's unit list no longer has, so an exact match never comes.
+  const fp = await registryFingerprint(db as never);
+  db.raw.prepare("UPDATE forge_deploy_plans SET fingerprint = ? WHERE main_sha = ?").run(`${fp},cryptophys-home=disabled`.split(",").sort().join(","), MAIN);
+  let pending = await pendingDeploys(orchestratorEnv(db) as never);
+  assert.deepEqual(pending.units.map((u) => u.unit), ["console"], "every input the Forge planned from is unchanged");
+  // One of those inputs changes (a deploy recorded a new desired version): the plan no longer holds.
+  db.raw.prepare("UPDATE service_registry SET desired_version = 'cccccccccccc' WHERE service_id = 'cryptophys-console'").run();
+  pending = await pendingDeploys(orchestratorEnv(db) as never);
+  assert.deepEqual([pending.units, pending.skipped], [[], [{ unit: "*", reason: "forge_plan_pending" }]]);
+  // A service it names that has no row, or an unparsable fingerprint, fails closed.
+  const { fingerprintStillHolds } = await import("../src/forge-gate.ts");
+  assert.equal(await fingerprintStillHolds(db as never, "cryptophys-nope=aaaaaaaaaaaa"), false);
+  assert.equal(await fingerprintStillHolds(db as never, "not a fingerprint"), false);
+  assert.equal(await fingerprintStillHolds(db as never, ""), false);
+  assert.equal(await fingerprintStillHolds(db as never, "x".repeat(2000)), false, "a truncated fingerprint is never trusted");
+});
+
 test("DP3. a different answer is a disagreement; new registry inputs are a new comparison; an unknown base fails closed", async () => {
   const db = migratedDb();
   behind(db);
