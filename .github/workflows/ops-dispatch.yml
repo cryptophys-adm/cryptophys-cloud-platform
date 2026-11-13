@@ -71,7 +71,7 @@ jobs:
 
           workflow="$(jq -r .workflow "$request")"
           case "$workflow" in
-            provision-access.yml|deploy-control-plane.yml|deploy-deployment-orchestrator.yml|deploy-console.yml|deploy-home.yml|deploy-forge.yml) ref=main ;;
+            provision-access.yml|deploy-control-plane.yml|deploy-deployment-orchestrator.yml|deploy-console.yml|deploy-forge.yml) ref=main ;;
             mirror-to-forge.yml) ref=main ;; # no inputs; pushes main to the Forge (ADR-0012)
             forge-ci-report.yml) ref=main ;; # no inputs; backfills GitHub CI results to the Forge (ADR-0012)
             retire-worker.yml) ref=main ;;
