@@ -224,16 +224,19 @@ test("G4-3. discovery lists refs/heads/* of platform-work with a 120 s read toke
   assert.equal(auditOf(db).filter((a: any) => a.event_type === "forge.change_registered").length, 3);
 });
 
-test("G4-3b. the tick calls ARTIFACTS.list as a method of the binding, never through Function.prototype.bind (an RPC stub has no local bind)", async () => {
+test("G4-3b. the tick calls ARTIFACTS.list only as a method of the binding: an RPC stub turns bind, call and apply into remote method names", async () => {
   const ns = standard();
   ns.push("platform-work", "claude/feature-x", A, [A]);
-  const realList = (ns.binding as any).list;
-  // A Workers RPC stub turns any property access, `bind` included, into a remote method name.
-  const list = function (this: unknown, opts?: unknown) { assert.equal(this, stub, "called with the binding as receiver"); return realList.call(ns.binding, opts); };
-  Object.defineProperty(list, "bind", { get() { throw new Error('The RPC receiver does not implement the method "bind".'); } });
-  const stub = { get: (n: string) => (ns.binding as any).get(n), list };
+  const real = ns.binding as any;
+  // A Workers RPC stub: callable, and any property read on it is a remote method the receiver does not implement.
+  const stubMethod = (name: string) => new Proxy(function () {}, {
+    apply: (_t, thisArg, args) => { assert.equal(thisArg, stub, "called with the binding as receiver"); return real[name](...args); },
+    get: (_t, prop) => { throw new Error(`The RPC receiver does not implement the method "${String(prop)}".`); },
+  });
+  const stub: any = { get: (n: string) => real.get(n), list: stubMethod("list") };
   const out = await workBranchesTick({ DB: migratedDb() as never, ARTIFACTS: stub as never }, Date.now(), gitServer(ns.repos).fetchImpl);
   assert.deepEqual([out.outcome, out.registered], ["discovered", ["fg-claude-feature-x"]]);
+  for (const prop of ["bind", "call", "apply"]) assert.throws(() => stub.list[prop], /does not implement the method/);
 });
 
 test("G4-4. base = canonical main when it is an ancestor of the head; otherwise blocked not_based_on_main (and never checked)", async () => {
