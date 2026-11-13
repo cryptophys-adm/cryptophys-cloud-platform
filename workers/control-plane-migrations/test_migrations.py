@@ -385,7 +385,8 @@ print("PASS: 0056 alert channels (additive, default seed, no token column, CHECK
 merge_db = sqlite3.connect(":memory:")
 merge_db.execute("PRAGMA foreign_keys = ON")
 for migration in sorted(ROOT.glob("*.sql")):
-    merge_db.executescript(migration.read_text(encoding="utf-8"))
+    if migration.name <= "0057_forge_merge_path.sql":
+        merge_db.executescript(migration.read_text(encoding="utf-8"))
 merge_sql = (ROOT / "0057_forge_merge_path.sql").read_text(encoding="utf-8")
 merge_code = "\n".join(line.split("--", 1)[0] for line in merge_sql.splitlines()).upper()
 assert not re.search(r"\b(DROP|DELETE|ALTER|UPDATE)\b", merge_code), "0057 is additive"
@@ -398,3 +399,15 @@ for bad in [("merge_path", "anything"), ("other", "github")]:
     raise AssertionError(f"0057 accepted {bad}")
 merge_db.close()
 print("PASS: 0057 forge merge path (additive, default github, CHECKs)")
+
+# Migration 0058 (ADR-0012 G6, cut-over step 4): the merge path is the Forge. Only that row changes.
+cut_db = sqlite3.connect(":memory:")
+cut_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    cut_db.executescript(migration.read_text(encoding="utf-8"))
+assert cut_db.execute("SELECT control, value, updated_by FROM forge_controls").fetchall() == [("merge_path", "forge", "migration:0058")], "0058 flips the merge path"
+cut_sql = (ROOT / "0058_cutover_merge_path_forge.sql").read_text(encoding="utf-8")
+cut_code = "\n".join(line.split("--", 1)[0] for line in cut_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT)\b", cut_code) and cut_code.count("UPDATE ") == 1 and "WHERE CONTROL = 'MERGE_PATH'" in cut_code, "0058 changes one row"
+cut_db.close()
+print("PASS: 0058 cut-over (merge path forge, one row)")

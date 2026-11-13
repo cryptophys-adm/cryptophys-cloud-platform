@@ -211,7 +211,10 @@ test("CR6. the tick checks open change request heads first; their runs stay out 
 
 test("CR7. wiring: workflows from the default branch only, forks ignored, outcome from the main mirror; migration 0037 required", () => {
   const wf = read(".github/workflows/forge-change-request.yml");
-  assert.match(wf, /workflow_run:\n\s+workflows: \["Validate Control Plane Workers"\]/);
+  // Cut-over (migration 0058): GitHub pull requests are no longer change requests; the workflow only runs by hand, and
+  // its job needs a workflow_run event, so it does nothing (change requests come from platform-work, G4).
+  assert.match(wf, /on:\n  workflow_dispatch:\n/);
+  assert.doesNotMatch(wf, /workflow_run:\n\s+workflows:/);
   assert.match(wf, /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/, "same-repository pull requests only");
   assert.match(wf, /environment: production/);
   assert.match(wf, /persist-credentials: false/);

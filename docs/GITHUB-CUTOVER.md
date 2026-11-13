@@ -53,6 +53,25 @@ Each step is reversible until step 7.
    - The Console Code page shows the merge.
    - The audit chain shows `forge.merged` and `deployment.*` events with no GitHub run.
 
+## Cut-over log (2026-11-13; owner: "kejar cut-over hari ini")
+
+- Gate 6: the owner forked `platform` into `platform-work` and gave the orchestrator session a write token through
+  the session's secure form; a push from the session succeeded. Interoperability of the Forge's own transfer
+  (`transfer.ts`) was proven against Artifacts: a pack of 11 objects / 16 KB with `have <main>`.
+- Gate 8: a full clone of the repository passes `git fsck --full --strict` (5,466 objects) and main's tree equals
+  GitHub's. The Forge's R2 bundles are verified by their pack checksum and SHA-256.
+- Gate 13: met without the Secrets Store. Every secret the native paths read is a Worker secret
+  (`CF_DEPLOY_TOKEN`, `CF_ACCESS_TOKEN`, `CF_ACCOUNT_ID`, `ACCESS_GROUPS_TOKEN`); the GitHub `production`
+  environment's secrets serve only the workflows this cut-over turns off.
+- Steps 4–5: migration 0058 sets `forge_controls.merge_path = forge`; `mirror-to-forge.yml` keeps only a manual
+  trigger (run once by hand for the cut-over commit; afterwards the Forge refuses its token) and
+  `forge-change-request.yml` is off. Contributors push to `platform-work` (AGENTS.md).
+- Known limit after the cut-over: a change that adds a Durable Object class (a DO migration) is refused by the native
+  deploy (Cloudflare applies DO migrations only on a full script deploy). Until native DO migrations are built, such
+  a change uses an existing class under another instance name.
+- Steps 6–7 (retire the remaining GitHub paths, revoke `GH_ACTIONS_TOKEN`, archive the repository) follow after a day
+  without incident, by the owner.
+
 ## Rollback of the cut-over
 
 Before step 7, rolling back means re-enabling the workflows and pushing the Forge's `main` back to GitHub.

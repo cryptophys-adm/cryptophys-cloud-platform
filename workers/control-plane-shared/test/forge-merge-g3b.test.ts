@@ -125,6 +125,8 @@ test("M1. the vote: every voter approves only an open platform-work request at t
 
 test("M2. migration 0057 keeps GitHub merging: the Policy Engine vetoes a merge until the cut-over flips the path", async () => {
   const db = migratedDb();
+  assert.equal(await mergePath(db as never), "forge", "migration 0058 (the cut-over) flipped it");
+  db.raw.prepare("UPDATE forge_controls SET value = 'github' WHERE control = 'merge_path'").run();
   assert.equal(await mergePath(db as never), "github");
   const env = baseEnv("cryptophys-policy-engine", db);
   const ask = () => decide(env as never, parsePolicyRequest({ subject: "agent:supervisor", action: "consensus.execute", resource: `merge_change:${CR}`, context: { class: "routine", passed: true } }) as never);
@@ -141,6 +143,7 @@ test("M3. end to end: the Supervisor proposes, the council and the Policy Engine
   const g = gitWorld({ platform: { "refs/heads/main": M }, "platform-work": { "refs/heads/main": M, "refs/heads/claude/x": H } });
   const forgeEnv = { DB: db, ARTIFACTS: g.binding };
   const env = kernelEnv(db, forgeEnv, g.fetchImpl);
+  db.raw.prepare("UPDATE forge_controls SET value = 'github' WHERE control = 'merge_path'").run();
   const mem = new Map<string, unknown>();
   const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, v); } };
 

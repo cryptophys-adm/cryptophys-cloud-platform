@@ -8,9 +8,9 @@ name: Mirror to Forge
 # request this commit merged (its "(#N)" subject) and recently closed unmerged pull requests, and
 # deletes their cr/<number> branches.
 
+# Cut-over (ADR-0012 G6, 2026-11-13): GitHub no longer moves canonical main, so no push trigger. Run by hand once
+# for the cut-over commit; after migration 0058 the Forge refuses the mirror token (409 merge_path_forge).
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
