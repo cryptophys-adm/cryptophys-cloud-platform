@@ -2,7 +2,7 @@
 // Worker's wrangler.toml; eligibility plans the change against the active version's full binding records; the
 // version is uploaded with exactly the planned bindings and verified (bindings and script_runtime) before any
 // traffic moves; cron schedules and observability are applied only after the live check, and restored (newest
-// first, before the deployment) on any later failure. Workers with static assets stay on GitHub.
+// first, before the deployment) on any later failure. Workers with static assets: native-deploy-g2c2-console.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -370,7 +370,8 @@ test("G2c2W-3. every refusal keeps the GitHub workflow with its reason in the na
       active: activeFor(FORGE_TOML).map((x) => x.name === "SERVICE_ENVIRONMENT" ? { ...x, text: "staging" } : x),
       expect: { reason: "active_differs_from_config:plain_text:SERVICE_ENVIRONMENT", service: "cryptophys-forge" }, reads: 2 },
     { label: "an active deployment split across versions", split: true, expect: { reason: "active_deployment_split", service: "cryptophys-forge" }, reads: 1 },
-    { label: "a Worker that serves static assets (the Console, a later step)", unit: CONSOLE, expect: { reason: "assets", service: "cryptophys-console" }, reads: 0 },
+    // Step 6 (native-deploy-g2c2-console.test.ts): the Console needs its stored build, read from R2 before any Cloudflare call.
+    { label: "a Worker that serves static assets without a stored Console build", unit: CONSOLE, expect: { reason: "console_dist_missing", service: "cryptophys-console", file: `bundles/${NEW}/console-dist.json` }, reads: 0 },
   ];
   try {
     for (const c of cases) {

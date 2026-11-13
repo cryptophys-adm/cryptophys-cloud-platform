@@ -683,6 +683,10 @@ async function queueNativeDeploy(env: Env, source: NativeDeploySource, target: s
       ...(choice.migrations.length ? { migrations: choice.migrations.map((m) => m.file) } : {}),
       // G2c-2: what each planned configuration changes (planned again before the upload).
       ...(choice.services.some((s) => s.config) ? { config: Object.fromEntries(choice.services.filter((s) => s.config).map((s) => [s.service, { ...s.config!.changes, steps: s.config!.steps }])) } : {}),
+      // G2c-2 step 6: how each Worker's static assets will reach the version (decided again before the upload).
+      ...(choice.services.some((s) => s.assets) ? { assets: Object.fromEntries(choice.services.filter((s) => s.assets).map((s) => [s.service, {
+        mode: s.assets!.mode, running_dist: s.assets!.running_dist, files: s.assets!.files, total_bytes: s.assets!.total_bytes,
+      }])) } : {}),
       ...(fromPlan ? { plan_id: link } : { proposal_id: link }) },
   });
   return { dispatched: true, executor: NATIVE_DEPLOY_EXECUTOR, request_id: requestId, unit: unit.unit, commit_sha: sha };
