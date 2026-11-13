@@ -1,6 +1,6 @@
 # ADR-0014: The evolution loop: the platform writes, merges and deploys its own improvements
 
-- **Status:** Accepted, **deferred** (owner, 2026-11-12: "tunda hingga berhasil lepas dari github", postpone until the platform is off GitHub). Building starts after ADR-0012 phase 5, the cut-over to Artifacts. It also needs the model and the AI Gateway budget (Q2).
+- **Status:** Accepted, **deferred** (owner, 2026-11-12: "tunda hingga berhasil lepas dari github", postpone until the platform is off GitHub). Building starts after ADR-0012 phase 5, the cut-over to Artifacts. The model and the cadence are decided (amendment 2026-11-13).
 - **Owner direction (2026-11-12):** "kekuatan organism ini adalah otak yang terus berkembang dan melakukan evolusi melalui auto-deployment untuk menyesuaikan dan terus meningkatkan kemampuan diri" (the organism's strength is a brain that keeps growing and evolves through auto-deployment, to adapt and keep improving its own abilities).
 - **Owner decisions (2026-11-12):** "tidak perlu shadow bisa langsung production dan merge dilakukan semua autonomous" (no shadow phase; straight to production; every merge is autonomous).
   1. **No shadow phase.** Each step goes live in production when it is built.
@@ -138,13 +138,14 @@ These live in reviewed code (`evolution-limits.ts`), a guard path (§3). An evol
 
 | Limit | Value |
 |---|---|
-| Open evolution pull requests at a time | 2 |
-| Evolutions merged per 24 h | 3 (reverts do not count) |
+| Evolutions in flight | **1** (owner 2026-11-13). A new evolution starts only when the previous one is merged and deployed (or closed, reverted or frozen) **and** at least 4 hours after the previous one started |
+| Evolutions started per 4 h | **1** (owner 2026-11-13), so at most 6 per 24 h; reverts do not count and do not start a new cycle |
 | Diff size | at most 400 changed lines and 20 files; larger work is split into several intents |
 | Per Worker | one evolution in flight |
 | Quiet conditions | no merge while a deploy runs, a service is drifted, a critical report is open, or the kill switch is on |
 | Freeze | after 2 unfit evolutions in a row, or any failed revert; only the owner lifts it (`consensus_controls.evolution = on`) |
-| Model budget | the evolver's tokens per day are capped at the owner's AI Gateway budget and counted in the Metabolism page |
+| Model | `gpt-oss` only, on Workers AI (`@cf/openai/gpt-oss-120b`; the id is checked against the Workers AI catalog when the evolver is built). No other model writes code; a missing or failing model stops the cycle, it never falls back to another model |
+| Model budget | the evolver's Workers AI usage is counted in the Metabolism page; the 4-hour cadence bounds it |
 | Guard-path merges | one per 24 h, unanimous council, 24-hour fitness window (§3) |
 
 **Never, by any evolution, vote or click** (ADR-0009, AGENTS.md):
@@ -191,10 +192,19 @@ The owner chose to go straight to production. The safety that a shadow phase wou
 ### 8. Owner decisions and what is still open
 
 - **Q1. Guard paths:** fully autonomous, under §3's conditions (owner, 2026-11-12).
-- **Q2. Code model:** a stronger model through AI Gateway (owner, 2026-11-12).
-  - Still open: the model and the daily token budget, both the owner's. Until a budget is set, the evolver writes nothing.
+- **Q2. Code model:** `gpt-oss` on Workers AI only (owner, 2026-11-13: "terkait pemilihan model untuk coding tetapkan sama menggunakan gpt-oss saja"). This replaces the 2026-11-12 answer (a stronger model through AI Gateway); no AI Gateway budget is needed.
 - **Q3. The GitHub App:** dropped (owner, 2026-11-12). The loop merges on the Forge after ADR-0012 phase 5 (§5), so it needs no GitHub credential.
-- **Q4. Quotas:** 2 open, 3 merged per 24 h, 400 changed lines per change (owner, 2026-11-12).
+- **Q4. Quotas:** one evolution at a time, at most one started per 4 hours, each cycle running to merge and deploy before the next starts (owner, 2026-11-13: "batasi ketat hanya per 4H siklus pekerjaannya sampai merge/deploy auto sebelum mengerjakan request lain hanya 1 pekerjaan per 4H"). This replaces "2 open, 3 merged per 24 h" (2026-11-12). The diff limit (400 changed lines, 20 files) is unchanged.
+
+### 9. Amendment 2026-11-13: model and cadence
+
+Owner, 2026-11-13: "terkait pemilihan model untuk coding tetapkan sama menggunakan gpt-oss saja, tapi batasi ketat hanya per 4H siklus pekerjaannya sampai merge/deploy auto sebelum mengerjakan request lain hanya 1 pekerjaan per 4H".
+
+- **Model.** The evolver writes code with `gpt-oss` on Workers AI only. There is no fallback model: when the model is unavailable or its answer fails validation, the cycle stops and is recorded, and the next cycle waits for its 4-hour slot.
+- **One cycle at a time.** A cycle is one evolution from intent to pull request, checks, consensus merge on the Forge, native deploy and the fitness window. Only one cycle is in flight. A new cycle starts only when the previous one has ended (merged and deployed, closed, reverted or frozen) and at least 4 hours have passed since the previous cycle started. Requests that arrive meanwhile queue as intents; they never start a parallel cycle.
+- **Enforced in code.** `evolution-limits.ts` (a guard path, §3) holds `MAX_IN_FLIGHT = 1` and `MIN_START_INTERVAL_HOURS = 4`. An evolution may not raise them (§4); only the owner can.
+- **Unchanged.** The diff limit (400 changed lines, 20 files), one evolution per Worker, the quiet conditions, the freeze, guard-path merges once per 24 h with a unanimous council, and the deferral until ADR-0012 phase 5.
+- **Scope.** This governs the platform's own evolver. It does not change how the orchestrator session (Claude Code) works on the owner's requests.
 
 ## Consequences
 
