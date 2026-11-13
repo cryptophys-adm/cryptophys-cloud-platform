@@ -296,3 +296,49 @@ expect_integrity_error("duplicate git backup run id", lambda: gb_db.execute(
 assert {row[1] for row in gb_db.execute("PRAGMA index_list(forge_git_backups)")} >= {"idx_forge_git_backups_ran", "idx_forge_git_backups_head"}
 gb_db.close()
 print("PASS: 0054 forge git backups (status CHECK, run id key, indexes)")
+
+# Migration 0055: cryptophys-home is retired. Its registry row is kept and only disabled; every
+# other row and the drift history are unchanged. Applying it twice changes nothing more.
+home_db = sqlite3.connect(":memory:")
+home_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name >= "0055_retire_home.sql":
+        continue
+    home_db.executescript(migration.read_text(encoding="utf-8"))
+assert home_db.execute(
+    "SELECT status FROM service_registry WHERE service_id = 'cryptophys-home'"
+).fetchone() == ("registered",), "0022 registers cryptophys-home"
+home_db.execute(
+    "UPDATE service_registry SET desired_version = 'abcdefabcdef', status = 'healthy' WHERE service_id = 'cryptophys-home'"
+)
+home_db.execute(
+    """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+       VALUES ('obs-home', 'cryptophys-home', 'd', 'o', 0, '{}', 't0')"""
+)
+others_before = home_db.execute(
+    "SELECT * FROM service_registry WHERE service_id <> 'cryptophys-home' ORDER BY service_id"
+).fetchall()
+rows_before = home_db.execute("SELECT COUNT(*) FROM service_registry").fetchone()[0]
+retire_home = (ROOT / "0055_retire_home.sql").read_text(encoding="utf-8")
+retire_home_code = "\n".join(line.split("--", 1)[0] for line in retire_home.splitlines()).upper()
+assert "DELETE" not in retire_home_code and "DROP" not in retire_home_code, "0055 deletes nothing"
+assert retire_home_code.count("UPDATE SERVICE_REGISTRY") == 1 and retire_home_code.count(";") == 1, "0055 is one registry update"
+for _ in range(2):
+    home_db.executescript(retire_home)
+    row = home_db.execute(
+        "SELECT status, desired_version, display_name FROM service_registry WHERE service_id = 'cryptophys-home'"
+    ).fetchone()
+    assert row == ("disabled", "abcdefabcdef", "Cerebrum Home"), f"0055 only disables the row: {row}"
+    assert home_db.execute("SELECT COUNT(*) FROM service_registry").fetchone()[0] == rows_before
+    assert home_db.execute(
+        "SELECT * FROM service_registry WHERE service_id <> 'cryptophys-home' ORDER BY service_id"
+    ).fetchall() == others_before, "0055 changes no other service"
+    assert home_db.execute(
+        "SELECT COUNT(*) FROM drift_observations WHERE service_id = 'cryptophys-home'"
+    ).fetchone()[0] == 1, "drift history is kept"
+assert home_db.execute("PRAGMA foreign_key_check").fetchall() == []
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name > "0055_retire_home.sql":
+        home_db.executescript(migration.read_text(encoding="utf-8"))
+home_db.close()
+print("PASS: 0055 retire cryptophys-home (row kept and disabled, nothing else changed, idempotent)")

@@ -26,7 +26,6 @@ export interface Env extends BaseEnv {
   AGENTS?: AgentRpcBinding;
   SVC_AI_KERNEL: HealthRpcBinding;
   SVC_CONSOLE: HealthRpcBinding;
-  SVC_HOME: HealthRpcBinding;
   /** ADR-0012 phase 1b: the Forge. Optional until every environment binds it. */
   SVC_FORGE?: HealthRpcBinding;
   /** xauusd Workers, deployed from cryptophys-adm/xauusd-ai-trading-assistant (ADR-0005 decision 7). */
@@ -61,7 +60,6 @@ export function targets(env: Env): Record<string, HealthRpcBinding | undefined> 
     "cryptophys-recovery-manager": env.SVC_RECOVERY_MANAGER,
     "cryptophys-ai-kernel": env.SVC_AI_KERNEL,
     "cryptophys-console": env.SVC_CONSOLE,
-    "cryptophys-home": env.SVC_HOME,
     "cryptophys-forge": env.SVC_FORGE,
   };
 }

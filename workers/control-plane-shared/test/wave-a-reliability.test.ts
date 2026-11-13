@@ -132,7 +132,7 @@ test("A2/A3. Access API calls retry transient errors; every deploy waits for a c
   for (const f of ["resolve-access.sh", "find-service-token.sh"]) {
     assert.match(readFileSync(new URL(`.github/scripts/${f}`, ROOT), "utf8"), /--retry 5 --retry-delay 10/, f);
   }
-  for (const wf of ["deploy-control-plane.yml", "deploy-console.yml", "deploy-home.yml", "deploy-platform-api.yml", "deploy-deployment-orchestrator.yml"]) {
+  for (const wf of ["deploy-control-plane.yml", "deploy-console.yml", "deploy-platform-api.yml", "deploy-deployment-orchestrator.yml", "deploy-forge.yml"]) {
     const s = readFileSync(new URL(`.github/workflows/${wf}`, ROOT), "utf8");
     const wait = s.indexOf("wait-cron-window.sh");
     assert.ok(wait > 0 && wait < s.indexOf("npx wrangler deploy"), `${wf}: the cron guard runs before the deploy`);

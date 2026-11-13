@@ -10,7 +10,6 @@ const SERVICE_NAMES: Record<string, string> = {
   "cryptophys-deployment-orchestrator": "Deployment Orchestrator",
   "cryptophys-drift-detector": "Drift Detector",
   "cryptophys-forge": "Forge",
-  "cryptophys-home": "Home (retired)",
   "cryptophys-platform-api": "Platform API",
   "cryptophys-platform-registry": "Platform Registry",
   "cryptophys-policy-engine": "Policy Engine",

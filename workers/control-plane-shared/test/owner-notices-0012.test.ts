@@ -60,7 +60,7 @@ test("O2. a draft plan and a pending_owner proposal open owner_attention once; a
     VALUES ('cns_1', 'supervisor', 'retire_worker', 'cryptophys-home', 'critical', '{}', '{}', 'deploy', 9, 6, 0, 1, NULL, NULL, 'pending_owner', NULL, ?, ?)`).run(now, now);
   r = await reconcileNotices(env as never, NOW);
   assert.equal(r[0].change, "changed");
-  assert.match(mail.sent[1].text, /Critical action: retire Home \(retired\)/);
+  assert.match(mail.sent[1].text, /^- Critical action: retire Home \(proposed by supervisor\)$/m);
   db.raw.prepare("UPDATE recovery_plans SET status = 'approved'").run();
   db.raw.prepare("UPDATE consensus_proposals SET status = 'executed'").run();
   r = await reconcileNotices(env as never, NOW);

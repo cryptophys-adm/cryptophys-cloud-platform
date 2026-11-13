@@ -28,7 +28,7 @@ test("P1. codes become sentences; unknown codes are still readable", () => {
 
 test("P2. report titles are plain English: drift, audit digest", () => {
   assert.equal(driftSubject([{ service_id: "cryptophys-platform-registry" }]), "Platform Registry is not running the expected version");
-  assert.equal(driftSubject([{ service_id: "cryptophys-console" }, { service_id: "cryptophys-home" }]), "Cerebrum Console, Home (retired) are not running the expected version");
+  assert.equal(driftSubject([{ service_id: "cryptophys-console" }, { service_id: "cryptophys-forge" }]), "Cerebrum Console, Forge are not running the expected version");
   const obs = {
     observed_at: "2026-11-07T08:37:00.000Z", since: "2026-11-06T08:37:00.000Z",
     chain: { valid: true, events_checked: 1610, head_hash: "abc1234567890", first_invalid_event_id: null, reason: null },

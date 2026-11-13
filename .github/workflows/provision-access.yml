@@ -28,7 +28,7 @@ env:
   PLATFORM_WORKERS: >-
     cryptophys-platform-api cryptophys-deployment-orchestrator cryptophys-platform-registry
     cryptophys-policy-engine cryptophys-drift-detector cryptophys-audit-ledger cryptophys-recovery-manager
-    cryptophys-ai-kernel cryptophys-console cryptophys-home cryptophys-forge
+    cryptophys-ai-kernel cryptophys-console cryptophys-forge
   # ADR-0010 (single subdomain): Nexus, with the Console mounted at /console, is the one public
   # origin. Its hostname joins this same Access application, so one sign-in (and one AUD) covers the
   # XAUUSD room and the Console. Service bindings (drift checks) do not pass through Access.

@@ -79,11 +79,6 @@ binding = "SVC_CONSOLE"
 service = "cryptophys-console"
 entrypoint = "HealthRpc"
 
-[[services]]
-binding = "SVC_HOME"
-service = "cryptophys-home"
-entrypoint = "HealthRpc"
-
 # ADR-0012 phase 1b: the Forge (platform source on Cloudflare Artifacts).
 [[services]]
 binding = "SVC_FORGE"

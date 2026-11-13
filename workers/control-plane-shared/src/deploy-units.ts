@@ -4,8 +4,8 @@
  * Forge (ADR-0012 phase 4, shadow: the same plan from the Artifacts repository, no GitHub), so the
  * two plans differ only in where the changed files come from. Each production workflow deploys a
  * fixed set of Workers from the exact main commit; a unit is pending when files under its paths
- * changed since the version recorded in the registry. Console, Home and Platform API import the
- * shared library.
+ * changed since the version recorded in the registry. Console and Platform API import the
+ * shared library. cryptophys-home was retired on 2026-11-13 (ADR-0010 amendment) and has no unit.
  */
 import type { D1Database } from "./types.ts";
 
@@ -21,7 +21,6 @@ export const DEPLOY_UNITS = [
   },
   // Directory prefixes include manifests, lockfiles, bundler config and static assets, not just source files.
   { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/", SHARED_SRC] },
-  { unit: "home", workflow: "deploy-home.yml", services: ["cryptophys-home"], paths: ["workers/home/", SHARED_SRC] },
   { unit: "platform-api", workflow: "deploy-platform-api.yml", services: ["cryptophys-platform-api"], paths: ["workers/platform-api/", SHARED_SRC] },
   // ADR-0012 phase 1b: the Forge (platform source on Cloudflare Artifacts).
   { unit: "forge", workflow: "deploy-forge.yml", services: ["cryptophys-forge"], paths: ["workers/forge/", SHARED_SRC] },

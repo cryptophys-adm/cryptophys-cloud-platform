@@ -133,7 +133,7 @@ test("F5. wiring: binding, Access destination, deploy and mirror workflows, ops-
   assert.match(toml, /\[\[artifacts\]\]\nbinding = "ARTIFACTS"\nnamespace = "cryptophys"/);
   assert.match(toml, /database_id = "__CONTROL_PLANE_D1_DATABASE_ID__"/);
   assert.match(toml, /preview_urls = false/);
-  assert.match(readFileSync(new URL(".github/workflows/provision-access.yml", ROOT), "utf8"), /cryptophys-home cryptophys-forge\n/);
+  assert.match(readFileSync(new URL(".github/workflows/provision-access.yml", ROOT), "utf8"), /cryptophys-console cryptophys-forge\n/);
   const deploy = readFileSync(new URL(".github/workflows/deploy-forge.yml", ROOT), "utf8");
   const order = ["resolve-access.sh", "render-d1-config.sh\" ../forge", "wait-cron-window.sh", "worker-rollback.sh\" capture", "wrangler deploy --config ../forge/wrangler.deploy.toml", "verify-worker-live.sh", "/v1/forge/import", "worker-rollback.sh\" restore"].map((k) => deploy.indexOf(k));
   assert.ok(order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])), `deploy step order ${order}`);

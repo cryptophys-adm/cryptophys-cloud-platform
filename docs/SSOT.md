@@ -2,7 +2,7 @@
 
 `CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0013). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
-Last reviewed: 2026-11-13 (owner channel and Owner page; critical report acknowledgement); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
+Last reviewed: 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
 ## Platform rules
 
@@ -18,7 +18,7 @@ These hold everywhere:
 
 ## Entry point and sign-in (ADR-0008, ADR-0010, ADR-0011)
 
-- **Hosts.** `https://nexus.cryptophys.work` is the only public origin. The Cerebrum Console is mounted at `/console/`, through the Workers route `nexus.cryptophys.work/console*`. `console.` and `home.` redirect there.
+- **Hosts.** `https://nexus.cryptophys.work` is the only public origin. The Cerebrum Console is mounted at `/console/`, through the Workers route `nexus.cryptophys.work/console*`. The old hostnames `console.cryptophys.work` and `home.cryptophys.work` are retired (owner 2026-11-13, ADR-0010 amendment): one `retire-worker.yml` run detaches both custom domains (then they no longer resolve) and deletes `cryptophys-home`. Until that run, `console.` still redirects to the mount (`LEGACY_HOSTS`).
 - **Sign-in.** Cloudflare Access is the only login. The identity providers are Google, Microsoft (OIDC) and one-time PIN (kept for now by owner decision, 2026-11-08). There is one Access application, `cryptophys-cloud-platform`, so there is one AUD and one 8-hour session.
 - **Roles.** Configured identities come from `OPERATOR_IDENTITIES` and `APPROVER_IDENTITIES` (the owners). Accounts live in D1 `platform_accounts`:
   - `admin`: viewer, operator or approver;
@@ -46,7 +46,7 @@ These hold everywhere:
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
 | `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check reported by Workers Builds | :04/:19/:34/:49 |
 | `cryptophys-forge-typecheck` | Workers Builds stub for the type-check and the Console UI build (`workers/forge-typecheck`, TypeScript 7): no route, no bindings, not in the registry | — |
-| `cryptophys-home` | Retired (redirects to Nexus); scheduled for removal | — |
+| `cryptophys-home` | Retired 2026-11-13 (ADR-0010 amendment): source removed, registry row `disabled` (0055, never probed, never drift); the Worker is deleted by `retire-worker.yml` | — |
 | `cryptophys-signal-engine` | Disabled (TP-018) | — |
 
 **Observed only (health, not version):** four `xauusd-*` Workers and `cryptophys-aether`.
@@ -131,6 +131,5 @@ These hold everywhere:
 | Deploy from the Forge, shadowed over 10 deploys | phase 4 |
 | GitHub archived | phase 5 |
 | Evolution loop: autonomous merge (E1), the evolver agent (E2), fitness and revert (E3), memory and Console (E4); no shadow phase, guard paths autonomous under unanimous consensus (owner 2026-11-12); code model `gpt-oss` on Workers AI only, one evolution in flight and at most one started per 4 h, each running to merge and deploy (owner 2026-11-13) | ADR-0014, accepted and deferred until ADR-0012 phase 5 (owner 2026-11-12); merges on the Forge, no GitHub App |
-| `cryptophys-home` removed | after the redirect week |
 
 See `docs/RETROSPECTIVE-2026-11-08.md` §7 for the order of work.

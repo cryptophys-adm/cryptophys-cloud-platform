@@ -1,6 +1,6 @@
 # ADR-0010: Nexus is the single origin; the Console is a Nexus menu; OIDC sign-in
 
-- **Status:** Accepted (owner decision 2026-11-06)
+- **Status:** Accepted (owner decision 2026-11-06); amended 2026-11-13 (retirement of `cryptophys-home` and the old custom domains)
 - **Date:** 2026-11-06
 - **Owner decisions (2026-11-06):**
   - "nexus sudah menyediakan placeholder menu/navigator console, saatnya integrasikan sehingga sekarang hanya ada 1 subdomain nexus, lalu integrasikan nexus dengan OIDC cloudflare. Sekarang console akan menjadi bagian dari menu nexus." (Nexus already has a placeholder menu entry for the Console. Integrate it now, so that there is only one subdomain, nexus, and put Nexus behind Cloudflare's OIDC sign-in. The Console becomes part of the Nexus menu.)
@@ -88,4 +88,42 @@ Nexus is now the single origin.
 
 **Remaining:**
 - ~~The owner adds the Google and Microsoft identity providers, then Provision Access runs again.~~ **Closed 2026-11-07 (owner):** setting up Google and Microsoft sign-in failed because of the providers' own policies, so Nexus keeps the Cloudflare Access **one-time PIN** by email as its sign-in. Nothing else changes: Access still guards all of Nexus, `ACCESS_ALLOWED_EMAILS` still decides who may enter, and `provision-access.yml` still binds whichever Google, Microsoft or one-time-PIN providers exist, so OIDC can be added later without a code change (`docs/OWNER-OIDC-SETUP.md`).
-- After a week with no issues, remove the `console.` and `home.` custom domains and retire `cryptophys-home`.
+- ~~After a week with no issues, remove the `console.` and `home.` custom domains and retire `cryptophys-home`.~~ **Approved 2026-11-13 (owner):** see the amendment below.
+
+## Amendment 2026-11-13: retirement of `cryptophys-home` and the old custom domains
+
+**Owner decision (2026-11-13, verbatim):** "setuju pension domain lama" (approved: retire the old domains). Nexus has been the single origin for a week (since 2026-11-06) with no issue that needed the old hostnames. Deleting a Worker is irreversible and critical (ADR-0009 §1); this decision is the owner's approval, and it runs through the narrow Retire Worker workflow.
+
+**Removed**
+
+- The `cryptophys-home` Worker: its source (`workers/home/`), its deploy workflow (`deploy-home.yml`), its DNA (`organism.json`), its deploy unit, its Drift Detector binding and probe (`SVC_HOME`), its plain-English name, and its entries in `provision-access.yml` (`PLATFORM_WORKERS`) and `rollback-worker.yml`. The tests that existed only for this Worker (`home-tp025.test.ts`, and the Home redirect case of `nexus-adr0010.test.ts`) are removed with it; `retire-home-adr0010.test.ts` holds the retirement itself.
+- The custom domain `home.cryptophys.work` (from `cryptophys-home`) and the custom domain `console.cryptophys.work` (from `cryptophys-console`). `workers/console/wrangler.toml` declares no routes any more, and `deploy-console.yml` no longer checks the old host.
+- After merge, one run of `retire-worker.yml` with `worker: cryptophys-home` and `confirm_production: DELETE` (ops request `{"workflow":"retire-worker.yml","inputs":{"worker":"cryptophys-home","confirm_production":"DELETE"}}`):
+  1. it fails closed unless the source, the bindings and the deploy, validation and Access entries are gone from main, and unless no Worker config declares either hostname;
+  2. it reads both hostnames through the Workers Custom Domains API (`GET /accounts/{account}/workers/domains?hostname=…`) and stops, detaching nothing, if either is attached to another Worker than expected;
+  3. it detaches each (`DELETE /accounts/{account}/workers/domains/{id}`) and verifies that no custom domain is left on the hostname. Cloudflare removes the read-only DNS record it added for the custom domain; the Advanced Certificate it issued is not deleted automatically (follow-up below);
+  4. only then it deletes the `cryptophys-home` script and verifies it is gone (404).
+
+  Wrangler publishes only the routes it is given and leaves an undeclared custom domain attached, which is why the workflow detaches them explicitly. The calls use `CLOUDFLARE_API_TOKEN`. Cloudflare's current Workers authorization asks for Workers edit access plus **Zone → Workers Routes → Edit** on the zone to remove a Custom Domain, which that token may not hold (decision of 2026-11-06 above); on HTTP 401 or 403 the DELETE is retried once with `CLOUDFLARE_ACCESS_API_TOKEN`, which holds Workers Routes: Edit on `cryptophys.work`. Any other status, or a refusal of both, fails the run before the Worker is deleted.
+
+**Kept**
+
+- `cryptophys-console` is **not** deleted. It keeps serving `https://nexus.cryptophys.work/console/` through the zone route `nexus.cryptophys.work/console*`, which `deploy-console.yml` attaches and verifies as before and which the Retire Worker run never touches. Its redirect code and `LEGACY_HOSTS = "console.cryptophys.work"` stay, so the old host keeps redirecting to the mount until the run detaches it; afterwards nothing reaches it.
+- D1 data is never deleted. Migration 0055 keeps the `cryptophys-home` row of `service_registry` and sets its status to `disabled`, as 0020 did for `cryptophys-signal-engine`: the Drift Detector records it with reason `disabled`, never probes it and never counts it as drift, so no owner notice or recovery plan follows; the Forge census reports nothing for a disabled row without DNA. Its drift history, deployment requests and audit events stay. Migration 0022 is history and unchanged.
+- The Nexus Worker and its repository are unchanged (see the Nexus menu follow-up).
+
+**Owner follow-ups**
+
+- **Access.** The platform Access application keeps a `cryptophys-home` Worker destination until Provision Access runs again; run it once after the Retire Worker run, so the destinations equal `PLATFORM_WORKERS` (running it before would leave the Worker's `workers.dev` outside Access while it still exists). Any other Access application or destination that still names `home.cryptophys.work` or `console.cryptophys.work` is harmless once the hostnames have no DNS record, and this repository does not remove it: the owner removes it in Zero Trust when convenient.
+- **Certificates.** Cloudflare does not delete the Advanced Certificate of a removed Custom Domain. The two certificates for `home.cryptophys.work` and `console.cryptophys.work` are harmless; the owner may delete them under SSL/TLS → Edge Certificates.
+- **Nexus menu.** The Nexus Worker's "Cerebrum Console" menu entry still points at `console.cryptophys.work`; after the run it should point at `https://nexus.cryptophys.work/console/` (a change in `cryptophys-adm/xauusd-ai-trading-assistant`, not here).
+- **Ops dispatch.** `ops-dispatch.yml` still allow-lists `deploy-home.yml`; a request for it fails because the workflow no longer exists. Removing the entry is a later workflow change.
+
+**Rollback.** The Retire Worker run is irreversible on Cloudflare's side: a deleted Worker and a detached domain come back only by redeploying from Git history. Revert the retirement commit on main in a reviewed pull request (this restores `workers/home/`, `deploy-home.yml`, the lists and the Console's custom domain), add a forward migration that sets the registry row back to `registered`, then run Provision Access, Deploy Control Plane, Deploy Home and Deploy Console; Wrangler re-attaches the custom domains it is given. Before the run, rolling back is only reverting the commit.
+
+**Verification after the run**
+
+- `home.cryptophys.work` and `console.cryptophys.work` resolve to nothing (no DNS record), or at least no longer reach a Worker.
+- `GET /accounts/{account}/workers/domains?hostname=home.cryptophys.work` and `…?hostname=console.cryptophys.work` return no record; `GET /accounts/{account}/workers/scripts/cryptophys-home/settings` returns 404.
+- `https://nexus.cryptophys.work/console/health` still returns 200 from `cryptophys-console` through Access, and the Console UI loads under `/console/`.
+- `GET /v1/drift` shows `cryptophys-home` with status `disabled` and reason `disabled`, not drifted.
