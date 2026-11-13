@@ -10,7 +10,7 @@ import { verifyAuditChain } from "../src/audit.ts";
 import { baseline, castVote, classify, type Proposal } from "../src/consensus-rules.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { observe } from "../../ai-kernel/src/syscall.ts";
-import { gatherEvidence } from "../../ai-kernel/src/consensus.ts";
+import { gatherEvidence, openCriticalReports } from "../../ai-kernel/src/consensus.ts";
 import { collectNotices } from "../../ai-kernel/src/owner-notices.ts";
 import { acknowledgePhrase } from "../../ai-kernel/src/reports.ts";
 import { UI_ROUTES } from "../../console/src/ui/routes.ts";
@@ -200,4 +200,14 @@ test("A6. Console and docs: one approver-only route with the ACKNOWLEDGE {id13} 
   assert.doesNotMatch(sql.replace(/--[^\n]*/g, ""), /\b(DROP|DELETE|UPDATE|ALTER)\b/i);
   const index = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
   assert.match(index, /"POST \/v1\/reports\/\{id\}\/acknowledge \(APPROVER_IDENTITIES person; critical reports only\)"/);
+});
+
+test("A7. the brake fails closed: a missing, failed or malformed reports overview counts one open critical report", () => {
+  assert.equal(openCriticalReports(undefined), 1, "no overview");
+  assert.equal(openCriticalReports({ counts: { critical: 0 }, error: "reports_unavailable" }), 1, "the reports query failed");
+  assert.equal(openCriticalReports({}), 1, "no counts");
+  assert.equal(openCriticalReports({ counts: { critical: "0" as never } }), 1, "not a number");
+  assert.equal(openCriticalReports({ counts: { critical: -1 } }), 1, "negative");
+  assert.equal(openCriticalReports({ counts: { critical: 0 } }), 0, "a readable overview with no open critical report");
+  assert.equal(openCriticalReports({ counts: { critical: 2 } }), 2);
 });

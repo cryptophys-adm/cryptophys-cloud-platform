@@ -498,11 +498,13 @@ Owner 2026-11-13, asked how to release the brake held by one handled critical re
 - **Audit and idempotency.** The acknowledgement (migration 0053, `agent_report_acknowledgements`, one row per report, reason bounded by a CHECK) and its `report.acknowledged` audit event commit in one D1 batch (`appendAuditEventWithMutation`).
   - The event's subject is `report:<id>` and its actor is the approver. Its payload holds report_id, agent_id, kind, subject and reason.
   - A repeat returns the existing acknowledgement with 200 and writes no second event. A concurrent duplicate fails its audit insert, so it commits nothing.
-- **Fails closed.** Before migration 0053 is applied, nothing reads as acknowledged, and every critical report keeps counting.
+- **Fails closed.**
+  - Before migration 0053 is applied, nothing reads as acknowledged, and every critical report keeps counting.
+  - The brake no longer opens when the reports query fails. Before this amendment, a failed query read as zero critical reports and lifted the brake. The consensus evidence now counts one open critical report when the overview is missing, has `error`, or has no numeric critical count (`openCriticalReports` in `ai-kernel/src/consensus.ts`).
 - **Console.** The Cognition page lists the critical reports from `GET /v1/reports`, which now carries `acknowledgement: {acknowledged_by, reason, acknowledged_at} | null`. For an approver, each unacknowledged report has a required reason field and an "Acknowledge…" action with the typed phrase. Everyone sees "Acknowledged by … at …". The Console's allow-list grows to 60 rows.
 - **Unchanged.**
   - The rule text, the threshold, the 24-hour window and the voters.
   - The kill switch and the audit-chain check of the baseline. An acknowledged report of an invalid chain does not lift the `audit_valid` check.
   - The report itself, which is never edited or deleted.
-  - The pre-existing fallback: when the reports query fails, the counts read 0 with `error: "reports_unavailable"`.
-- **Tests.** `report-acknowledge.test.ts` (A1–A6) and the 0053 block of `test_migrations.py`. The updated tests are `reports-overview-tp015.test.ts` (the new counter) and `console-tp023`/`console-tp024` (route counts).
+  - The overview's own fallback (`error: "reports_unavailable"`, counts 0), which only the dashboards display; the brake reads it as one open report (above).
+- **Tests.** `report-acknowledge.test.ts` (A1–A7) and the 0053 block of `test_migrations.py`. The updated tests are `reports-overview-tp015.test.ts` (the new counter) and `console-tp023`/`console-tp024` (route counts).

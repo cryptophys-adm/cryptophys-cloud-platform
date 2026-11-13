@@ -77,7 +77,7 @@ export async function consensusMode(env: SyscallEnv): Promise<ConsensusMode> {
 
 export async function gatherEvidence(env: SyscallEnv, action: string, target: string, now = Date.now()): Promise<Evidence> {
   const ov = await observe(env, now) as unknown as {
-    agents_enabled: boolean; services: ServiceState[]; agent_reports_24h?: { counts?: { critical?: number } };
+    agents_enabled: boolean; services: ServiceState[]; agent_reports_24h?: { counts?: { critical?: number }; error?: unknown };
   };
   const chain = await verifyAuditChainIncremental(env.DB);
   const reg = await env.DB.prepare("SELECT service_id, status, desired_version FROM service_registry").all<{ service_id: string; status: string; desired_version: string | null }>();
@@ -100,12 +100,23 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
     services: Object.fromEntries(ov.services.map((s) => [s.service_id, s])),
     registry: Object.fromEntries(reg.results.map((r) => [r.service_id, { status: r.status, desired_version: r.desired_version }])),
     agents: Object.fromEntries(ag.results.map((a) => [a.agent_id, { status: a.status, host_worker: a.host_worker, voter: a.voter === 1 }])),
-    critical_reports_24h: ov.agent_reports_24h?.counts?.critical ?? 0,
+    critical_reports_24h: openCriticalReports(ov.agent_reports_24h),
     executing_plan_targets: plans.results.map((p) => p.service_id),
     recent_same: same?.n ?? 0,
   };
 }
 
+
+/**
+ * The open critical reports the consensus brake counts. Fails closed (2026-11-13): when the reports overview is
+ * missing, reports an error, or has no numeric critical count, the brake counts one open report, so a broken
+ * reports query never lifts it. Acknowledged reports are already excluded from `counts.critical`.
+ */
+export function openCriticalReports(reports: { counts?: { critical?: unknown }; error?: unknown } | undefined): number {
+  if (!reports || reports.error) return 1;
+  const n = reports.counts?.critical;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 1;
+}
 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
 export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
