@@ -62,17 +62,20 @@ test("A2. 0047 never deletes an agent that any row refers to", () => {
 
 const proposalOf = (db: ReturnType<typeof migratedDb>, target: string) => db.raw.prepare("SELECT proposal_id, status, outcome_json FROM consensus_proposals WHERE action = 'retire_agent' AND target = ? ORDER BY rowid DESC LIMIT 1").get(target) as any;
 
-test("A3. retire_agent is critical (owner 2026-11-11, ADR-0013 §3): outside mode critical it is only recorded; in mode critical it waits for the owner's click", async () => {
+test("A3. retire_agent is critical (owner 2026-11-11, ADR-0013 §3): in modes shadow and routine it is only recorded; in modes deploy and critical it waits for the owner's click", async () => {
   const { env, db } = kernelEnv();
   addAgent(db, "idle-helper");
-  setMode(db, "deploy");
+  setMode(db, "routine");
   await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "idle-helper", params: { reason: "idle" } });
-  assert.equal(proposalOf(db, "idle-helper").status, "shadow_passed", "deploy mode never retires");
+  assert.equal(proposalOf(db, "idle-helper").status, "shadow_passed", "routine mode never retires");
   assert.equal(agent(db, "idle-helper").status, "enabled");
-  setMode(db, "critical");
-  await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "idle-helper", params: { reason: "idle" } });
-  assert.equal(proposalOf(db, "idle-helper").status, "pending_owner", "it reaches the owner");
-  assert.equal(agent(db, "idle-helper").status, "enabled", "nothing happens before the click");
+  // Owner 2026-11-13 ("Tombol muncul di mode deploy"): mode deploy asks for the click too.
+  for (const mode of ["deploy", "critical"]) {
+    setMode(db, mode);
+    await syscall(env as never, "supervisor", "consensus.propose", { action: "retire_agent", target: "idle-helper", params: { reason: "idle" } });
+    assert.equal(proposalOf(db, "idle-helper").status, "pending_owner", `it reaches the owner in mode ${mode}`);
+    assert.equal(agent(db, "idle-helper").status, "enabled", "nothing happens before the click");
+  }
 });
 
 test("A4. after the owner's click: an agent nothing refers to is deleted and audited; one with history is kept, suspended as retired", async () => {

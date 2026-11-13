@@ -197,19 +197,21 @@ test("R5. the executor takes the gene from the census: a proposal that differs f
 
 test("R6. a privileged agent is critical: it registers only after consensus and the owner's click", async () => {
   const { env, db, memory } = kernelEnv();
-  setMode(db, "deploy");
+  setMode(db, "routine");
   await censusTick(db as never, repoWith(grownDna(["platform.observe", "consensus.propose"])));
   await runCycle(env as never, memory, "scheduled");
   let p = last(db);
   assert.equal(p.action, "register_privileged_agent");
-  assert.equal(p.status, "shadow_passed", "critical actions reach the owner only in mode critical");
+  assert.equal(p.status, "shadow_passed", "critical actions reach the owner only in mode deploy or critical");
   assert.equal(agentRow(db, "forge-steward"), undefined);
 
-  setMode(db, "critical");
+  // Owner 2026-11-13: mode deploy (the mode in production) also asks for the click.
+  setMode(db, "deploy");
   await runCycle(env as never, memory, "scheduled", Date.now() + 25 * 3_600_000);
   p = last(db);
   assert.equal(p.action, "register_privileged_agent");
   assert.equal(p.status, "pending_owner", p.outcome_json);
+  assert.equal(agentRow(db, "forge-steward"), undefined, "nothing registers before the click");
   const out = await ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, "test");
   assert.equal(out.status, "executed", JSON.stringify(out));
   assert.match(agentRow(db, "forge-steward").updated_by, new RegExp(`^owner:${APPROVER_EMAIL.replace(/[.]/g, "\\.")} via consensus:`));

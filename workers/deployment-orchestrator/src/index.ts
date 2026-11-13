@@ -11,6 +11,7 @@ import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFinger
 import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
+import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -484,6 +485,8 @@ async function dispatchRollback(env: Env, actor: string, serviceId: string, tag:
 const NATIVE_ROLLBACK_MAX_AGE_MS = 3 * 3_600_000;
 /** A queued native deploy runs within 45 minutes or never: the Registry records it only within the hour. */
 export const NATIVE_DEPLOY_MAX_AGE_MS = 45 * 60_000;
+/** A queued native retirement runs within 3 hours of the owner's click or never, like a rollback. */
+export const NATIVE_RETIRE_MAX_AGE_MS = 3 * 3_600_000;
 /** A claimed executor that has not completed after this window is terminally failed, never replayed. */
 export const NATIVE_ROLLBACK_EXECUTION_LEASE_MS = 30 * 60_000;
 
@@ -513,11 +516,18 @@ const NATIVE_EXECUTORS: Record<string, NativeExecutorSpec> = {
     queuePrefix: "cryptophys.native-deploy.queue.v1|", claimPrefix: "cryptophys.native-deploy.execution.v1|",
     maxAgeMs: NATIVE_DEPLOY_MAX_AGE_MS, succeededEvent: "deployment.native_deploy_succeeded", failedEvent: "deployment.native_deploy_failed",
   },
+  // ADR-0012 G6 gate 10: an owner-approved retire_worker, without retire-worker.yml.
+  [NATIVE_RETIRE_EXECUTOR]: {
+    executor: NATIVE_RETIRE_EXECUTOR, label: "native retirement", reasonPrefix: "native_retire",
+    queuePrefix: "cryptophys.native-retire.queue.v1|", claimPrefix: "cryptophys.native-retire.execution.v1|",
+    maxAgeMs: NATIVE_RETIRE_MAX_AGE_MS, succeededEvent: "deployment.retire_succeeded", failedEvent: "deployment.retire_failed",
+  },
 };
 /** The spec of a stored row: from its parsed details, else from its raw text (for an unreadable row). */
 function executorSpecOf(details: Record<string, unknown> | null, raw: string): NativeExecutorSpec {
   const named = typeof details?.executor === "string" && Object.hasOwn(NATIVE_EXECUTORS, details.executor) ? NATIVE_EXECUTORS[details.executor] : undefined;
   if (named) return named;
+  if (raw.includes('"executor":"' + NATIVE_RETIRE_EXECUTOR + '"')) return NATIVE_EXECUTORS[NATIVE_RETIRE_EXECUTOR];
   return raw.includes('"executor":"' + NATIVE_DEPLOY_EXECUTOR + '"') ? NATIVE_EXECUTORS[NATIVE_DEPLOY_EXECUTOR] : NATIVE_EXECUTORS[NATIVE_EXECUTOR];
 }
 
@@ -695,6 +705,15 @@ async function queueNativeDeploy(env: Env, source: NativeDeploySource, target: s
 /** Is this stored row exactly what the queue wrote for its executor? */
 function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, details: Record<string, unknown>): boolean {
   if (!/^dep_[0-9a-f-]{36}$/.test(r.request_id)) return false;
+  if (spec.executor === NATIVE_RETIRE_EXECUTOR) {
+    // Gate 10: only an owner-approved consensus proposal, only a RETIRABLE Worker that is no deploy unit.
+    const proposalId = typeof details.proposal_id === "string" ? details.proposal_id : null;
+    return proposalId !== null && details.plan_id === undefined
+      && r.requested_by === "consensus:" + proposalId && r.approval_id === proposalId
+      && r.requested_version === "retire" && details.worker === r.service_id
+      && Object.hasOwn(RETIRABLE, r.service_id) && !unitForService(r.service_id)
+      && r.idempotency_key === "consensus:retire:" + r.service_id + ":" + proposalId;
+  }
   const unit = unitForService(r.service_id);
   if (!unit) return false;
   const planId = typeof details.plan_id === "string" ? details.plan_id : null;
@@ -802,7 +821,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       continue;
     }
     const isDeploy = spec.executor === NATIVE_DEPLOY_EXECUTOR;
-    if (isDeploy ? !nativeDeployConfigured(env) : !nativeRollbackConfigured(env)) continue;
+    const isRetire = spec.executor === NATIVE_RETIRE_EXECUTOR;
+    if (isDeploy || isRetire ? !nativeDeployConfigured(env) : !nativeRollbackConfigured(env)) continue;
     // A deploy uploads and verifies every Worker of a unit; one per run keeps the cron within its time.
     if (isDeploy && deploysRun > 0) continue;
 
@@ -829,6 +849,19 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         await failNativeRequest(env, spec, r, details, refusal, now);
         continue;
       }
+    }
+    // Gate 10: a retirement is planned again right before it runs (registry, source on the Forge's main, domains).
+    // A refusal here only read: it changes nothing and tells the owner, who may approve a new proposal.
+    let retirePlan: Extract<RetirePlan, { ok: true }> | null = null;
+    if (isRetire) {
+      const plan = await readRetirePlan(env, r.service_id, fetcher);
+      if (!plan.ok) {
+        const reason = "refused: " + plan.reason + (plan.detail ? " (" + plan.detail + ")" : "");
+        await failNativeRequest(env, spec, r, details, reason, now);
+        await publishRetireReport(env, r, details, { ok: false, reason, changed: false, steps: [] });
+        continue;
+      }
+      retirePlan = plan;
     }
 
     // Persist approved -> running before consuming the one-time DO claim. If D1 fails, no claim
@@ -857,10 +890,12 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     }
 
     executed++;
-    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[] };
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean };
     if (isDeploy) {
       deploysRun++;
       run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations });
+    } else if (isRetire) {
+      run = await executeRetire(new CloudflareRetire(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher), retirePlan!, opts);
     } else {
       run = await executeRollback(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY! }, r.request_id, r.service_id, r.requested_version, opts);
     }
@@ -872,9 +907,15 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       event_type: run.ok ? spec.succeededEvent : spec.failedEvent, actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
       payload: isDeploy
         ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...run }
-        : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
+        : isRetire
+          ? { request_id: r.request_id, executor: spec.executor, worker: r.service_id, proposal_id: String(details.proposal_id), ...run }
+          : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
     });
-    if (!run.ok) {
+    if (isRetire) {
+      if (!run.ok) {
+        await publishRetireReport(env, r, details, { ok: false, reason: run.reason, changed: run.changed === true, steps: run.steps });
+      }
+    } else if (!run.ok) {
       await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
         kind: "platform_digest", severity: "critical",
         subject: isDeploy
@@ -899,6 +940,73 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
 /** The phase 2 name of the executor loop, which now also runs native deploys. */
 export const runNativeRollbacks = runNativeExecutors;
 
+/**
+ * Gate 10: everything a native retirement reads before it changes anything: the registry, the Forge's main and
+ * pending deploys, its bundles and Cloudflare's current state. Never throws.
+ */
+async function readRetirePlan(env: Env, target: string, fetcher: typeof fetch = fetch): Promise<RetirePlan> {
+  try {
+    const reg = await env.DB.prepare("SELECT status FROM service_registry WHERE service_id = ?").bind(target).first<{ status: string }>();
+    if (reg?.status !== "disabled") return { ok: false, reason: "worker_not_disabled_in_registry" };
+    const pending = await forgePendingDeploys(env.DB);
+    // A unit pending on main, or no plan for main's head at all, means a live Worker may still run another config.
+    const open = [...pending.units.map((u) => u.unit), ...pending.skipped.filter((x) => x.unit === "*").map((x) => "*:" + x.reason)];
+    return await planRetire(new CloudflareRetire(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher), env.BUNDLES!,
+      { sha: pending.main_sha, ready: pending.ci_green, pending: open }, target);
+  } catch (err) {
+    return { ok: false, reason: String((err as Error)?.message ?? err).slice(0, 120) };
+  }
+}
+
+/**
+ * Gate 10: tell the owner a retirement did not complete. Nothing changed (a refusal, or a failure before the first
+ * detach): a warning. Something was detached or deleted: critical, because production is between two states.
+ */
+async function publishRetireReport(env: Env, r: NativeSignedRow, details: Record<string, unknown>, run: { ok: false; reason?: string; changed: boolean; steps: string[] }): Promise<void> {
+  await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
+    kind: "platform_digest", severity: run.changed ? "critical" : "warning",
+    subject: (run.changed ? "Retirement of " : "Retirement refused: ") + serviceName(r.service_id) + (run.changed ? " stopped part way" : ""),
+    body: {
+      request_id: r.request_id, proposal_id: typeof details.proposal_id === "string" ? details.proposal_id : null,
+      reason: run.reason ?? null, changed: run.changed, steps: run.steps,
+      action_required: run.changed
+        ? "Some custom domains were detached or the Worker's Workflow was deleted, but the retirement did not finish. Run retire-worker.yml for this Worker, or propose retire_worker again."
+        : "Nothing was changed. Fix the reason, then propose retire_worker again.",
+    },
+  });
+}
+
+/**
+ * Gate 10: queue an owner-approved retire_worker for the Orchestrator's own executor (no GitHub). One request per
+ * proposal: a replay of the proposal is a no-op, and after a refusal or failure a new proposal queues again (a
+ * second run against a Worker already gone finds nothing to detach or delete, and verifies it absent).
+ */
+async function queueNativeRetire(env: Env, proposalId: string, decisionId: string, target: string, plan: Extract<RetirePlan, { ok: true }>): Promise<Record<string, unknown>> {
+  const key = "consensus:retire:" + target + ":" + proposalId;
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(key))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: "0".repeat(40) }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { dispatched: false, reason: "already_dispatched", executor: NATIVE_RETIRE_EXECUTOR, worker: target };
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  const actor = "consensus:" + proposalId;
+  const row: NativeSignedRow = { request_id: requestId, service_id: target, requested_version: "retire", requested_by: actor, approval_id: proposalId, idempotency_key: key, created_at: at };
+  try {
+    await insertSignedNativeRequest(env, NATIVE_EXECUTORS[NATIVE_RETIRE_EXECUTOR], row, {
+      executor: NATIVE_RETIRE_EXECUTOR, worker: target, proposal_id: proposalId, policy_decision_id: decisionId,
+      main_sha: plan.main_sha, detach: plan.domains.map((d) => d.host), workflow: plan.workflow,
+    });
+  } catch (err) {
+    await releaseLock(env, key, "0".repeat(40));
+    throw err;
+  }
+  await appendAuditEvent(env.DB, {
+    event_type: "deployment.retire_queued", actor, subject: target, outcome: "approved",
+    payload: { request_id: requestId, executor: NATIVE_RETIRE_EXECUTOR, proposal_id: proposalId, main_sha: plan.main_sha, detach: plan.domains.map((d) => d.host), workflow: plan.workflow, script_present: plan.script_present },
+  });
+  return { dispatched: true, executor: NATIVE_RETIRE_EXECUTOR, request_id: requestId, worker: target };
+}
+
 /** Recovery step rollback_worker_version of an approved, executing plan (same checks as deployForRecovery). */
 export async function rollbackForRecovery(env: Env, planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>> {
   await verifyRecoveryExecution(env, planId, decisionId, serviceId);
@@ -918,10 +1026,12 @@ export async function rollbackForConsensus(env: Env, proposalId: string, decisio
 
 /**
  * ADR-0009 phase 4: execute an owner-approved retire_worker. Re-verifies the proposal (which,
- * for a critical action, includes the owner's approval click), requires the Worker to be
- * disabled in the registry, and dispatches the Retire Worker workflow. That workflow keeps its
- * own gates: an owner-curated RETIRABLE list, source gone from main, the production
- * Environment, and the DELETE confirmation. D1 data is never touched.
+ * for a critical action, includes the owner's approval click) and requires the Worker to be
+ * disabled in the registry. With the native credentials (ADR-0012 G6 gate 10) the Orchestrator
+ * queues its own retirement (native-retire.ts), run by its cron with the workflow's gates read
+ * from the Forge. Otherwise it dispatches the Retire Worker workflow, which keeps its own gates:
+ * an owner-curated RETIRABLE list, source gone from main, the production Environment, and the
+ * DELETE confirmation. D1 data is never touched.
  */
 export async function retireForConsensus(env: Env, proposalId: string, decisionId: string, target: string): Promise<Record<string, unknown>> {
   await verifyConsensusExecution(env.DB, proposalId, decisionId, "retire_worker", target);
@@ -929,6 +1039,14 @@ export async function retireForConsensus(env: Env, proposalId: string, decisionI
   if (unitForService(target)) throw new Error("worker_is_an_active_deploy_unit");
   const reg = await env.DB.prepare("SELECT status FROM service_registry WHERE service_id = ?").bind(target).first<{ status: string }>();
   if (reg?.status !== "disabled") throw new Error("worker_not_disabled_in_registry");
+  // ADR-0012 G6 gate 10: with the native credentials the Orchestrator retires the Worker itself. A refusal for
+  // safety stops here, as the workflow would; one that only means CF_DEPLOY_TOKEN may not read something keeps
+  // the workflow, whose tokens may.
+  if (nativeDeployConfigured(env) && env.DEPLOYMENT_LOCK && Object.hasOwn(RETIRABLE, target)) {
+    const plan = await readRetirePlan(env, target);
+    if (plan.ok) return queueNativeRetire(env, proposalId, decisionId, target, plan);
+    if (!isPermissionRefusal(plan.reason)) throw new Error("native_retire_refused: " + plan.reason + (plan.detail ? " (" + plan.detail + ")" : ""));
+  }
   if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`consensus:retire:${target}`))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: "0".repeat(40) }) });
@@ -1021,7 +1139,7 @@ export function presentDeploymentRequest(r: Record<string, unknown>) {
   return {
     request_id: r.request_id, service_id: r.service_id, version: r.requested_version, status: r.status,
     requested_by: r.requested_by, origin: deploymentOrigin(r.requested_by as string),
-    workflow: text(d.workflow) ?? (d.executor === NATIVE_DEPLOY_EXECUTOR ? "native deploy" : d.executor ? "native rollback" : null),
+    workflow: text(d.workflow) ?? (d.executor === NATIVE_DEPLOY_EXECUTOR ? "native deploy" : d.executor === NATIVE_RETIRE_EXECUTOR ? "native retirement" : d.executor ? "native rollback" : null),
     proposal_id: text(d.proposal_id), run_url: runUrl?.startsWith("https://github.com/") ? runUrl : null,
     note: text(outcome.reason) ?? text(outcome.conclusion),
     created_at: r.created_at, updated_at: r.updated_at,

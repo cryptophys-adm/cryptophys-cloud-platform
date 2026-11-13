@@ -550,7 +550,7 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
 
 ### 5l. Step G2c-2 (modules): configuration, bindings and Console assets without GitHub (2026-11-12)
 
-G2c-2 builds, as standalone modules with their own tests, the two pieces G2b left on GitHub: a changed wrangler.toml (`config_changed`) and the Console's static assets (`assets`). Integration steps 1–6 below are now wired (see "Wired" at the end of this section). The build script (step 7) is still open: until it posts the Console build, no commit has one stored, so the Console stays on its workflow with `console_dist_missing`.
+G2c-2 builds, as standalone modules with their own tests, the two pieces G2b left on GitHub: a changed wrangler.toml (`config_changed`) and the Console's static assets (`assets`). Integration steps 1–7 are now merged (see "Wired" at the end of this section; step 7, the build script, in #312). Not yet live: the Forge's route `POST /v1/forge/console-dist` is live only from the Forge at 8cc865b (#307); production's Forge runs e6c0372, so until its next deploy no commit has a stored build and the Console stays on its workflow with `console_dist_missing`.
 
 - **What was built.**
   - `deployment-orchestrator/src/config-diff.ts`, pure functions:
@@ -626,7 +626,7 @@ G2c-2 builds, as standalone modules with their own tests, the two pieces G2b lef
     - the session (`POST …/scripts/{name}/assets-upload-session`) uses the deploy token;
     - each bucket upload (`POST …/workers/assets/upload?base64=true`, multipart, one part per hash with the file's content type) uses only the session JWT;
     - with no buckets, the session JWT is the completion token.
-- **Integration steps** (1–6 done, see "Wired" below; 7 left):
+- **Integration steps** (1–7 done, see "Wired" below; step 7 merged in #312, live after the Forge's next deploy):
   1. **Keep the configs.** `storeBundles` must also write each Worker's wrangler.toml text, for example `bundles/<sha>/config/<worker>.toml` (the `BuiltModule` already holds it). The manifest names it, so eligibility can read the running and target configs. Today the manifest holds only `config_sha256`.
   2. **Read full version records.** `CloudflareWorkers` needs a call that returns a version's full `result`: the raw `resources.bindings` and `resources.script_runtime`, not only the digest.
   3. **Eligibility.** In `nativeDeployEligible`, replace `config_changed` with `planConfigChange(running, target, activeBindings)` read at execution time. An ineligible plan keeps its reason in the `native_deploy` audit payload. The plan is computed again in the executor right before the upload, because the active bindings can change between queueing and execution.
@@ -648,13 +648,13 @@ G2c-2 builds, as standalone modules with their own tests, the two pieces G2b lef
      - `assets` becomes eligible when `bundles/<sha>/console-dist.json` exists and the `[assets]` table is unchanged.
      - Before the upload, the native path must repeat the workflow's checks on the stored `index.html`: no inline script (CSP `script-src 'self'`).
      - The Nexus route `nexus.cryptophys.work/console*` is attached by `ensure-zone-route.sh` with a zone token the Orchestrator does not hold. So the native path verifies, read-only, that the route exists, or stays ineligible.
-  7. **The build script (owner-visible change).** `workers/forge-typecheck/typecheck-and-report.mjs` is an owner-only harness path and is not edited here. When the Console build passed and `WORKERS_CI_BRANCH` is `main` (or empty for an Artifacts build of main), the script must post the dist before it posts the report:
+  7. **The build script (owner-visible change; owner approved 2026-11-13, merged in #312).** `workers/forge-typecheck/typecheck-and-report.mjs` is an owner-only harness path. When the Console build passed and `WORKERS_CI_BRANCH` is `main` (or empty for an Artifacts build of main), the script must post the dist before it posts the report:
      1. walk `workers/console/ui/dist`;
      2. for each file, take its relative `/`-separated path, its base64 content, and a content type from its extension: `.html` `text/html; charset=utf-8`, `.js` `text/javascript`, `.css` `text/css`, `.svg` `image/svg+xml`, `.json` `application/json`, `.png` `image/png`, `.woff2` `font/woff2`, else `application/octet-stream`;
      3. `POST new URL("/v1/forge/console-dist", FORGE_URL)` with the same headers as `postReport` (`content-type: application/json`, `CF-Access-Client-Id`, `CF-Access-Client-Secret`, `redirect: "manual"`) and the body `{ confirm: "UPLOAD", commit, files }`;
      4. treat a 3xx as a refused token, and treat anything but a JSON 200 whose `commit` equals the build's commit as a failure (exit 3, as for the report).
 
-     The Forge test `FD4` asserts the script does not post yet, so that change must update that assertion.
+     Done in #312, with the Forge test `FD4` updated. Until the Forge serves the route, the post fails, the type-check report is still posted, and the build exits 3.
 - **Wired: steps 1–5, for Workers without static assets (2026-11-12).** Tests: `control-plane-shared/test/native-deploy-g2c2-wire.test.ts`.
   - **Step 1, the Forge keeps the configs** (`forge/src/bundles.ts`). `storeBundles` writes each Worker's wrangler.toml, the committed source exactly as hashed into `config_sha256`, to `bundles/<sha>/config/<worker>.toml`, before the manifest. The manifest names it per Worker as `config: "config/<worker>.toml"`. The schema stays `forge-bundles.v1`: a manifest without `config` (built before this step) reads as "config unknown", and a `config` that is not exactly that path makes the manifest unreadable.
   - **Step 2, full version records** (`native-rollback.ts`). `CloudflareWorkers.version(script, id)` returns the API's whole `result` (the raw `resources.bindings` and `resources.script_runtime`); `versionBindingSet` now reads through it. `scriptSetting` makes the two script-level calls (`PUT …/schedules`, `PATCH …/script-settings`). A version upload with a plan sends `bindings`, `keep_bindings` (only `secret_text` and `secret_key`) and the target's `limits`; without a plan it is the G2b upload, unchanged.
@@ -742,6 +742,39 @@ Phase 5 says "the R2 git bundles are the off-Artifacts copy", and the Consequenc
   - the size of the pack Artifacts builds, which may be larger than git's.
 
   If any of these is wrong, the run records `discovery_failed:…`, `fetch_http_<status>`, `fetch_not_smart_http`, `remote_error:…`, `no_acknowledgement`, `pack_checksum_mismatch` or `pack_too_large`, writes nothing, and the Console shows the failure.
+
+### 5n. Gate 10: Worker retirement through the Orchestrator (2026-11-13)
+
+Gate 10 of `docs/GITHUB-CUTOVER.md`. An owner-approved consensus `retire_worker` (critical, ADR-0009 phase 4) no longer needs `retire-worker.yml` once the native credentials are set (`CF_DEPLOY_TOKEN`, `CF_ACCOUNT_ID` and the Forge's `BUNDLES`, as for native deploys). The code is `workers/deployment-orchestrator/src/native-retire.ts`.
+
+- **The same gates as the workflow, from the Forge's records.**
+  - Only a Worker in `RETIRABLE`. This is the owner's list, the same as the workflow's: a test (NR1) parses `retire-worker.yml` and requires the same Workers, Workflows and custom domains.
+  - The registry row must be `disabled`, and the Worker must belong to no deploy unit.
+  - Instead of a checkout of main, the plan reads the Forge's bundles for main's head (`forge_deploy_plans`, G2a):
+    - main must be `ready` and no deploy pending (otherwise a live Worker may still run a config other than main's);
+    - no Worker of that name is built (`source_still_on_main`);
+    - no stored wrangler.toml names it (`still_bound_on_main`) or still declares a custom domain to detach (`domain_still_declared_on_main`).
+  - Every custom domain to detach is read and must be on the expected Worker before any is detached (`domain_on_unexpected_worker`).
+  - The script and its Workflow are read; anything but 200 or 404 refuses.
+- **Queue and execution.** `retireForConsensus` plans (read only) and queues a signed `deployment_requests` row with executor `native:retire`, one per proposal (`consensus:retire:<worker>:<proposal>`); a replay of the proposal is a no-op. The Orchestrator's cron runs it at a SAFE minute under the one-time Durable Object claim, like native rollbacks and deploys, within 3 hours of the click. It plans again first. Then it:
+  1. detaches each custom domain and verifies its hostname has none left;
+  2. deletes the Workflow, if any;
+  3. deletes the script without `force`, so Cloudflare refuses while another Worker still binds to it;
+  4. verifies both are gone.
+
+  D1 is never touched.
+- **Outcomes.**
+  - Success: `deployment.retire_succeeded`, and no report.
+  - A refusal, or a failure before anything changed: the request fails, nothing changed, and the owner gets a **warning** report ("Retirement refused"). A new proposal may be approved after the cause is fixed.
+  - A failure after something was detached or deleted (`changed: true`): a **critical** report ("stopped part way"), because production is between two states. The fix is `retire-worker.yml`, or a new proposal; a second run against a Worker already partly gone finds less to do and verifies it absent.
+- **The workflow stays the fallback.**
+  - Without the native credentials, `retire_worker` dispatches `retire-worker.yml` exactly as before.
+  - The workflow is also used when the only refusal is that `CF_DEPLOY_TOKEN` may not read something (HTTP 401 or 403). Detaching a custom domain needs Zone → Workers Routes → Edit; the workflow retries with `CLOUDFLARE_ACCESS_API_TOKEN`, which the Orchestrator does not hold.
+  - A safety refusal never falls back.
+- **Notes.**
+  - Reaching the owner: since 2026-11-13 (owner, "Tombol muncul di mode deploy") a passed `retire_worker` waits for the click in mode `deploy` as well as `critical` (ADR-0009).
+  - The live run is not yet proven. `cryptophys-home` is retired with `retire-worker.yml` (an ops request, the owner's 2026-11-13 decision), not by this path.
+  - Gate 10 is met when one owner-approved native retirement succeeds live.
 
 ### 6. Owner decisions (2026-11-08)
 

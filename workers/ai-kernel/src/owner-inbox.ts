@@ -149,7 +149,7 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
   return {
     schema: "owner-inbox.v1" as const,
     observed_at: iso(now),
-    /** A critical proposal can be approved only in mode critical (ADR-0009 phase 4); the panel shows the mode, never a default. */
+    /** A critical proposal can be approved only in mode deploy or critical (OWNER_CLICK_MODES); the panel shows the mode, never a default. */
     consensus_mode: mode,
     approvals,
     critical_reports: critical,

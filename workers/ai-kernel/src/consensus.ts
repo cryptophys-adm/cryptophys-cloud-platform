@@ -123,6 +123,13 @@ export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version"
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
 export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
 
+/**
+ * The modes in which a passed critical proposal waits for the owner's approval click (status pending_owner).
+ * Owner 2026-11-13: "Tombol muncul di mode deploy": in mode 'deploy' too, not only 'critical'. Nothing critical
+ * ever executes without the click; shadow and routine only record critical proposals.
+ */
+export const OWNER_CLICK_MODES: ReadonlySet<ConsensusMode> = new Set<ConsensusMode>(["deploy", "critical"]);
+
 /** What the current mode lets the kernel execute. Shadow executes nothing. */
 export function executableIn(mode: ConsensusMode): Set<string> {
   if (mode === "routine") return PHASE2_EXECUTABLE;
@@ -211,13 +218,13 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   const executable = allowed && cls === "routine" && executableIn(mode).has(action);
   let status = !allowed ? (cls === "prohibited" || !passed ? "rejected" : "shadow_blocked")
     : mode === "shadow" ? "shadow_passed"
-    : cls === "critical" ? (mode === "critical" ? "pending_owner" : "shadow_passed")
+    : cls === "critical" ? (OWNER_CLICK_MODES.has(mode) ? "pending_owner" : "shadow_passed")
     : executable ? "executing"
     : "shadow_passed"; // a passed routine action with no executor yet (deploys arrive in phase 3)
   let outcome: JsonObject = {
     executed: false,
     reason: mode === "shadow" ? "shadow mode: phase 1 records only"
-      : cls === "critical" && allowed ? (mode === "critical" ? "waiting for an owner approval click" : "critical actions reach the owner only in mode critical")
+      : cls === "critical" && allowed ? (OWNER_CLICK_MODES.has(mode) ? "waiting for an owner approval click" : "critical actions reach the owner only in mode deploy or critical")
       : allowed && !executable ? `no executor for ${action} in this phase` : "not executed",
   };
 
@@ -287,7 +294,7 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
 
 /**
  * ADR-0009 phase 4: critical actions. After consensus and a Policy Engine allow, a critical
- * proposal waits (status pending_owner, mode 'critical' only) for one click by a person in
+ * proposal waits (status pending_owner, in mode 'deploy' or 'critical': OWNER_CLICK_MODES) for one click by a person in
  * APPROVER_IDENTITIES. Approval re-runs the Policy Engine with the owner decision on record,
  * then executes through the owning path, which re-verifies everything again.
  *
@@ -347,7 +354,8 @@ export async function ownerDecide(env: SyscallEnv, proposalId: string, decision:
   }
   const subject = `${p.action}:${p.target}`;
   if (decision === "approve") {
-    if ((await consensusMode(env)) !== "critical") throw new OwnerDecisionError(409, "mode_not_critical", "critical actions execute only in consensus mode 'critical'");
+    // The code stays mode_not_critical (the API's error code since phase 4); the modes are OWNER_CLICK_MODES.
+    if (!OWNER_CLICK_MODES.has(await consensusMode(env))) throw new OwnerDecisionError(409, "mode_not_critical", "critical actions execute only in consensus mode 'deploy' or 'critical'");
     if (!PHASE4_EXECUTABLE.has(p.action)) throw new OwnerDecisionError(409, "manual_only", `${p.action} has no platform executor; carry it out by its runbook and reject this proposal`);
   }
   try {
