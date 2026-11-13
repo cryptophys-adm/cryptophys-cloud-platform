@@ -90,12 +90,19 @@ export function chooseCapabilities(advertised: ReadonlySet<string>): { caps: str
   return { caps, sideband };
 }
 
-/** The upload-pack request of a full clone: the wants (capabilities on the first), a flush, then `done`. No haves. */
-export function uploadPackRequest(wants: string[], caps: string[]): Uint8Array<ArrayBuffer> {
+/**
+ * The upload-pack request: the wants (capabilities on the first), a flush, then `done`. A full clone sends no
+ * haves; a transfer (transfer.ts) names the commits the receiving repository already has, so the pack omits
+ * what they reach.
+ */
+export function uploadPackRequest(wants: string[], caps: string[], haves: string[] = []): Uint8Array<ArrayBuffer> {
   const unique = [...new Set(wants)];
   if (!unique.length || !unique.every(validSha)) fail("invalid_wants");
+  if (!haves.every(validSha)) fail("invalid_haves");
   const parts: Uint8Array[] = unique.map((w, i) => pktLine(i === 0 && caps.length ? `want ${w} ${caps.join(" ")}\n` : `want ${w}\n`));
-  parts.push(FLUSH, pktLine("done\n"));
+  parts.push(FLUSH);
+  for (const h of [...new Set(haves)].filter((h) => !unique.includes(h)).slice(0, 32)) parts.push(pktLine(`have ${h}\n`));
+  parts.push(pktLine("done\n"));
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
   for (const p of parts) { out.set(p, at); at += p.length; }

@@ -41,5 +41,5 @@ test("SS3. wiring: every Orchestrator and Registry entry point resolves its secr
   assert.match(reg, /STORE_SECRETS = \["ACCESS_GROUPS_TOKEN"\]/);
   assert.match(reg, /return worker\.fetch\(request, await resolved\(env\)\)/);
   assert.match(reg, /applyConsensus\(await resolved\(this\.env\)/);
-  assert.match(read("workers/forge/src/changes.ts"), /secrets\\\.ts\$\/, "secrets"/);
+  assert.match(read("workers/control-plane-shared/src/guard-paths.ts"), /secrets\\\.ts\$\/, "secrets"/);
 });

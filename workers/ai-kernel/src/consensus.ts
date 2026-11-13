@@ -15,7 +15,7 @@ import { appendAuditEvent, appendAuditEventWithMutation, AuditMutationConflictEr
 import { PROHIBITED_CAPABILITY, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { SyscallEnv } from "./syscall.ts";
 import {
-  CONSENSUS_ACTIONS, KERNEL_AGENTS, TARGET, VOTERS, castVote, classify, councilSeats,
+  CONSENSUS_ACTIONS, KERNEL_AGENTS, MERGE_ACTIONS, TARGET, VOTERS, castVote, classify, councilSeats,
   type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type ServiceState, type Vote, type Voter,
 } from "../../control-plane-shared/src/consensus-rules.ts";
 export { CONSENSUS_ACTIONS, VOTERS, castVote, classify, type ConsensusClass, type ConsensusMode, type Evidence, type Proposal, type Vote, type Voter };
@@ -103,7 +103,14 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
     critical_reports_24h: openCriticalReports(ov.agent_reports_24h),
     executing_plan_targets: plans.results.map((p) => p.service_id),
     recent_same: same?.n ?? 0,
+    // G3b: a merge vote reads the change request's state as the Forge computes it; unreadable is null (every voter rejects).
+    ...(MERGE_ACTIONS.has(action) ? { change: await mergeEvidence(env, target) } : {}),
   };
+}
+
+async function mergeEvidence(env: SyscallEnv, crId: string): Promise<Evidence["change"]> {
+  if (!env.FORGE_MERGE) return null;
+  try { return await env.FORGE_MERGE.changeState(crId); } catch { return null; }
 }
 
 
@@ -121,7 +128,7 @@ export function openCriticalReports(reports: { counts?: { critical?: unknown }; 
 /** Routine actions with an executor in phase 2 (reversible; no deploys). Deploys come in phase 3. */
 export const PHASE2_EXECUTABLE = new Set(["observe_drift", "set_desired_version", "registry_disable_service", "registry_enable_service", "suspend_agent", "resume_agent", "amend_doctrine", ...ROUTINE_REGISTRATIONS]);
 /** Phase 3 adds deploys of CI-green main commits, executed only in the 'deploy' (or later) mode. */
-export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version"]);
+export const PHASE3_EXECUTABLE = new Set([...PHASE2_EXECUTABLE, "deploy_commit", "rollback_worker_version", "merge_change"]);
 
 /**
  * The modes in which a passed critical proposal waits for the owner's approval click (status pending_owner).
@@ -160,6 +167,9 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
     case "deploy_commit":
       if (!env.DEPLOY) throw new Error("deploy_binding_missing");
       return await env.DEPLOY.deployForConsensus(proposalId, decisionId, p.target, p.params);
+    case "merge_change":
+      if (!env.FORGE_MERGE) throw new Error("forge_merge_binding_missing");
+      return await env.FORGE_MERGE.mergeForConsensus(proposalId, decisionId, p.target, p.params);
     case "observe_drift":
       if (!env.DRIFT) throw new Error("drift_binding_missing");
       return await env.DRIFT.observeForConsensus(proposalId, decisionId);
@@ -233,6 +243,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   const evidenceSummary: JsonObject = {
     agents_enabled: evidence.agents_enabled, audit_valid: evidence.audit_valid, critical_reports_24h: evidence.critical_reports_24h,
     target_service: evidence.services[target] as unknown as JsonObject ?? null, target_registry: evidence.registry[target] as unknown as JsonObject ?? null,
+    ...(evidence.change !== undefined ? { change: evidence.change as unknown as JsonObject } : {}),
     policy_reason: policy?.reason ?? "policy_unavailable",
     votes_via: { rpc: votes.filter((v) => v.via === "rpc").length, kernel: votes.filter((v) => v.via === "kernel").length, unreachable: votes.filter((v) => v.via === "unreachable").length },
   };
@@ -310,7 +321,7 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -332,6 +343,10 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "change_access") {
     if (!env.DEPLOY?.accessForConsensus) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.accessForConsensus(proposalId, decisionId, String(p.params.digest ?? ""));
+  }
+  if (p.action === "merge_owner_change") {
+    if (!env.FORGE_MERGE) throw new Error("forge_merge_binding_missing");
+    return await env.FORGE_MERGE.mergeForConsensus(proposalId, decisionId, p.target, p.params);
   }
   if (p.action === "retire_agent") {
     return await retireAgent(env as never, p.target, `owner:${approver} via consensus:${proposalId}`, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));

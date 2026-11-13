@@ -79,6 +79,13 @@ binding = "CANONICAL_MAIN"
 service = "cryptophys-forge"
 entrypoint = "CanonicalMainRpc"
 
+# ADR-0012 G3b (2026-11-13): a change request's state for a merge vote, and the executor of a passed merge_change or
+# merge_owner_change. The Forge re-verifies the consensus proposal itself (consensus-merge.ts).
+[[services]]
+binding = "FORGE_MERGE"
+service = "cryptophys-forge"
+entrypoint = "MergeRpc"
+
 # Wave C (C1): each control-plane Worker casts its own consensus vote (VoteRpc).
 [[services]]
 binding = "VOTE_PLATFORM_API"

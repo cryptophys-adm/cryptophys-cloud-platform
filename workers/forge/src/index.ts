@@ -44,6 +44,7 @@ import { mergeSpike, trustedRemoteFor } from "./merge.ts";
 import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
 import { gitBackup } from "../../control-plane-shared/src/git-backup.ts";
 import { ensureWorkRepo } from "./work-repo.ts";
+import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { handleConsoleDist } from "./console-dist.ts";
 
 export const REPO = "platform";
@@ -179,6 +180,8 @@ export async function importRepo(env: Env, identity: AccessIdentity): Promise<{ 
 
 export async function mirrorToken(env: Env, identity: AccessIdentity): Promise<{ remote: string; token: string; expires_at: string | number }> {
   if (identity.type !== "service_token") throw Object.assign(new Error("service_token_required"), { status: 403 });
+  // ADR-0012 G3b: after the cut-over the Forge alone writes canonical main; GitHub's main is no longer copied here.
+  if ((await mergePath(env.DB)) === "forge") throw Object.assign(new Error("merge_path_forge"), { status: 409 });
   const state = await repoState(env);
   if (state !== "ready") throw Object.assign(new Error(state === "missing" ? "repo_not_imported" : "repo_not_ready"), { status: 409 });
   const result = await withRepo(env, async (repo) => {

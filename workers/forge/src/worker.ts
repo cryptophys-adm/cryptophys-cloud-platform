@@ -11,6 +11,8 @@ import { bundleWorkerDir, type WorkerBundle } from "./runner/core.ts";
 import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
 import { WORK_REPO } from "./work-repo.ts";
+import { changeState, mergeForConsensus } from "./consensus-merge.ts";
+import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
 interface RunnerCtx {
@@ -44,6 +46,19 @@ export class CanonicalMainRpc extends WorkerEntrypoint<Env> {
     if (!this.env.ARTIFACTS) return { main_sha: null };
     const repo = await this.env.ARTIFACTS.get(REPO);
     try { return { main_sha: await canonicalMainHead(repo as never) }; } finally { repo[Symbol.dispose]?.(); }
+  }
+}
+
+/**
+ * ADR-0012 G3b: the AI Kernel's view of a change request for a merge vote, and the executor of a passed merge. The
+ * executor re-verifies the consensus proposal and everything else itself (consensus-merge.ts); no route reaches it.
+ */
+export class MergeRpc extends WorkerEntrypoint<Env> {
+  async changeState(crId: string): Promise<ChangeEvidence | null> {
+    return changeState(this.env as never, String(crId));
+  }
+  async mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return mergeForConsensus(this.env as never, String(proposalId), String(decisionId), String(crId), params && typeof params === "object" ? params : {});
   }
 }
 
