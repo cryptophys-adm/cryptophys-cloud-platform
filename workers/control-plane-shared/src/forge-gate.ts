@@ -74,6 +74,24 @@ export async function forgePendingDeploys(db: D1Database, nowMs = Date.now()): P
   }
 }
 
+/**
+ * Whether every registry input named in a stored fingerprint (`service=status-or-version`, comma-separated, as
+ * registryFingerprint writes it) is unchanged now. Fails closed: a truncated, empty or unparsable fingerprint, a
+ * service that no longer has a row, or any changed value is false.
+ */
+export async function fingerprintStillHolds(db: D1Database, stored: string): Promise<boolean> {
+  if (typeof stored !== "string" || !stored || stored.length >= 2000) return false;
+  const pairs = stored.split(",").map((p) => /^(cryptophys-[a-z0-9-]{1,60})=([A-Za-z0-9._-]{1,64})$/.exec(p));
+  if (!pairs.length || pairs.some((m) => !m)) return false;
+  const want = new Map(pairs.map((m) => [m![1], m![2]] as const));
+  if (want.size !== pairs.length) return false;
+  const ids = [...want.keys()];
+  const rows = await db.prepare(`SELECT service_id, status, desired_version FROM service_registry WHERE service_id IN (${ids.map(() => "?").join(", ")})`)
+    .bind(...ids).all<{ service_id: string; status: string; desired_version: string | null }>();
+  const now = new Map((rows.results ?? []).map((r) => [r.service_id, r.status === "disabled" ? "disabled" : r.desired_version ?? "-"] as const));
+  return ids.every((id) => now.get(id) === want.get(id));
+}
+
 async function pendingFromForge(db: D1Database, nowMs: number): Promise<ForgePending> {
   const out: ForgePending = { main_sha: null, ci_green: false, units: [], skipped: [] };
   const head = await forgeMainHead(db, nowMs);
@@ -83,8 +101,17 @@ async function pendingFromForge(db: D1Database, nowMs: number): Promise<ForgePen
   out.ci_green = gate.ready;
   if (!gate.ready) { out.skipped.push({ unit: "*", reason: gate.reason }); return out; }
   const fingerprint = await registryFingerprint(db);
-  const plan = await db.prepare("SELECT forge_units, forge_skipped FROM forge_deploy_plans WHERE main_sha = ? AND fingerprint = ?")
+  let plan = await db.prepare("SELECT forge_units, forge_skipped FROM forge_deploy_plans WHERE main_sha = ? AND fingerprint = ? AND forge_at IS NOT NULL")
     .bind(head.sha, fingerprint.slice(0, 2000)).first<{ forge_units: string | null; forge_skipped: string | null }>();
+  if (!plan) {
+    // 2026-11-13: a Forge and an Orchestrator built from different commits can list different deploy units (a unit
+    // added or retired, as cryptophys-home in #316). Their fingerprints then never match and nothing is pending,
+    // the Forge's own redeploy included. The Forge's newest plan for the head still holds when every registry input
+    // it was made from is unchanged: each service it names has the same status and desired version now.
+    const newest = await db.prepare("SELECT fingerprint, forge_units, forge_skipped FROM forge_deploy_plans WHERE main_sha = ? AND forge_at IS NOT NULL ORDER BY forge_at DESC LIMIT 1")
+      .bind(head.sha).first<{ fingerprint: string; forge_units: string | null; forge_skipped: string | null }>();
+    if (newest && await fingerprintStillHolds(db, newest.fingerprint)) plan = newest;
+  }
   const names = list(plan?.forge_units ?? null);
   if (!plan || !names) { out.skipped.push({ unit: "*", reason: "forge_plan_pending" }); return out; }
   const tag = head.sha.slice(0, 12);
