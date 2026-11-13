@@ -8,10 +8,10 @@ name: Forge change request
 # only fetched and pushed. Runs from the default branch (workflow_run), so the production secrets stay
 # behind the environment's main-only rule. Pull requests from forks are ignored.
 
+# Cut-over (ADR-0012 G6, 2026-11-13): off. Change requests come from branches pushed to platform-work (G4); the
+# job's condition needs a workflow_run event, so a manual run does nothing.
 on:
-  workflow_run:
-    workflows: ["Validate Control Plane Workers"]
-    types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read

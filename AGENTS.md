@@ -22,3 +22,15 @@ owner closed #269 and asked for a real panel instead (#270).
 - Agents open pull requests; they do not merge them. The orchestrator (the Claude cloud session)
   reviews and merges, after CI is green.
 
+## After the GitHub cut-over (ADR-0012 G6, migration 0058, 2026-11-13)
+
+The canonical repository is `cryptophys/platform` on Cloudflare Artifacts; GitHub merges nothing.
+
+- Push a branch named `claude/…`, `agent/…` or `cr/…` to the work repository `cryptophys/platform-work`,
+  based on the current canonical `main`. The Forge registers it as change request `fg-<slug>`, copies its head
+  to `cr/<cr_id>` of `platform` for the type-check, and runs the same checks as before.
+- Nobody merges by hand. When every check passes, the Supervisor proposes `merge_change` and the council votes;
+  a change that touches a guard path (`control-plane-shared/src/guard-paths.ts`) is `merge_owner_change` and
+  waits for the owner's click. The Forge fast-forwards `main`; the agents then deploy it as before.
+- A branch that does not contain the current `main` is `blocked` until it is rebased or merged with `main`.
+

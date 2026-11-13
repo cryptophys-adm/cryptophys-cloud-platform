@@ -56,8 +56,15 @@ test("F1. import is one-time, confirmed, audited, from the public GitHub reposit
   assert.equal((await call(forge, e, req("POST", "/v1/forge/import", { confirm: "IMPORT" }, OUTSIDER_JWT))).status, 403);
 });
 
-test("F2. the mirror token is for the CI service token only, short-lived, audited without the token", async () => {
+/** A control-plane database before the cut-over (merge path github), the state F2 describes; after it, F2b. */
+function preCutoverDb() {
   const db = migratedDb();
+  db.raw.prepare("UPDATE forge_controls SET value = 'github' WHERE control = 'merge_path'").run();
+  return db;
+}
+
+test("F2. the mirror token is for the CI service token only, short-lived, audited without the token", async () => {
+  const db = preCutoverDb();
   const a = fakeArtifacts({ exists: true });
   const e = env(db, a.binding);
   for (const jwt of [OPERATOR_JWT, APPROVER_JWT]) {
@@ -72,13 +79,13 @@ test("F2. the mirror token is for the CI service token only, short-lived, audite
   assert.deepEqual(a.calls.tokens, [{ scope: "write", ttl: MIRROR_TOKEN_TTL_S }]);
   assert.equal(MIRROR_TOKEN_TTL_S, 600);
   const bad = fakeArtifacts({ exists: true, remote: "https://evil.example/git/cryptophys/platform.git" });
-  const badResult = await call(forge, env(migratedDb(), bad.binding), req("POST", "/v1/forge/mirror-token", { confirm: "MIRROR" }, CI_JWT));
+  const badResult = await call(forge, env(preCutoverDb(), bad.binding), req("POST", "/v1/forge/mirror-token", { confirm: "MIRROR" }, CI_JWT));
   assert.equal(badResult.status, 502, "a write token is never issued for an untrusted remote");
   assert.equal(bad.calls.tokens.length, 0);
   const audit = db.raw.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'forge.mirror_token_issued'").all() as any[];
   assert.equal(audit.length, 1);
   assert.doesNotMatch(audit[0].payload_json, /art_v1/, "the token is never stored");
-  const none = env(migratedDb(), fakeArtifacts().binding);
+  const none = env(preCutoverDb(), fakeArtifacts().binding);
   assert.equal((await call(forge, none, req("POST", "/v1/forge/mirror-token", { confirm: "MIRROR" }, CI_JWT))).status, 409, "no repo yet: the mirror workflow skips");
 });
 
@@ -139,7 +146,9 @@ test("F5. wiring: binding, Access destination, deploy and mirror workflows, ops-
   assert.ok(order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])), `deploy step order ${order}`);
   assert.match(deploy, /\[\[ "\$CONFIRM_PRODUCTION" == "DEPLOY" \]\]/);
   const mirror = readFileSync(new URL(".github/workflows/mirror-to-forge.yml", ROOT), "utf8");
-  assert.match(mirror, /branches: \[main\]/);
+  // Cut-over (migration 0058): GitHub no longer moves main, so the mirror runs by hand only (and the Forge refuses its token).
+  assert.match(mirror, /on:\n  workflow_dispatch:\n/);
+  assert.doesNotMatch(mirror, /branches: \[main\]/);
   assert.match(mirror, /fetch-depth: 0/);
   assert.match(mirror, /persist-credentials: false/);
   assert.match(mirror, /echo "::add-mask::\$\{token\}"; echo "::add-mask::\$\{remote\}"/);
@@ -169,7 +178,7 @@ test("F9. a SQL.js database left by the previous test is closed before the next 
 
 test("F2b. after the cut-over (merge path forge) the Forge mints no mirror token, and the mirror workflow never force-pushes main", async () => {
   const db = migratedDb();
-  db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  assert.equal((db.raw.prepare("SELECT value FROM forge_controls WHERE control = 'merge_path'").get() as any).value, "forge", "migration 0058");
   const a = fakeArtifacts({ exists: true });
   const r = await call(forge, env(db, a.binding), req("POST", "/v1/forge/mirror-token", { confirm: "MIRROR" }, CI_JWT));
   assert.equal(r.status, 409);
