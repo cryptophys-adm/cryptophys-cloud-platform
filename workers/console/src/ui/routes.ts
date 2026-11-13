@@ -31,6 +31,8 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.kernel", "kernel", "GET", "/v1/kernel", false, null),
   r("kernel.status", "kernel", "GET", "/v1/status", false, null),
   r("kernel.notices", "kernel", "GET", "/v1/notices", false, null),
+  // Owner 2026-11-13: the Owner page reads what waits for a person (approvals, open critical reports) in one call.
+  r("kernel.owner_inbox", "kernel", "GET", "/v1/owner/inbox", false, null),
   r("kernel.metabolism", "kernel", "GET", "/v1/metabolism", false, null),
   r("kernel.mesh", "kernel", "GET", "/v1/mesh", false, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),

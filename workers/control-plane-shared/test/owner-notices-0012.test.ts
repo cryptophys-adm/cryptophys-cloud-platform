@@ -1,9 +1,11 @@
 // ADR-0012 phase 2: owner notices without GitHub (replaces owner-attention.yml and drift-alert.yml).
+// Owner 2026-11-13 ("Batasi User/Owner hanya untuk critical dan permintaan approval only"): only owner_attention and
+// critical_reports are emailed and sent to Telegram, both linking to the Owner page; every other topic is console-only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
-import { collectNotices, emailConfigured, reconcileNotices, STALE_MS, telegramConfigured } from "../../ai-kernel/src/owner-notices.ts";
+import { OWNER_CHANNEL_TOPICS, TOPICS, channelOf, collectNotices, emailConfigured, reconcileNotices, STALE_MS, telegramConfigured } from "../../ai-kernel/src/owner-notices.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const NOW = Date.parse("2026-11-08T03:22:00Z");
@@ -29,8 +31,8 @@ test("O1. nothing open when everything is healthy and nothing waits", async () =
   const db = migratedDb();
   healthy(db);
   const n = await collectNotices(db as never, NOW);
-  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false], ["dependencies", false]]);
-  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
+  assert.deepEqual(n.map((x) => [x.topic, x.active]), [["owner_attention", false], ["drift", false], ["critical_reports", false], ["organism", false], ["build_minutes", false], ["dependencies", false], ["production_unhandled", false]]);
+  assert.deepEqual((await reconcileNotices({ DB: db } as never, NOW)).map((r) => r.change), ["unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
 });
 
 test("O2. a draft plan and a pending_owner proposal open owner_attention once; a change updates it; resolution closes it, with emails to the owners", async () => {
@@ -48,7 +50,9 @@ test("O2. a draft plan and a pending_owner proposal open owner_attention once; a
   assert.deepEqual(mail.sent[0].to, ["owner@example.com"], "only owner emails, never service tokens");
   assert.equal(mail.sent[0].from, "alerts@notify.example.com");
   assert.match(mail.sent[0].subject, /^\[Cryptophys\] 1 item\(s\) wait for your approval$/);
-  assert.match(mail.sent[0].text, /Recovery plan for Cerebrum Console .*#\/recovery\/plan_1/);
+  assert.match(mail.sent[0].text, /^- Recovery plan for Cerebrum Console \(by agent:supervisor\)$/m);
+  assert.match(mail.sent[0].text, /^Open the Owner page of the Cerebrum Console: https:\/\/nexus\.cryptophys\.work\/console\/#\/owner$/m, "every owner email links to the Owner page");
+  assert.doesNotMatch(mail.sent[0].text, /#\/recovery/, "no per-kind link: the item is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
   assert.equal(r[0].change, "unchanged", "same items, no second email");
   assert.equal(mail.sent.length, 1);
@@ -99,6 +103,8 @@ test("O4. critical reports of the last 24 hours open critical_reports; older one
   assert.match(c.lines[0], /supervisor: Rollback of Cerebrum Console failed/);
   const r = await reconcileNotices({ DB: db } as never, NOW);
   assert.deepEqual(r[2], { topic: "critical_reports", change: "opened", delivery: "not_configured" }, "without email the notice is still recorded for the Console");
+  assert.equal(c.channel, "owner");
+  assert.equal(c.link, "https://nexus.cryptophys.work/console/#/owner");
 });
 
 test("O6. a failed email delivery is retried until it succeeds, then stops", async () => {
@@ -170,7 +176,7 @@ test("O5. wiring: kernel schedule, kernel route, Console route and panel", () =>
   assert.ok(toml.includes('allowed_sender_addresses = ["alerts@notify.cryptophys.work"]'), "binding restricts the sender as well as recipients");
 });
 
-test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too, and owner_attention reaches the owner's Telegram (only that topic)", async () => {
+test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too, and owner_attention reaches the owner's Telegram (an owner-channel topic)", async () => {
   const db = migratedDb();
   healthy(db);
   const now = at(0);
@@ -178,35 +184,39 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   let fail = true;
   const env = { DB: db, OWNER_TELEGRAM: { notify: async (n: any) => { tg.push(n); if (fail) { fail = false; return { sent: false, reason: "rate_limited" }; } return { sent: true }; } } };
   assert.equal(telegramConfigured(env as never, "owner_attention"), true);
-  assert.equal(telegramConfigured(env as never, "drift"), false, "drift and the other topics stay in the Console and the email");
+  assert.equal(telegramConfigured(env as never, "critical_reports"), true, "owner 2026-11-13: critical reports reach Telegram too");
+  for (const topic of ["drift", "organism", "build_minutes", "dependencies"] as const) assert.equal(telegramConfigured(env as never, topic), false, `${topic} stays in the Console`);
   db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
-    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-curator', 'k-role-risk-calibration-talk', 1, 'role_reminder', '{}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), now);
+    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-calibrator', 'k-param-prophet-r37-statemaxage-16', 1, 'param_candidate', '{}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), now);
+  // #310: a text proposal runs by itself (optional veto), so it never waits for the owner.
+  db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
+    VALUES ('knw_00000000-0000-4000-8000-000000000002', 'aether-curator', 'k-role-risk-calibration-talk', 1, 'role_reminder', '{}', ?, 'pending', NULL, NULL, 'dec_y', ?, NULL)`).run("b".repeat(64), now);
   let r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].topic, r[0].change, r[0].delivery], ["owner_attention", "opened", "failed: rate_limited"]);
   assert.equal(tg[0].change, "opened");
   assert.equal(tg[0].title, "1 item(s) wait for your approval");
-  assert.match(tg[0].lines[0], /^Knowledge proposal k-role-risk-calibration-talk@1 \(role reminder, by aether-curator\): review at .*#\/knowledge$/);
-  assert.match(tg[0].link, /#\/knowledge$/, "one kind: the link opens its page");
+  assert.deepEqual(tg[0].lines, ["Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"], "only the parameter proposal needs the owner");
+  assert.equal(tg[0].link, "https://nexus.cryptophys.work/console/#/owner", "every kind is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].change, r[0].delivery], ["delivery_retry", "sent"], "a failed Telegram send is retried");
   r = await reconcileNotices(env as never, NOW);
   assert.equal(r[0].change, "unchanged");
   assert.equal(tg.length, 2);
-  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved'").run();
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved' WHERE kind = 'param_candidate'").run();
   r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].change, r[0].delivery], ["closed", "sent"]);
   assert.equal(tg.at(-1).change, "closed");
   // With email too, the delivery is "sent" only when both sent.
   const mail: any[] = [];
   const both = { ...env, APPROVER_IDENTITIES: "owner@example.com", NOTIFY_FROM: "alerts@notify.example.com", OWNER_EMAIL: { send: async (m: any) => { mail.push(m); return {}; } }, OWNER_TELEGRAM: { notify: async () => ({ sent: false, reason: "telegram_not_configured" }) } };
-  db.raw.prepare("UPDATE knowledge_proposals SET status = 'pending'").run();
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'pending' WHERE kind = 'param_candidate'").run();
   r = await reconcileNotices(both as never, NOW);
   assert.equal(r[0].delivery, "email: sent; telegram: failed: telegram_not_configured");
   assert.equal(mail.length, 1);
 });
 
 
-test("O9. the organism notice emails once while the Supervisor registers engines one by one, and again when something needs the owner", async () => {
+test("O9. the organism notice changes once while the Supervisor registers engines one by one, and again when something needs the owner; it is console-only (owner 2026-11-13)", async () => {
   const db = migratedDb();
   healthy(db);
   const census = (findings: Array<{ kind: string; subject: string; detail: string }>, sha: string) =>
@@ -214,16 +224,79 @@ test("O9. the organism notice emails once while the Supervisor registers engines
       .run(sha, JSON.stringify(findings), new Date(NOW + Number.parseInt(sha[0], 16) * 60_000).toISOString());
   const engine = (t: string) => ({ kind: "unregistered_engine", subject: `xauusd-ai-trading-assistant:${t}`, detail: `AI engine ${t} on xauusd-ai-trading-assistant is in the DNA but not registered` });
   const mail = emailSpy();
-  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", OWNER_EMAIL: mail.binding, NOTIFY_FROM: "alerts@notify.example.com" };
-  const organism = async () => (await reconcileNotices(env as never, NOW)).find((r) => r.topic === "organism")!.change;
+  const tg: any[] = [];
+  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", OWNER_EMAIL: mail.binding, NOTIFY_FROM: "alerts@notify.example.com", OWNER_TELEGRAM: { notify: async (n: any) => { tg.push(n); return { sent: true }; } } };
+  const organism = async () => (await reconcileNotices(env as never, NOW)).find((r) => r.topic === "organism")!;
   census([engine("a"), engine("b"), engine("c")], "1".repeat(40));
-  assert.equal(await organism(), "opened");
-  assert.match(mail.sent.at(-1).subject, /3 item\(s\), all being registered automatically/);
+  assert.deepEqual(await organism(), { topic: "organism", change: "opened", delivery: "console_only" });
+  assert.match((await collectNotices(db as never, NOW)).find((n) => n.topic === "organism")!.title, /3 item\(s\), all being registered automatically/);
   census([engine("b"), engine("c")], "2".repeat(40));
-  assert.equal(await organism(), "unchanged", "one engine registered: no new email");
+  assert.equal((await organism()).change, "unchanged", "one engine registered: no new notice event");
   census([engine("c"), { kind: "agent_host_changed", subject: "x", detail: "agent x moved" }], "3".repeat(40));
-  assert.equal(await organism(), "changed", "a finding the Supervisor does not settle by itself reaches the owner");
+  assert.equal((await organism()).change, "changed", "a finding the Supervisor does not settle by itself changes the notice");
   census([], "4".repeat(40));
-  assert.equal(await organism(), "closed");
-  assert.equal(mail.sent.length, 3);
+  assert.equal((await organism()).change, "closed");
+  assert.equal(mail.sent.length, 0, "the organism topic is never emailed");
+  assert.equal(tg.length, 0, "nor sent to Telegram");
+  const events = db.raw.prepare("SELECT event_type, payload_json FROM audit_events WHERE subject = 'organism' AND event_type LIKE 'owner.notice_%' ORDER BY rowid").all() as any[];
+  assert.deepEqual(events.map((e) => [e.event_type, JSON.parse(e.payload_json).delivery]),
+    [["owner.notice_opened", "console_only"], ["owner.notice_changed", "console_only"], ["owner.notice_closed", "console_only"]], "the audit events are unchanged; the delivery says console only");
+});
+
+test("O11. owner 2026-11-13: drift, organism, build minutes and dependencies are computed, audited and shown with channel console, but never emailed, sent to Telegram or retried", async () => {
+  const db = migratedDb();
+  healthy(db);
+  // drift: a registered service the Drift Detector never observed.
+  db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, metadata_json, created_at, updated_at) VALUES ('cryptophys-new', 'New', 'production', 'registered', NULL, '{}', ?, ?)").run(at(0), at(0));
+  // organism: a census finding.
+  db.raw.prepare("INSERT INTO forge_organism_census (main_sha, status, organs, agents, engines, voters, findings, genome, taken_at) VALUES (?, 'changes', 18, 23, 34, 9, ?, '[]', ?)")
+    .run("a".repeat(40), JSON.stringify([{ kind: "agent_host_changed", subject: "x", detail: "agent x moved" }]), at(60_000));
+  // build_minutes: 1000 measured minutes by 8 November project past 80% of the 3000-minute budget.
+  db.raw.prepare("INSERT INTO forge_build_collections (collected_at, outcome, workers, builds_seen, builds_new) VALUES (?, 'collected', 1, 1, 1)").run(at(600_000));
+  db.raw.prepare("INSERT INTO forge_builds (build_uuid, worker, created_on, stopped_on, duration_s, billed_minutes, seen_at) VALUES ('b1', 'cryptophys-forge-typecheck', ?, ?, 60000, 1000, ?)").run(at(86_400_000), at(86_000_000), at(0));
+  // dependencies: no audit has succeeded for 72 hours.
+  db.raw.prepare("INSERT INTO forge_dependency_audits (run_id, main_sha, ran_at, status) VALUES ('dep_1', ?, ?, 'ok')").run("b".repeat(40), at(80 * 3_600_000));
+  const consoleTopics = TOPICS.filter((t) => !(OWNER_CHANNEL_TOPICS as readonly string[]).includes(t));
+  assert.deepEqual(consoleTopics, ["drift", "organism", "build_minutes", "dependencies"]);
+  const notices = await collectNotices(db as never, NOW);
+  for (const t of consoleTopics) {
+    const n = notices.find((x) => x.topic === t)!;
+    assert.deepEqual([t, n.active, n.channel, channelOf(t)], [t, true, "console", "console"], `${t} is open and console-only`);
+  }
+  assert.deepEqual(notices.filter((n) => n.channel === "owner").map((n) => n.topic), ["owner_attention", "critical_reports", "production_unhandled"]);
+  assert.equal(notices.find((n) => n.topic === "production_unhandled")!.active, false, "an 80% build month, a stale audit without a critical advisory and a census finding are not production problems");
+  const mail = emailSpy();
+  const tg: any[] = [];
+  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", OWNER_EMAIL: mail.binding, NOTIFY_FROM: "alerts@notify.example.com", OWNER_TELEGRAM: { notify: async (n: any) => { tg.push(n); return { sent: true }; } } };
+  const first = await reconcileNotices(env as never, NOW);
+  for (const t of consoleTopics) assert.deepEqual(first.find((r) => r.topic === t), { topic: t, change: "opened", delivery: "console_only" });
+  const second = await reconcileNotices(env as never, NOW);
+  for (const t of consoleTopics) assert.equal(second.find((r) => r.topic === t)!.change, "unchanged", `${t}: a console-only delivery is never retried`);
+  assert.equal(mail.sent.length, 0);
+  assert.equal(tg.length, 0);
+  const events = db.raw.prepare("SELECT event_type, subject, actor FROM audit_events WHERE event_type LIKE 'owner.notice_%' ORDER BY rowid").all() as any[];
+  assert.deepEqual(events.map((e) => [e.event_type, e.subject]), consoleTopics.map((t) => ["owner.notice_opened", t]), "each one is still audited, once");
+  assert.ok(events.every((e) => e.actor === "agent:supervisor"));
+});
+
+test("O12. owner 2026-11-13: an open critical report is emailed and sent to Telegram with the Owner page link, and its resolution sends one Resolved message", async () => {
+  const db = migratedDb();
+  healthy(db);
+  db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, created_at) VALUES ('rpt_c1', 'deployment-orchestrator', 'platform_digest', 'critical', 'Rollback of Cerebrum Console failed', '{}', 'deterministic', ?)").run(at(60_000));
+  const mail = emailSpy();
+  const tg: any[] = [];
+  const env = { DB: db, APPROVER_IDENTITIES: "owner@example.com", OWNER_EMAIL: mail.binding, NOTIFY_FROM: "alerts@notify.example.com", OWNER_TELEGRAM: { notify: async (n: any) => { tg.push(n); return { sent: true }; } } };
+  const critical = async () => (await reconcileNotices(env as never, NOW)).find((r) => r.topic === "critical_reports")!;
+  assert.deepEqual(await critical(), { topic: "critical_reports", change: "opened", delivery: "sent" }, "email and Telegram both sent");
+  assert.equal(mail.sent.length, 1);
+  assert.match(mail.sent[0].subject, /^\[Cryptophys\] 1 open critical agent report\(s\) in the last 24 hours$/);
+  assert.match(mail.sent[0].text, /deployment-orchestrator: Rollback of Cerebrum Console failed/);
+  assert.match(mail.sent[0].text, /: https:\/\/nexus\.cryptophys\.work\/console\/#\/owner$/m);
+  assert.deepEqual([tg.length, tg[0].change, tg[0].link], [1, "opened", "https://nexus.cryptophys.work/console/#/owner"]);
+  assert.equal((await critical()).change, "unchanged");
+  db.raw.prepare("DELETE FROM agent_reports WHERE report_id = 'rpt_c1'").run();
+  assert.deepEqual(await critical(), { topic: "critical_reports", change: "closed", delivery: "sent" });
+  assert.match(mail.sent[1].subject, /^\[Cryptophys\] Resolved: /);
+  assert.equal(tg.at(-1).change, "closed");
+  assert.equal(mail.sent.length, 2);
 });

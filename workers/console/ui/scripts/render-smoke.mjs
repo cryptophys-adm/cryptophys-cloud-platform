@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
-const ROUTES = ["", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
+const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
   "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
@@ -52,9 +52,9 @@ const MOCK = {
     ], runtime_high_ids: ["1100001"], observed_at: "2026-11-12T09:20:00.000Z" } },
   "/api/forge/v1/forge/commits": { commits: [{ sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" }] },
   "/api/kernel/v1/notices": { email: "not_configured", notices: [
-    { topic: "owner_attention", active: true, fingerprint: "f", title: "1 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor): review at https://nexus.cryptophys.work/console/#/recovery/plan_00000000-0000-4000-8000-000000000000"] },
-    { topic: "drift", active: false, fingerprint: "", title: "All services are healthy", link: "https://nexus.cryptophys.work/console/#/infrastructure", lines: [] },
-  ] },
+    { topic: "owner_attention", channel: "owner", active: true, fingerprint: "f", title: "3 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/owner", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor)", "Critical action: admit forge-steward to the council (proposed by supervisor)", "Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"] },
+    { topic: "drift", channel: "console", active: true, fingerprint: "d", title: "Drift in production: 1 service(s)", link: "https://nexus.cryptophys.work/console/#/infrastructure", lines: ["Policy Engine: the running version differs from the expected version (expected 7eaf570a4ed5, running c5b73b4c3711)"] },
+  ], owner_channel_topics: ["owner_attention", "critical_reports", "production_unhandled"] },
   "/api/kernel/v1/knowledge": { counts: { pending: 1 }, proposals: [{ proposal_id: "knw_00000000-0000-4000-8000-000000000000", proposer_agent_id: "aether-curator", item_id: "k-prophet-trap", item_version: 1, kind: "caution", content_sha256: "0".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null, item: { text: "Its bearish lean was wrong in 11 of 14 such bars.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { bars: 14, wrong: 11 }, provenance: { card_ids: [] } } },
   { proposal_id: "knw_00000000-0000-4000-8000-000000000001", proposer_agent_id: "aether-calibrator", item_id: "k-param-prophet-r37-statemaxage-16", item_version: 1, kind: "param_candidate", content_sha256: "1".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null, item: { text: "Test the Prophet R37 latch at 16 bars in shadow.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { episodes: 3 }, params: { family: "prophet_r37", values: { stateMaxAge: 16 } }, provenance: { card_ids: [] } } }] },
   "/api/orchestrator/v1/deployments": {
@@ -201,6 +201,31 @@ MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "
   workers_today: SVC.map((s, i) => ({ script: s, requests: 9000 - i * 700 })), workers_errors_today: 4, source: "Cloudflare GraphQL Analytics & Billable Usage API" };
 MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
 
+// Owner 2026-11-13: the Owner page (#/owner) reads GET /v1/owner/inbox: approvals and open critical reports only.
+MOCK["/api/kernel/v1/owner/inbox"] = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "critical",
+  approvals: {
+    recovery_plans: [{ plan_id: "plan_00000000-0000-4000-8000-000000000000", service_id: SVC[9], plan_version: "7eaf570a4ed5", created_by: "agent:supervisor", created_at: at(40), approve_by: at(-60 * 71),
+      title: "Drift on cryptophys-console: version_mismatch, a title long enough to wrap on a phone screen", rationale: "Two consecutive drifted observations.", synthetic: false,
+      steps: [{ action: "redeploy_commit", description: "Redeploy the desired version 7eaf570a4ed5 of cryptophys-console through the deploy workflow." }, { action: "manual", description: "Confirm health and drift are back in sync after the deploy." }] }],
+    consensus: [
+      { proposal_id: "cns_00000005-0000-4000-8000-000000000000", action: "admit_voter", target: "forge-steward", proposer_agent_id: "supervisor", created_at: at(90), expires_at: at(-60 * 22), approvals: 7, rejections: 1, eligible: 8, executable: true },
+      { proposal_id: "cns_00000011-0000-4000-8000-000000000000", action: "rotate_secret", target: "cryptophys-platform-registry", proposer_agent_id: "supervisor", created_at: at(200), expires_at: at(-60 * 20), approvals: 6, rejections: 0, eligible: 8, executable: false },
+    ],
+    knowledge: [{ proposal_id: "knw_00000000-0000-4000-8000-000000000001", item_id: "k-param-prophet-r37-statemaxage-16", item_version: 1, kind: "param_candidate", proposer_agent_id: "aether-calibrator", created_at: at(300), expires_at: at(-60 * 24 * 13),
+      item: { text: "Test the Prophet R37 latch at 16 bars in shadow; a long sentence that has to wrap on a phone screen." } }],
+  },
+  critical_reports: [{ report_id: "rpt_00000000-0000-4000-8000-000000000000", agent_id: "deployment-orchestrator", kind: "platform_digest", severity: "critical", subject: "Rollback of Cerebrum Console to 6fafa095ce3e failed, which is a long subject that wraps", created_at: at(30) }],
+  production_problems: [
+    { code: "self_unhealthy", subject: "cryptophys-ai-kernel", detail: "AI Kernel is drifted or unhealthy (version_mismatch); the agents do not recover their own Worker", since: at(50), link: "#/infrastructure" },
+    { code: "observations_stale", subject: "cryptophys-policy-engine", detail: "Policy Engine: not observed since 2026-11-13T01:00:00.000Z; the Drift Detector may have stopped", since: at(120), link: "#/infrastructure" },
+    { code: "recovery_failed", subject: "plan_00000000-0000-4000-8000-000000000009", detail: "Recovery plan for Cerebrum Console failed at 2026-11-13T02:00:00.000Z", since: at(90), link: "#/recovery/plan_00000000-0000-4000-8000-000000000009" },
+  ],
+  counts: { approvals: 4, critical_reports: 1, production_problems: 3 } };
+const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
+const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
+/** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
+let OVERRIDE = {};
+
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png" };
 
 const server = http.createServer((req, res) => {
@@ -210,7 +235,7 @@ const server = http.createServer((req, res) => {
   u = u.slice("/console".length);
   if (u.startsWith("/api/")) {
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify(MOCK[u] ?? {}));
+    return res.end(JSON.stringify(OVERRIDE[u] ?? MOCK[u] ?? {}));
   }
   const file = path.join(dist, u === "/" ? "index.html" : u);
   if (!file.startsWith(dist) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end(); }
@@ -239,10 +264,34 @@ for (const width of [390, 1440]) {
   }
   await page.close();
 }
+// The Owner page: both sections with their actions for an approver, read-only for an operator, and the empty state.
+const OWNER_CHECKS = [
+  { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "kernel or Drift Detector", "recovery failed", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
+  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Only an approver can decide.", "Only an approver can acknowledge."], not: ["Approve…", "Reject…", "Disable…", "Acknowledge…"] },
+  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of OWNER_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px owner/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}#/owner`);
+    await page.waitForTimeout(700);
+    // textContent, not innerText: section titles are upper-cased by CSS.
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px #/owner (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px #/owner (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/owner (${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-owner-${check.name}.png`), fullPage: true });
+    await page.close();
+  }
+}
+OVERRIDE = {};
 await browser.close();
 server.close();
 if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, and the Owner page as approver, operator and empty.`);

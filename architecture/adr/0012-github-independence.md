@@ -422,6 +422,8 @@ How notices are kept and shown:
 
 `owner-attention.yml` and `drift-alert.yml` were retired on 2026-11-08, after the first owner email was delivered (audit `delivery: sent`). Their summary scripts and script tests went with them.
 
+*Amended 2026-11-13 (owner: "Batasi User/Owner hanya untuk critical dan permintaan approval only"; ADR-0009 amendment of that date).* The topics are now seven (`organism`, `build_minutes`, `dependencies` and `production_unhandled` were added since). Only `owner_attention`, `critical_reports` and `production_unhandled` (`OWNER_CHANNEL_TOPICS`) are emailed and sent to Telegram, and all three link to the Console's Owner page (`#/owner`, read from `GET /v1/owner/inbox`). The other topics are console-only: still computed, audited and shown at `GET /v1/notices` (each notice carries `channel`), never emailed or sent to Telegram.
+
 ### 5i. Step G5: Dependabot and secret scanning off GitHub (2026-11-12)
 
 The Consequences below require replacements for GitHub's Dependabot and secret scanning before phase 5.

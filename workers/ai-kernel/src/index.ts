@@ -29,7 +29,8 @@ import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { OwnerDecisionError, agreementReport, getProposal, listProposals, ownerDecide, setConsensusMode } from "./consensus.ts";
 import { KnowledgeDecisionError, decideKnowledge, getKnowledge, listKnowledge } from "./knowledge.ts";
-import { collectNotices, emailConfigured, reconcileNotices } from "./owner-notices.ts";
+import { OWNER_CHANNEL_TOPICS, collectNotices, emailConfigured, reconcileNotices } from "./owner-notices.ts";
+import { ownerInbox } from "./owner-inbox.ts";
 import { metabolismView } from "./metabolism-view.ts";
 import { meshView } from "./mesh-view.ts";
 
@@ -62,7 +63,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
@@ -116,8 +117,12 @@ export default {
       if (path === "/v1/kernel" && request.method === "GET") return json({ ...(await listAgents(env)), capabilities: CAPABILITIES });
       if (path === "/v1/status" && request.method === "GET") return json(await observe(env));
       if (path === "/v1/notices" && request.method === "GET") {
-        return json({ notices: await collectNotices(env.DB), email: emailConfigured(env) ? "configured" : "not_configured" });
+        // Each notice carries its channel: "owner" (emailed and sent to Telegram) or "console" (owner 2026-11-13).
+        return json({ notices: await collectNotices(env.DB), email: emailConfigured(env) ? "configured" : "not_configured", owner_channel_topics: OWNER_CHANNEL_TOPICS });
       }
+      // Owner 2026-11-13: the Console's Owner page, the one place a person is needed (approvals and open critical
+      // reports). Read-only and open to operators; every action on it goes to its own approver-only route.
+      if (path === "/v1/owner/inbox" && request.method === "GET") return json(await ownerInbox(env.DB));
       if (path === "/v1/metabolism" && request.method === "GET") return json(await metabolismView(env));
       if (path === "/v1/mesh" && request.method === "GET") return json(await meshView(env));
       if (path === "/v1/consensus" && request.method === "GET") return json(await listProposals(env, limitParam(url)));

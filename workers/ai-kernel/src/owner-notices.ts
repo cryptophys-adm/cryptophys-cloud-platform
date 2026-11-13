@@ -1,41 +1,61 @@
 // ADR-0012 phase 2: owner notifications without GitHub. These replace the scheduled
 // owner-attention.yml and drift-alert.yml workflows, which kept GitHub issues open and closed.
 //
-// Four topics are computed from D1:
+// Seven topics are computed from D1:
 //   owner_attention  - recovery plans in draft, critical proposals in pending_owner and pending knowledge
-//                      proposals (a click is needed);
+//                      proposals of a kind that needs the owner (a click is needed; text kinds run by themselves);
+//   critical_reports - an open (not acknowledged) critical agent report of the last 24 hours;
 //   drift            - a service drifted, unhealthy, never observed, or not observed for 45 minutes;
-//   critical_reports - an agent published a critical report in the last 24 hours;
 //   build_minutes    - the month's measured Workers Builds minutes, or their projection, reach 80% of the
 //                      free-tier budget (owner 2026-11-12; control-plane-shared/src/build-usage.ts);
 //   organism         - the Forge's census (ADR-0013) found the DNA and the live registries apart:
 //                      a declared Worker or agent not registered, an agent no longer declared, a change;
 //   dependencies     - the Forge's npm dependency audit (ADR-0012 G5) found a high or critical advisory in a
-//                      Worker's or the Console UI's lockfile, or has not succeeded for 72 hours.
+//                      Worker's or the Console UI's lockfile, or has not succeeded for 72 hours;
+//   production_unhandled - a production problem no agent is handling (owner-inbox.ts unhandledProblems: the kernel
+//                      or the Drift Detector itself unhealthy, stale observations, a persistent drift with no plan or
+//                      deploy under way or with agents off, a failed or expired recovery, a critical runtime advisory,
+//                      the Workers Builds budget used up).
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
-// needs no table of its own. When the send_email binding OWNER_EMAIL and the var NOTIFY_FROM are
-// configured, it also emails the owners (the people in APPROVER_IDENTITIES). The Console shows
-// the live notices at GET /v1/notices.
-// Telegram (owner 2026-11-11: "buat notif telegram jika ada yang perlu approve owner di semua
-// cerebrum"): owner_attention also goes to the owner's Telegram through the Service Binding
-// OWNER_TELEGRAM (the xauusd AI Worker's OwnerNotifier, which holds the bot; the platform holds no
-// Telegram credential). The other topics stay in the Console and the email.
+// needs no table of its own. The Console shows the live notices at GET /v1/notices.
+//
+// The owner channel (owner 2026-11-13: "Batasi User/Owner hanya untuk critical dan permintaan approval only"):
+// only OWNER_CHANNEL_TOPICS, the approvals (owner_attention), the open critical reports (critical_reports) and the
+// production problems no agent is handling (production_unhandled), reach the owner. They are emailed to the people in APPROVER_IDENTITIES when the send_email binding OWNER_EMAIL
+// and the var NOTIFY_FROM are configured, and sent to the owner's Telegram through the Service Binding
+// OWNER_TELEGRAM (the xauusd AI Worker's OwnerNotifier, which holds the bot; the platform holds no Telegram
+// credential; owner 2026-11-11). Both link to the Console's Owner page (#/owner), which lists exactly the same
+// items (owner-inbox.ts). Every other topic, and any topic added later, is console-only: computed, audited with
+// the same owner.notice_* events and shown at GET /v1/notices with channel "console", but never emailed or sent
+// to Telegram. ADR-0009 amendment 2026-11-13 (owner channel) records why that is safe.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
-import { acknowledgementsReadable } from "./reports.ts";
+import { STALE_MS, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
-export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies"] as const;
+/** The one Console page every owner email and Telegram message links to (owner 2026-11-13). */
+export const OWNER_PANEL_URL = `${CONSOLE_URL}#/owner`;
+export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies", "production_unhandled"] as const;
 export type Topic = (typeof TOPICS)[number];
-/** Observations older than this (45 min, three missed Drift Detector runs) count as stale. */
-export const STALE_MS = 45 * 60_000;
+/**
+ * The only topics that contact the owner, by email and by Telegram: approval requests and critical items, i.e. the
+ * open critical reports and the production problems no agent is handling (owner 2026-11-13). Every other topic stays
+ * in the Console.
+ */
+export const OWNER_CHANNEL_TOPICS = ["owner_attention", "critical_reports", "production_unhandled"] as const satisfies readonly Topic[];
+export type Channel = "owner" | "console";
+export const channelOf = (topic: Topic): Channel => (OWNER_CHANNEL_TOPICS as readonly Topic[]).includes(topic) ? "owner" : "console";
+/** Observations older than this (45 min, three missed Drift Detector runs) count as stale (owner-inbox.ts). */
+export { STALE_MS };
 
 export interface Notice {
   topic: Topic;
+  /** "owner": emailed and sent to Telegram; "console": shown in the Console only. */
+  channel: Channel;
   active: boolean;
   fingerprint: string;
   title: string;
@@ -56,37 +76,23 @@ export interface NoticeEnv {
   NOTIFY_FROM?: string;
   OWNER_TELEGRAM?: OwnerTelegramBinding;
 }
-/** The topics that reach the owner's Telegram: only what waits for the owner's click. */
-export const TELEGRAM_TOPICS: readonly Topic[] = ["owner_attention"];
 
-const iso = (ms: number) => new Date(ms).toISOString();
 const fp = async (parts: string[]) => (parts.length ? (await sha256Hex([...parts].sort().join("\n"))).slice(0, 32) : "");
 
 async function ownerAttention(db: D1Database): Promise<Notice> {
-  const plans = await db.prepare("SELECT plan_id, service_id, created_by FROM recovery_plans WHERE status = 'draft' ORDER BY created_at LIMIT 50")
-    .all<{ plan_id: string; service_id: string; created_by: string }>();
-  const critical = await db.prepare("SELECT proposal_id, action, target, proposer_agent_id FROM consensus_proposals WHERE status = 'pending_owner' ORDER BY created_at LIMIT 50")
-    .all<{ proposal_id: string; action: string; target: string; proposer_agent_id: string }>();
-  // Learned-knowledge proposals wait for an approver too (TP-028); before migration 0029 there are none.
-  let knowledge: { proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string }[] = [];
-  try {
-    knowledge = (await db.prepare("SELECT proposal_id, item_id, item_version, kind, proposer_agent_id FROM knowledge_proposals WHERE status = 'pending' ORDER BY created_at LIMIT 50")
-      .all<{ proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string }>()).results;
-  } catch { knowledge = []; }
+  const { recovery_plans: plans, consensus: critical, knowledge } = await pendingApprovals(db);
   const lines = [
-    ...plans.results.map((p) => `Recovery plan for ${serviceName(p.service_id)} (by ${p.created_by}): review at ${CONSOLE_URL}#/recovery/${p.plan_id}`),
-    ...critical.results.map((c) => `Critical action: ${describeAction(c.action, c.target)} (proposed by ${c.proposer_agent_id}): decide at ${CONSOLE_URL}#/consensus`),
-    ...knowledge.map((k) => `Knowledge proposal ${k.item_id}@${k.item_version} (${String(k.kind).replace(/_/g, " ")}, by ${k.proposer_agent_id}): review at ${CONSOLE_URL}#/knowledge`),
+    ...plans.map((p) => `Recovery plan for ${serviceName(p.service_id)} (by ${p.created_by})`),
+    ...critical.map((c) => `Critical action: ${describeAction(c.action, c.target)} (proposed by ${c.proposer_agent_id})`),
+    ...knowledge.map((k) => `Knowledge proposal ${k.item_id}@${k.item_version} (${String(k.kind).replace(/_/g, " ")}, by ${k.proposer_agent_id})`),
   ];
   const n = lines.length;
-  // The link goes to the one page that holds every item when it is a single kind.
-  const kinds = [plans.results.length > 0, critical.results.length > 0, knowledge.length > 0].filter(Boolean).length;
-  const link = kinds !== 1 ? `${CONSOLE_URL}#/` : plans.results.length ? `${CONSOLE_URL}#/recovery` : critical.results.length ? `${CONSOLE_URL}#/consensus` : `${CONSOLE_URL}#/knowledge`;
   return {
-    topic: "owner_attention", active: n > 0,
-    fingerprint: await fp([...plans.results.map((p) => p.plan_id), ...critical.results.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id)]),
+    topic: "owner_attention", channel: channelOf("owner_attention"), active: n > 0,
+    fingerprint: await fp([...plans.map((p) => p.plan_id), ...critical.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id)]),
     title: n ? `${n} item(s) wait for your approval` : "Nothing waits for your approval",
-    lines, link,
+    // Every item is decided on the Owner page (owner 2026-11-13), whatever its kind.
+    lines, link: OWNER_PANEL_URL,
   };
 }
 
@@ -120,7 +126,7 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     }
   }
   return {
-    topic: "drift", active: problems.length > 0,
+    topic: "drift", channel: channelOf("drift"), active: problems.length > 0,
     fingerprint: await fp(problems.map((p) => `${p.service}:${p.code}:${p.line}`)),
     title: problems.length ? `Drift in production: ${problems.length} service(s)` : "All services are healthy and at their expected versions",
     lines: problems.map((p) => p.line), link: `${CONSOLE_URL}#/infrastructure`,
@@ -132,21 +138,14 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
  * migration 0053) is not open, as for the consensus baseline; before the table exists every one is open.
  */
 async function criticalReports(db: D1Database, now: number): Promise<Notice> {
-  const since = iso(now - 24 * 3_600_000);
-  const acks = await acknowledgementsReadable(db);
-  const rows = await db.prepare(
-    `SELECT r.report_id, r.agent_id, r.kind, r.subject, r.created_at FROM agent_reports r
-     ${acks ? "LEFT JOIN agent_report_acknowledgements a ON a.report_id = r.report_id" : ""}
-     WHERE r.severity = 'critical' AND r.created_at >= ? AND r.created_at <= ?${acks ? " AND a.report_id IS NULL" : ""}
-     ORDER BY r.created_at DESC LIMIT 200`,
-  ).bind(since, iso(now)).all<{ report_id: string; agent_id: string; kind: string; subject: string; created_at: string }>();
-  const n = rows.results.length;
+  const rows = await openCriticalReportRows(db, now);
+  const n = rows.length;
   return {
-    topic: "critical_reports", active: n > 0,
-    fingerprint: await fp(rows.results.map((r) => r.report_id)),
+    topic: "critical_reports", channel: channelOf("critical_reports"), active: n > 0,
+    fingerprint: await fp(rows.map((r) => r.report_id)),
     title: n ? `${n} open critical agent report(s) in the last 24 hours` : "No open critical agent report in the last 24 hours",
-    lines: rows.results.slice(0, 5).map((r) => `${r.created_at} ${r.agent_id}: ${r.subject.slice(0, 160)}`),
-    link: `${CONSOLE_URL}#/agents`,
+    lines: rows.slice(0, 5).map((r) => `${r.created_at} ${r.agent_id}: ${r.subject.slice(0, 160)}`),
+    link: OWNER_PANEL_URL,
   };
 }
 
@@ -164,7 +163,7 @@ async function organism(db: D1Database): Promise<Notice> {
   let findings: Array<{ kind: string; subject: string; detail: string }> = [];
   try { const f = JSON.parse(row?.findings ?? "[]"); if (Array.isArray(f)) findings = f; } catch { findings = []; }
   return {
-    topic: "organism", active: findings.length > 0,
+    topic: "organism", channel: channelOf("organism"), active: findings.length > 0,
     fingerprint: await fp([
       ...findings.filter((f) => !SELF_REGISTERING_FINDINGS.has(f.kind)).map((f) => `${f.kind}:${f.subject}`),
       ...(findings.some((f) => SELF_REGISTERING_FINDINGS.has(f.kind)) ? ["self-registering"] : []),
@@ -188,7 +187,7 @@ async function buildMinutes(db: D1Database, now: number): Promise<Notice> {
     `Budget: the Workers Builds free tier (${u.included_minutes.free} min/month); the account's Workers Paid plan includes ${u.included_minutes.paid}`,
   ] : [];
   return {
-    topic: "build_minutes", active,
+    topic: "build_minutes", channel: channelOf("build_minutes"), active,
     fingerprint: active && u ? await fp([u.month, u.status, String(step)]) : "",
     title: !u || u.status === "no_data" ? "Workers Builds minutes are not measured yet"
       : u.status === "stale" ? `Workers Builds minutes: last measured at ${u.last_collection?.collected_at ?? "unknown"} (${u.minutes}/${u.budget_minutes} this month)`
@@ -218,7 +217,7 @@ async function dependencies(db: D1Database, now: number): Promise<Notice> {
   ] : [];
   const n = ids.length;
   return {
-    topic: "dependencies", active,
+    topic: "dependencies", channel: channelOf("dependencies"), active,
     fingerprint: active ? await fp([...ids, ...(a?.stale ? ["stale"] : [])]) : "",
     title: !a || a.status === "no_data" ? "npm dependencies are not audited yet"
       : n ? `Vulnerable npm dependencies: ${n} high or critical advisor${n === 1 ? "y" : "ies"} in Worker or Console builds${a.stale ? "; the audit is also stale" : ""}`
@@ -228,21 +227,36 @@ async function dependencies(db: D1Database, now: number): Promise<Notice> {
   };
 }
 
+/** Production problems no agent is handling; one line per problem, fingerprinted by what and where, not when. */
+async function productionUnhandled(db: D1Database, now: number): Promise<Notice> {
+  const problems = await unhandledProblems(db, now);
+  const n = problems.length;
+  return {
+    topic: "production_unhandled", channel: channelOf("production_unhandled"), active: n > 0,
+    fingerprint: await fp(problems.map((p) => `${p.code}:${p.subject}`)),
+    title: n ? `A production problem no agent is handling: ${n} item(s)` : "Every production problem is handled by an agent or waits for your approval",
+    lines: problems.slice(0, 20).map((p) => p.detail), link: OWNER_PANEL_URL,
+  };
+}
+
 /** The live notices, for the Console and for reconcileNotices. Read-only. */
 export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now)];
+  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now), await productionUnhandled(db, now)];
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));
 
+/** Whether email is set up at all (GET /v1/notices reports it); only owner-channel topics are ever emailed. */
 export function emailConfigured(env: NoticeEnv): boolean {
   return Boolean(env.OWNER_EMAIL && env.NOTIFY_FROM && owners(env).length);
 }
 
+/** Whether this topic goes to the owner's Telegram: an owner-channel topic and a configured binding. */
 export function telegramConfigured(env: NoticeEnv, topic: Topic): boolean {
-  return typeof env.OWNER_TELEGRAM?.notify === "function" && TELEGRAM_TOPICS.includes(topic);
+  return typeof env.OWNER_TELEGRAM?.notify === "function" && channelOf(topic) === "owner";
 }
-const anyChannel = (env: NoticeEnv, topic: Topic) => emailConfigured(env) || telegramConfigured(env, topic);
+const emailFor = (env: NoticeEnv, topic: Topic) => channelOf(topic) === "owner" && emailConfigured(env);
+const anyChannel = (env: NoticeEnv, topic: Topic) => emailFor(env, topic) || telegramConfigured(env, topic);
 
 async function deliverTelegram(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
   try {
@@ -253,14 +267,18 @@ async function deliverTelegram(env: NoticeEnv, change: "opened" | "changed" | "c
   }
 }
 
-/** Every configured channel; "sent" only when each one sent. */
+/**
+ * Every configured channel of an owner-channel topic; "sent" only when each one sent. A console-only topic is never
+ * delivered: its delivery is recorded as "console_only", and it is never retried.
+ */
 async function deliver(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
+  if (channelOf(n.topic) !== "owner") return "console_only";
   const results: string[] = [];
-  if (emailConfigured(env)) results.push(await deliverEmail(env, change, n));
+  if (emailFor(env, n.topic)) results.push(await deliverEmail(env, change, n));
   if (telegramConfigured(env, n.topic)) results.push(await deliverTelegram(env, change, n));
   if (!results.length) return "not_configured";
   if (results.length === 1 || results.every((r) => r === "sent")) return results.length === 1 ? results[0] : "sent";
-  const names = [emailConfigured(env) ? "email" : null, telegramConfigured(env, n.topic) ? "telegram" : null].filter(Boolean);
+  const names = [emailFor(env, n.topic) ? "email" : null, telegramConfigured(env, n.topic) ? "telegram" : null].filter(Boolean);
   return names.map((c, i) => `${c}: ${results[i]}`).join("; ").slice(0, 300);
 }
 
@@ -271,7 +289,7 @@ async function deliverEmail(env: NoticeEnv, change: "opened" | "changed" | "clos
     "",
     ...n.lines.map((l) => `- ${l}`),
     "",
-    `Open the Cerebrum Console: ${n.link}`,
+    `Open the Owner page of the Cerebrum Console: ${n.link}`,
     "",
     "Sent by the Cryptophys AI Kernel (ADR-0012). It moves no funds; a trading action needs your click.",
   ].join("\n");

@@ -114,7 +114,7 @@ test("U3. the month's total, per Worker, unmeasured builds and the projection ag
   assert.equal((await buildUsage(db as never, Date.parse("2026-11-01T06:00:00Z")))!.projected_minutes, null, "no projection on the first day");
 });
 
-test("U4. the owner hears when the month's measured or projected minutes reach 80% of the budget, once per 10% step", async () => {
+test("U4. the notice opens when the month's measured or projected minutes reach 80% of the budget and changes once per 10% step; console-only (owner 2026-11-13)", async () => {
   const db = migratedDb();
   const notice = async (now = NOW) => (await collectNotices(db as never, now)).find((n) => n.topic === "build_minutes")!;
   assert.equal((await notice()).active, false);
@@ -126,8 +126,9 @@ test("U4. the owner hears when the month's measured or projected minutes reach 8
   assert.match(quiet.title, /near the free-tier budget \(1000\/3000/);
   assert.ok(quiet.lines.some((l) => /about \d+ minutes by the end of the month/.test(l)));
   assert.equal(quiet.link, "https://nexus.cryptophys.work/console/#/code");
+  assert.equal(quiet.channel, "console", "owner 2026-11-13: shown in the Console, never emailed or sent to Telegram");
   ins.run("x2", iso(NOW - 3_600_000), iso(NOW - 3_500_000), 60, 1, iso(NOW));
-  assert.equal((await notice()).fingerprint, quiet.fingerprint, "one more build in the same 10% step: no new email");
+  assert.equal((await notice()).fingerprint, quiet.fingerprint, "one more build in the same 10% step: no new notice event");
   ins.run("x3", iso(NOW - 3_600_000), iso(NOW - 3_500_000), 120_000, 2000, iso(NOW));
   const over = await notice();
   assert.match(over.title, /over the free-tier budget \(3001\/3000/);
