@@ -81,7 +81,7 @@ test("1. migration 0024: one owner decision per proposal, by a person", () => {
   const db = migratedDb();
   const cols = db.raw.prepare("PRAGMA table_info(consensus_owner_decisions)").all().map((c: any) => c.name);
   assert.deepEqual(cols, ["proposal_id", "decision", "decided_by", "reason", "created_at"]);
-  assert.deepEqual([...PHASE4_EXECUTABLE].sort(), ["admit_voter", "amend_constitution", "register_principal", "register_privileged_agent", "retire_agent", "retire_worker"]);
+  assert.deepEqual([...PHASE4_EXECUTABLE].sort(), ["admit_voter", "amend_constitution", "change_access", "register_principal", "register_privileged_agent", "retire_agent", "retire_worker"]);
 });
 
 test("2. critical actions reach the owner in mode deploy or critical (owner 2026-11-13); shadow and routine only record them", async () => {

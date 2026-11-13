@@ -152,7 +152,10 @@ async function registerWorkChange(db: D1Database, repo: WorkReader, p: { id: str
 export async function workBranchesTick(env: WorkTickEnv, nowMs = Date.now(), fetchImpl: Fetch = (i, init) => fetch(i, init)): Promise<Record<string, unknown>> {
   const binding = env.ARTIFACTS;
   if (!binding || typeof binding.list !== "function") return { outcome: "not_configured" };
-  const state = await repoStatus({ list: binding.list.bind(binding) }, WORK_REPO);
+  // Never `binding.list.bind(binding)`: on a Workers RPC stub `.bind` is itself a remote method name, and the call
+  // fails with "The RPC receiver does not implement the method \"bind\"" (every tick from the first live run, 2026-11-13).
+  const list = binding.list;
+  const state = await repoStatus({ list: (opts) => list.call(binding, opts) }, WORK_REPO);
   if (state !== "ready") return { outcome: "no_work_repo", status: state };
 
   const canonical = await binding.get(CANONICAL_REPO);

@@ -10,6 +10,7 @@ import { runCycle, SerialCycleQueue, type CycleReport } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
 import { healthBody, type HealthBody, type JsonObject } from "../../control-plane-shared/src/http.ts";
+import { vaultOn } from "./alert-channels.ts";
 
 export default worker;
 
@@ -67,6 +68,16 @@ export class SignalAnalystAgent extends DurableObject<Env> {
   async status(): Promise<CycleReport | null> {
     return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;
   }
+}
+
+/**
+ * Owner 2026-11-13 (Alerts page): the Telegram bot tokens of the owner's alert channels. Only this Worker holds the
+ * binding (no route, no other Worker), so a token never sits in the shared D1 and is never returned by an API.
+ */
+export class AlertVault extends DurableObject<Env> {
+  async put(channelId: string, token: string): Promise<void> { return vaultOn(this.ctx.storage as never).put(channelId, token); }
+  async get(channelId: string): Promise<string | null> { return vaultOn(this.ctx.storage as never).get(channelId); }
+  async delete(channelId: string): Promise<void> { return vaultOn(this.ctx.storage as never).delete(channelId); }
 }
 
 /** Platform Auditor agent process (TP-007): hourly audit hash chain & 24h governance verification. */

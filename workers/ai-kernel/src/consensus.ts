@@ -303,12 +303,14 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  *  - retire_worker: the Deployment Orchestrator dispatches the narrow Retire Worker workflow,
  *    which deletes only Workers in its RETIRABLE list whose source is gone from main;
  *  - retire_agent (owner 2026-11-11, ADR-0013 §3): the kernel deletes an agent no row refers to, or
- *    suspends it as retired; kernel agents, council seats and exempt hosts are refused.
- * Restoring D1, rotating secrets, changing Access and turning agents back on stay manual:
+ *    suspends it as retired; kernel agents, council seats and exempt hosts are refused;
+ *  - change_access (ADR-0012 G6 gate 9, owner 2026-11-13): the Deployment Orchestrator applies exactly the Access
+ *    plan whose digest the proposal carries (native-access.ts), with the owner's CF_ACCESS_TOKEN.
+ * Restoring D1, rotating secrets and turning agents back on stay manual:
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -326,6 +328,10 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "retire_worker") {
     if (!env.DEPLOY) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.retireForConsensus(proposalId, decisionId, p.target);
+  }
+  if (p.action === "change_access") {
+    if (!env.DEPLOY?.accessForConsensus) throw new Error("deploy_binding_missing");
+    return await env.DEPLOY.accessForConsensus(proposalId, decisionId, String(p.params.digest ?? ""));
   }
   if (p.action === "retire_agent") {
     return await retireAgent(env as never, p.target, `owner:${approver} via consensus:${proposalId}`, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));

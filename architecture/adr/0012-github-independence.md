@@ -776,6 +776,44 @@ Gate 10 of `docs/GITHUB-CUTOVER.md`. An owner-approved consensus `retire_worker`
   - The live run is not yet proven. `cryptophys-home` is retired with `retire-worker.yml` (an ops request, the owner's 2026-11-13 decision), not by this path.
   - Gate 10 is met when one owner-approved native retirement succeeds live.
 
+### 5o. Gate 9: Access provisioning through the Orchestrator (2026-11-13)
+
+Gate 9 of `docs/GITHUB-CUTOVER.md`. The owner chose the automatic path with the owner's click, and created the Orchestrator secret `CF_ACCESS_TOKEN` (2026-11-13: "done namanya CF_ACCESS_TOKEN"). Its permissions are Access: Apps and Policies Edit; Access: Organizations, Identity Providers, and Groups Edit; and Access: Service Tokens Read. The code is `workers/deployment-orchestrator/src/native-access.ts`.
+
+- **The definition.** It is `provision-access.yml`'s, and test NA1 keeps the two equal:
+  - one self-hosted application, `cryptophys-cloud-platform`;
+  - destinations: every platform Worker (destination type `worker`, by its script tag, read with `CF_DEPLOY_TOKEN`), `nexus.cryptophys.work`, and the path `ai.cryptophys.work/api/*`;
+  - three policies:
+    - `ci-service-token`: Service Auth;
+    - `platform-operators`: allow, for the operator emails and the group `cryptophys-nexus-accounts`;
+    - `external-agents`: Service Auth, for the tokens named `cryptophys-agent-*`;
+  - the Google, Microsoft Entra ID or OIDC, and one-time PIN identity providers;
+  - an 8-hour session, not in the app launcher, no automatic redirect.
+- **What it never decides by itself.**
+  - The operator emails are kept exactly as the live `platform-operators` policy has them. The workflow's `ACCESS_ALLOWED_EMAILS` is a GitHub variable, and people are added through the Console's Users page, which manages the group.
+  - The CI token is kept from the live `ci-service-token` policy and must still exist.
+  - The application and the group must already exist; neither is created here.
+  - Any of these unreadable, or a read refused, is a refusal.
+- **Plan and proposal.** Planning only reads. The plan compares a tag-independent view of the live application with the desired one: Workers by name, policies by name, identity providers by type and name.
+  - In the first cycle of each hour the Supervisor reads the plan through `DeployRpc.accessPlan`.
+  - A difference becomes one critical `change_access` proposal (target `platform`). Its params carry the plan's SHA-256 digest and up to 12 described changes, for example "add destination worker:cryptophys-forge" or "policy external-agents: add service_token:…".
+  - A plan is proposed once per digest within 24 hours. The Owner page lists its changes, and the proposal waits for the owner's click in mode `deploy` or `critical` (ADR-0009).
+- **Applying.** After the click, `accessForConsensus` runs once per proposal (a Durable Object claim). It:
+  1. re-verifies the proposal;
+  2. plans again and requires the approved digest (`plan_changed_since_approval` otherwise);
+  3. creates any platform Worker that does not exist yet as the workflow's private 503 stub, with workers.dev and previews disabled;
+  4. plans again (the digest must still match, now with the tag);
+  5. updates the application with `PUT /access/apps/{id}`, requiring the same id and AUD back;
+  6. reads it back, which must be in sync with the plan.
+- **Outcomes.**
+  - Success: `access.applied` is audited, and there is no report.
+  - A refusal, or a failure before anything changed: `access.apply_failed` and a **warning**. Nothing changed, and the next hourly check proposes the current plan.
+  - A failure after something changed: a **critical** report ("Access change stopped part way") that asks for one `provision-access.yml` run.
+- **Not repeated from the workflow.** The live probes through Access with the CI token: the Orchestrator does not hold that secret. The read-back of the application is the check.
+- **Not verified live.**
+  - That `GET /access/apps` returns the policies inline with the `include` shapes above. The workflow reads only `.result.aud` and the destinations, so no live read has confirmed it. If the shapes differ, every plan reads as out of sync, and the Owner page shows that before any click.
+  - That a `PUT` with inline policies keeps its id and AUD. The workflow has relied on this on every run.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).

@@ -2,7 +2,7 @@
 // Runtime entry point: the Access-gated HTTP handler, the DeploymentLock Durable Object,
 // and the RPC health entrypoint used by the Drift Detector.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
+import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import { resolveSecrets } from "../../control-plane-shared/src/secrets.ts";
@@ -35,6 +35,14 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   }
   async deployForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>) {
     return deployForConsensus(await resolved(this.env), proposalId, decisionId, target, params);
+  }
+  /** ADR-0012 G6 gate 9: the Access plan, read only (for the Supervisor). */
+  async accessPlan() {
+    return accessPlanSummary(await resolved(this.env));
+  }
+  /** ADR-0012 G6 gate 9: an owner-approved change_access. */
+  async accessForConsensus(proposalId: string, decisionId: string, digest: string) {
+    return accessForConsensus(await resolved(this.env), proposalId, decisionId, digest);
   }
   async retireForConsensus(proposalId: string, decisionId: string, target: string) {
     return retireForConsensus(await resolved(this.env), proposalId, decisionId, target);

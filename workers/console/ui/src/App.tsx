@@ -17,6 +17,7 @@ import Knowledge from "./pages/Knowledge";
 import Code from "./pages/Code";
 import Organism from "./pages/Organism";
 import Owner from "./pages/Owner";
+import Alerts from "./pages/Alerts";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -51,6 +52,8 @@ export default function App() {
     case "pipelines": page = <Pipelines />; break;
     case "markets": page = <Markets />; break;
     case "users": page = <Users />; break;
+    // Owner 2026-11-13: Telegram alert channels, from the account menu.
+    case "alerts": page = <Alerts />; break;
     case "code": page = <Code />; break;
     default: page = <Command />; current = "";
   }

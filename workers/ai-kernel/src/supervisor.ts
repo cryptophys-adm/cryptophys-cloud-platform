@@ -29,6 +29,8 @@ export const DAILY_DEPLOY_LIMIT = POLICY_PARAMETERS["daily-deploy-limit"].defaul
 export const SUSPEND_AFTER_FAILURES_PER_HOUR = 5;
 
 export const AGENT_ID = "supervisor";
+/** Gate 9: the Access plan is read in the first cycle of each hour (cycles at :07/:22/:37/:52). */
+export const ACCESS_CHECK_MINUTES = 15;
 const SERVICE = "cryptophys-ai-kernel";
 const PROPOSAL_COOLDOWN_MS = 24 * 3_600_000;
 /** ADR-0013: one registration proposal per action and target per day. */
@@ -413,6 +415,37 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       }
     } catch (err) {
       report.findings.push({ kind: "deploy", action: "none", why: `pending deploys unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
+    }
+  }
+
+  // ADR-0012 G6 gate 9: once an hour, compare the Access application with the platform's definition. A difference
+  // becomes one critical change_access proposal per plan (its digest), which waits for the owner's click; it is
+  // proposed again only when the plan changes or after 24 h (the owner window). A plan that cannot be read is a
+  // finding only: the owner is contacted for approvals, not for this.
+  if (trigger === "scheduled" && env.DEPLOY?.accessPlan && new Date(now).getUTCMinutes() < ACCESS_CHECK_MINUTES) {
+    try {
+      const plan = await env.DEPLOY.accessPlan();
+      if (!plan.configured) {
+        // Not set up: nothing to say every hour.
+      } else if (!plan.ok) {
+        report.findings.push({ kind: "access", action: "none", why: `access plan unavailable: ${String(plan.reason ?? "unknown").slice(0, 120)}` });
+      } else if (plan.in_sync) {
+        report.findings.push({ kind: "access", action: "none", why: "the Access application matches the platform's definition" });
+      } else if (plan.digest && /^[0-9a-f]{64}$/.test(plan.digest)) {
+        const seen = await env.DB.prepare(
+          "SELECT 1 AS x FROM consensus_proposals WHERE action = 'change_access' AND json_extract(params_json, '$.digest') = ? AND created_at >= ? LIMIT 1",
+        ).bind(plan.digest, new Date(now - PROPOSAL_COOLDOWN_MS).toISOString()).first();
+        if (seen) {
+          report.findings.push({ kind: "access", action: "none", why: "the Access change is already proposed; it waits for the owner" });
+        } else {
+          const changes = (plan.changes ?? []).slice(0, 12).map((c) => String(c).slice(0, 120));
+          const r = await syscall(env, AGENT_ID, "consensus.propose", { action: "change_access", target: "platform", params: { digest: plan.digest, changes } });
+          report.actions.push(r);
+          report.findings.push({ kind: "access", action: "consensus.propose", outcome: r.outcome, why: `${changes.length} Access change(s): ${changes.slice(0, 3).join("; ")}`.slice(0, 300) });
+        }
+      }
+    } catch (err) {
+      report.findings.push({ kind: "access", action: "none", why: `access plan unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
   }
 

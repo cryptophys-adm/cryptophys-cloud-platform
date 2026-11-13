@@ -162,7 +162,8 @@ test("O9. repeated closure email failures keep retrying until delivered", async 
 
 test("O5. wiring: kernel schedule, kernel route, Console route and panel", () => {
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
-  assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(reconcileNotices\(env, event\.scheduledTime\)/);
+  // Owner 2026-11-13 (Alerts page): the run also gets the AlertVault, which holds the alert channels' bot tokens.
+  assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(reconcileNotices\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}, event\.scheduledTime\)/);
   assert.match(idx, /path === "\/v1\/notices" && request\.method === "GET"/);
   assert.match(readFileSync(new URL("workers/console/src/ui/routes.ts", ROOT), "utf8"), /r\("kernel\.notices", "kernel", "GET", "\/v1\/notices", false, null\)/);
   const command = readFileSync(new URL("workers/console/ui/src/pages/Command.tsx", ROOT), "utf8");
@@ -213,6 +214,17 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   r = await reconcileNotices(both as never, NOW);
   assert.equal(r[0].delivery, "email: sent; telegram: failed: telegram_not_configured");
   assert.equal(mail.length, 1);
+  // Owner 2026-11-13, "tetap telegram saja": with OWNER_NOTICE_CHANNELS = "telegram" the email binding is never used.
+  const tgOnly: any[] = [];
+  const telegramOnly = { ...both, OWNER_NOTICE_CHANNELS: "telegram", OWNER_TELEGRAM: { notify: async (n: any) => { tgOnly.push(n); return { sent: true }; } } };
+  assert.equal(emailConfigured(telegramOnly as never), false);
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved' WHERE kind = 'param_candidate'").run();
+  r = await reconcileNotices(telegramOnly as never, NOW);
+  assert.deepEqual([r[0].change, r[0].delivery], ["closed", "sent"]);
+  assert.equal(mail.length, 1, "no email is sent");
+  assert.equal(tgOnly.length, 1);
+  const toml = readFileSync(new URL("../../ai-kernel/wrangler.toml", import.meta.url), "utf8");
+  assert.match(toml, /^OWNER_NOTICE_CHANNELS = "telegram"$/m, "production sends owner notices to Telegram only");
 });
 
 

@@ -63,7 +63,7 @@ const PROPOSAL_COLS: Column<any>[] = [
 ];
 
 /** ADR-0009 phase 4: the actions the platform can execute after an owner click (the kernel's PHASE4_EXECUTABLE). Others are done by runbook. */
-const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "amend_constitution", "register_privileged_agent", "admit_voter"]);
+const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "register_privileged_agent", "admit_voter"]);
 
 function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload: () => void }) {
   const { who, act } = useSession();

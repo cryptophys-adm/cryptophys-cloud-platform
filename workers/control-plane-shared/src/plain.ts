@@ -112,6 +112,7 @@ const ACTION_TEXT: Record<string, string> = {
   admit_voter: "give a council seat to",
   set_policy_parameter: "change the policy parameter",
   retire_worker: "retire",
+  change_access: "update Cloudflare Access for the",
   "consensus.execute": "carry out",
   "recovery.execute": "run the recovery plan for",
   deploy: "deploy",

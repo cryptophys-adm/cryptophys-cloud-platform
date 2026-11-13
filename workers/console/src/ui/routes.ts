@@ -39,6 +39,12 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
+  // Owner 2026-11-13: the Alerts page (the owner's Telegram alert channels), changed by approvers only.
+  r("kernel.alerts", "kernel", "GET", "/v1/alerts", false, null),
+  r("kernel.alert_create", "kernel", "POST", "/v1/alerts", true, "ADD ALERT"),
+  r("kernel.alert_update", "kernel", "POST", "/v1/alerts/{id}", true, "UPDATE {id13}"),
+  r("kernel.alert_test", "kernel", "POST", "/v1/alerts/{id}/test", true, "TEST {id13}"),
+  r("kernel.alert_delete", "kernel", "DELETE", "/v1/alerts/{id}", true, "DELETE {id13}"),
   r("kernel.agents", "kernel", "GET", "/v1/agents", false, null),
   r("kernel.agent", "kernel", "GET", "/v1/agents/{id}", false, null),
   r("kernel.agent_actions", "kernel", "GET", "/v1/agents/{id}/actions", false, null),

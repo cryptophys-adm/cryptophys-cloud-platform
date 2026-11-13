@@ -1,6 +1,7 @@
 /** Kernel operations shared by the HTTP API and the MCP tools (ADR-0007). */
 import type { OwnerTelegramBinding, SendEmailBinding } from "./owner-notices.ts";
 import type { OmegaHealthBinding } from "./execution-hosts.ts";
+import type { AlertVault } from "./alert-channels.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -25,6 +26,13 @@ export interface KernelHttpEnv extends KernelEnv {
   NOTIFY_FROM?: string;
   /** Owner 2026-11-12: Omega's VPS bridge and EA liveness for the AI Mesh (xauusd OmegaHealth, read-only). */
   XAUUSD_OMEGA_HEALTH?: OmegaHealthBinding;
+  /** Owner 2026-11-13 (Alerts page): the AlertVault Durable Object, which holds the alert channels' bot tokens. */
+  ALERT_VAULT_NS?: { idFromName(name: string): unknown; get(id: unknown): AlertVault };
+}
+
+/** The one AlertVault instance, or undefined where the binding is absent. */
+export function alertVaultOf(env: KernelHttpEnv): AlertVault | undefined {
+  return env.ALERT_VAULT_NS ? env.ALERT_VAULT_NS.get(env.ALERT_VAULT_NS.idFromName("alert-vault")) : undefined;
 }
 
 const AGENT_ID_RE = /^[a-z0-9-]{2,40}$/;
