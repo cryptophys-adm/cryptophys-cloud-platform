@@ -44,6 +44,8 @@ export default function Command() {
                 <div className="flex flex-wrap items-center gap-2">
                   <Dot tone={n.topic === "owner_attention" ? "amber" : "red"} pulse />
                   <span className="min-w-0 flex-1 break-words text-[12px] text-slate-200">{n.title}</span>
+                  {/* Owner 2026-11-13: only approvals and critical reports reach the owner; the kernel says which channel each notice uses. */}
+                  <Badge tone={n.channel === "owner" ? "amber" : "slate"}>{n.channel === "owner" ? "owner channel" : n.channel === "console" ? "Console only" : "—"}</Badge>
                   <a href={String(n.link ?? "").replace(/^.*#/, "#")} className="text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Open →</a>
                 </div>
                 <ul className="mt-1.5 space-y-1 pl-4 text-[11px] leading-relaxed text-slate-400">
@@ -95,7 +97,7 @@ export default function Command() {
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
-        <Panel title="Approval Queue" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />} right={<Badge tone={plans.length ? "amber" : "green"}>{plans.length} pending</Badge>}>
+        <Panel title="Approval Queue" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />} right={<div className="flex items-center gap-2"><Badge tone={plans.length ? "amber" : "green"}>{plans.length} pending</Badge><a href="#/owner" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Owner →</a></div>}>
           {loading && !ov ? <Skeleton /> : plans.length === 0 ? <Empty>No proposals waiting for a human. The mesh is acting within its mandate.</Empty> : (
             <div className="space-y-2">
               {plans.map((p) => (

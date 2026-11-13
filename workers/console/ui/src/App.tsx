@@ -16,6 +16,7 @@ import Consensus from "./pages/Consensus";
 import Knowledge from "./pages/Knowledge";
 import Code from "./pages/Code";
 import Organism from "./pages/Organism";
+import Owner from "./pages/Owner";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -37,6 +38,8 @@ export default function App() {
     // Owner 2026-11-11: the Metabolism page duplicated Organism and is removed; an old #/metabolism link lands on Organism.
     case "organism":
     case "metabolism": page = <Organism />; current = "organism"; break;
+    // Owner 2026-11-13: the one page where the platform needs a person; every owner email and Telegram message links here.
+    case "owner": page = <Owner />; break;
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;

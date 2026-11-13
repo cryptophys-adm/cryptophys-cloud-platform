@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight } from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -14,6 +14,8 @@ import { ago } from "../lib/format";
 import { serviceName } from "../lib/plain";
 
 export const NAV = [
+  // Owner 2026-11-13: approvals and open critical reports, the only things that need a person, come first.
+  { label: "Owner", href: "#/owner", key: "owner", icon: Inbox },
   { label: "Command", href: "#/", key: "", icon: Terminal },
   { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },

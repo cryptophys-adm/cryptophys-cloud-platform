@@ -45,8 +45,39 @@ function AcknowledgeForm({ report, reload }: { report: any; reload: () => void }
   );
 }
 
-export default function CriticalReports() {
+/**
+ * The report rows with their acknowledgement state: the acknowledge form for approvers, read-only for everyone else.
+ * The Cognition page passes the latest critical reports; the Owner page passes the open ones (GET /v1/owner/inbox).
+ */
+export function CriticalReportList({ rows, reload, empty }: { rows: any[]; reload: () => void; empty: string }) {
   const { who } = useSession();
+  if (rows.length === 0) return <Empty>{empty}</Empty>;
+  return (
+    <div className="space-y-2">
+      {rows.map((r: any) => (
+        <div key={r.report_id} className="glass-inner px-3 py-2 text-[12px]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="min-w-0 break-words text-slate-200">{r.subject}</span>
+            <span className="text-[11px] text-slate-500" title={r.created_at}>{ago(r.created_at)}</span>
+          </div>
+          <div className="mt-0.5 break-words text-[11px] text-slate-500"><span className="mono text-cyan-300">{r.agent_id}</span> · {r.kind} · <span className="mono">{r.report_id}</span></div>
+          {r.acknowledgement ? (
+            <div className="mt-1.5 text-[11px] text-emerald-300">
+              Acknowledged by <span className="mono">{r.acknowledgement.acknowledged_by}</span> at <span title={r.acknowledgement.acknowledged_at}>{r.acknowledgement.acknowledged_at}</span>
+              <div className="text-slate-400">{r.acknowledgement.reason}</div>
+            </div>
+          ) : who.approver ? (
+            <AcknowledgeForm report={r} reload={reload} />
+          ) : (
+            <div className="mt-1.5 text-[11px] text-slate-500"><Badge tone="red">not acknowledged</Badge> Only an approver can acknowledge.</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function CriticalReports() {
   const { ov } = useOverview();
   const { data, loading, error, refresh } = usePoll(() => call("kernel.reports", undefined, undefined, { limit: "100" }), 60_000);
   const rows = listOf(data, "reports").filter((r: any) => r.severity === "critical").slice(0, 20);
@@ -57,30 +88,8 @@ export default function CriticalReports() {
     <Panel title="Critical reports" icon={<ShieldAlert className="h-3.5 w-3.5 text-rose-300" />}
       right={<span className="flex gap-1.5"><Badge tone={counts?.critical ? "red" : "slate"}>{open} open · 24 h</Badge><Badge tone="slate">{acknowledged} acknowledged · 24 h</Badge></span>}>
       <p className="mb-2 text-[11px] text-slate-500">An open critical report of the last 24 hours makes the agents reject routine actions. An approver can acknowledge it once it is handled; warnings and info do not block.</p>
-      {loading && !data ? <Skeleton rows={2} /> : error ? <Empty>{error}</Empty> : rows.length === 0 ? (
-        <Empty>No critical report among the latest 100 reports.</Empty>
-      ) : (
-        <div className="space-y-2">
-          {rows.map((r: any) => (
-            <div key={r.report_id} className="glass-inner px-3 py-2 text-[12px]">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-slate-200">{r.subject}</span>
-                <span className="text-[11px] text-slate-500" title={r.created_at}>{ago(r.created_at)}</span>
-              </div>
-              <div className="mt-0.5 text-[11px] text-slate-500"><span className="mono text-cyan-300">{r.agent_id}</span> · {r.kind} · <span className="mono">{r.report_id}</span></div>
-              {r.acknowledgement ? (
-                <div className="mt-1.5 text-[11px] text-emerald-300">
-                  Acknowledged by <span className="mono">{r.acknowledgement.acknowledged_by}</span> at <span title={r.acknowledgement.acknowledged_at}>{r.acknowledgement.acknowledged_at}</span>
-                  <div className="text-slate-400">{r.acknowledgement.reason}</div>
-                </div>
-              ) : who.approver ? (
-                <AcknowledgeForm report={r} reload={() => void refresh()} />
-              ) : (
-                <div className="mt-1.5 text-[11px] text-slate-500"><Badge tone="red">not acknowledged</Badge> Only an approver can acknowledge.</div>
-              )}
-            </div>
-          ))}
-        </div>
+      {loading && !data ? <Skeleton rows={2} /> : error ? <Empty>{error}</Empty> : (
+        <CriticalReportList rows={rows} reload={() => void refresh()} empty="No critical report among the latest 100 reports." />
       )}
     </Panel>
   );

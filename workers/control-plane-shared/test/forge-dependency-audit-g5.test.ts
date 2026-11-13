@@ -251,7 +251,7 @@ test("G5-5. GET /v1/forge/dependency-audit for operators (read only), in the Con
   assert.match(read("workers/console/ui/scripts/render-smoke.mjs"), /"\/api\/forge\/v1\/forge\/dependency-audit"/);
 });
 
-test("G5-6. the owner notice: a high or critical advisory in a build, or a stale audit; one email per set of advisories", async () => {
+test("G5-6. the owner notice: a high or critical advisory in a build, or a stale audit; one notice event per set of advisories, console-only (owner 2026-11-13)", async () => {
   const db = migratedDb();
   const notice = async (now = NOW) => (await collectNotices(db as never, now)).find((n) => n.topic === "dependencies")!;
   const none = await notice();
@@ -270,8 +270,9 @@ test("G5-6. the owner notice: a high or critical advisory in a build, or a stale
   assert.match(open.title, /^Vulnerable npm dependencies: 1 high or critical advisory in Worker or Console builds$/);
   assert.ok(open.lines.some((l) => /^@scope\/pkg@2\.0\.0: high, Prototype pollution \(https:\/\/github\.com\/advisories\/GHSA-aaaa\) in workers\/console\/ui\/package-lock\.json/.test(l)));
   assert.equal(open.link, "https://nexus.cryptophys.work/console/#/code");
+  assert.equal(open.channel, "console", "owner 2026-11-13: shown in the Console, never emailed or sent to Telegram");
 
-  // The same advisory on a newer head: same fingerprint, no second email. A failed run after it changes nothing.
+  // The same advisory on a newer head: same fingerprint, no second notice event. A failed run after it changes nothing.
   await dependencyAuditTick({ DB: db as never }, repoWith(FILES, "2".repeat(40)), NOW + 2 * H, registry(ADVISORIES).fetchImpl as never);
   assert.equal((await notice(NOW + 2 * H + 60_000)).fingerprint, open.fingerprint);
   await dependencyAuditTick({ DB: db as never }, repoWith(FILES, "3".repeat(40)), NOW + 3 * H, registry({}, 500).fetchImpl as never);
