@@ -158,6 +158,10 @@ function healthPath(row: RegistryRow): string {
  * verification (health and reported version tag). Writes nothing.
  */
 export async function probeService(env: Env, serviceId: string): Promise<Probe> {
+  // The detector is not one of its own targets: it answers for itself from its version metadata, as observe()
+  // does. Without this the Orchestrator's native deploy could never verify a new Drift Detector live
+  // (2026-11-13: the control-plane deploy at fb511a0 failed with not_live_at_tag and was restored).
+  if (serviceId === SERVICE) return { reachable: true, healthy: true, version_tag: env.CF_VERSION_METADATA?.tag ?? null, error: null };
   const binding = targets(env)[serviceId];
   if (!binding) throw new Error("unknown_service");
   return probe(binding);
