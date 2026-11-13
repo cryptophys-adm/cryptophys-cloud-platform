@@ -1,12 +1,14 @@
 // Workers Builds build command (ADR-0012 §5c). Runs the control-plane type-check with the locked
 // toolchain, then the Console UI build (its own type-check and the Vite build, as GitHub CI's
 // "Build the Console UI" step), reports both for this commit to the Forge, then exits non-zero if
-// either failed so the build shows the same outcome. Reads Workers Builds' default variables
+// either failed so the build shows the same outcome. ADR-0012 §5l step 7: on a build of main whose Console
+// UI built, it first posts the built dist to the Forge (POST /v1/forge/console-dist), which keeps it for the
+// Orchestrator's native Console deploy. Reads Workers Builds' default variables
 // (WORKERS_CI_COMMIT_SHA, WORKERS_CI_BUILD_UUID, WORKERS_CI_BRANCH) and the build secrets
 // CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (the CI service token) plus FORGE_URL.
 // Nothing here prints a secret. Without FORGE_URL or the token it still type-checks, and says so.
 import { spawnSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,6 +99,70 @@ export async function postReport(fetchImpl, forgeUrl, clientId, clientSecret, bo
 }
 
 /**
+ * ADR-0012 §5l step 7: the content type of one dist file, from its extension (the types the Forge accepts).
+ */
+const DIST_TYPES = {
+  ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
+  ".json": "application/json", ".png": "image/png", ".woff2": "font/woff2",
+};
+export function distContentType(file) {
+  return DIST_TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream";
+}
+
+/** The Forge's request limit for one dist post (workers/forge/src/console-dist.ts MAX_BODY_BYTES). */
+export const MAX_DIST_BODY_BYTES = 36 * 1024 * 1024;
+
+/**
+ * Every file under `dir` as the Forge takes it: the relative `/`-separated path, the base64 content and the
+ * content type, sorted by path. Anything but a regular file or a directory (a symlink, a socket) is refused.
+ */
+export function collectConsoleDist(dir) {
+  const files = [];
+  const walk = (abs, rel) => {
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const p = path.join(abs, entry.name);
+      const r = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(p, r);
+      else if (entry.isFile()) files.push({ path: r, content_base64: readFileSync(p).toString("base64"), content_type: distContentType(r) });
+      else throw new Error(`console-dist: ${r} is neither a file nor a directory`);
+    }
+  };
+  walk(dir, "");
+  return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** Only a build of main posts the dist: WORKERS_CI_BRANCH is `main`, or empty for an Artifacts build of main. */
+export function postsConsoleDist(branch) {
+  const b = typeof branch === "string" ? branch.trim() : "";
+  return b === "" || b === "main";
+}
+
+/**
+ * POST the dist, before the report, with the same headers as `postReport`. A 3xx is a refused token; anything
+ * but a JSON 200 whose `commit` is this build's commit is a failure. Returns the Forge's answer.
+ */
+export async function postConsoleDist(fetchImpl, forgeUrl, clientId, clientSecret, commit, files) {
+  const body = JSON.stringify({ confirm: "UPLOAD", commit, files });
+  if (body.length > MAX_DIST_BODY_BYTES) throw new Error(`console-dist: the dist is ${body.length} bytes as JSON, over the Forge's limit of ${MAX_DIST_BODY_BYTES}`);
+  const res = await fetchImpl(new URL("/v1/forge/console-dist", forgeUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "content-type": "application/json", "CF-Access-Client-Id": clientId, "CF-Access-Client-Secret": clientSecret },
+    body,
+  });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`console-dist: Cloudflare Access refused the CI service token (HTTP ${res.status} to sign-in). Check CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the build variables.`);
+  }
+  const text = await res.text();
+  let answer = null;
+  try { answer = JSON.parse(text); } catch { /* not JSON */ }
+  if (!res.ok || !answer || answer.commit !== commit) {
+    throw new Error(`console-dist: the Forge did not store the dist (HTTP ${res.status}) (invalid JSON or commit mismatch)`);
+  }
+  return answer;
+}
+
+/**
  * The result line the Forge reads from a build log through the Workers Builds API (ADR-0012 §5d: change
  * requests are type-checked with no build secrets, so they cannot report). It holds no secret: commit,
  * build id, branch, counts, file:line:code diagnostics, toolchain versions and the Console build.
@@ -106,16 +172,33 @@ export function resultLine(body) {
   return RESULT_MARKER + JSON.stringify(body);
 }
 
-async function report(body, env) {
+function forgeCredentials(env) {
   const url = cleanCredential(env.FORGE_URL, "");
   const id = cleanCredential(env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Id");
   const secret = cleanCredential(env.CF_ACCESS_CLIENT_SECRET, "CF-Access-Client-Secret");
-  if (!url || !id || !secret) {
+  return url && id && secret ? { url, id, secret } : null;
+}
+
+async function report(body, env) {
+  const c = forgeCredentials(env);
+  if (!c) {
     console.log("typecheck-report: FORGE_URL or the CI service token is not configured in this build; result not reported.");
     return;
   }
-  const answer = await postReport(fetch, url, id, secret, body);
+  const answer = await postReport(fetch, c.url, c.id, c.secret, body);
   console.log(`typecheck-report: the Forge recorded ${answer.conclusion} for ${answer.commit} (applied to its check: ${answer.applied_to_run})`);
+}
+
+/** ADR-0012 §5l step 7: the Console dist of a build of main, posted before the report. */
+async function postDist(commit, dist, env) {
+  const c = forgeCredentials(env);
+  if (!c) {
+    console.log("console-dist: FORGE_URL or the CI service token is not configured in this build; dist not posted.");
+    return;
+  }
+  const files = collectConsoleDist(dist);
+  const answer = await postConsoleDist(fetch, c.url, c.id, c.secret, commit, files);
+  console.log(`console-dist: the Forge ${answer.stored ? "stored" : "already held"} ${answer.files} files (${answer.total_bytes} bytes) for ${answer.commit}`);
 }
 
 // Run as a script only (the Forge tests import the pure functions above; in that bundle import.meta.url is absent).
@@ -151,11 +234,24 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
   for (const diagnostic of consoleBuild.diagnostics) console.log(diagnostic);
   const body = { commit, build_id: env.WORKERS_CI_BUILD_UUID ?? "manual", branch: env.WORKERS_CI_BRANCH ?? null, ...summary, console_build: consoleBuild };
   console.log(resultLine(body));
+  // The dist first, so a commit the Forge marks ready has its Console build stored when it could. A failed dist
+  // post still reports the checks (the Orchestrator then keeps the Console on its workflow: console_dist_missing),
+  // and fails the build.
+  let distFailed = false;
+  if (uiBuild.status === 0 && postsConsoleDist(env.WORKERS_CI_BRANCH)) {
+    try {
+      await postDist(commit, path.join(ui, "dist"), env);
+    } catch (e) {
+      console.error(String(e?.message ?? e));
+      distFailed = true;
+    }
+  }
   try {
     await report(body, env);
   } catch (e) {
     console.error(String(e?.message ?? e));
     process.exit(3);
   }
+  if (distFailed) process.exit(3);
   process.exit(tc.status === 0 && uiBuild.status === 0 ? 0 : 1);
 }
