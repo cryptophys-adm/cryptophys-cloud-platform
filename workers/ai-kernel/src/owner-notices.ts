@@ -75,7 +75,15 @@ export interface NoticeEnv {
   OWNER_EMAIL?: SendEmailBinding;
   NOTIFY_FROM?: string;
   OWNER_TELEGRAM?: OwnerTelegramBinding;
+  /**
+   * The owner channels in use, comma-separated: "email", "telegram". Owner 2026-11-13: "tetap telegram saja", so
+   * production sets "telegram" (wrangler.toml). Unset: both, wherever their bindings are configured.
+   */
+  OWNER_NOTICE_CHANNELS?: string;
 }
+
+const channelOn = (env: NoticeEnv, name: "email" | "telegram") =>
+  env.OWNER_NOTICE_CHANNELS === undefined || env.OWNER_NOTICE_CHANNELS.split(",").map((c) => c.trim().toLowerCase()).includes(name);
 
 const fp = async (parts: string[]) => (parts.length ? (await sha256Hex([...parts].sort().join("\n"))).slice(0, 32) : "");
 
@@ -248,12 +256,12 @@ const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").ma
 
 /** Whether email is set up at all (GET /v1/notices reports it); only owner-channel topics are ever emailed. */
 export function emailConfigured(env: NoticeEnv): boolean {
-  return Boolean(env.OWNER_EMAIL && env.NOTIFY_FROM && owners(env).length);
+  return channelOn(env, "email") && Boolean(env.OWNER_EMAIL && env.NOTIFY_FROM && owners(env).length);
 }
 
 /** Whether this topic goes to the owner's Telegram: an owner-channel topic and a configured binding. */
 export function telegramConfigured(env: NoticeEnv, topic: Topic): boolean {
-  return typeof env.OWNER_TELEGRAM?.notify === "function" && channelOf(topic) === "owner";
+  return channelOn(env, "telegram") && typeof env.OWNER_TELEGRAM?.notify === "function" && channelOf(topic) === "owner";
 }
 const emailFor = (env: NoticeEnv, topic: Topic) => channelOf(topic) === "owner" && emailConfigured(env);
 const anyChannel = (env: NoticeEnv, topic: Topic) => emailFor(env, topic) || telegramConfigured(env, topic);

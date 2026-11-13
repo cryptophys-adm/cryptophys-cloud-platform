@@ -213,6 +213,17 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   r = await reconcileNotices(both as never, NOW);
   assert.equal(r[0].delivery, "email: sent; telegram: failed: telegram_not_configured");
   assert.equal(mail.length, 1);
+  // Owner 2026-11-13, "tetap telegram saja": with OWNER_NOTICE_CHANNELS = "telegram" the email binding is never used.
+  const tgOnly: any[] = [];
+  const telegramOnly = { ...both, OWNER_NOTICE_CHANNELS: "telegram", OWNER_TELEGRAM: { notify: async (n: any) => { tgOnly.push(n); return { sent: true }; } } };
+  assert.equal(emailConfigured(telegramOnly as never), false);
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved' WHERE kind = 'param_candidate'").run();
+  r = await reconcileNotices(telegramOnly as never, NOW);
+  assert.deepEqual([r[0].change, r[0].delivery], ["closed", "sent"]);
+  assert.equal(mail.length, 1, "no email is sent");
+  assert.equal(tgOnly.length, 1);
+  const toml = readFileSync(new URL("../../ai-kernel/wrangler.toml", import.meta.url), "utf8");
+  assert.match(toml, /^OWNER_NOTICE_CHANNELS = "telegram"$/m, "production sends owner notices to Telegram only");
 });
 
 
