@@ -130,7 +130,7 @@ These hold everywhere:
 | Worker secrets to Secrets Store | ADR-0012 phase 4 |
 | Deploy from the Forge, shadowed over 10 deploys | phase 4 |
 | GitHub archived | phase 5 |
-| Evolution loop: autonomous merge (E1), the evolver agent (E2), fitness and revert (E3), memory and Console (E4); no shadow phase, guard paths autonomous under unanimous consensus (owner 2026-11-12) | ADR-0014, accepted and deferred until ADR-0012 phase 5 (owner 2026-11-12); merges on the Forge, no GitHub App |
+| Evolution loop: autonomous merge (E1), the evolver agent (E2), fitness and revert (E3), memory and Console (E4); no shadow phase, guard paths autonomous under unanimous consensus (owner 2026-11-12); code model `gpt-oss` on Workers AI only, one evolution in flight and at most one started per 4 h, each running to merge and deploy (owner 2026-11-13) | ADR-0014, accepted and deferred until ADR-0012 phase 5 (owner 2026-11-12); merges on the Forge, no GitHub App |
 | `cryptophys-home` removed | after the redirect week |
 
 See `docs/RETROSPECTIVE-2026-11-08.md` §7 for the order of work.
