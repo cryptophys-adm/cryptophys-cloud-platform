@@ -6,6 +6,7 @@ import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
 import { describeAction, explainReason } from "../lib/plain";
+import { ownerClickMode } from "../lib/consensus";
 
 /** Proposal outcomes in the validated segment order (good, info, warning, owner, serious, critical, neutral). */
 export const PROPOSAL_STATUS = [
@@ -61,8 +62,8 @@ const PROPOSAL_COLS: Column<any>[] = [
   { key: "when", header: "when", sort: (p) => Date.parse(p.created_at) || 0, cell: (p) => <span className="text-slate-500" title={p.created_at}>{ago(p.created_at)}</span> },
 ];
 
-/** ADR-0009 phase 4: the actions the platform can execute after an owner click. Others are done by runbook. */
-const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "register_privileged_agent", "admit_voter"]);
+/** ADR-0009 phase 4: the actions the platform can execute after an owner click (the kernel's PHASE4_EXECUTABLE). Others are done by runbook. */
+const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "amend_constitution", "register_privileged_agent", "admit_voter"]);
 
 function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload: () => void }) {
   const { who, act } = useSession();
@@ -70,7 +71,7 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
   return (
     <Panel title="Owner Approval Queue" icon={<ShieldAlert className="h-3.5 w-3.5 text-fuchsia-300" />} right={<Badge tone={pending.length ? "purple" : "slate"}>{pending.length}</Badge>}>
       {pending.length === 0 ? (
-        <Empty>Nothing waits for you. Critical actions reach this queue only in mode critical, after the agents pass them and the Policy Engine allows them.</Empty>
+        <Empty>Nothing waits for you. Critical actions reach this queue in mode deploy or critical, after the agents pass them and the Policy Engine allows them.</Empty>
       ) : (
         <DataTable rows={pending} rowKey={(p) => p.proposal_id} maxHeight={360} initialSort={{ key: "when", dir: "asc" }} columns={[
           { key: "action", header: "action", sort: (p) => p.action, cell: (p) => <span className="inline-flex items-center gap-1.5"><Dot tone="purple" pulse /><span className="mono text-fuchsia-200">{p.action}</span></span> },
@@ -81,7 +82,7 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
                 {!runnable && <div className="text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject to close it.</div>}
                 {who.approver ? (
                   <div className="flex flex-wrap gap-2">
-                    {runnable && mode === "critical" && (
+                    {runnable && ownerClickMode(mode) && (
                       <button type="button" className="btn btn-approve !py-1" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
                         lines: ["Your click is recorded under your Access identity and is final.", "The Policy Engine re-checks, then the platform executes it immediately.", p.action === "retire_worker" ? "Retiring deletes the Worker from Cloudflare. D1 data is not touched." : p.action === "admit_voter" ? "The agent gets a council seat and votes on every later proposal." : p.action === "register_privileged_agent" ? "The agent is registered with the privileged capabilities its DNA declares." : "The principal can act as this agent until revoked."],
                         done: "Approved and executed.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>

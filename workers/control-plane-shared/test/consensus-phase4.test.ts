@@ -84,14 +84,25 @@ test("1. migration 0024: one owner decision per proposal, by a person", () => {
   assert.deepEqual([...PHASE4_EXECUTABLE].sort(), ["admit_voter", "amend_constitution", "register_principal", "register_privileged_agent", "retire_agent", "retire_worker"]);
 });
 
-test("2. critical actions reach the owner only in mode critical; shadow and routine only record them", async () => {
-  for (const mode of ["shadow", "routine", "deploy"]) {
+test("2. critical actions reach the owner in mode deploy or critical (owner 2026-11-13); shadow and routine only record them", async () => {
+  for (const mode of ["shadow", "routine"]) {
     const { env, db } = kernelEnv();
     setMode(db, mode);
     await syscall(env as never, "supervisor", "consensus.propose", { action: "register_principal", target: "platform-api", params: { access_identity: PRINCIPAL } });
     assert.notEqual(last(db).status, "pending_owner", mode);
     await assert.rejects(ownerDecide(env as never, last(db).proposal_id, "approve", APPROVER_EMAIL, null), /not_pending_owner/, mode);
   }
+  // Owner 2026-11-13, "Tombol muncul di mode deploy": in mode deploy a passed critical proposal waits for the click
+  // and executes only after it, exactly as in mode critical.
+  const { env, db } = kernelEnv();
+  setMode(db, "deploy");
+  await syscall(env as never, "supervisor", "consensus.propose", { action: "register_principal", target: "platform-api", params: { access_identity: PRINCIPAL } });
+  const p = last(db);
+  assert.equal(p.status, "pending_owner", p.outcome_json);
+  assert.match(p.outcome_json, /waiting for an owner approval click/);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_principals").get() as any).n, 0, "nothing executes before the click");
+  const res = await ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, "deploy mode");
+  assert.equal(res.status, "executed", JSON.stringify(res));
 });
 
 test("3. approve: the owner click is recorded, the Policy Engine re-checks with it, the action executes and is audited", async () => {
@@ -139,11 +150,13 @@ test("5. only a person decides; service tokens never; the window is 24 h; manual
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_owner_decisions WHERE decision = 'approve'").get() as any).n, 0);
 });
 
-test("6. leaving mode critical before the click blocks approval; targets refuse without the owner row", async () => {
+test("6. leaving modes deploy and critical before the click blocks approval; targets refuse without the owner row", async () => {
   const { env, db } = kernelEnv();
   const p = await pendingPrincipal(env, db);
-  setMode(db, "deploy");
-  await assert.rejects(ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, null), /mode_not_critical/);
+  for (const mode of ["routine", "shadow"]) {
+    setMode(db, mode);
+    await assert.rejects(ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, null), /mode_not_critical/, mode);
+  }
   setMode(db, "critical");
   // Even with the proposal forced to executing and a matching allow, the shared check needs the owner's approval row.
   db.raw.prepare("UPDATE consensus_proposals SET status = 'executing' WHERE proposal_id = ?").run(p.proposal_id);

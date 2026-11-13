@@ -109,7 +109,11 @@ test("I2. the Console: #/owner is the first nav item, reads only the inbox, reus
   assert.match(page, /<CriticalReportList rows=\{reports\}/, "the open critical reports reuse CriticalReports.tsx (acknowledge for approvers)");
   for (const text of ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Nothing needs you"]) assert.ok(page.includes(text), text);
   assert.match(page, /const problems = arr\(data\?\.production_problems\)/, "the third section reads the same inbox");
-  assert.match(page, /p\.executable === true && mode === "critical"/, "approve follows the kernel's executor list and mode");
+  assert.match(page, /p\.executable === true && ownerClickMode\(mode\)/, "approve follows the kernel's executor list and modes");
+  const modes = readFileSync(new URL("../../console/ui/src/lib/consensus.ts", import.meta.url), "utf8");
+  const kernel = readFileSync(new URL("../../ai-kernel/src/consensus.ts", import.meta.url), "utf8");
+  assert.match(modes, /OWNER_CLICK_MODES: readonly string\[\] = \["deploy", "critical"\]/);
+  assert.match(kernel, /OWNER_CLICK_MODES: ReadonlySet<ConsensusMode> = new Set<ConsensusMode>\(\["deploy", "critical"\]\)/, "the Console shows the button in exactly the kernel's modes");
   const reports = read("workers/console/ui/src/components/CriticalReports.tsx");
   assert.match(reports, /export function CriticalReportList/);
   const smoke = read("workers/console/ui/scripts/render-smoke.mjs");

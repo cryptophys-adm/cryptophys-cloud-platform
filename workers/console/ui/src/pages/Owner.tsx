@@ -8,6 +8,7 @@ import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
 import { ago } from "../lib/format";
 import { describeAction, serviceName } from "../lib/plain";
+import { ownerClickMode } from "../lib/consensus";
 
 /**
  * Owner decision 2026-11-13 ("Batasi User/Owner hanya untuk critical dan permintaan approval only"): the one page
@@ -104,7 +105,7 @@ function PlanItem({ p, reload }: { p: any; reload: () => void }) {
 
 function ProposalItem({ p, mode, reload }: { p: any; mode: string | null; reload: () => void }) {
   const { who, act } = useSession();
-  const canApprove = p.executable === true && mode === "critical";
+  const canApprove = p.executable === true && ownerClickMode(mode);
   return (
     <div className="glass-inner px-3 py-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-2">
@@ -116,7 +117,7 @@ function ProposalItem({ p, mode, reload }: { p: any; mode: string | null; reload
         <span className="mono">{p.action}</span> → <span className="mono">{p.target}</span> · proposed by <span className="mono">{p.proposer_agent_id}</span> · agents {count(p.approvals)} for, {count(p.rejections)} against of {count(p.eligible)} · expires {until(p.expires_at)}
       </div>
       {p.executable !== true && <div className="mt-1 text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject to close it.</div>}
-      {p.executable === true && mode !== "critical" && <div className="mt-1 text-[11px] text-amber-300">Approval executes only in consensus mode critical (now {mode ?? "—"}).</div>}
+      {p.executable === true && !ownerClickMode(mode) && <div className="mt-1 text-[11px] text-amber-300">Approval executes only in consensus mode deploy or critical (now {mode ?? "—"}).</div>}
       {who.approver ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {canApprove && (

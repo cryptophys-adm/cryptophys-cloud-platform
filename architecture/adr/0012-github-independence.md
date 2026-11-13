@@ -771,8 +771,8 @@ Gate 10 of `docs/GITHUB-CUTOVER.md`. An owner-approved consensus `retire_worker`
   - Without the native credentials, `retire_worker` dispatches `retire-worker.yml` exactly as before.
   - The workflow is also used when the only refusal is that `CF_DEPLOY_TOKEN` may not read something (HTTP 401 or 403). Detaching a custom domain needs Zone → Workers Routes → Edit; the workflow retries with `CLOUDFLARE_ACCESS_API_TOKEN`, which the Orchestrator does not hold.
   - A safety refusal never falls back.
-- **Not covered.**
-  - In consensus mode `deploy`, a critical proposal never reaches `pending_owner`; only mode `critical` asks for the click (open owner question).
+- **Notes.**
+  - Reaching the owner: since 2026-11-13 (owner, "Tombol muncul di mode deploy") a passed `retire_worker` waits for the click in mode `deploy` as well as `critical` (ADR-0009).
   - The live run is not yet proven. `cryptophys-home` is retired with `retire-worker.yml` (an ops request, the owner's 2026-11-13 decision), not by this path.
   - Gate 10 is met when one owner-approved native retirement succeeds live.
 

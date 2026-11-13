@@ -71,7 +71,7 @@ These hold everywhere:
 - **Census (phase 2).** The Forge compares the DNA of each main commit with `service_registry`, `agents` (and their seats) and `engines` (`forge_organism_census`, retaken every 30 min). Differences become the owner notice `organism` and appear on the Console Agents page. Findings the Supervisor registers by itself (an unregistered engine or agent) send one email when they appear and one when all are registered, not one per registration (owner 2026-11-12).
 - **Self-registration (phase 3).** The Supervisor turns census findings into consensus proposals, one per cycle:
   - `register_agent` and `register_engine` are routine: consensus only.
-  - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `critical` only.
+  - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `deploy` or `critical` (owner 2026-11-13).
   - The kernel takes the gene from the census, never from the proposal, so only merged DNA can register. Tier 3, unknown and fund-movement capabilities are never registered; a trading capability registers only as privileged (the owner's click).
   - A new seat must vote through a reviewed vote binding; without one it is refused. A seat the DNA no longer asks for is reported, never removed by an agent.
 
@@ -122,7 +122,7 @@ These hold everywhere:
   - "Production problems no agent is handling", with evidence links.
 
   Operators see it read-only. When all three are empty it says "Nothing needs you".
-- **Open question for the owner:** critical proposals reach `pending_owner` only in mode `critical`, so in today's mode `deploy` an organism finding that needs the owner (a council seat, a privileged agent) is never put to the owner (ADR-0009 amendment 2026-11-13).
+- **Answered (owner 2026-11-13, "Tombol muncul di mode deploy"):** critical proposals reach `pending_owner` in mode `deploy` as well as `critical`, so in today's mode `deploy` an organism finding that needs the owner (a council seat, a privileged agent) and every other critical action wait for the owner's click on the Owner page (ADR-0009).
 
 ## Backlog that changes this page
 
