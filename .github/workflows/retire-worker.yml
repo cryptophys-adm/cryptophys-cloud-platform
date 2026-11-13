@@ -5,11 +5,26 @@ name: Retire Worker
 #   the exact confirmation DELETE, in the production Environment;
 # - fails closed unless the Worker's source is already gone from main and no Worker
 #   config in this repository still binds to it;
+# - detaches the custom domains listed for it (if any) first, failing closed if one is attached to
+#   another Worker than expected, and verifies each is gone;
 # - deletes its Cloudflare Workflow (if any) first, then the script, and verifies both are gone.
 # Data in D1 is never touched.
 #
 # RETIRABLE:
 #   cryptophys-signal-engine  (owner decision 2026-11-05, TP-018; Workflow cryptophys-signal-ingest)
+#   cryptophys-home           (owner decision 2026-11-13, ADR-0010 amendment: "setuju pension domain lama";
+#                              no Workflow; detaches home.cryptophys.work from cryptophys-home and
+#                              console.cryptophys.work from cryptophys-console. cryptophys-console itself
+#                              is NOT deleted: it keeps serving nexus.cryptophys.work/console* through its
+#                              zone route, which this workflow never touches.)
+#
+# Custom domains are detached through the Workers Custom Domains API with CLOUDFLARE_API_TOKEN
+# (GET /accounts/{account}/workers/domains?hostname=…, then DELETE /accounts/{account}/workers/domains/{id}).
+# Cloudflare's current Workers authorization asks for Workers edit access and Zone > Workers Routes >
+# Edit on the zone to remove a Custom Domain; if CLOUDFLARE_API_TOKEN is refused (HTTP 401/403), the
+# DELETE is retried once with CLOUDFLARE_ACCESS_API_TOKEN, the token that holds Workers Routes: Edit on
+# cryptophys.work (owner decision 2026-11-06, ADR-0010). Any other status fails the run before the
+# Worker is deleted.
 
 on:
   workflow_dispatch:
@@ -46,6 +61,8 @@ jobs:
           [[ "$CONFIRM" == "DELETE" ]] || { echo "::error::Exact confirmation DELETE required"; exit 1; }
           case "$WORKER" in
             cryptophys-signal-engine) echo "WORKFLOW_NAME=cryptophys-signal-ingest" >> "$GITHUB_ENV" ;;
+            # hostname=expected Worker, space-separated; detached before the Worker is deleted.
+            cryptophys-home) echo "DETACH_DOMAINS=home.cryptophys.work=cryptophys-home console.cryptophys.work=cryptophys-console" >> "$GITHUB_ENV" ;;
             *) echo "::error::${WORKER} is not retirable"; exit 1 ;;
           esac
 
@@ -69,6 +86,78 @@ jobs:
             echo "::error::A deploy, validation or Access workflow still lists ${WORKER}"; exit 1
           fi
           echo "${WORKER} has no source, no binding and no deploy/Access entry on main."
+
+      - name: Detach the retired custom domains, then verify they are gone
+        if: env.DETACH_DOMAINS != ''
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCESS_API_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" && test -n "$CLOUDFLARE_API_TOKEN"
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains"
+          body="$(mktemp)"; trap 'rm -f "$body"' EXIT
+          fail() { echo "::error::$*" >&2; exit 1; }
+          call() { # METHOD URL TOKEN -> prints the HTTP status; the body goes to $body (never contains secrets)
+            curl --silent --show-error --proto '=https' --max-time 30 --output "$body" --write-out '%{http_code}' \
+              --request "$1" --header "Authorization: Bearer $3" "$2"
+          }
+          errors() { jq -c '[.errors[]? | {code, message}]' "$body" 2>/dev/null || true; }
+          lookup() { # HOSTNAME -> prints "<id> <service>" for each custom domain on exactly that hostname
+            local status
+            status="$(call GET "${api}?hostname=$1" "$CLOUDFLARE_API_TOKEN")"
+            if [[ "$status" != "200" ]] || ! jq -e '.success == true and (.result | type == "array")' "$body" >/dev/null; then
+              fail "Listing the custom domains of $1 failed: HTTP ${status} $(errors)"
+            fi
+            jq -r --arg h "$1" '.result[] | select(.hostname == $h) | "\(.id) \(.service)"' "$body"
+          }
+
+          # 1. Read and check every hostname before detaching any, so a surprise leaves nothing half done.
+          declare -A records=()
+          for entry in $DETACH_DOMAINS; do
+            host="${entry%%=*}"; expected="${entry#*=}"
+            [[ "$host" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ && "$expected" =~ ^cryptophys-[a-z0-9-]+$ ]] || fail "Invalid DETACH_DOMAINS entry ${entry}"
+            # A Worker config that still declares the hostname would attach it again on its next deploy.
+            if grep -rlE --include='wrangler*.toml' --include='wrangler*.json*' "pattern\"?[[:space:]]*[:=][[:space:]]*\"${host//./\\.}\"" workers/; then
+              fail "A Worker config on main still declares the custom domain ${host}"
+            fi
+            found="$(lookup "$host")"
+            while read -r id service; do
+              [[ -n "$id" ]] || continue
+              [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || fail "Unexpected custom domain id for ${host}"
+              [[ "$service" == "$expected" ]] || fail "${host} is attached to ${service}, not ${expected}; nothing was detached"
+            done <<< "$found"
+            records["$host"]="$found"
+            echo "${host}: $(grep -c . <<< "$found" || true) custom domain record(s) on ${expected}."
+          done
+
+          # 2. Detach, then verify that no custom domain is left on each hostname.
+          for entry in $DETACH_DOMAINS; do
+            host="${entry%%=*}"; expected="${entry#*=}"
+            while read -r id service; do
+              [[ -n "$id" ]] || continue
+              status="$(call DELETE "${api}/${id}" "$CLOUDFLARE_API_TOKEN")"
+              if [[ "$status" == "401" || "$status" == "403" ]] && [[ -n "${CLOUDFLARE_ACCESS_API_TOKEN:-}" ]]; then
+                echo "CLOUDFLARE_API_TOKEN may not detach ${host} (HTTP ${status} $(errors)); retrying with CLOUDFLARE_ACCESS_API_TOKEN."
+                status="$(call DELETE "${api}/${id}" "$CLOUDFLARE_ACCESS_API_TOKEN")"
+              fi
+              # 404: already gone between the read and the delete; the check below confirms it.
+              [[ "$status" =~ ^2[0-9][0-9]$ || "$status" == "404" ]] \
+                || fail "Detaching ${host} from ${service} failed: HTTP ${status} $(errors). The token needs Workers edit access and Zone > Workers Routes > Edit on the zone. The Worker was not deleted."
+              echo "Detached ${host} from ${service}."
+            done <<< "${records[$host]}"
+            left="unknown"
+            for _ in 1 2 3 4 5; do
+              left="$(lookup "$host")"
+              [[ -z "$left" ]] && break
+              sleep 3
+            done
+            [[ -z "$left" ]] || fail "${host} still has a custom domain after the detach"
+            echo "Verified: ${host} has no custom domain."
+            echo "- Custom domain \`${host}\` detached from \`${expected}\` (verified absent)." >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Delete the Workflow and the Worker, then verify both are gone
         shell: bash

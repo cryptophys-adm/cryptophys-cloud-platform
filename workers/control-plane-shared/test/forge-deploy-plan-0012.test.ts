@@ -79,8 +79,8 @@ test("DP1. the shared ordering rules: migration first and alone; orchestrator fi
   assert.deepEqual(orderPending([u("console"), u("deployment-orchestrator")], false, []).units.map((x) => x.unit), ["deployment-orchestrator"]);
   assert.deepEqual(orderPending([u("console")], true, [{ unit: "control-plane", reason: "desired_version_unknown" }]),
     { units: [], skipped: [{ unit: "control-plane", reason: "desired_version_unknown" }, { unit: "*", reason: "new_migration_control_plane_unavailable" }] });
-  assert.deepEqual(orderPending([u("console"), u("home")], false, []).units.map((x) => x.unit), ["console", "home"]);
-  assert.equal(DEPLOY_UNITS.length, 6);
+  assert.deepEqual(orderPending([u("console"), u("platform-api")], false, []).units.map((x) => x.unit), ["console", "platform-api"]);
+  assert.equal(DEPLOY_UNITS.length, 5, "six units until cryptophys-home was retired (2026-11-13)");
 });
 
 test("DP2. G1 (owner 2026-11-12): the Orchestrator's pending deploys are the Forge's plan from Artifacts, gated by the Forge's checks", async () => {
@@ -116,8 +116,8 @@ test("DP3. a different answer is a disagreement; new registry inputs are a new c
   behind(db);
   const repo = repoWith(["workers/console/ui/src/App.tsx"]);
   await planTick(db as never, repo);
-  await recordPlanSide(db as never, "github", MAIN, await registryFingerprint(db as never), { units: [{ unit: "home", workflow: "w", target: "t", reason: "r" }], skipped: [] });
-  assert.deepEqual(row(db), [{ forge_units: '["console"]', github_units: '["home"]', agrees: 0 }]);
+  await recordPlanSide(db as never, "github", MAIN, await registryFingerprint(db as never), { units: [{ unit: "platform-api", workflow: "w", target: "t", reason: "r" }], skipped: [] });
+  assert.deepEqual(row(db), [{ forge_units: '["console"]', github_units: '["platform-api"]', agrees: 0 }]);
   // A deploy changed the registry: the same commit is compared again under the new inputs.
   db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-console'").run(MAIN.slice(0, 12));
   assert.deepEqual(await planTick(db as never, repo), { outcome: "recorded", main_sha: MAIN, units: [] });
@@ -125,9 +125,9 @@ test("DP3. a different answer is a disagreement; new registry inputs are a new c
   const listed = await listDeployPlans(db as never, 10);
   assert.deepEqual(listed.parity, { target: 10, consecutive: 0, compared: 1, disagreements: [MAIN.slice(0, 12)] });
   // A desired version that is not in main's recent history cannot be diffed: skipped, as a failed compare is.
-  db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-home'").run("abcdefabcdef");
+  db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-platform-api'").run("abcdefabcdef");
   const plan = await forgePlan(db as never, repo, MAIN);
-  assert.ok(plan.skipped.some((s) => s.unit === "home" && s.reason === "compare_failed_or_diverged"));
+  assert.ok(plan.skipped.some((s) => s.unit === "platform-api" && s.reason === "compare_failed_or_diverged"));
 });
 
 test("DP4. GET /v1/forge/deploy-plans for operators; wiring: migration 0038 required, Console route, Orchestrator records its side without ever failing on it", async () => {

@@ -318,7 +318,6 @@ test("drift detector compares registry desired versions with live versions over 
     SVC_SIGNAL_ENGINE: { health: async () => { signalEngineProbes++; return { status: "ok", version: { id: "v", tag: "aaaaaaaaaaaa" } }; } },
     SVC_AI_KERNEL: healthy("aaaaaaaaaaaa"),
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
-    SVC_HOME: healthy("aaaaaaaaaaaa"),
     SVC_FORGE: healthy("aaaaaaaaaaaa"),
     // External xauusd Workers: plain fetch service bindings, probed over HTTP.
     EXT_XAUUSD_AI: http((path) => path === "/health" ? Response.json({ status: "ok", service: "xauusd-ai-trading-assistant" }) : new Response("no", { status: 404 })),
@@ -349,7 +348,8 @@ test("drift detector compares registry desired versions with live versions over 
   assert.equal(signalEngineProbes, 0, "disabled Signal Engine is never probed");
   assert.deepEqual([by["cryptophys-ai-kernel"].drifted, by["cryptophys-ai-kernel"].status], [false, "healthy"]);
   assert.deepEqual([by["cryptophys-console"].drifted, by["cryptophys-console"].status], [false, "healthy"]);
-  assert.deepEqual([by["cryptophys-home"].drifted, by["cryptophys-home"].status], [false, "healthy"]);
+  // cryptophys-home is retired (0055): its row is kept, disabled, never drift, and it has no binding.
+  assert.deepEqual([by["cryptophys-home"].drifted, by["cryptophys-home"].status, by["cryptophys-home"].reasons], [false, "disabled", ["disabled"]]);
   // External services: health-managed only (their version is not observable from outside).
   assert.deepEqual([by["xauusd-ai-trading-assistant"].drifted, by["xauusd-ai-trading-assistant"].managed, by["xauusd-ai-trading-assistant"].status], [false, false, "healthy"]);
   assert.deepEqual([by["xauusd-fundamental-news-ingestion"].status, by["xauusd-fundamental-news-ingestion"].probe.error], ["unavailable", "http_500"]);

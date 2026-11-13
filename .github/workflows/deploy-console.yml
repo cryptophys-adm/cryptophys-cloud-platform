@@ -1,6 +1,7 @@
 name: Deploy Console
 
-# Deploys cryptophys-console (ADR-0008, TP-023): the operator Console at console.cryptophys.work.
+# Deploys cryptophys-console (ADR-0008, TP-023): the operator Console, served at
+# nexus.cryptophys.work/console/ (ADR-0010; its old custom domain was retired on 2026-11-13).
 # It has no D1, AI or secret. It forwards the operator's own Access JWT to allow-listed routes,
 # so it is deployed only after Provision Access has put it in the same Access application.
 
@@ -126,7 +127,6 @@ jobs:
             --script cryptophys-console \
             --commit "$COMMIT_SHA" \
             --require-access \
-            --custom-domain console.cryptophys.work \
             --health-filter ".status == \"ok\" and .service == \"cryptophys-console\" and .environment == \"production\" and .contract_version == \"v1\" and .version.tag == \"${tag}\"" \
             --ready-filter '.status == "ready" and .service == "cryptophys-console" and .production_ready == true and ([.checks[]] | all)'
       - name: Smoke-test forwarding, the allow-list and CSRF through Access
@@ -168,7 +168,7 @@ jobs:
           probe GET /console/api/whoami 200 '.operator == true'
           probe GET /console/api/kernel/v1/kernel 200 '.agents | type == "array"'
           # The Nexus hostname routes /console* to this Worker (route precedence over the Nexus Custom
-          # Domain), and the retired console.cryptophys.work redirects there.
+          # Domain). The old console custom domain was retired on 2026-11-13 and is not checked.
           # A new zone route takes up to a couple of minutes to reach every edge: retry before failing.
           for _ in $(seq 1 24); do
             nexus="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output "$out" --write-out '%{http_code}' https://nexus.cryptophys.work/console/health || true)"
@@ -178,9 +178,6 @@ jobs:
           [[ "$nexus" == "200" ]] && jq -e '.service == "cryptophys-console"' "$out" >/dev/null \
             || { echo "::error::nexus.cryptophys.work/console/health: HTTP ${nexus}: $(head -c 300 "$out")"; exit 1; }
           echo "ok GET https://nexus.cryptophys.work/console/health -> 200 (cryptophys-console)"
-          legacy="$(curl --silent --show-error --proto '=https' --max-time 30 --header "@${access_headers}" --output /dev/null --write-out '%{http_code} %{redirect_url}' https://console.cryptophys.work/)"
-          [[ "$legacy" == "301 https://nexus.cryptophys.work/console/" ]] || { echo "::error::console.cryptophys.work should redirect to Nexus, got: ${legacy}"; exit 1; }
-          echo "ok GET https://console.cryptophys.work/ -> ${legacy}"
           printf 'Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
       - name: Record the desired version in the Platform Registry (drift baseline, TP-026)
         env:

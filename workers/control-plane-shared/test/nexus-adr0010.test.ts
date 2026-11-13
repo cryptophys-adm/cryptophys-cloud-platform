@@ -1,12 +1,13 @@
 // ADR-0010 (owner decision 2026-11-06): one subdomain. The Console is part of Nexus at
 // nexus.cryptophys.work/console/; console.cryptophys.work and home.cryptophys.work redirect there;
 // Nexus joins the platform Access application with Google and Microsoft OIDC sign-in.
+// Amendment 2026-11-13: cryptophys-home and both old custom domains are retired
+// (retire-home-adr0010.test.ts); the Console keeps its redirect code for the old host.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv } from "./harness.ts";
 import consoleWorker, { MOUNT, SERVICE_BINDINGS } from "../../console/src/index.ts";
-import homeWorker from "../../home/src/index.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const NEXUS = "https://nexus.cryptophys.work";
@@ -86,24 +87,14 @@ test("4. console.cryptophys.work redirects to the Nexus mount, keeping the path;
   assert.equal(e.forwarded.length, 0);
 });
 
-test("5. home.cryptophys.work (Cerebrum, retired) redirects to Nexus; health stays", async () => {
-  const access = accessEnv();
-  const h = {
-    SERVICE_NAME: "cryptophys-home", SERVICE_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1", CF_VERSION_METADATA: { id: "v", tag: "abc1234" },
-    ACCESS_TEAM_DOMAIN: access.ACCESS_TEAM_DOMAIN, ACCESS_AUD: access.ACCESS_AUD, OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`,
-    APPROVER_IDENTITIES: APPROVER_EMAIL, PLATFORM: { fetch: async () => Response.json({}) }, NEXUS_ORIGIN: NEXUS, LEGACY_HOSTS: "home.cryptophys.work",
-  };
-  const r = await homeWorker.fetch(req("https://home.cryptophys.work/", "GET", null), h as never);
-  assert.deepEqual([r.status, r.headers.get("location")], [301, `${NEXUS}/`]);
-  assert.equal((await homeWorker.fetch(req("https://home.cryptophys.work/health"), h as never)).status, 200);
-});
-
 test("6. wiring: Workers route on the Nexus host, the UI is mount-relative, Access covers nexus.cryptophys.work with Google and Microsoft", () => {
   const toml = readFileSync(new URL("workers/console/wrangler.toml", ROOT), "utf8");
   // The zone route is attached by the deploy workflow with CLOUDFLARE_ACCESS_API_TOKEN (the Workers
   // deploy token cannot hold zone route permissions), before verification; the redirect is on.
   assert.doesNotMatch(toml, /^\s*\{ pattern = "nexus/m, "wrangler does not manage the zone route");
   assert.match(toml, /^LEGACY_HOSTS = "console\.cryptophys\.work"/m);
+  // Amendment 2026-11-13: the old custom domain is no longer declared (retire-worker.yml detaches it).
+  assert.doesNotMatch(toml, /custom_domain/, "the Console declares no custom domain");
   const wf = readFileSync(new URL(".github/workflows/deploy-console.yml", ROOT), "utf8");
   const deploy = wf.indexOf("npx wrangler deploy"), route = wf.indexOf("ensure-zone-route.sh"), verify = wf.indexOf("nexus.cryptophys.work/console/health");
   assert.ok(deploy > 0 && route > deploy && verify > route, "deploy, then attach the route, then verify it through Access");

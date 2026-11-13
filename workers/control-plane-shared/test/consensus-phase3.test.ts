@@ -131,8 +131,9 @@ test("2. deploy units: every registered platform Worker maps to exactly one work
   const cp = unitForService("cryptophys-policy-engine")!;
   assert.equal(unitChanged(cp, ["docs/SSOT.md", ".github/workflows/deploy-console.yml"]), false);
   assert.equal(unitChanged(cp, ["workers/control-plane-migrations/0024_x.sql"]), true);
-  assert.equal(unitChanged(unitForService("cryptophys-home")!, ["workers/control-plane-shared/src/http.ts"]), true);
-  assert.equal(unitChanged(unitForService("cryptophys-home")!, ["workers/control-plane-shared/test/x.test.ts"]), false);
+  assert.equal(unitChanged(unitForService("cryptophys-platform-api")!, ["workers/control-plane-shared/src/http.ts"]), true);
+  assert.equal(unitChanged(unitForService("cryptophys-platform-api")!, ["workers/control-plane-shared/test/x.test.ts"]), false);
+  assert.equal(unitForService("cryptophys-home"), null, "cryptophys-home is retired (2026-11-13): no deploy unit");
   assert.equal(unitChanged(unitForService("cryptophys-console")!, ["workers/console/ui/vite.config.ts"]), true);
   assert.equal(unitChanged(unitForService("cryptophys-console")!, ["workers/console/ui/package.json"]), true);
   assert.equal(unitChanged(unitForService("cryptophys-platform-api")!, ["workers/platform-api/package.json"]), true);
@@ -152,10 +153,10 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     // A shared-library change touches every unit; the orchestrator goes first and the rest wait a cycle.
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"]);
     assert.deepEqual(p.skipped.filter((s) => s.reason === "deployment_orchestrator_must_complete_first").map((s) => s.unit).sort(),
-      ["console", "control-plane", "forge", "home", "platform-api"]);
+      ["console", "control-plane", "forge", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-deployment-orchestrator'").run(MAIN.slice(0, 12));
     p = await pending(db);
-    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "forge", "home", "platform-api"]);
+    assert.deepEqual(p.units.map((u) => u.unit).sort(), ["console", "control-plane", "forge", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD);
     // A new D1 migration (2026-11-07): only the Control Plane deploy applies it, and every Worker's
     // readiness needs it, so the Control Plane goes first and alone; the orchestrator follows.
@@ -163,7 +164,7 @@ test("3. pendingDeploys: only units with changed files on a CI-green main; red C
     p = await pending(db);
     assert.deepEqual(p.units.map((u) => u.unit), ["control-plane"]);
     assert.deepEqual(p.skipped.filter((s) => s.reason === "control_plane_migration_first").map((s) => s.unit).sort(),
-      ["console", "deployment-orchestrator", "forge", "home", "platform-api"]);
+      ["console", "deployment-orchestrator", "forge", "platform-api"]);
     db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id IN ('cryptophys-policy-engine','cryptophys-audit-ledger','cryptophys-platform-registry','cryptophys-recovery-manager','cryptophys-drift-detector','cryptophys-ai-kernel')").run(MAIN.slice(0, 12));
     p = await pending(db);
     assert.deepEqual(p.units.map((u) => u.unit), ["deployment-orchestrator"], "after the Control Plane, the usual order resumes");
@@ -249,7 +250,7 @@ test("7. deploy mode: a commit that is not current main, or red CI, fails withou
   setMode(db, "deploy");
   try {
     let gh = github({ main: "2".repeat(40) });
-    await syscall(env as never, "supervisor", "consensus.propose", { action: "deploy_commit", target: "cryptophys-home", params: { commit_sha: MAIN } });
+    await syscall(env as never, "supervisor", "consensus.propose", { action: "deploy_commit", target: "cryptophys-console", params: { commit_sha: MAIN } });
     let p = proposals(db).at(-1);
     assert.equal(p.status, "failed");
     assert.match(JSON.parse(p.outcome_json).error, /commit_not_current_main/);
@@ -324,7 +325,7 @@ test("11. deploy proposals: never on an operator wake; at most one per scheduled
     const first = await runCycle(env as never, memory, "scheduled");
     let ps = proposals(db).filter((p) => p.action === "deploy_commit");
     assert.equal(ps.length, 1);
-    assert.equal(first.findings.filter((f) => f.kind === "deploy" && String(f.why ?? "").startsWith("deferred")).length, 4);
+    assert.equal(first.findings.filter((f) => f.kind === "deploy" && String(f.why ?? "").startsWith("deferred")).length, 3);
     await runCycle(env as never, memory, "scheduled");
     ps = proposals(db).filter((p) => p.action === "deploy_commit");
     assert.equal(ps.length, 2);

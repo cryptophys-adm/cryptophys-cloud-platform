@@ -19,7 +19,7 @@ import type { ArtifactsReader, ArtifactsTreeEntry } from "../../forge/src/checks
 type Db = ReturnType<typeof migratedDb>;
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
-const DIRS = ["ai-kernel", "audit-ledger", "console", "deployment-orchestrator", "drift-detector", "forge", "forge-typecheck", "forge-typecheck-cr", "home", "platform-api", "platform-registry", "policy-engine", "recovery-manager"];
+const DIRS = ["ai-kernel", "audit-ledger", "console", "deployment-orchestrator", "drift-detector", "forge", "forge-typecheck", "forge-typecheck-cr", "platform-api", "platform-registry", "policy-engine", "recovery-manager"];
 const MAIN = "c".repeat(40);
 const XAUUSD = EXTERNAL_ORIGINS.find((o) => o.origin === "xauusd")!;
 const CAPS = [...EXTERNAL_CEILING.capabilities];

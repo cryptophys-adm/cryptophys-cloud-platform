@@ -53,7 +53,7 @@ const uploadedFrom = (plan: ConfigPlan): BindingRecord[] => [
 
 test("CD1. every workers/*/wrangler.toml parses, and every binding kind it uses maps to an API record", () => {
   const dirs = readdirSync(new URL("workers/", ROOT)).filter((d) => existsSync(new URL(`workers/${d}/wrangler.toml`, ROOT)));
-  assert.ok(dirs.length >= 13, `found ${dirs.length}`);
+  assert.ok(dirs.length >= 12, `found ${dirs.length}`); // 12 since cryptophys-home was retired (2026-11-13)
   const types = new Set<string>();
   for (const d of dirs) {
     const config = parseToml(read(`workers/${d}/wrangler.toml`));

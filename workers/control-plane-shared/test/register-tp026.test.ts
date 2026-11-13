@@ -26,7 +26,6 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
     SVC_RECOVERY_MANAGER: healthy("aaaaaaaaaaaa"),
     SVC_AI_KERNEL: healthy("aaaaaaaaaaaa"),
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
-    SVC_HOME: healthy("bbbbbbbbbbbb"),
     SVC_FORGE: healthy("bbbbbbbbbbbb"),
     EXT_XAUUSD_AI: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_NEWS: http(() => Response.json({ status: "ok" })),
@@ -38,7 +37,7 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
   } as any;
 }
 
-test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge from 0030 + Omega from 0042), console and home registered, schemaReady is true", async () => {
+test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge from 0030 + Omega from 0042), console registered, home kept but disabled (0055), schemaReady is true", async () => {
   const db = migratedDb();
   const rows = db.raw.prepare("SELECT * FROM service_registry ORDER BY service_id").all() as any[];
   assert.equal(rows.length, 18);
@@ -70,7 +69,8 @@ test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge 
   assert.ok(homeRow);
   assert.equal(homeRow.display_name, "Cerebrum Home");
   assert.equal(homeRow.environment, "production");
-  assert.equal(homeRow.status, "registered");
+  // ADR-0010 amendment 2026-11-13: cryptophys-home is retired; 0055 keeps the row and disables it.
+  assert.equal(homeRow.status, "disabled");
   assert.equal(homeRow.desired_version, null);
   const homeMeta = JSON.parse(homeRow.metadata_json);
   assert.equal(homeMeta.owner, "cryptophys-adm");
@@ -83,11 +83,10 @@ test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge 
   assert.equal(await schemaReady(env), true);
 });
 
-test("2. Probed and healthy: console and home are probed, healthy, drifted: false, desired_version_unset", async () => {
+test("2. Probed and healthy: console is probed, healthy, drifted: false, desired_version_unset; retired home is disabled, never drift", async () => {
   const db = migratedDb();
   const env = driftTestEnv(db, {
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
-    SVC_HOME: healthy("bbbbbbbbbbbb"),
     SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report = await observe(env, "test", "operator");
@@ -103,14 +102,14 @@ test("2. Probed and healthy: console and home are probed, healthy, drifted: fals
 
   const h = by["cryptophys-home"];
   assert.ok(h);
-  assert.equal(h.status, "healthy");
+  assert.equal(h.status, "disabled");
   assert.equal(h.drifted, false);
-  assert.equal(h.managed, false);
-  assert.ok(h.reasons.includes("desired_version_unset"));
-  assert.equal(h.observed_version, "bbbbbbbbbbbb");
+  assert.deepEqual(h.reasons, ["disabled"]);
+  assert.equal(h.observed_version, null);
+  assert.equal(report.drifted, 0, "the retired Worker without a binding is not drift");
 });
 
-test("3. Managed: setting desired_version via registry makes console and home managed, drifted: false, status: healthy", async () => {
+test("3. Managed: setting desired_version via registry makes console managed, drifted: false, status: healthy", async () => {
   const db = migratedDb();
   const regEnv = baseEnv("cryptophys-platform-registry", db);
 
@@ -119,14 +118,8 @@ test("3. Managed: setting desired_version via registry makes console and home ma
   }));
   assert.equal(resC.status, 200);
 
-  const resH = await call(registry, regEnv, req("PUT", "/v1/services/cryptophys-home/desired-version", {
-    desired_version: "bbbbbbbbbbbb",
-  }));
-  assert.equal(resH.status, 200);
-
   const env = driftTestEnv(db, {
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
-    SVC_HOME: healthy("bbbbbbbbbbbb"),
     SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report = await observe(env, "test", "operator");
@@ -138,27 +131,18 @@ test("3. Managed: setting desired_version via registry makes console and home ma
   assert.equal(c.status, "healthy");
   assert.equal(c.desired_version, "aaaaaaaaaaaa");
   assert.equal(c.observed_version, "aaaaaaaaaaaa");
-
-  const h = by["cryptophys-home"];
-  assert.equal(h.managed, true);
-  assert.equal(h.drifted, false);
-  assert.equal(h.status, "healthy");
-  assert.equal(h.desired_version, "bbbbbbbbbbbb");
-  assert.equal(h.observed_version, "bbbbbbbbbbbb");
 });
 
-test("4. Real drift: version mismatch drifts console; throwing binding makes home unavailable and drifted", async () => {
+test("4. Real drift: version mismatch drifts console; a throwing binding makes console unavailable and drifted", async () => {
   const db = migratedDb();
   const regEnv = baseEnv("cryptophys-platform-registry", db);
 
   // Set desired versions
   await call(registry, regEnv, req("PUT", "/v1/services/cryptophys-console/desired-version", { desired_version: "aaaaaaaaaaaa" }));
-  await call(registry, regEnv, req("PUT", "/v1/services/cryptophys-home/desired-version", { desired_version: "bbbbbbbbbbbb" }));
 
-  // Part 1: Version mismatch on console; home stays healthy
+  // Part 1: Version mismatch on console
   const mismatchEnv = driftTestEnv(db, {
     SVC_CONSOLE: healthy("cccccccccccc"), // different tag
-    SVC_HOME: healthy("bbbbbbbbbbbb"),    // matches desired
     SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report1 = await observe(mismatchEnv, "test", "operator");
@@ -169,22 +153,17 @@ test("4. Real drift: version mismatch drifts console; throwing binding makes hom
   assert.ok(c1.reasons.includes("version_mismatch"));
   assert.equal(c1.status, "degraded");
 
-  const h1 = by1["cryptophys-home"];
-  assert.equal(h1.drifted, false);
-  assert.equal(h1.status, "healthy");
-
-  // Part 2: Unreachable home (throws)
+  // Part 2: Unreachable console (throws)
   const throwingEnv = driftTestEnv(db, {
-    SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
-    SVC_HOME: { health: async () => { throw new Error("unreachable"); } },
+    SVC_CONSOLE: { health: async () => { throw new Error("unreachable"); } },
     SVC_FORGE: healthy("bbbbbbbbbbbb"),
   });
   const report2 = await observe(throwingEnv, "test", "operator");
   const by2 = Object.fromEntries(report2.services.map((s) => [s.service_id, s]));
 
-  const h2 = by2["cryptophys-home"];
-  assert.equal(h2.drifted, true);
-  assert.equal(h2.status, "unavailable");
+  const c2 = by2["cryptophys-console"];
+  assert.equal(c2.drifted, true);
+  assert.equal(c2.status, "unavailable");
 });
 
 test("5. Binding missing: without SVC_CONSOLE in env, cryptophys-console reports no_observation_binding", async () => {
@@ -208,11 +187,11 @@ test("6. No regressions: drift detector readiness and targets mapping cover all 
   const env = driftTestEnv(db);
   const targetMap = targets(env);
 
-  assert.equal(Object.keys(targetMap).length, 10);
+  // 9 since cryptophys-home was retired (2026-11-13): it has no binding and no target.
+  assert.equal(Object.keys(targetMap).length, 9);
   assert.ok("cryptophys-console" in targetMap);
-  assert.ok("cryptophys-home" in targetMap);
+  assert.ok(!("cryptophys-home" in targetMap));
   assert.ok(targetMap["cryptophys-console"]);
-  assert.ok(targetMap["cryptophys-home"]);
 
   const ready = await call(drift, env, req("GET", "/ready"));
   assert.equal(ready.status, 200);
@@ -222,10 +201,6 @@ test("6. No regressions: drift detector readiness and targets mapping cover all 
   const missingConsole = await call(drift, { ...env, SVC_CONSOLE: undefined }, req("GET", "/ready"));
   assert.equal(missingConsole.status, 503);
   assert.equal(missingConsole.body.checks.observation_bindings, false);
-
-  const missingHome = await call(drift, { ...env, SVC_HOME: undefined }, req("GET", "/ready"));
-  assert.equal(missingHome.status, 503);
-  assert.equal(missingHome.body.checks.observation_bindings, false);
 });
 
 test("TP-027: after 0028 the cryptophys-aether row is registered and probed at /health over EXT_AETHER; a failing Aether drifts", async () => {

@@ -4,14 +4,17 @@ compatibility_date = "2026-11-01"
 workers_dev = true
 # ADR-0010 (single subdomain): the Console is part of Nexus at nexus.cryptophys.work/console/. A
 # Workers route on the Nexus hostname takes precedence over the Nexus Worker's Custom Domain for
-# /console*. console.cryptophys.work stays attached only to redirect there, until it is removed.
+# /console*.
 #
 # The zone route nexus.cryptophys.work/console* is NOT managed here: the Workers deploy token
 # cannot hold "Workers Routes: Edit" (owner decision 2026-11-06), so deploy-console.yml attaches
 # it after the deploy with CLOUDFLARE_ACCESS_API_TOKEN through the zone routes API (idempotent).
-routes = [
-  { pattern = "console.cryptophys.work", custom_domain = true },
-]
+#
+# ADR-0010 amendment 2026-11-13 (owner: "setuju pension domain lama"): the old custom domain
+# console.cryptophys.work is retired, so this file declares no routes. Wrangler publishes only the
+# routes it is given and leaves an undeclared custom domain attached, so retire-worker.yml detaches
+# it explicitly (Workers Custom Domains API) when it retires cryptophys-home. Until that run,
+# LEGACY_HOSTS keeps redirecting the old host to the Nexus mount; afterwards nothing reaches it.
 
 [observability]
 enabled = true
