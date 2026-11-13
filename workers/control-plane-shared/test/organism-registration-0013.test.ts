@@ -497,3 +497,41 @@ test("R18. registration fails closed when canonical main cannot be read (no bind
     assert.equal(agentRow(db, "forge-steward"), undefined, variant);
   }
 });
+
+test("R19. the brake: nothing is proposed while a critical report is open, and a registration rejected only by the brake is proposed again once it is off (2026-11-13)", async () => {
+  const { env, db, memory } = kernelEnv();
+  setMode(db, "deploy");
+  const t0 = Date.now();
+  await censusTick(db as never, repoWith(grownDna()), t0);
+  const proposals = () => (db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action LIKE 'register%'").get() as any).n;
+
+  // An open critical report: the Supervisor proposes nothing (every voter would reject it) and says why.
+  db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES ('rep_brake', 'deployment-orchestrator', 'platform_digest', 'critical', 'Deploy failed', '{}', 'not_used', NULL, ?)")
+    .run(new Date(t0 - 60_000).toISOString());
+  const held = await runCycle(env as never, memory, "scheduled", t0);
+  assert.equal(proposals(), 0);
+  assert.ok(held.findings.some((f: any) => f.kind === "organism" && /2 registration\(s\) wait: a critical report is open/.test(String(f.why))), JSON.stringify(held.findings));
+
+  // The state production was in: a proposal the council rejected while the brake held (its evidence says so).
+  db.raw.prepare(
+    `INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, status, outcome_json, created_at, decided_at)
+     VALUES ('cns_00000000-0000-4000-8000-00000000b4a1', 'supervisor', 'register_agent', 'forge-steward', 'routine', '{}', '{"critical_reports_24h":1}', 'deploy', 8, 0, 8, 0, 'rejected', '{}', ?, ?)`,
+  ).run(new Date(t0 - 3_600_000).toISOString(), new Date(t0 - 3_600_000).toISOString());
+
+  // The owner acknowledges the report: the brake is off, and the registration is proposed again within the day.
+  db.raw.prepare("DELETE FROM agent_reports WHERE report_id = 'rep_brake'").run();
+  await runCycle(env as never, memory, "scheduled", t0);
+  const p = last(db);
+  assert.deepEqual([p.action, p.target, p.status], ["register_agent", "forge-steward", "executed"], p.outcome_json);
+
+  // A rejection for another reason (no open critical report in its evidence) still holds its 24 h.
+  const { env: env2, db: db2, memory: mem2 } = kernelEnv();
+  setMode(db2, "deploy");
+  await censusTick(db2 as never, repoWith(grownDna()), t0);
+  db2.raw.prepare(
+    `INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, status, outcome_json, created_at, decided_at)
+     VALUES ('cns_00000000-0000-4000-8000-00000000b4a2', 'supervisor', 'register_agent', 'forge-steward', 'routine', '{}', '{"critical_reports_24h":0}', 'deploy', 8, 0, 8, 0, 'rejected', '{}', ?, ?)`,
+  ).run(new Date(t0 - 3_600_000).toISOString(), new Date(t0 - 3_600_000).toISOString());
+  await runCycle(env2 as never, mem2, "scheduled", t0);
+  assert.equal((db2.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = 'register_agent'").get() as any).n, 1, "not proposed again");
+});
