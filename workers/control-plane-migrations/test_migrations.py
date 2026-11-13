@@ -277,3 +277,22 @@ assert {row[2] for row in ack_db.execute("PRAGMA foreign_key_list(agent_report_a
 assert ack_db.execute("PRAGMA foreign_key_check").fetchall() == []
 ack_db.close()
 print("PASS: 0053 agent report acknowledgements (primary key, reason bounds, report foreign key)")
+
+
+# Migration 0054: one row per git backup run, status ok or failed only, run id unique.
+gb_db = sqlite3.connect(":memory:")
+for migration in sorted(ROOT.glob("*.sql")):
+    gb_db.executescript(migration.read_text(encoding="utf-8"))
+gb_db.execute(
+    """INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, objects, refs)
+       VALUES ('gb-1', 'abc', '2026-11-13', 't0', 'ok', 'git-backups/platform/2026-11-13-abc.bundle', 'f00', 10, 3, 1)"""
+)
+expect_integrity_error("git backup status outside ok/failed", lambda: gb_db.execute(
+    """INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status) VALUES ('gb-2', 'abc', '2026-11-13', 't1', 'pending')"""
+))
+expect_integrity_error("duplicate git backup run id", lambda: gb_db.execute(
+    """INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status) VALUES ('gb-1', 'abc', '2026-11-13', 't1', 'failed')"""
+))
+assert {row[1] for row in gb_db.execute("PRAGMA index_list(forge_git_backups)")} >= {"idx_forge_git_backups_ran", "idx_forge_git_backups_head"}
+gb_db.close()
+print("PASS: 0054 forge git backups (status CHECK, run id key, indexes)")
