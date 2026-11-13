@@ -118,6 +118,46 @@ const MODEL_NAME: Record<string, string> = { tight_long: "tight · long", tight_
 const fx = (v: unknown, d = 3) => (num(v) === null ? "—" : (v as number).toFixed(d));
 
 /**
+ * The decision model (LightGBM), next to the baseline (xauusd 196bd34, Aether 6a7d779): trained once a day, in
+ * shadow (`connected` is always false: it is not behind the council gate yet). Read from overview().model.gbm
+ * only (null when the report has none). Prospective is empty until its first predictions are labeled: shown as
+ * "waiting for outcomes", never as a number. No price, tree or threshold is in the block.
+ */
+function DecisionModel({ g }: { g: any }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Decision model (LightGBM, daily 04:17 UTC)</h4>
+        {g ? <Badge tone={g.connected === true ? "green" : "purple"}>{g.connected === true ? "connected" : "shadow"}</Badge> : null}
+      </div>
+      {!g ? <Empty>The latest model report holds no decision model yet: it trains once a day.</Empty> : (<>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <Stat label="labeled rows" value={dash(g.rows)} sub={`model ${dash(g.model_id)}`} />
+          <Stat label="features" value={dash(g.features)} />
+          <Stat label="last training" value={g.trained_at ? ago(g.trained_at) : "—"} />
+          <Stat label="status" value={g.status === "ok" ? "trained" : g.status === "not_enough_rows" ? "not enough rows" : dash(g.status)} />
+        </div>
+        <p className="text-[11px] text-slate-500">In shadow it only predicts: the council does not receive its probabilities. Its record is kept next to the baseline's on the same decisions.</p>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {(g.models ?? []).map((x: any) => (
+            <div key={x.id} className="glass-inner space-y-2 px-3 py-2.5">
+              <div className="flex items-center justify-between text-[12px]"><span className="text-slate-200">{MODEL_NAME[x.id] ?? dash(x.id)}</span>{num(x.prospective?.skill) !== null && (x.prospective.skill as number) > 0 ? <Badge tone="green">beats base</Badge> : <Badge tone="slate">{x.prospective ? "collecting" : "waiting"}</Badge>}</div>
+              <div className="text-[11px] text-slate-400">walk-forward · skill <span className="mono text-slate-200">{fx(x.walk_forward?.skill)}</span> · AUC <span className="mono text-slate-200">{fx(x.walk_forward?.auc, 2)}</span> · {dash(x.walk_forward?.n)} rows</div>
+              <div className="text-[11px] text-slate-400">its picks <span className="mono text-slate-200">{fx(x.walk_forward?.picked_mean_r, 2)}R</span> ({dash(x.walk_forward?.picked)}) vs all <span className="mono text-slate-200">{fx(x.walk_forward?.all_mean_r, 2)}R</span></div>
+              {x.prospective
+                ? <div className="text-[11px] text-slate-400">prospective · skill <span className="mono text-slate-200">{fx(x.prospective.skill)}</span> · p <span className="mono text-slate-200">{fx(x.prospective.p_value)}</span> · AUC <span className="mono text-slate-200">{fx(x.prospective.auc, 2)}</span> · {dash(x.prospective.n)} decisions</div>
+                : <div className="text-[11px] text-slate-500">prospective · waiting for outcomes</div>}
+              <div className="flex flex-wrap gap-1">{(x.top_features ?? []).map((f: string) => <Badge key={f} tone="slate">{words(f)}</Badge>)}</div>
+            </div>
+          ))}
+        </div>
+        {!(g.models ?? []).length && <Empty>The decision model reported no label set.</Empty>}
+      </>)}
+    </div>
+  );
+}
+
+/**
  * Owner 2026-11-13: "Pastikan Modul training ini punya visualisasi di cerebrum". The XAUUSD baseline model
  * retrains itself every hour (docs/RFC_CUSTOM_MODEL.md there) and reports to Aether: its walk-forward check,
  * its prospective record (decisions it had not seen), the features it leaned on, whether its gate has
@@ -156,6 +196,7 @@ function Training({ o }: { o: any }) {
         ))}
       </div>
       {!models.length && <Empty>The report holds no trained model yet (each needs 150 decisive rows).</Empty>}
+      <DecisionModel g={m.gbm} />
       <div>
         <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Learned notes live by themselves</h4>
         <DataTable dense rows={notes} rowKey={(n: any) => `${n.item_id}@${n.version}`} maxHeight={220} empty="No note has passed its shadow test yet." columns={[
@@ -390,7 +431,7 @@ export default function Knowledge() {
       </Panel>
       <Panel title="Training · the platform's own model" icon={<BrainCircuit className="h-3.5 w-3.5 text-emerald-300" />} right={<Badge tone={o?.model?.promotion?.status === "promoted" ? "green" : "slate"}>{o?.model?.promotion ? (o.model.promotion.status === "promoted" ? "connected" : "not connected") : "—"}</Badge>}>
         <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
-          XAUUSD's baseline model learns from every Decision Engine decision and its outcome, retrains every hour, is judged on newer decisions than it trained on, and predicts each new decision before its outcome is known. It connects itself to the council only on that record.
+          XAUUSD's baseline model learns from every Decision Engine decision and its outcome, retrains every hour, is judged on newer decisions than it trained on, and predicts each new decision before its outcome is known. It connects itself to the council only on that record. The decision model (LightGBM) below learns from the same decisions once a day and stays in shadow.
         </p>
         {aether.loading && !o ? <Skeleton rows={6} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Training o={o} />}
       </Panel>

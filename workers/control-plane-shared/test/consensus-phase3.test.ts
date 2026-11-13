@@ -213,6 +213,31 @@ test("4. supervisor proposes deploy_commit once per unit and commit; shadow reco
   } finally { globalThis.fetch = realFetch; }
 });
 
+test("4b. a deploy the council rejected only because the brake held is proposed again once the brake is off (2026-11-13)", async () => {
+  const { env, db, memory } = kernelEnv();
+  behind(db);
+  try {
+    github();
+    await runCycle(env as never, memory, "scheduled");
+    const deploys = () => proposals(db).filter((p) => p.action === "deploy_commit");
+    assert.equal(deploys().length, 1);
+    // As on 2026-11-13 04:52: the council rejected it because a critical report was open.
+    db.raw.prepare("UPDATE consensus_proposals SET status = 'rejected', evidence_json = json_set(evidence_json, '$.critical_reports_24h', 1) WHERE action = 'deploy_commit'").run();
+    const at = new Date(Date.now() - 60_000).toISOString();
+    db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES ('rpt_brake-1', 'deployment-orchestrator', 'platform_digest', 'critical', 'Deploy failed', '{}', 'not_used', NULL, ?)").run(at);
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(deploys().length, 1, "while the brake holds, the rejected commit is not proposed again");
+    // The owner acknowledges the report: the brake is off, and the same commit is proposed again.
+    db.raw.prepare("INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at) VALUES ('rpt_brake-1', 'owner@example.com', 'root cause fixed', ?)").run(new Date().toISOString());
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(deploys().length, 2, "proposed again once the brake is off");
+    // A rejection for any other reason (no critical report in its evidence) is still never retried.
+    db.raw.prepare("UPDATE consensus_proposals SET status = 'rejected', evidence_json = json_set(evidence_json, '$.critical_reports_24h', 0) WHERE action = 'deploy_commit'").run();
+    await runCycle(env as never, memory, "scheduled");
+    assert.equal(deploys().length, 2, "a rejection on its merits stays final for that commit");
+  } finally { globalThis.fetch = realFetch; }
+});
+
 test("5. routine mode still does not deploy", async () => {
   const { env, db } = kernelEnv();
   setMode(db, "routine");

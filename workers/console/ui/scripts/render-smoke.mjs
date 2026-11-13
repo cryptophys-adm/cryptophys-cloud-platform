@@ -153,6 +153,10 @@ MOCK["/api/aether/v1/overview"] = { service: "cryptophys-aether", generated_at: 
     gate: { min_n: 300, alpha: 0.05, min_auc: 0.55 },
     models: [{ id: "tight_long", walk_forward: { n: 86, skill: 0.0742, auc: 0.6984, picked: 3, picked_mean_r: 1.5, all_mean_r: -0.3314 }, prospective: { n: 120, skill: 0.03, p_value: 0.21, auc: 0.58, picked: 12, picked_mean_r: 0.4, all_mean_r: -0.1 }, top_features: ["time_hour_cos", "w_news_lean", "w_macro_drivers_lean", "x_10_year_yield_change_1d", "g_long_no_veto", "px_range_pos_20"] },
       { id: "wide_short", walk_forward: { n: 51, skill: -2.869, auc: 0.1111, picked: 0, picked_mean_r: null, all_mean_r: 1.2059 }, prospective: null, top_features: [] }],
+    // The decision model (LightGBM, xauusd 196bd34): shadow only, prospective empty until its outcomes are labeled.
+    gbm: { model_id: "gbm@2026-11-13T04:22Z", trained_at: at(170), rows: 317, features: 87, status: "ok", connected: false,
+      models: [{ id: "tight_long", walk_forward: { n: 95, skill: 0.059, auc: 0.68, picked: 4, picked_mean_r: 1.1, all_mean_r: -0.3 }, prospective: null, top_features: ["time_hour_cos", "w_strategy_confidence"] },
+        { id: "wide_long", walk_forward: { n: 40, skill: -3.1, auc: 0.07, picked: 0, picked_mean_r: null, all_mean_r: 1.4 }, prospective: null, top_features: [] }] },
     live_notes: [{ item_id: "k-role-chronos-matrix-calibration-talk", version: 1, status: "retired", agents: ["chronos_matrix"], chart: "60", promoted_at: at(3000), retired_at: at(60), reason: "worse live: 12 of 44 decided calls right since the promotion, against 50% in the test (p 0.002)" }] },
   sync: { version: "cryptophys.aether-sync.v1", overall: "warn", market_open: true, checks: { card_ingest: { status: "warn", age_minutes: 140, limit_minutes: 90 }, canon_index: { status: "ok" } } },
   weighting: [{ timeframe: "60", active: { id: "weighting@default" }, agents: [{ agent: "prophet", weight: 1.12 }, { agent: "gmi", weight: 0.94 }] }],

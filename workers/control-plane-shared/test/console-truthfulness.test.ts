@@ -73,6 +73,11 @@ test("T6. Knowledge (owner 2026-11-13): the training view reads Aether's model r
   // The training module comes from overview().model only: no number without a reading.
   assert.match(k, /const m = o\?\.model;/);
   assert.match(k, /No model report has reached Aether yet/);
+  // The decision model (LightGBM) comes from overview().model.gbm only, is shown in shadow while not connected,
+  // and an empty prospective record is "waiting for outcomes", never a number.
+  assert.match(k, /<DecisionModel g=\{m\.gbm\} \/>/);
+  assert.match(k, /g\.connected === true \? "connected" : "shadow"/);
+  assert.match(k, /prospective · waiting for outcomes/);
   // "Batasi User/Owner hanya untuk critical dan permintaan approval only": text proposals run by themselves,
   // the approve button is only for the kinds that still need a person, and the owner panel lists only those
   // approvals and the loop's failing checks while the market is open.

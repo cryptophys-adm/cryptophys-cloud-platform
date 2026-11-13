@@ -16,6 +16,7 @@ import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-pl
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
+import { openCriticalReportRows } from "./owner-inbox.ts";
 import { latestCensusRow, proposalFor } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS } from "../../control-plane-shared/src/consensus-rules.ts";
@@ -375,6 +376,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         const reopens = daily?.oldest ? new Date(Date.parse(daily.oldest) + 86_400_000).toISOString().slice(11, 16) : "later";
         report.findings.push({ kind: "deploy", action: "none", why: `daily limit of ${dailyLimit} deploys reached; ${pending.units.length} unit(s) wait until about ${reopens} UTC` });
       }
+      // 2026-11-13: a proposal the council rejected only because the brake held (an open critical report in its
+      // evidence) is proposed again once the brake is off; before, such a commit waited for the next main commit.
+      // Unreadable counts as on (fail closed), so nothing is retried while the brake may hold.
+      let brakeOff = false;
+      try { brakeOff = (await openCriticalReportRows(env.DB, Date.now(), 1)).length === 0; } catch { brakeOff = false; }
       for (const u of (daily?.n ?? 0) >= dailyLimit ? [] : pending.units) {
         const recentTarget = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND status IN ${ran} AND decided_at >= ? LIMIT 1`,
@@ -393,8 +399,9 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         // limit would never deploy (2026-11-07: #187 stayed undeployed after a target_rate_limit veto).
         const seen = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ?
-             AND (status <> 'shadow_blocked' OR created_at >= ?) LIMIT 1`,
-        ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString()).first();
+             AND (status <> 'shadow_blocked' OR created_at >= ?)
+             AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
+        ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString(), brakeOff ? 1 : 0).first();
         if (seen) continue;
         const r = await syscall(env, AGENT_ID, "consensus.propose", {
           action: "deploy_commit", target: u.target,
