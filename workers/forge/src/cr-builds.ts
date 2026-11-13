@@ -12,10 +12,12 @@
 // (2026-11-11: the first live tick found no cr/290 build there). When the Worker's list has no finished build
 // of a request's branch, the Forge reads that branch's Preview (GET .../previews, then .../previews/{id}/builds).
 //
-// Only GitHub-sourced requests (gh-<n>, head on cr/<n> of platform) have such a build. Requests pushed to
-// platform-work (G4, source 'forge') have no type-check source yet and are not looked up here (ADR-0012 §5j).
+// GitHub-sourced requests (gh-<n>) have their head on cr/<n> of platform. Requests pushed to platform-work (G4,
+// source 'forge') get theirs from the Forge itself: transfer.ts copies the head to cr/<cr_id> of platform (gate 6,
+// 2026-11-13), and the same project builds that branch.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { recordTypecheckReport } from "./typecheck.ts";
+import { typecheckBranch } from "./transfer.ts";
 
 export const CR_TYPECHECK_WORKER = "cryptophys-forge-typecheck-cr";
 export const RESULT_MARKER = "FORGE_TYPECHECK_RESULT ";
@@ -69,9 +71,10 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
   const token = env.CF_BUILDS_API_TOKEN?.trim();
   if (!token) return { outcome: "not_configured" };
   const open = (await env.DB.prepare(
-    `SELECT c.number, c.head_sha FROM forge_change_requests c LEFT JOIN forge_typecheck_reports t ON t.commit_sha = c.head_sha
-     WHERE c.status = 'open' AND c.source = 'github' AND t.commit_sha IS NULL ORDER BY c.updated_at DESC LIMIT 10`,
-  ).all<{ number: number; head_sha: string }>()).results ?? [];
+    `SELECT c.cr_id, c.source, c.number, c.head_sha FROM forge_change_requests c LEFT JOIN forge_typecheck_reports t ON t.commit_sha = c.head_sha
+     WHERE c.status = 'open' AND (c.source = 'github' OR (c.source = 'forge' AND c.blocked_reason IS NULL)) AND t.commit_sha IS NULL
+     ORDER BY c.updated_at DESC LIMIT 10`,
+  ).all<{ cr_id: string; source: string; number: number; head_sha: string }>()).results ?? [];
   if (!open.length) return { outcome: "up_to_date" };
   const accounts = await api(fetchImpl, token, "/accounts?per_page=5") as Array<{ id?: string }>;
   const account = accounts?.[0]?.id;
@@ -82,7 +85,7 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
   if (!tag) return { outcome: "no_project", worker: name };
   const builds = (await api(fetchImpl, token, `/accounts/${account}/builds/workers/${tag}/builds?per_page=50`) as BuildRow[]) ?? [];
   let requests = 3; // accounts, scripts and builds; then Preview lookups and logs, within MAX_REQUESTS_PER_TICK
-  const recorded: Array<{ number: number; commit: string; conclusion: string }> = [];
+  const recorded: Array<{ number: number; cr_id?: string; commit: string; conclusion: string }> = [];
   const sameCommit = (b: BuildRow, head: string) => !commitOf(b) || head.startsWith(commitOf(b)) || commitOf(b).startsWith(head);
   const newestFinished = (list: BuildRow[], head: string) => list
     .filter((b) => finished(b) && b.build_uuid && sameCommit(b, head))
@@ -92,7 +95,7 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
   let viaPreview = 0;
   for (const cr of open) {
     if (!HEX40.test(cr.head_sha)) continue;
-    const branch = `cr/${cr.number}`;
+    const branch = cr.source === "forge" ? typecheckBranch(cr.cr_id) : `cr/${cr.number}`;
     let candidates = newestFinished(builds.filter((b) => branchOf(b) === branch), cr.head_sha);
     if (!candidates.length && requests + 2 < MAX_REQUESTS_PER_TICK) {
       // The branch's Preview holds its builds (Worker Previews); its builds all belong to that branch.
@@ -115,8 +118,8 @@ export async function crBuildsTick(env: CrBuildsEnv, nowMs = Date.now(), fetchIm
       const result = resultFromLogs(await api(fetchImpl, token, `/accounts/${account}/builds/builds/${b.build_uuid}/logs`));
       if (!result || result.commit !== cr.head_sha) continue;
       // The same validation as POST /v1/forge/typecheck-report; the build id is the Builds UUID it was read from.
-      const r = await recordTypecheckReport(env.DB, { ...result, build_id: String(b.build_uuid).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64), branch: `cr/${cr.number}` }, "system:forge-cr-builds", nowMs);
-      recorded.push({ number: cr.number, commit: r.commit, conclusion: r.conclusion });
+      const r = await recordTypecheckReport(env.DB, { ...result, build_id: String(b.build_uuid).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64), branch }, "system:forge-cr-builds", nowMs);
+      recorded.push({ number: cr.number, ...(cr.source === "forge" ? { cr_id: cr.cr_id } : {}), commit: r.commit, conclusion: r.conclusion });
     }
   }
   return { outcome: recorded.length ? "recorded" : "waiting", open: open.length, recorded, builds_listed: builds.length, previews_listed: previews?.length ?? null, via_preview: viaPreview };

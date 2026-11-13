@@ -7,7 +7,9 @@
 //   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12);
 //   and, once a day per head of main, the npm dependency audit (dependency-audit.ts, ADR-0012 G5).
 //   and the branches pushed to the work repository platform-work, as change requests (work-repo.ts, G4);
-//   and, once per UTC day per head of main, a git bundle of platform to R2 (git-backup.ts, ADR-0012 gate 8).
+//   and, once per UTC day per head of main, a git bundle of platform to R2 (git-backup.ts, ADR-0012 gate 8);
+//   and the type-check source of forge-sourced change requests: their head copied to cr/<cr_id> of platform
+//   (transfer.ts, gate 6); and the G3a merge spike on the scratch repository until it has succeeded once (gate 5).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
@@ -20,6 +22,8 @@ import { buildUsageTick } from "./build-usage.ts";
 import { dependencyAuditTick } from "./dependency-audit.ts";
 import { WORK_REPO, workBranchesTick } from "./work-repo.ts";
 import { gitBackupTick, type GitBackupBucket } from "./git-backup.ts";
+import { crSourcesTick } from "./transfer.ts";
+import { mergeSpikeUntilProven } from "./merge.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
 export interface TickEnv {
@@ -83,7 +87,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   // ADR-0012 §5d: the type-check of open change requests, read from their secret-free Workers Builds (no-op without the token).
   if (env.CF_BUILDS_API_TOKEN) await step("cr_typecheck", () => crBuildsTick(env, nowMs()));
   // ADR-0012 G4: branches pushed to the work repository platform-work become change requests fg-<slug>.
-  if (env.ARTIFACTS && typeof env.ARTIFACTS.list === "function") await step("work_branches", () => workBranchesTick(env as never, nowMs()));
+  if (env.ARTIFACTS && typeof env.ARTIFACTS.list === "function") {
+    await step("work_branches", () => workBranchesTick(env as never, nowMs()));
+    // Gate 6 (2026-11-13): a forge-sourced request's head goes to cr/<cr_id> of platform, where its type-check builds.
+    await step("cr_sources", () => crSourcesTick(env as never));
+    // Gate 5: the G3a spike, on the scratch repository only, until one run has succeeded (then a no-op).
+    await step("merge_spike", () => mergeSpikeUntilProven(env as never, nowMs()));
+  }
   // Owner 2026-11-12: the account's Workers Builds minutes against the free-tier budget (hourly; read only).
   if (env.CF_BUILDS_API_TOKEN) await step("build_usage", () => buildUsageTick(env, nowMs()));
   if (env.ARTIFACTS) {

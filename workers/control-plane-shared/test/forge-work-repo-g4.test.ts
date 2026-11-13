@@ -388,12 +388,12 @@ test("G4-8. checks read forge-sourced heads from platform-work and GitHub ones f
   const t3 = await tick();
   assert.equal((t3.change_checks as any).outcome, "up_to_date");
 
-  // The secret-free change-request type-check reader looks up GitHub-sourced requests only.
-  // With gh-9 closed, only the forge-sourced request is open: there is nothing to look up, and no API call.
+  // Gate 6 (2026-11-13): the secret-free type-check reader also looks up forge-sourced requests, on cr/<cr_id> of
+  // platform, where the Forge copies their head (transfer.ts). With gh-9 closed, fg-claude-feature is looked up.
   db.raw.prepare("UPDATE forge_change_requests SET status = 'closed' WHERE cr_id = 'gh-9'").run();
   const urls: string[] = [];
   const builds = await crBuildsTick({ DB: db as never, CF_BUILDS_API_TOKEN: "test-token" }, Date.now(), (async (u: string) => { urls.push(u); return Response.json({ success: true, result: [] }); }) as never);
-  assert.deepEqual([builds.outcome, urls], ["up_to_date", []], "fg-claude-feature has no cr/<n> build to read");
+  assert.deepEqual([builds.outcome, urls], ["no_account", ["https://api.cloudflare.com/client/v4/accounts?per_page=5"]], "fg-claude-feature is looked up (no account in this fake)");
 
   // The token never reaches the audit chain or a tick result.
   for (const blob of [...auditOf(db).map((a: any) => a.payload_json), JSON.stringify(t1), JSON.stringify(t2)]) assert.doesNotMatch(blob, /SECRET|art_v1|expires=/);

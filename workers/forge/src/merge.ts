@@ -105,11 +105,11 @@ export async function emptyPack(): Promise<Uint8Array> {
  * The receive-pack request for one ref update. A create has old = zero, a delete has new = zero.
  * The packfile is sent unless the only command is a delete (the protocol forbids it then).
  */
-export async function receivePackBody(cmd: { from: string; to: string; ref: string }): Promise<Uint8Array<ArrayBuffer>> {
+export async function receivePackBody(cmd: { from: string; to: string; ref: string }, pack?: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
   const del = cmd.to === ZERO_SHA;
   const caps = del ? "report-status delete-refs" : "report-status";
   const parts = [pktLine(`${cmd.from} ${cmd.to} ${cmd.ref}\0 ${caps}\n`), FLUSH];
-  if (!del) parts.push(await emptyPack());
+  if (!del) parts.push(pack ?? await emptyPack());
   return concat(parts);
 }
 
@@ -227,8 +227,12 @@ export async function discoverRefs(remote: string, token: string, fetchImpl: Fet
  * `to` = zero deletes it. Refuses, without sending the update, unless the discovered value of the
  * branch is exactly `from`. It does not check ancestry: forgeMerge does that before calling it.
  */
-export async function fastForward(args: { remote: string; token: string; branch: string; from: string; to: string; fetchImpl: Fetch }): Promise<MergeResult> {
-  const { remote, token, branch, from, to, fetchImpl } = args;
+/**
+ * `pack` (transfer.ts) carries the objects `to` needs when the remote may not have them; without it an empty
+ * pack is sent, which is enough for a fast-forward to objects the repository already holds.
+ */
+export async function fastForward(args: { remote: string; token: string; branch: string; from: string; to: string; fetchImpl: Fetch; pack?: Uint8Array }): Promise<MergeResult> {
+  const { remote, token, branch, from, to, fetchImpl, pack } = args;
   const ref = `refs/heads/${typeof branch === "string" ? branch : ""}`;
   const result = (ok: boolean, reason?: string): MergeResult => ({ ok, ref, from: validSha(from) ? from : "", to: validSha(to) ? to : "", ...(reason ? { reason } : {}) });
   if (!validBranch(branch)) return result(false, "invalid_branch");
@@ -251,7 +255,7 @@ export async function fastForward(args: { remote: string; token: string; branch:
       method: "POST",
       redirect: "manual",
       headers: gitHeaders(token, { "content-type": "application/x-git-receive-pack-request", accept: "application/x-git-receive-pack-result" }),
-      body: await receivePackBody({ from, to, ref }),
+      body: await receivePackBody({ from, to, ref }, to === ZERO_SHA ? undefined : pack),
     });
   } catch {
     // The outcome is unknown: the caller re-reads the branch before it believes either answer.
@@ -454,4 +458,21 @@ export async function mergeSpike(env: { DB: D1Database; ARTIFACTS?: SpikeBinding
   } finally {
     repo[Symbol.dispose]?.();
   }
+}
+
+/** A failed spike is retried after this long. */
+export const SPIKE_RETRY_MS = 6 * 3_600_000;
+
+/**
+ * Gate 5 without a person (2026-11-13): the tick runs the spike until one run has succeeded, then never again.
+ * A failed or still-forking run is retried after SPIKE_RETRY_MS. The spike writes only the scratch repository.
+ */
+export async function mergeSpikeUntilProven(env: { DB: D1Database; ARTIFACTS?: SpikeBinding }, nowMs = Date.now(), fetchImpl: Fetch = (i, init) => fetch(i, init)): Promise<Record<string, unknown>> {
+  if (!env.ARTIFACTS) return { outcome: "not_configured" };
+  const done = await env.DB.prepare("SELECT created_at FROM audit_events WHERE event_type = 'forge.merge_spike' AND outcome = 'succeeded' ORDER BY created_at DESC LIMIT 1").first<{ created_at: string }>();
+  if (done) return { outcome: "proven", at: done.created_at };
+  const last = await env.DB.prepare("SELECT created_at FROM audit_events WHERE event_type = 'forge.merge_spike' ORDER BY created_at DESC LIMIT 1").first<{ created_at: string }>();
+  if (last && nowMs - Date.parse(last.created_at) < SPIKE_RETRY_MS) return { outcome: "waiting", last: last.created_at };
+  const result = await mergeSpike(env, "system:forge-tick", fetchImpl);
+  return { outcome: result.outcome, steps: result.steps.length };
 }
