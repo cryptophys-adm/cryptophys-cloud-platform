@@ -35,7 +35,7 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 61-route allow-list, CSP, CSRF | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 62-route allow-list, CSP, CSRF | — |
 | `cryptophys-platform-api` | Overview for the Console | — |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
@@ -58,9 +58,12 @@ These hold everywhere:
 - **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/`, numbered from 0001; each Worker's readiness lists the ones it needs.
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
-- **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). `forge_dependency_audits` and `forge_dependency_findings` (G5, migration 0051) keep 90 days. Other tables are kept.
+- **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). `forge_dependency_audits` and `forge_dependency_findings` (G5, migration 0051) keep 90 days. `forge_git_backups` (gate 8, migration 0054) keeps 90 days, except rows whose bundle is still in R2. Other tables are kept.
 - **Forge bundles (G2a, 2026-11-12).** The R2 bucket `cryptophys-forge-bundles` holds the Worker modules and a manifest of every passed main commit, for 14 days (`workers/forge/src/bundles.ts`).
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).
+- **Repository backup (ADR-0012 gate 8, §5m, 2026-11-13).** Once per UTC day per head of main, the Forge clones `cryptophys/platform` over Git smart HTTP. It writes the result as a git bundle to `cryptophys-forge-bundles` at `git-backups/platform/<UTC date>-<main sha>.bundle`, with its SHA-256 in D1 and in the object's metadata. It keeps the newest bundle of each of the last 30 days (`GIT_BACKUP_RETAINED_DAYS`).
+  - `GET /v1/forge/git-backup` and the Console Code page show the backups. A backup that has not succeeded for 48 hours is shown on the Console only, never sent as an owner notice.
+  - Restore: `git bundle verify <file>`, then `git clone <file> platform-restore`. A restore is critical (owner).
 
 ## The living platform (ADR-0013)
 

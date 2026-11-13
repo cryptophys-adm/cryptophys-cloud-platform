@@ -25,6 +25,8 @@
 //     over Git smart HTTP on the scratch repo merge-spike (a fork of platform); never writes platform.
 //   - POST /v1/forge/work-repo {confirm: "CREATE"} (G4, work-repo.ts): approvers only. Forks platform once into
 //     the work repository platform-work, where contributors push their branches (registered by the tick).
+//   - GET /v1/forge/git-backup (ADR-0012 gate 8, git-backup.ts): operators, read only. The latest git bundles of
+//     platform in R2 (SHA-256, size, refs, objects) and the failed runs, for the Console Code page.
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { accessConfigured, accessGate, actorOf, listConfigured, requireApprover, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
@@ -40,6 +42,7 @@ import { recentBuilds } from "./build-usage.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { mergeSpike, trustedRemoteFor } from "./merge.ts";
 import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
+import { gitBackup } from "../../control-plane-shared/src/git-backup.ts";
 import { ensureWorkRepo } from "./work-repo.ts";
 import { handleConsoleDist } from "./console-dist.ts";
 
@@ -250,6 +253,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/build-usage") return json({ usage: await buildUsage(env.DB, Date.now()), builds: await recentBuilds(env.DB, Number(url.searchParams.get("limit") ?? "15") || 15) });
       if (request.method === "GET" && url.pathname === "/v1/forge/dependency-audit") return json({ audit: await dependencyAudit(env.DB, Date.now()) });
+      if (request.method === "GET" && url.pathname === "/v1/forge/git-backup") return json({ backup: await gitBackup(env.DB, Date.now(), Number(url.searchParams.get("limit") ?? "10") || 10) });
       if (request.method === "GET" && url.pathname === "/v1/forge/census") return json(await latestCensus(env.DB, Number(url.searchParams.get("limit") ?? "5") || 5));
       if (request.method === "GET" && url.pathname === "/v1/forge/deploy-plans") return json(await listDeployPlans(env.DB, Number(url.searchParams.get("limit") ?? "10") || 10));
       if (request.method === "GET" && url.pathname === "/v1/forge/changes") return json(await listChanges(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));

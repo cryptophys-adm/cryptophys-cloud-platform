@@ -6,6 +6,7 @@ import { usePoll } from "../lib/usePoll";
 import { BarList, DataTable, Meter, STATUS, Stat, StatusBar } from "../components/viz";
 import BuildMinutes from "../components/BuildMinutes";
 import DependencyAudit from "../components/DependencyAudit";
+import GitBackup from "../components/GitBackup";
 
 const CHECK_TONE: Record<string, "green" | "red" | "amber" | "slate"> = { passed: "green", failed: "red", error: "amber", running: "slate" };
 const VERDICT: Record<string, { tone: "green" | "red" | "amber" | "slate" | "cyan"; label: string }> = {
@@ -27,6 +28,7 @@ export default function Code() {
   const plans = usePoll(() => call("forge.deploy_plans", undefined, undefined, { limit: "8" }), 60_000);
   const buildUsage = usePoll(() => call("forge.build_usage", undefined, undefined, { limit: "15" }), 300_000);
   const depAudit = usePoll(() => call("forge.dependency_audit"), 300_000);
+  const gitBackup = usePoll(() => call("forge.git_backup", undefined, undefined, { limit: "10" }), 300_000);
   const planRows = listOf(plans.data, "plans");
   const planParity = plans.data?.parity;
   const unitsText = (u: string[] | null) => (u === null ? "not computed" : u.length ? u.join(" → ") : "nothing to deploy");
@@ -139,6 +141,7 @@ export default function Code() {
       </Panel>
       <BuildMinutes data={buildUsage.data} loading={buildUsage.loading} />
       <DependencyAudit data={depAudit.data} loading={depAudit.loading} />
+      <GitBackup data={gitBackup.data} loading={gitBackup.loading} />
       <Panel title="History of main" icon={<GitCommitHorizontal className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone="slate">{rows.length} commits</Badge>}>
         {commits.loading && !commits.data ? <Skeleton /> : (
           <DataTable rows={rows} rowKey={(c, i) => c.sha || `${c.title}-${i}`} maxHeight={420} empty="No commits to show." columns={[
