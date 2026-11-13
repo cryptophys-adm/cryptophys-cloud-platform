@@ -5,7 +5,9 @@
 //
 //   approvals         - recovery plans in draft (Recovery Manager; an approver approves or disables them),
 //                       critical consensus proposals in pending_owner (ADR-0009 phase 4; approve or reject),
-//                       pending learned-knowledge proposals (TP-028; approve for shadow testing or reject);
+//                       pending learned-knowledge proposals that need the owner (TP-028; approve for shadow testing
+//                       or reject). Text kinds run by themselves with an optional veto (#310) and are not listed:
+//                       knowledgeNeedsOwner() in control-plane-shared/src/knowledge-kinds.ts is the one rule;
 //   critical_reports  - open critical agent reports of the last 24 hours (not acknowledged; ADR-0009 amendment
 //                       2026-11-13). Each one blocks routine consensus until an approver acknowledges it;
 //   production_problems - production problems no agent is handling (coordinator 2026-11-13, closing the gaps the
@@ -23,6 +25,7 @@ import { DEPLOYISH } from "../../control-plane-shared/src/consensus-rules.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
 import { serviceName } from "../../control-plane-shared/src/plain.ts";
+import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -91,8 +94,9 @@ export async function pendingApprovals(db: D1Database): Promise<PendingApprovals
   let knowledge: { proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string; item_json: string; created_at: string }[] = [];
   try {
     knowledge = (await db.prepare(
-      "SELECT proposal_id, item_id, item_version, kind, proposer_agent_id, item_json, created_at FROM knowledge_proposals WHERE status = 'pending' ORDER BY created_at LIMIT ?",
-    ).bind(INBOX_LIMIT).all<{ proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string; item_json: string; created_at: string }>()).results;
+      `SELECT proposal_id, item_id, item_version, kind, proposer_agent_id, item_json, created_at FROM knowledge_proposals
+       WHERE status = 'pending' AND kind NOT IN (${AUTONOMOUS_KNOWLEDGE_KINDS.map(() => "?").join(", ")}) ORDER BY created_at LIMIT ?`,
+    ).bind(...AUTONOMOUS_KNOWLEDGE_KINDS, INBOX_LIMIT).all<{ proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string; item_json: string; created_at: string }>()).results;
   } catch { knowledge = []; }
   return {
     recovery_plans: plans.results.map((p) => {

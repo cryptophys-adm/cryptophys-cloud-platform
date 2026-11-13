@@ -3,7 +3,7 @@
 //
 // Seven topics are computed from D1:
 //   owner_attention  - recovery plans in draft, critical proposals in pending_owner and pending knowledge
-//                      proposals (a click is needed);
+//                      proposals of a kind that needs the owner (a click is needed; text kinds run by themselves);
 //   critical_reports - an open (not acknowledged) critical agent report of the last 24 hours;
 //   drift            - a service drifted, unhealthy, never observed, or not observed for 45 minutes;
 //   build_minutes    - the month's measured Workers Builds minutes, or their projection, reach 80% of the

@@ -11,6 +11,7 @@ import kernel from "../../ai-kernel/src/index.ts";
 import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, collectNotices } from "../../ai-kernel/src/owner-notices.ts";
 import { acknowledgePhrase } from "../../ai-kernel/src/reports.ts";
 import { UI_ROUTES } from "../../console/src/ui/routes.ts";
+import { AUTONOMOUS_KNOWLEDGE_KINDS, knowledgeNeedsOwner } from "../src/knowledge-kinds.ts";
 import { CONSOLE_ALLOW_LIST } from "../../console/src/index.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -31,7 +32,12 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   proposal("cns_00000000-0000-4000-8000-000000000002", "rotate_secret", "pending_owner");
   proposal("cns_00000000-0000-4000-8000-000000000003", "admit_voter", "executed");
   db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
-    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-curator', 'k-prophet-trap', 1, 'caution', '{"text":"Prophet is often wrong in London"}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), ago(90));
+    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-calibrator', 'k-param-prophet-r37', 1, 'param_candidate', '{"text":"Test the Prophet R37 latch at 16 bars"}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), ago(90));
+  // #310: text kinds run by themselves with an optional veto; they never wait for the owner.
+  for (const [i, kind] of [[2, "caution"], [3, "role_reminder"]] as const) {
+    db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
+      VALUES (?, 'aether-curator', ?, 1, ?, '{"text":"runs by itself"}', ?, 'pending', NULL, NULL, ?, ?, NULL)`).run(`knw_00000000-0000-4000-8000-00000000000${i}`, `k-text-${i}`, kind, String(i).repeat(64), `dec_${i}`, ago(80));
+  }
   const report = (id: string, severity: string, minutes: number) => db.raw.prepare(`INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at)
     VALUES (?, 'deployment-orchestrator', 'platform_digest', ?, ?, '{}', 'deterministic', NULL, ?)`).run(id, severity, `${severity} ${id}`, ago(minutes));
   const open = "rpt_00000000-0000-4000-8000-000000000001", handled = "rpt_00000000-0000-4000-8000-000000000002";
@@ -54,14 +60,15 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   assert.deepEqual(b.approvals.consensus.map((p: any) => [p.proposal_id, p.action, p.executable, p.approvals, p.eligible]),
     [["cns_00000000-0000-4000-8000-000000000001", "admit_voter", true, 7, 8], ["cns_00000000-0000-4000-8000-000000000002", "rotate_secret", false, 7, 8]], "pending_owner only; rotate_secret has no platform executor");
   assert.equal(Date.parse(b.approvals.consensus[0].expires_at) - Date.parse(b.approvals.consensus[0].created_at), 24 * 3_600_000, "the 24 h owner window");
-  assert.deepEqual(b.approvals.knowledge.map((k: any) => [k.proposal_id, k.item.text]), [["knw_00000000-0000-4000-8000-000000000001", "Prophet is often wrong in London"]]);
+  assert.deepEqual(b.approvals.knowledge.map((k: any) => [k.proposal_id, k.kind, k.item.text]), [["knw_00000000-0000-4000-8000-000000000001", "param_candidate", "Test the Prophet R37 latch at 16 bars"]],
+    "only the knowledge proposal that needs the owner; the caution and the role reminder run by themselves");
   assert.deepEqual(b.critical_reports.map((x: any) => x.report_id), [open], "acknowledged, older than 24 h and warning reports are not open critical reports");
   // This database has no drift observation at all, so every registered service reads as not observed (condition 2 of
   // production_unhandled); the conditions themselves are tested one by one in production-unhandled.test.ts.
   assert.ok(b.production_problems.length > 0 && b.production_problems.every((p: any) => p.code === "observations_stale"));
   assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length });
   assert.equal(events(), before, "reading the inbox writes nothing");
-  assert.equal((db.raw.prepare("SELECT status FROM knowledge_proposals").get() as { status: string }).status, "pending");
+  assert.deepEqual((db.raw.prepare("SELECT DISTINCT status FROM knowledge_proposals").all() as { status: string }[]).map((r) => r.status), ["pending"]);
 
   // The notices list the same items, and both owner-channel notices link to the Owner page.
   const notices = await collectNotices(db as never);
@@ -110,4 +117,20 @@ test("I2. the Console: #/owner is the first nav item, reads only the inbox, reus
   assert.match(smoke, /"\/api\/kernel\/v1\/owner\/inbox"/);
   for (const check of ["approver", "operator", "empty"]) assert.match(smoke, new RegExp(`name: "${check}"`), `render smoke checks the Owner page as ${check}`);
   assert.match(smoke, /want: \["Nothing needs you"\]/);
+});
+
+test("I3. #310: one rule for which knowledge proposals need the owner, shared by the kernel and the Console's Knowledge page", async () => {
+  const { KNOWLEDGE_KINDS } = await import("../../ai-kernel/src/knowledge.ts");
+  assert.deepEqual([...AUTONOMOUS_KNOWLEDGE_KINDS], ["caution", "role_reminder"]);
+  for (const kind of AUTONOMOUS_KNOWLEDGE_KINDS) assert.ok((KNOWLEDGE_KINDS as readonly string[]).includes(kind), `${kind} is a knowledge kind`);
+  assert.deepEqual(KNOWLEDGE_KINDS.filter((kind) => knowledgeNeedsOwner({ status: "pending", kind })), ["param_candidate"], "only a parameter proposal needs the owner");
+  assert.equal(knowledgeNeedsOwner({ status: "approved", kind: "param_candidate" }), false, "only pending proposals wait");
+  assert.equal(knowledgeNeedsOwner({ status: "pending", kind: "caution" }), false);
+  // The Knowledge page's set (pinned by console-truthfulness T6) is the same set, and its rule is the same rule.
+  const page = read("workers/console/ui/src/pages/Knowledge.tsx");
+  const literal = /const AUTONOMOUS_KINDS = new Set\((\[[^\]]*\])\);/.exec(page);
+  assert.ok(literal, "the Knowledge page defines AUTONOMOUS_KINDS");
+  assert.deepEqual(JSON.parse(literal![1]), [...AUTONOMOUS_KNOWLEDGE_KINDS], "the Knowledge page and the kernel agree on the autonomous kinds");
+  assert.match(page, /const needsOwner = \(p: any\) => p\?\.status === "pending" && !AUTONOMOUS_KINDS\.has\(p\?\.kind\);/);
+  assert.match(read("workers/ai-kernel/src/owner-inbox.ts"), /kind NOT IN \(\$\{AUTONOMOUS_KNOWLEDGE_KINDS\.map/, "the inbox and the owner notice filter by the shared kinds");
 });

@@ -187,26 +187,29 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   assert.equal(telegramConfigured(env as never, "critical_reports"), true, "owner 2026-11-13: critical reports reach Telegram too");
   for (const topic of ["drift", "organism", "build_minutes", "dependencies"] as const) assert.equal(telegramConfigured(env as never, topic), false, `${topic} stays in the Console`);
   db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
-    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-curator', 'k-role-risk-calibration-talk', 1, 'role_reminder', '{}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), now);
+    VALUES ('knw_00000000-0000-4000-8000-000000000001', 'aether-calibrator', 'k-param-prophet-r37-statemaxage-16', 1, 'param_candidate', '{}', ?, 'pending', NULL, NULL, 'dec_x', ?, NULL)`).run("a".repeat(64), now);
+  // #310: a text proposal runs by itself (optional veto), so it never waits for the owner.
+  db.raw.prepare(`INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decided_by, reason, decision_id, created_at, decided_at)
+    VALUES ('knw_00000000-0000-4000-8000-000000000002', 'aether-curator', 'k-role-risk-calibration-talk', 1, 'role_reminder', '{}', ?, 'pending', NULL, NULL, 'dec_y', ?, NULL)`).run("b".repeat(64), now);
   let r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].topic, r[0].change, r[0].delivery], ["owner_attention", "opened", "failed: rate_limited"]);
   assert.equal(tg[0].change, "opened");
   assert.equal(tg[0].title, "1 item(s) wait for your approval");
-  assert.equal(tg[0].lines[0], "Knowledge proposal k-role-risk-calibration-talk@1 (role reminder, by aether-curator)");
+  assert.deepEqual(tg[0].lines, ["Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"], "only the parameter proposal needs the owner");
   assert.equal(tg[0].link, "https://nexus.cryptophys.work/console/#/owner", "every kind is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].change, r[0].delivery], ["delivery_retry", "sent"], "a failed Telegram send is retried");
   r = await reconcileNotices(env as never, NOW);
   assert.equal(r[0].change, "unchanged");
   assert.equal(tg.length, 2);
-  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved'").run();
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'approved' WHERE kind = 'param_candidate'").run();
   r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].change, r[0].delivery], ["closed", "sent"]);
   assert.equal(tg.at(-1).change, "closed");
   // With email too, the delivery is "sent" only when both sent.
   const mail: any[] = [];
   const both = { ...env, APPROVER_IDENTITIES: "owner@example.com", NOTIFY_FROM: "alerts@notify.example.com", OWNER_EMAIL: { send: async (m: any) => { mail.push(m); return {}; } }, OWNER_TELEGRAM: { notify: async () => ({ sent: false, reason: "telegram_not_configured" }) } };
-  db.raw.prepare("UPDATE knowledge_proposals SET status = 'pending'").run();
+  db.raw.prepare("UPDATE knowledge_proposals SET status = 'pending' WHERE kind = 'param_candidate'").run();
   r = await reconcileNotices(both as never, NOW);
   assert.equal(r[0].delivery, "email: sent; telegram: failed: telegram_not_configured");
   assert.equal(mail.length, 1);

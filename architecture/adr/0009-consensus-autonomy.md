@@ -518,6 +518,10 @@ Owner 2026-11-13: "Pastikan semua loop ini apakah juga perlu Human Ai Interactio
     - recovery plans in `draft` (Recovery Manager; approve, or disable; the author cannot approve their own plan);
     - critical consensus proposals in `pending_owner` (phase 4). They can be approved when the platform has an executor and the mode is `critical`; otherwise they are carried out by runbook and rejected. The window is 24 hours;
     - learned-knowledge proposals in `pending` that need the owner (TP-028; approve for shadow testing, or reject; 14-day window).
+      - Since #310, text kinds (`caution`, `role_reminder`) run by themselves with an optional veto on the Knowledge page. Only `param_candidate` needs the owner.
+      - The rule is defined once, in `control-plane-shared/src/knowledge-kinds.ts` (`AUTONOMOUS_KNOWLEDGE_KINDS`, `knowledgeNeedsOwner`), and the inbox and the `owner_attention` notice use it.
+      - The Knowledge page keeps its own literal set, because `console-truthfulness.test.ts` T6 pins that line. `owner-inbox.test.ts` I3 checks that the two sets are the same.
+      - The Knowledge page's own "Needs you" panel stays; the Owner page is the aggregate.
   - *Open critical reports* (owner notice `critical_reports`): unacknowledged critical agent reports of the last 24 hours. Each blocks routine consensus until an approver acknowledges it (amendment above).
   - *Production problems no agent is handling* (owner notice `production_unhandled`, below).
   - *Owner-initiated controls, not requests.* These stay on their pages; nothing asks the owner for them, so they are not in the panel:
@@ -580,7 +584,7 @@ Owner 2026-11-13: "Pastikan semua loop ini apakah juga perlu Human Ai Interactio
     - O12: `critical_reports` goes by email and Telegram with the Owner page link and a Resolved message;
     - O2 and O10: the Owner page link.
   - `production-unhandled.test.ts`: P0 the healthy baseline; P1–P6 one test per condition; P3-negative a drift with a draft plan does not fire; P7 delivery, deduplication and resolution.
-  - `owner-inbox.test.ts`: I1 the endpoint and its parity with the notices; I2 the Console wiring.
+  - `owner-inbox.test.ts`: I1 the endpoint and its parity with the notices; I2 the Console wiring; I3 the shared knowledge rule and its parity with the Knowledge page.
   - `forge-build-usage` U4 and `forge-dependency-audit-g5` G5-6: channel `console`.
   - `console-tp023`/`console-tp024`: route counts.
   - The render smoke: the Owner page as approver, as operator and empty.
