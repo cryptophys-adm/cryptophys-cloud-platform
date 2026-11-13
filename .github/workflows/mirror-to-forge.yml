@@ -62,7 +62,7 @@ jobs:
           remote="$(jq -er '.remote' "$out")"
           [[ "$remote" =~ ^https://[0-9a-f]{32}\.artifacts\.cloudflare\.net/git/cryptophys/platform\.git$ ]] || { echo "::error::Forge returned an untrusted Artifacts remote"; exit 1; }
           echo "::add-mask::${token}"; echo "::add-mask::${remote}"
-          git -c http.extraHeader="Authorization: Bearer ${token}" push --force "$remote" "HEAD:refs/heads/main"
+          git -c http.extraHeader="Authorization: Bearer ${token}" push "$remote" "HEAD:refs/heads/main"
           echo "Mirrored main $(git rev-parse HEAD) to the Forge."
           forge="https://cryptophys-forge.${subdomain}.workers.dev"
           report_outcome() { # number merged(true|false) merge_sha

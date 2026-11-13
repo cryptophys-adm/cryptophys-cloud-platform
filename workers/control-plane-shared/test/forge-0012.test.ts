@@ -166,3 +166,15 @@ test("F9. a SQL.js database left by the previous test is closed before the next 
   if (!databases) return;
   assert.equal(databases.size, 0, "the runner must clean up after every test, not only after the file");
 });
+
+test("F2b. after the cut-over (merge path forge) the Forge mints no mirror token, and the mirror workflow never force-pushes main", async () => {
+  const db = migratedDb();
+  db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  const a = fakeArtifacts({ exists: true });
+  const r = await call(forge, env(db, a.binding), req("POST", "/v1/forge/mirror-token", { confirm: "MIRROR" }, CI_JWT));
+  assert.equal(r.status, 409);
+  assert.deepEqual(a.calls.tokens, [], "no token minted");
+  const mirror = readFileSync(new URL("../../../.github/workflows/mirror-to-forge.yml", import.meta.url), "utf8");
+  assert.match(mirror, /push "\$remote" "HEAD:refs\/heads\/main"/);
+  assert.doesNotMatch(mirror, /push --force "\$remote" "HEAD:refs\/heads\/main"/, "a diverged main is refused, never overwritten");
+});
