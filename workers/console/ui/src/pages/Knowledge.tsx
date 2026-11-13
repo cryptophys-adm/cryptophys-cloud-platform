@@ -1,4 +1,4 @@
-import { BookOpenCheck, Check, GraduationCap, Library, Scale, Sparkles, X } from "lucide-react";
+import { BellRing, BookOpenCheck, BrainCircuit, Check, GraduationCap, Library, Scale, Sparkles, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -6,7 +6,15 @@ import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
 import { DataTable, Meter, STATUS, Stat, StatusBar } from "../components/viz";
 
-/** TP-028: learned-knowledge proposals from Aether (tier 1 drafts). Approval is for shadow testing only. */
+/**
+ * TP-028: learned-knowledge proposals from Aether (tier 1 drafts). Since 2026-11-13 (owner: "buat agar
+ * autonomous"; "Batasi User/Owner hanya untuk critical dan permintaan approval only") a text proposal
+ * (caution, role reminder) runs by itself: XAUUSD shadow-tests it, puts it live on its own verdict and
+ * retires it when it stops helping. Only a parameter proposal (a reviewed grid value, or the room quorum
+ * weighting) still asks the owner for approval.
+ */
+const AUTONOMOUS_KINDS = new Set(["caution", "role_reminder"]);
+const needsOwner = (p: any) => p?.status === "pending" && !AUTONOMOUS_KINDS.has(p?.kind);
 const tone = (s?: string): "green" | "amber" | "red" | "slate" =>
   s === "approved" ? "green" : s === "pending" ? "amber" : s === "rejected" ? "red" : "slate";
 const KIND_TEXT: Record<string, string> = {
@@ -106,6 +114,89 @@ function Progress({ o }: { o: any }) {
   );
 }
 
+const MODEL_NAME: Record<string, string> = { tight_long: "tight · long", tight_short: "tight · short", wide_long: "wide · long", wide_short: "wide · short" };
+const fx = (v: unknown, d = 3) => (num(v) === null ? "—" : (v as number).toFixed(d));
+
+/**
+ * Owner 2026-11-13: "Pastikan Modul training ini punya visualisasi di cerebrum". The XAUUSD baseline model
+ * retrains itself every hour (docs/RFC_CUSTOM_MODEL.md there) and reports to Aether: its walk-forward check,
+ * its prospective record (decisions it had not seen), the features it leaned on, whether its gate has
+ * connected it to the Decision Engine council, and the learned notes XAUUSD put live by itself. Read from
+ * overview().model only; a missing value is a dash.
+ */
+function Training({ o }: { o: any }) {
+  const m = o?.model;
+  if (!m) return <Empty>No model report has reached Aether yet: the baseline reports after each hourly retraining.</Empty>;
+  const g = m.gate ?? {};
+  const p = m.promotion;
+  const connected = p?.status === "promoted";
+  const models: any[] = m.models ?? [];
+  const notes: any[] = m.live_notes ?? [];
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <Stat label="council connection" value={p ? (connected ? `connected · ${dash(p.set)}` : "not connected") : "—"} tone={p ? (connected ? "good" : undefined) : undefined} sub={p?.since ? `since ${ago(p.since)}` : undefined} />
+        <Stat label="labeled decisions" value={dash(m.rows)} sub={`model ${dash(m.model_id)}`} />
+        <Stat label="last retraining" value={m.generated_at ? ago(m.generated_at) : "—"} sub={m.received_at ? `received ${ago(m.received_at)}` : undefined} />
+        <Stat label="live learned notes" value={dash(notes.filter((n) => n.status === "live").length)} sub={`${notes.filter((n) => n.status === "retired").length} retired`} />
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Gate: a label set connects by itself when both sides hold {dash(g.min_n)}+ decisions it had not seen, beat the base rate (paired Brier gain, p &lt; {dash(g.alpha)}) and reach AUC {dash(g.min_auc)}; it disconnects when that no longer holds. Connected, the council receives its probabilities as advice; the guardrails still decide. {p?.reason ? <span className="text-slate-400">Now: {p.reason}</span> : null}
+      </p>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {models.map((x: any) => (
+          <div key={x.id} className="glass-inner space-y-2 px-3 py-2.5">
+            <div className="flex items-center justify-between text-[12px]"><span className="text-slate-200">{MODEL_NAME[x.id] ?? dash(x.id)}</span>{num(x.prospective?.skill) !== null && (x.prospective.skill as number) > 0 ? <Badge tone="green">beats base</Badge> : <Badge tone="slate">collecting</Badge>}</div>
+            <Need label="prospective decisions" have={x.prospective?.n ?? 0} need={g.min_n} />
+            <div className="text-[11px] text-slate-400">walk-forward · skill <span className="mono text-slate-200">{fx(x.walk_forward?.skill)}</span> · AUC <span className="mono text-slate-200">{fx(x.walk_forward?.auc, 2)}</span> · {dash(x.walk_forward?.n)} rows</div>
+            <div className="text-[11px] text-slate-400">its picks <span className="mono text-slate-200">{fx(x.walk_forward?.picked_mean_r, 2)}R</span> ({dash(x.walk_forward?.picked)}) vs all <span className="mono text-slate-200">{fx(x.walk_forward?.all_mean_r, 2)}R</span></div>
+            <div className="text-[11px] text-slate-400">prospective · skill <span className="mono text-slate-200">{fx(x.prospective?.skill)}</span> · p <span className="mono text-slate-200">{fx(x.prospective?.p_value)}</span> · AUC <span className="mono text-slate-200">{fx(x.prospective?.auc, 2)}</span></div>
+            <div className="flex flex-wrap gap-1">{(x.top_features ?? []).map((f: string) => <Badge key={f} tone="slate">{words(f)}</Badge>)}</div>
+          </div>
+        ))}
+      </div>
+      {!models.length && <Empty>The report holds no trained model yet (each needs 150 decisive rows).</Empty>}
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Learned notes live by themselves</h4>
+        <DataTable dense rows={notes} rowKey={(n: any) => `${n.item_id}@${n.version}`} maxHeight={220} empty="No note has passed its shadow test yet." columns={[
+          { key: "status", header: "status", sort: (n: any) => n.status, cell: (n: any) => <span className="inline-flex items-center gap-1.5"><Dot tone={n.status === "live" ? "green" : "slate"} />{n.status}</span> },
+          { key: "item", header: "item", sort: (n: any) => n.item_id, cell: (n: any) => <span className="mono text-cyan-200">{n.item_id}@{n.version}</span> },
+          { key: "where", header: "agents · chart", cell: (n: any) => <span className="text-slate-300">{(n.agents ?? []).join(", ") || "—"} · {TF[n.chart] ?? dash(n.chart)}</span> },
+          { key: "when", header: "live since", sort: (n: any) => Date.parse(n.promoted_at) || 0, cell: (n: any) => <span className="text-slate-500">{n.promoted_at ? ago(n.promoted_at) : "—"}</span> },
+          { key: "why", header: "retired because", className: "wrap", cell: (n: any) => <span className="text-[11px] text-slate-400">{n.status === "retired" ? dash(n.reason) : "—"}</span> },
+        ]} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The owner's part of the knowledge loop (owner 2026-11-13: "Batasi User/Owner hanya untuk critical dan
+ * permintaan approval only"): the parameter proposals waiting for an approval, and the loop's sync checks
+ * that fail while the market is open (the loop has stopped). Everything else runs by itself and is only shown.
+ */
+function OwnerActions({ approvals, o }: { approvals: any[]; o: any }) {
+  const checks = Object.entries((o?.sync?.checks ?? {}) as Record<string, any>).filter(([, c]) => c?.status === "warn");
+  const critical = o?.sync?.market_open ? checks : [];
+  if (!approvals.length && !critical.length) return <p className="text-[12px] text-slate-400">Nothing needs you. The knowledge loop is running by itself.</p>;
+  return (
+    <div className="space-y-2">
+      {approvals.map((p: any) => (
+        <div key={p.proposal_id} className="glass-inner flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[12px]">
+          <span><Badge tone="amber">approval</Badge> <span className="mono text-cyan-200">{p.item_id}@{p.item_version}</span> <span className="text-slate-400">· {KIND_TEXT[p.kind] ?? words(p.kind)}</span></span>
+          <span className="text-[11px] text-slate-500">open it under Proposals below · proposed {ago(p.created_at)}</span>
+        </div>
+      ))}
+      {critical.map(([k, c]) => (
+        <div key={k} className="glass-inner flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[12px]">
+          <span><Badge tone="red">critical</Badge> <span className="text-slate-200">the loop's {words(k)} check fails while the market is open</span></span>
+          <span className="mono text-[11px] text-slate-500">{c.age_minutes != null ? `${c.age_minutes} of ${dash(c.limit_minutes)} min` : dash(c.note)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const COUNCIL_TONE: Record<string, "green" | "amber" | "red" | "cyan" | "slate"> = { in_sync: "green", propose: "cyan", observing: "slate", refused: "red", unreported: "amber" };
 const COUNCIL_TEXT: Record<string, string> = {
   in_sync: "matches the measured system",
@@ -167,7 +258,7 @@ function Existing({ o }: { o: any }) {
         <Stat label="canon" value={dash(canon.version)} sub={`sha ${short(canon.content_sha256)}`} />
         <Stat label="indicator KB" value={canon.kb_version == null ? "—" : `v${canon.kb_version}`} sub={`sha ${short(canon.kb_content_sha256)}`} />
         <Stat label="doctrine rules" value={dash(canon.doctrine?.length)} />
-        <Stat label="learned items approved" value={dash(counts.approved ?? (o?.knowledge ? 0 : null))} sub="the learned pack (shadow only)" />
+        <Stat label="learned items approved" value={dash(counts.approved ?? (o?.knowledge ? 0 : null))} sub="approved by a person" />
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         <div>
@@ -271,14 +362,18 @@ export default function Knowledge() {
   const rows = listOf(data, "proposals");
   const counts: Record<string, number> = data?.counts ?? {};
   const pending = rows.filter((p: any) => p.status === "pending");
+  const approvals = rows.filter(needsOwner);
   const reload = () => void refresh();
   const aether = usePoll(() => call("aether.overview"), 300_000);
   const o: any = aether.data;
   return (
     <div className="flex flex-col gap-3">
+      <Panel title="Needs you · knowledge loop" icon={<BellRing className="h-3.5 w-3.5 text-amber-300" />} right={<Badge tone={approvals.length ? "amber" : "slate"}>{approvals.length} approval{approvals.length === 1 ? "" : "s"}</Badge>}>
+        {loading && !data ? <Skeleton rows={2} /> : <OwnerActions approvals={approvals} o={o} />}
+      </Panel>
       <Panel title="Learned Knowledge · Aether" icon={<Sparkles className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone={pending.length ? "amber" : "slate"}>{pending.length} pending</Badge>}>
         <p className="text-[12px] leading-relaxed text-slate-400">
-          Aether's curator and calibrator propose what they measured. Your approval only lets a proposal run in shadow on the XAUUSD rooms; it never changes a live agent. Promotion is a separate owner PR in the XAUUSD repository. Proposals expire after 14 days. Advisory only: no levels, sizes or orders.
+          Aether's curator and calibrator propose what they measured. A text proposal (a caution or a role reminder) runs by itself: XAUUSD tests it in shadow, puts it live for the agent and chart it was tested on when it proves better, and retires it when it stops helping. A parameter proposal still waits for your approval, which lets it run in shadow. Proposals expire after 14 days. Advisory only: no levels, sizes or orders.
         </p>
         <StatusBar className="mt-3" segments={[
           { key: "approved", label: "approved for shadow", value: counts.approved ?? 0, color: STATUS.good },
@@ -292,6 +387,12 @@ export default function Knowledge() {
           What the decision cards hold against each rule's threshold. A rule drafts a proposal only when it is ready; the curator and the calibrator run once a day ({dash(o?.progress?.curation?.schedule_utc)} UTC).
         </p>
         {aether.loading && !o ? <Skeleton rows={6} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Progress o={o} />}
+      </Panel>
+      <Panel title="Training · the platform's own model" icon={<BrainCircuit className="h-3.5 w-3.5 text-emerald-300" />} right={<Badge tone={o?.model?.promotion?.status === "promoted" ? "green" : "slate"}>{o?.model?.promotion ? (o.model.promotion.status === "promoted" ? "connected" : "not connected") : "—"}</Badge>}>
+        <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
+          XAUUSD's baseline model learns from every Decision Engine decision and its outcome, retrains every hour, is judged on newer decisions than it trained on, and predicts each new decision before its outcome is known. It connects itself to the council only on that record.
+        </p>
+        {aether.loading && !o ? <Skeleton rows={6} /> : aether.error && !o ? <Empty>{aether.error}</Empty> : <Training o={o} />}
       </Panel>
       <Panel title="Existing knowledge" icon={<Library className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="slate">{o?.canon?.version ? `canon ${o.canon.version}` : "—"}</Badge>}>
         <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
@@ -308,7 +409,7 @@ export default function Knowledge() {
       <Panel title="Proposals" icon={<BookOpenCheck className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="cyan">{rows.length}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : error && !data ? <Empty>{error}</Empty> : (
           <DataTable rows={rows} rowKey={(p) => p.proposal_id} initialSort={{ key: "when", dir: "desc" }} maxHeight={560}
-            footer={pending.length ? <span className="text-amber-300">open a pending row to review and decide</span> : null}
+            footer={approvals.length ? <span className="text-amber-300">open a pending parameter row to review and decide</span> : null}
             empty="No proposals yet. Aether proposes once it has enough decision cards and outcomes." columns={[
               { key: "status", header: "status", sort: (p) => p.status, cell: (p) => <span className="inline-flex items-center gap-1.5"><Dot tone={tone(p.status)} pulse={p.status === "pending"} />{p.status}</span> },
               { key: "item", header: "item", sort: (p) => p.item_id, cell: (p) => <span className="mono text-cyan-200">{p.item_id}@{p.item_version}</span> },
@@ -322,11 +423,19 @@ export default function Knowledge() {
               <div>
                 <p className="text-[11px] text-slate-400">{KIND_TEXT[p.kind] ?? ""}{p.reason ? ` · ${p.reason}` : ""}</p>
                 <Item p={p} />
-                {p.status === "pending" && (who.approver ? (
+                {p.status === "pending" && AUTONOMOUS_KINDS.has(p.kind) && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                    <Badge tone="cyan">autonomous</Badge> No action needed: XAUUSD tests it in shadow and decides from its own verdict.
+                    {who.approver && <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.knowledge_reject", params: p.proposal_id, body: { reason: "vetoed in the Console" },
+                      title: `Veto ${p.item_id}@${p.item_version}`, lines: ["Optional: the proposal is closed as rejected; XAUUSD drops it from shadow testing and retires it if it is live."],
+                      done: "Vetoed.", after: reload })}><X className="h-3.5 w-3.5" />Veto…</button>}
+                  </div>
+                )}
+                {needsOwner(p) && (who.approver ? (
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.knowledge_approve", params: p.proposal_id, body: { reason: "approved for shadow testing in the Console" },
                       title: `Approve ${p.item_id}@${p.item_version} for shadow testing`,
-                      lines: ["Recorded under your Access identity in the audit chain.", "Aether exports it in the approved pack; the XAUUSD shadow arm tests it. No live agent changes.", "Promotion still needs your PR in the XAUUSD repository."],
+                      lines: ["Recorded under your Access identity in the audit chain.", "Aether exports it in the approved pack; XAUUSD runs it in shadow. No live engine changes.", "Making a parameter permanent still needs a PR in the XAUUSD repository."],
                       done: "Approved for shadow testing.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>
                     <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.knowledge_reject", params: p.proposal_id, body: { reason: "rejected in the Console" },
                       title: `Reject ${p.item_id}@${p.item_version}`, lines: ["The proposal is closed as rejected. Aether does not propose the same version again."],

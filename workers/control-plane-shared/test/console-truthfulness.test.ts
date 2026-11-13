@@ -67,3 +67,17 @@ test("T5. hardening 2026-11-11: one metabolism view (Organism), no unmeasured st
   assert.match(cmd, /treasury_source === "placeholder" \? " \(placeholder\)"/);
 });
 
+
+test("T6. Knowledge (owner 2026-11-13): the training view reads Aether's model report, and the owner is asked only for approvals and critical failures", () => {
+  const k = read("pages/Knowledge.tsx");
+  // The training module comes from overview().model only: no number without a reading.
+  assert.match(k, /const m = o\?\.model;/);
+  assert.match(k, /No model report has reached Aether yet/);
+  // "Batasi User/Owner hanya untuk critical dan permintaan approval only": text proposals run by themselves,
+  // the approve button is only for the kinds that still need a person, and the owner panel lists only those
+  // approvals and the loop's failing checks while the market is open.
+  assert.match(k, /const AUTONOMOUS_KINDS = new Set\(\["caution", "role_reminder"\]\);/);
+  assert.match(k, /\{needsOwner\(p\) && \(who\.approver \? \(/);
+  assert.match(k, /const critical = o\?\.sync\?\.market_open \? checks : \[\];/);
+  assert.match(k, /Nothing needs you\. The knowledge loop is running by itself\./);
+});
