@@ -50,6 +50,13 @@ const MOCK = {
       { package: "@scope/a-package-with-a-rather-long-name", version: "1.2.3", advisory_id: "1100001", severity: "high", title: "Prototype pollution in a long advisory title that has to wrap on a phone screen", url: "https://github.com/advisories/GHSA-xxxx-xxxx-xxxx", vulnerable_versions: ">=1.0.0 <1.2.4", lockfiles: ["workers/console/ui/package-lock.json"], runtime: true },
       { package: "esbuild", version: "0.20.0", advisory_id: "1100002", severity: "moderate", title: "Dev server accepts cross-origin requests", url: null, vulnerable_versions: "<=0.24.2", lockfiles: ["workers/control-plane-shared/package-lock.json"], runtime: false },
     ], runtime_high_ids: ["1100001"], observed_at: "2026-11-12T09:20:00.000Z" } },
+  "/api/forge/v1/forge/git-backup": { backup: { schema: "git-backup.v1", status: "failing", stale: false, retained_bundles: 12, retained_days: 30, stale_after_hours: 48,
+    latest_run: { run_id: "gbk_3dbbead07e50_2", main_sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", day: "2026-11-12", ran_at: "2026-11-12T09:19:00.000Z", status: "failed", r2_key: null, bundle_sha256: null, bundle_bytes: null, pack_bytes: null, pack_sha1: null, pack_version: null, objects: null, refs: null, error: "discovery_failed:discovery_http_401, a long reason that has to wrap on a phone screen without scrolling", pruned_at: null },
+    last_ok_run: { run_id: "gbk_8588e21c0ffe_1", main_sha: "8588e21c0ffee0000000000000000000000000000", day: "2026-11-12", ran_at: "2026-11-12T00:04:00.000Z", status: "ok", r2_key: "git-backups/platform/2026-11-12-8588e21c0ffee0000000000000000000000000000.bundle", bundle_sha256: "5f1c0de2b7a94e3c8d6f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f", bundle_bytes: 2412345, pack_bytes: 2391000, pack_sha1: "c0ffee1234567890abcdef1234567890abcdef12", pack_version: 2, objects: 5114, refs: 41, error: null, pruned_at: null, ref_list: [{ name: "refs/heads/main", sha: "8588e21c0ffee0000000000000000000000000000" }] },
+    runs: [
+      { run_id: "gbk_3dbbead07e50_2", main_sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", day: "2026-11-12", ran_at: "2026-11-12T09:19:00.000Z", status: "failed", r2_key: null, bundle_sha256: null, bundle_bytes: null, pack_bytes: null, pack_sha1: null, pack_version: null, objects: null, refs: null, error: "discovery_failed:discovery_http_401", pruned_at: null },
+      { run_id: "gbk_8588e21c0ffe_1", main_sha: "8588e21c0ffee0000000000000000000000000000", day: "2026-11-12", ran_at: "2026-11-12T00:04:00.000Z", status: "ok", r2_key: "git-backups/platform/2026-11-12-8588e21c0ffee0000000000000000000000000000.bundle", bundle_sha256: "5f1c0de2b7a94e3c8d6f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f", bundle_bytes: 2412345, pack_bytes: 2391000, pack_sha1: "c0ffee1234567890abcdef1234567890abcdef12", pack_version: 2, objects: 5114, refs: 41, error: null, pruned_at: null },
+    ], observed_at: "2026-11-12T09:20:00.000Z" } },
   "/api/forge/v1/forge/commits": { commits: [{ sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" }] },
   "/api/kernel/v1/notices": { email: "not_configured", notices: [
     { topic: "owner_attention", channel: "owner", active: true, fingerprint: "f", title: "3 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/owner", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor)", "Critical action: admit forge-steward to the council (proposed by supervisor)", "Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"] },
@@ -260,6 +267,13 @@ for (const width of [390, 1440]) {
     if (overflow > 1) problems.push(`${width}px #/${route}: horizontal scroll of ${overflow}px`);
     const text = await page.evaluate(() => document.body.innerText.length);
     if (text < 40) problems.push(`${width}px #/${route}: blank page`);
+    if (route === "code") {
+      // ADR-0012 gate 8: the git backup panel shows the measured values of GET /v1/forge/git-backup.
+      const body = await page.evaluate(() => document.body.innerText);
+      for (const want of ["5f1c0de2b7a94e3c", "5114 objects · 41 branches", "2.3 MiB", "discovery_failed:discovery_http_401"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/code: git backup panel does not show "${want}"`);
+      }
+    }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });
   }
   await page.close();

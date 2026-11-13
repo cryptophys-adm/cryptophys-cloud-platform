@@ -702,6 +702,47 @@ G2c-2 builds, as standalone modules with their own tests, the two pieces G2b lef
     - that the uploaded `config` (`run_worker_first = true`, `not_found_handling`) is applied to the new version. The version record has no field to read it back, so a live check of the first native Console deploy should request an asset without the operator role and expect the Console Worker's refusal;
     - that the assets binding comes back from `GET …/versions/{id}` as `{ type: "assets", name: "ASSETS" }`, the shape sent, so the digest check passes (if not, `bindings_differ` stops the deploy before traffic).
 
+### 5m. Gate 8: a daily git bundle of the repository in R2 (2026-11-13)
+
+Phase 5 says "the R2 git bundles are the off-Artifacts copy", and the Consequences list a "daily `git bundle` written by the Forge" as the mitigation for depending on a beta product. This is that copy (`workers/forge/src/git-backup.ts`, migration 0054). It is gate 8 of `docs/GITHUB-CUTOVER.md`.
+
+- **When.** A Forge tick step, `git_backup`, runs only with the Artifacts binding and the R2 binding `BUNDLES`. It runs at most once per UTC day per head of main, so a new head of main gets a fresh bundle at the next tick. A failed run of the same head is retried after an hour. During the cut-over freeze (procedure step 3), the frozen head is therefore backed up within one tick of the final sync.
+- **How it fetches.**
+  1. It mints a read token for `platform` with a 120 s TTL, as G4 does for `platform-work` (§5j), and requires that the remote is this account's Artifacts host and that exact path (`trustedRemoteFor`).
+  2. It runs ref discovery, `GET <remote>/info/refs?service=git-upload-pack` (protocol v0/v1, parsed by G3a's pkt-line code).
+  3. It sends one `POST <remote>/git-upload-pack`. The request wants the head of every `refs/heads/*` (main is required), puts the capabilities on the first want, then sends a flush and `done`, with no `have` lines, so the answer is a full clone. The capabilities are `side-band-64k` (or `side-band`) when advertised, `ofs-delta`, `no-progress`, and an `agent`. Tags and other refs are not taken.
+  4. It reads the answer as a stream: the acknowledgements (`NAK`, or a final `ACK`; `ACK … continue|common|ready` are skipped; `ERR` fails), then the pack. With side-band, band 1 is the pack, band 2 progress (dropped) and band 3 a fatal error, and a flush ends it. Without side-band, the raw pack follows `NAK`.
+- **What is checked before anything is written.** The pack must start with `PACK`, have version 2 or 3 and at least one object, and end with a 20-byte SHA-1 that equals the SHA-1 of everything before it. The bundle's main must also be the head the run was due for (`main_moved_during_backup`). Any failure records a failed run with its reason; nothing goes to R2.
+- **The bundle.** Format v2: `# v2 git bundle`, then one `<sha> <ref>` line per branch sorted by name, then `<main sha> HEAD`, a blank line and the pack. There are no prerequisite lines, because the bundle is a full clone. The ref order is the order `git bundle create --all` writes; given git's refs and pack, the writer reproduces git 2.43's bundle byte for byte (test GB1).
+  - The key is `git-backups/platform/<UTC date>-<main sha>.bundle` in `cryptophys-forge-bundles`. `pruneBundles` only touches `bundles/`, so the 14-day bundle retention does not apply here.
+  - `customMetadata` holds `sha256` (of the whole bundle file), `bytes`, `pack_sha1`, `pack_version`, `objects`, `refs`, `main_sha`, `created_at` and `run_id`.
+- **Records.**
+  - D1 `forge_git_backups` (migration 0054, additive) has one row per run: the head, the UTC day, the status `ok` or `failed`, the R2 key, the bundle's SHA-256 and size, the pack's size, SHA-1, version and object count, the branches (count and list), the error, and `pruned_at`.
+  - Audit events: `forge.git_backup_written` (key, SHA-256, sizes, objects, refs, side-band) or `forge.git_backup_failed` (reason).
+- **Retention (`GIT_BACKUP_RETAINED_DAYS = 30`).** After each successful run, R2 keeps the newest bundle of each of the last 30 UTC days that have one. Older bundles of the same day and older days are deleted, at most 100 per run, and their rows get `pruned_at`. Rows are kept 90 days, except a row whose bundle is still in R2.
+- **Memory.** A Worker has 128 MB. The pack is held twice while the bundle is assembled (as chunks, then in the bundle buffer), so it is capped at `MAX_PACK_BYTES = 32 MiB`, about 64 MiB at the peak. A larger pack fails closed with `pack_too_large`, and nothing is written; a truncated bundle is never written. Branches are capped at 5,000 (`too_many_refs`), never silently left out.
+  - Measured 2026-11-13 on the local clone of main `7c5258d` (359 commits, 5,114 objects): git's own upload-pack, run through this code, gives a 2,273,268-byte bundle (pack 2,273,148 bytes, deltified). Packed without deltas, the same objects are 8.5 MB.
+  - Artifacts' packs may be less compressed than git's. Even an undeltified pack today is about a quarter of the cap.
+  - Past the cap, the next step is a streamed write (R2 multipart upload with incremental hashing).
+- **The token** goes only into the `Authorization` header. It is never logged, stored, audited or returned, and an error text is scrubbed of it before it is recorded (test GB3 searches every row, audit payload, R2 key and metadata, and every result).
+- **Shown.**
+  - `GET /v1/forge/git-backup`, operators, read only. It returns the latest runs, the latest successful run with its branches, the number of retained bundles and the 48-hour stale flag. The route is on the Console's read-only allowlist.
+  - The Console Code page has a panel showing only these measured values.
+  - Owner 2026-11-13: the owner is contacted only for critical reports and approval requests. So "no successful backup for 48 hours" is a Console signal only (the panel turns red). It is not an owner notice, and it is never emailed or sent to Telegram.
+- **Restore** (owner decision: a restore of the canonical repository is critical).
+  1. Download the newest bundle from R2: `cryptophys-forge-bundles`, prefix `git-backups/platform/`. Check its SHA-256 against the run's `bundle_sha256`, or against the object's `customMetadata.sha256`.
+  2. `git bundle verify platform.bundle` (run inside any git repository) lists the refs and reports "is okay".
+  3. `git clone platform.bundle platform-restore` checks out main. The other branches are under `refs/remotes/origin/*`.
+  4. To refill Artifacts or another remote: `git -C platform-restore push --mirror <remote>`, or push `main` and the branches explicitly.
+- **Proven locally (test GB8, wherever a git process exists; the Forge runner checks the same bytes against git's bundle instead).** A real `git upload-pack --stateless-rpc` serves a repository with three branches. The Forge's tick turns the answer into a bundle that `git bundle verify` accepts, and `git clone` restores with `fsck --full --strict` clean.
+- **Not verified against the live service.** These are assumptions, checked only against the Git protocol documentation, git's own upload-pack and the fake server in the tests:
+  - that a read token is accepted for `POST <remote>/git-upload-pack` (G4 assumes it only for discovery);
+  - that Artifacts answers a v0 stateless upload-pack request with `NAK` and a side-band-64k pack, or a raw pack when it advertises no side-band;
+  - that it serves a full clone of about 2–9 MB within the 110 s fetch timeout and the token's 120 s;
+  - the size of the pack Artifacts builds, which may be larger than git's.
+
+  If any of these is wrong, the run records `discovery_failed:…`, `fetch_http_<status>`, `fetch_not_smart_http`, `remote_error:…`, `no_acknowledgement`, `pack_checksum_mismatch` or `pack_too_large`, writes nothing, and the Console shows the failure.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).

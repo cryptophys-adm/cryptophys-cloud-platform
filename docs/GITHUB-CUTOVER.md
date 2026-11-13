@@ -15,7 +15,7 @@ G6 runs only when every gate below is met. Each gate is measured, not assumed. U
 | 5 | The Forge merges with a fast-forward (G3a), and `merge_change` runs by consensus (G3b) | the merge button and branch protection | G3a merged in #305 (the live spike, `POST /v1/forge/merge-spike`, has not run yet); G3b is enabled at step 4 of the procedure |
 | 6 | Contributors push to `platform-work`; the Forge registers change requests from Artifacts (G4) | pull requests | G4 merged in #305. **Open:** an approver creates the work repo (`POST /v1/forge/work-repo`), the owner provides a repo-scoped write token for `platform-work` through the session's secure credential form, and a type-check source for `platform-work` is still missing |
 | 7 | Dependency audit and secret scan (G5) | Dependabot, secret scanning | done: secret scan (phase 3, plus the `npm_token` rule) and the daily npm dependency audit (G5, merged in #305) |
-| 8 | Off-Artifacts copy of the repository: a daily `git bundle` to R2 (ADR-0012 §5) | GitHub as the second copy | **open**: not built |
+| 8 | Off-Artifacts copy of the repository: a daily `git bundle` to R2 (ADR-0012 §5, §5m) | GitHub as the second copy | **built, not yet run live** (2026-11-13): the Forge tick step `git_backup` clones `platform` over Git smart HTTP once per UTC day per head of main, writes `git-backups/platform/<date>-<sha>.bundle` to `cryptophys-forge-bundles` with its SHA-256 (migration 0054, `GET /v1/forge/git-backup`, Console Code page), and keeps the newest bundle of each of the last 30 days. Met once a run against Artifacts has succeeded and its bundle passes `git bundle verify` |
 | 9 | Access provisioning for a new Worker without `provision-access.yml` | `provision-access.yml` | **open**; Access is critical (the owner's click) |
 | 10 | Worker retirement through the Orchestrator's Scripts API | `retire-worker.yml` | **open** (critical action) |
 | 11 | Rollback, alerts and owner notices off GitHub | `rollback-worker.yml`, `drift-alert.yml`, `owner-attention.yml` | done: native rollback (credentials set), Kernel notices |
@@ -29,6 +29,9 @@ Each step is reversible until step 7.
 1. **Freeze.** Announce a merge freeze. No pull request merges on GitHub from here on.
 2. **Final sync.** Run `mirror-to-forge.yml` once more. Confirm the Forge's `main` equals GitHub's `main` (Console Code page, or `GET /v1/forge/status`).
 3. **Backup.** Take a fresh `git bundle` of `cryptophys/platform` to R2 (gate 8). Record its SHA-256.
+   - The Forge takes one by itself within one tick (:04/:19/:34/:49) of the final sync, because a new head of main is due at once (ADR-0012 §5m).
+   - Read `GET /v1/forge/git-backup` (or the Console Code page) and check two things: `last_ok_run.main_sha` equals the Forge's main, and the run's `day` is today. Record `bundle_sha256`, `r2_key` and `objects`.
+   - Download that object and check its SHA-256. Then run `git bundle verify <file>` and `git clone <file> platform-restore`; the clone must check out main at the same SHA.
 4. **Flip the merge path.** Enable `merge_change` on canonical `main` (G3b), and turn off the GitHub-sourced change requests (`forge-change-request.yml`).
 5. **Flip contributors.** Contributors push to `platform-work` only (G4). For Claude Code sessions, the push credential is the owner-provided `platform-work` token, injected by the session proxy and never shown.
 6. **Retire GitHub paths.** Disable these workflows; they stay in the history:

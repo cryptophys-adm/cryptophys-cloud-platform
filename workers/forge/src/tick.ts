@@ -6,7 +6,8 @@
 //   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts)
 //   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12);
 //   and, once a day per head of main, the npm dependency audit (dependency-audit.ts, ADR-0012 G5).
-//   and the branches pushed to the work repository platform-work, as change requests (work-repo.ts, G4).
+//   and the branches pushed to the work repository platform-work, as change requests (work-repo.ts, G4);
+//   and, once per UTC day per head of main, a git bundle of platform to R2 (git-backup.ts, ADR-0012 gate 8).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
@@ -18,6 +19,7 @@ import { crBuildsTick } from "./cr-builds.ts";
 import { buildUsageTick } from "./build-usage.ts";
 import { dependencyAuditTick } from "./dependency-audit.ts";
 import { WORK_REPO, workBranchesTick } from "./work-repo.ts";
+import { gitBackupTick, type GitBackupBucket } from "./git-backup.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
 export interface TickEnv {
@@ -89,6 +91,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     await step("dependency_audit", async () => {
       const repo = await env.ARTIFACTS!.get(repoName);
       try { return await dependencyAuditTick(env, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
+    });
+  }
+  if (env.ARTIFACTS && env.BUNDLES) {
+    // ADR-0012 gate 8 (§5m): the off-Artifacts copy of platform, a git bundle in R2 (once per UTC day per head).
+    await step("git_backup", async () => {
+      const repo = await env.ARTIFACTS!.get(repoName);
+      try { return await gitBackupTick({ DB: env.DB, BUNDLES: env.BUNDLES as unknown as GitBackupBucket }, repo as never, nowMs()); } finally { repo[Symbol.dispose]?.(); }
     });
   }
   const started = nowMs();

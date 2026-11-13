@@ -186,11 +186,11 @@ async function readBounded(res: Response): Promise<Uint8Array> {
   return buf;
 }
 
-function gitHeaders(token: string, extra: Record<string, string> = {}): Record<string, string> {
+export function gitHeaders(token: string, extra: Record<string, string> = {}): Record<string, string> {
   return { authorization: `Bearer ${tokenSecret(token)}`, "user-agent": "git/2 (cryptophys-forge)", ...extra };
 }
 
-function remoteBase(remote: string): string | null {
+export function remoteBase(remote: string): string | null {
   try {
     const url = new URL(remote);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return null;
