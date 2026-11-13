@@ -203,7 +203,7 @@ test("G4-3. discovery lists refs/heads/* of platform-work with a 120 s read toke
   const out = await workBranchesTick({ DB: db as never, ARTIFACTS: ns.binding as never }, Date.now(), server.fetchImpl);
   assert.deepEqual(out, {
     outcome: "discovered", main: M1, branches: 3, ignored: 4, registered: ["fg-agent-pi.fix_1", "fg-claude-feature-x", "fg-cr-41"],
-    blocked: 0, deferred: 0, closed: [], collisions: [], unreadable: [],
+    blocked: 0, deferred: 0, closed: [], collisions: [], unreadable: [], already_merged: 0, at_main: 0,
   });
   assert.deepEqual(ns.calls.tokens, [{ repo: "platform-work", scope: "read", ttl: WORK_READ_TOKEN_TTL_S }]);
   assert.equal(WORK_READ_TOKEN_TTL_S, 120);
@@ -315,6 +315,36 @@ test("G4-6. a vanished branch closes its request (verdict frozen); a returning o
   const back = await workBranchesTick(env, Date.now(), server.fetchImpl);
   assert.deepEqual(back.registered, ["fg-claude-two"]);
   assert.deepEqual(rowsOf(db).map((r: any) => r.status), ["open", "open"]);
+});
+
+test("G4-6b. a merged request is never reopened by its branch at the merged head, and a branch at main is no request (2026-11-13)", async () => {
+  const ns = standard();
+  ns.push("platform-work", "claude/done", A, [A]);
+  const server = gitServer(ns.repos);
+  const db = migratedDb();
+  const env = { DB: db as never, ARTIFACTS: ns.binding as never };
+  await workBranchesTick(env, Date.now(), server.fetchImpl);
+  // The consensus merge fast-forwards canonical main to the head and records the outcome (MergeRpc).
+  db.raw.prepare("UPDATE forge_change_requests SET status = 'merged', merge_sha = ?, outcome_at = ? WHERE cr_id = 'fg-claude-done'").run(A, new Date().toISOString());
+  ns.repos.get("platform")!.commits.add(A);
+  ns.repos.get("platform")!.refs.set("refs/heads/main", A);
+  // The contributor did not delete the branch, and another branch sits exactly at the new main.
+  ns.push("platform-work", "claude/at-main", A);
+  const out = await workBranchesTick(env, Date.now(), server.fetchImpl);
+  assert.deepEqual([out.main, out.registered, out.already_merged, out.at_main, out.closed], [A, [], 1, 1, []]);
+  const rows = rowsOf(db);
+  assert.deepEqual(rows.map((r: any) => [r.cr_id, r.status, r.merge_sha]), [["fg-claude-done", "merged", A]]);
+  assert.equal(auditOf(db).filter((a: any) => a.event_type === "forge.change_registered").length, 1, "only the first registration");
+  // Deleting the merged branch leaves the merged record as it is.
+  ns.push("platform-work", "claude/done", null);
+  const gone = await workBranchesTick(env, Date.now(), server.fetchImpl);
+  assert.deepEqual(gone.closed, []);
+  assert.equal(rowsOf(db)[0].status, "merged");
+  // New work on the same branch name is a new change again.
+  ns.push("platform-work", "claude/done", B, [B]);
+  const next = await workBranchesTick(env, Date.now(), server.fetchImpl);
+  assert.deepEqual(next.registered, ["fg-claude-done"]);
+  assert.equal(rowsOf(db)[0].status, "open");
 });
 
 test("G4-7. bounded per tick, slug collisions keep the first owner, unreadable heads wait, untrusted remotes are refused", async () => {

@@ -185,10 +185,15 @@ export async function workBranchesTick(env: WorkTickEnv, nowMs = Date.now(), fet
     const byId = new Map(rows.map((r) => [r.cr_id, r]));
     const taken = new Map<string, string>();
     const registered: string[] = []; const collisions: string[] = []; const unreadable: string[] = [];
-    let deferred = 0; let blocked = 0;
+    let deferred = 0; let blocked = 0; let alreadyMerged = 0; let atMain = 0;
     for (const [branch, head] of [...branches].sort(([a], [b]) => a.localeCompare(b))) {
       const id = workChangeId(branch);
       const existing = byId.get(id);
+      // A merged request whose branch still points at the merged head is done. Re-registering it reopened it as an
+      // empty change and erased its merge record (2026-11-13: fg-claude-adr-agentic-e0-e5 at 18:35 after its merge).
+      if (existing && existing.status === "merged" && existing.head_sha === head) { alreadyMerged++; continue; }
+      // A branch at canonical main changes nothing: it is not a change request.
+      if (head === main && existing?.status !== "open") { atMain++; continue; }
       // Two branches with the same slug (claude/a/b and claude/a-b): the one already registered keeps the id.
       const owner = existing && existing.status === "open" && existing.branch !== branch && branches.has(existing.branch) ? existing.branch : taken.get(id);
       if (owner && owner !== branch) { collisions.push(branch); continue; }
@@ -214,7 +219,7 @@ export async function workBranchesTick(env: WorkTickEnv, nowMs = Date.now(), fet
       closed.push(r.cr_id);
       await appendAuditEvent(env.DB, { event_type: "forge.change_outcome", actor: ACTOR, subject: r.cr_id, outcome: "closed", payload: { source: "forge", reason: "branch_deleted", branch: r.branch, verdict, head_sha: r.head_sha } });
     }
-    return { outcome: "discovered", main, branches: branches.size, ignored, registered, blocked, deferred, closed, collisions, unreadable };
+    return { outcome: "discovered", main, branches: branches.size, ignored, registered, blocked, deferred, closed, collisions, unreadable, already_merged: alreadyMerged, at_main: atMain };
   } finally {
     repo[Symbol.dispose]?.();
   }
