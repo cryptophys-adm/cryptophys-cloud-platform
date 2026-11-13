@@ -26,6 +26,7 @@ import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audi
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
+import { acknowledgementsReadable } from "./reports.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
 export const TOPICS = ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies"] as const;
@@ -126,15 +127,24 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
   };
 }
 
+/**
+ * Open critical reports of the last 24 hours. A report an approver acknowledged (ADR-0009 amendment 2026-11-13,
+ * migration 0053) is not open, as for the consensus baseline; before the table exists every one is open.
+ */
 async function criticalReports(db: D1Database, now: number): Promise<Notice> {
   const since = iso(now - 24 * 3_600_000);
-  const rows = await db.prepare("SELECT report_id, agent_id, kind, subject, created_at FROM agent_reports WHERE severity = 'critical' AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT 200")
-    .bind(since, iso(now)).all<{ report_id: string; agent_id: string; kind: string; subject: string; created_at: string }>();
+  const acks = await acknowledgementsReadable(db);
+  const rows = await db.prepare(
+    `SELECT r.report_id, r.agent_id, r.kind, r.subject, r.created_at FROM agent_reports r
+     ${acks ? "LEFT JOIN agent_report_acknowledgements a ON a.report_id = r.report_id" : ""}
+     WHERE r.severity = 'critical' AND r.created_at >= ? AND r.created_at <= ?${acks ? " AND a.report_id IS NULL" : ""}
+     ORDER BY r.created_at DESC LIMIT 200`,
+  ).bind(since, iso(now)).all<{ report_id: string; agent_id: string; kind: string; subject: string; created_at: string }>();
   const n = rows.results.length;
   return {
     topic: "critical_reports", active: n > 0,
     fingerprint: await fp(rows.results.map((r) => r.report_id)),
-    title: n ? `${n} critical agent report(s) in the last 24 hours` : "No critical agent report in the last 24 hours",
+    title: n ? `${n} open critical agent report(s) in the last 24 hours` : "No open critical agent report in the last 24 hours",
     lines: rows.results.slice(0, 5).map((r) => `${r.created_at} ${r.agent_id}: ${r.subject.slice(0, 160)}`),
     link: `${CONSOLE_URL}#/agents`,
   };

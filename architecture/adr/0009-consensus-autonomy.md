@@ -482,3 +482,29 @@ Owner 2026-11-12: "larangan trading harus dicabut karena kita sudah masuk fase p
   - Omega (the xauusd repository) keeps its own controls: the owner's settings and the EA's gates.
 - **Unchanged:** the Console still never claims the platform moves funds (`console-truthfulness.test.ts` T1). The knowledge validator's rules for learned knowledge are not changed by this amendment.
 - **Tests:** `trading-0009.test.ts` F1–F3. The updated tests are `ai-kernel.test.ts` (syscall checks), `consensus-phase1.test.ts` 5 and `organism-external-0013.test.ts` X4.
+
+## Amendment 2026-11-13: an approver acknowledges a critical report
+
+Owner 2026-11-13, asked how to release the brake held by one handled critical report: "Tambah tombol 'acknowledge'" (add an acknowledge button). The report was `rpt_4c0738b9-…` ("Deploy of control-plane at 8cc865b9d77b failed", 2026-11-12 23:25 UTC). Its cause was fixed and live, and production was unchanged. Even so, every voter rejected routine actions for 24 hours, autonomous deploys and engine registrations included, and nothing could close the report.
+
+- **What counts as open.** The baseline rule is unchanged: "a critical report is open in the last 24 h", threshold `> 0` (`control-plane-shared/src/consensus-rules.ts`). A critical report now counts as open only while no approver has acknowledged it.
+  - `observe()` (`ai-kernel/src/syscall.ts`) leaves acknowledged reports out of `counts.critical`, `latest_critical`, `critical_fingerprint` and `latest_attention`. It adds `counts.critical_acknowledged`, the number acknowledged in the window.
+  - The evidence the voters read (`critical_reports_24h`) follows `counts.critical`. The owner notice `critical_reports` also counts open reports only, so it closes once every one is acknowledged.
+  - An unacknowledged critical report blocks exactly as before.
+- **Who.** Only an approver who is a person can acknowledge: `POST /v1/reports/{rpt_id}/acknowledge` on the AI Kernel, checked with `requireApprover`. Operators, service tokens and agents get 403, and no agent or consensus action can acknowledge.
+  - The body is `{ confirm: "ACKNOWLEDGE {id13}", reason }`. `{id13}` follows the Console convention: the first 13 characters without a trailing separator, so `ACKNOWLEDGE rpt_4c0738b9`.
+  - `reason` must be 10–500 characters.
+  - Only a report of severity `critical` can be acknowledged: a warning or info gets 409 `not_critical`, because those never block. An unknown report gets 404.
+- **Audit and idempotency.** The acknowledgement (migration 0053, `agent_report_acknowledgements`, one row per report, reason bounded by a CHECK) and its `report.acknowledged` audit event commit in one D1 batch (`appendAuditEventWithMutation`).
+  - The event's subject is `report:<id>` and its actor is the approver. Its payload holds report_id, agent_id, kind, subject and reason.
+  - A repeat returns the existing acknowledgement with 200 and writes no second event. A concurrent duplicate fails its audit insert, so it commits nothing.
+- **Fails closed.**
+  - Before migration 0053 is applied, nothing reads as acknowledged, and every critical report keeps counting.
+  - The brake no longer opens when the reports query fails. Before this amendment, a failed query read as zero critical reports and lifted the brake. The consensus evidence now counts one open critical report when the overview is missing, has `error`, or has no numeric critical count (`openCriticalReports` in `ai-kernel/src/consensus.ts`).
+- **Console.** The Cognition page lists the critical reports from `GET /v1/reports`, which now carries `acknowledgement: {acknowledged_by, reason, acknowledged_at} | null`. For an approver, each unacknowledged report has a required reason field and an "Acknowledge…" action with the typed phrase. Everyone sees "Acknowledged by … at …". The Console's allow-list grows to 60 rows.
+- **Unchanged.**
+  - The rule text, the threshold, the 24-hour window and the voters.
+  - The kill switch and the audit-chain check of the baseline. An acknowledged report of an invalid chain does not lift the `audit_valid` check.
+  - The report itself, which is never edited or deleted.
+  - The overview's own fallback (`error: "reports_unavailable"`, counts 0), which only the dashboards display; the brake reads it as one open report (above).
+- **Tests.** `report-acknowledge.test.ts` (A1–A7) and the 0053 block of `test_migrations.py`. The updated tests are `reports-overview-tp015.test.ts` (the new counter) and `console-tp023`/`console-tp024` (route counts).

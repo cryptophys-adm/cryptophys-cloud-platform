@@ -66,6 +66,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.metabolism", "kernel", "GET", "/v1/metabolism", false, null],
   ["kernel.mesh", "kernel", "GET", "/v1/mesh", false, null],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
+  ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
   ["kernel.agents", "kernel", "GET", "/v1/agents", false, null],
   ["kernel.agent", "kernel", "GET", "/v1/agents/{id}", false, null],
   ["kernel.agent_actions", "kernel", "GET", "/v1/agents/{id}/actions", false, null],
@@ -113,8 +114,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 60 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 60);
+test("1. route table: exactly the 61 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 61);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -123,7 +124,7 @@ test("1. route table: exactly the 60 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 60);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 61);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -131,9 +132,9 @@ test("1. route table: exactly the 60 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the sixteen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes)", () => {
+test("2. approver flags: exactly the seventeen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes; since 2026-11-13 the acknowledgement of a critical report)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
+  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -209,7 +210,7 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 });
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
-  assert.equal(CONSOLE_ALLOW_LIST.length, 59);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 60);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

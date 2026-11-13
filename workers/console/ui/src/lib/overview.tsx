@@ -8,7 +8,8 @@ export interface Overview {
   services?: { service_id: string; drifted: boolean; observed_at?: string; persistent?: boolean }[];
   open_agent_plans?: { plan_id: string; service_id?: string; status?: string; created_at?: string }[];
   agent_reports_24h?: {
-    counts?: { critical?: number; warning?: number; info?: number };
+    /** critical: open (not acknowledged) critical reports; critical_acknowledged: acknowledged by an approver (ADR-0009, 2026-11-13). */
+    counts?: { critical?: number; warning?: number; info?: number; critical_acknowledged?: number };
     latest_attention?: { report_id: string; agent_id: string; kind: string; severity: string; subject: string; created_at: string }[];
     latest_critical?: { report_id: string; agent_id: string; kind: string; created_at: string }[];
     error?: string;

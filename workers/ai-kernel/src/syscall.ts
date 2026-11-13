@@ -12,7 +12,7 @@ import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-p
 import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
-import { publishReport } from "./reports.ts";
+import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
 import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 
@@ -92,17 +92,30 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   const since = new Date(now - 24 * 3_600_000).toISOString();
   let agentReports24h: JsonObject;
   try {
+    // ADR-0009 amendment 2026-11-13: a critical report an approver acknowledged (migration 0053) is no longer
+    // open. counts.critical, latest_critical and critical_fingerprint cover only the open ones, and
+    // counts.critical_acknowledged says how many were acknowledged in the window. Before the table exists
+    // nothing is acknowledged and every critical report stays open (fail closed).
+    const acks = await acknowledgementsReadable(env.DB);
+    const ackJoin = acks ? "LEFT JOIN agent_report_acknowledgements a ON a.report_id = r.report_id" : "";
+    const open = acks ? "a.report_id IS NULL" : "1 = 1";
     const countRows = await env.DB.prepare(
-      "SELECT severity, COUNT(*) AS n FROM agent_reports WHERE created_at > ? GROUP BY severity",
-    ).bind(since).all<{ severity: string; n: number }>();
-    const counts = { critical: 0, warning: 0, info: 0 };
+      `SELECT r.severity AS severity, COUNT(*) AS n, SUM(CASE WHEN ${open} THEN 0 ELSE 1 END) AS acknowledged
+       FROM agent_reports r ${ackJoin} WHERE r.created_at > ? GROUP BY r.severity`,
+    ).bind(since).all<{ severity: string; n: number; acknowledged: number | null }>();
+    const counts = { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 };
     for (const r of countRows.results) {
-      if (r.severity === "critical" || r.severity === "warning" || r.severity === "info") {
+      if (r.severity === "critical") {
+        const acknowledged = Number(r.acknowledged ?? 0);
+        counts.critical = Number(r.n) - acknowledged;
+        counts.critical_acknowledged = acknowledged;
+      } else if (r.severity === "warning" || r.severity === "info") {
         counts[r.severity] = Number(r.n);
       }
     }
     const latestRows = await env.DB.prepare(
-      "SELECT report_id, agent_id, kind, severity, subject, created_at FROM agent_reports WHERE created_at > ? AND severity IN ('critical','warning') ORDER BY created_at DESC, rowid DESC LIMIT 5",
+      `SELECT r.report_id, r.agent_id, r.kind, r.severity, r.subject, r.created_at FROM agent_reports r ${ackJoin}
+       WHERE r.created_at > ? AND (r.severity = 'warning' OR (r.severity = 'critical' AND ${open})) ORDER BY r.created_at DESC, r.rowid DESC LIMIT 5`,
     ).bind(since).all<{ report_id: string; agent_id: string; kind: string; severity: string; subject: string; created_at: string }>();
     const latestAttention = latestRows.results.map((r) => ({
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: r.severity,
@@ -111,10 +124,12 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     // Keep the public alert's fingerprint complete even when warning reports crowd
     // critical reports out of the five-row latest_attention window.
     const criticalIdSet = await env.DB.prepare(
-      "SELECT GROUP_CONCAT(report_id, ',') AS report_ids FROM (SELECT report_id FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY report_id)",
+      `SELECT GROUP_CONCAT(report_id, ',') AS report_ids FROM (SELECT r.report_id AS report_id FROM agent_reports r ${ackJoin}
+       WHERE r.created_at > ? AND r.severity = 'critical' AND ${open} ORDER BY r.report_id)`,
     ).bind(since).first<{ report_ids: string | null }>();
     const criticalLatestRows = await env.DB.prepare(
-      "SELECT report_id, agent_id, kind, created_at FROM agent_reports WHERE created_at > ? AND severity = 'critical' ORDER BY created_at DESC, rowid DESC LIMIT 5",
+      `SELECT r.report_id, r.agent_id, r.kind, r.created_at FROM agent_reports r ${ackJoin}
+       WHERE r.created_at > ? AND r.severity = 'critical' AND ${open} ORDER BY r.created_at DESC, r.rowid DESC LIMIT 5`,
     ).bind(since).all<{ report_id: string; agent_id: string; kind: string; created_at: string }>();
     const criticalFingerprint = await sha256Hex(criticalIdSet?.report_ids ?? "");
     const latestCritical = criticalLatestRows.results.map((r) => ({
@@ -127,7 +142,7 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   } catch (err) {
     console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "agent_reports_overview_failed", message: String((err as Error)?.message ?? err) }));
     agentReports24h = {
-      since, counts: { critical: 0, warning: 0, info: 0 }, latest_attention: [],
+      since, counts: { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 }, latest_attention: [],
       critical_fingerprint: null, latest_critical: [], error: "reports_unavailable",
     };
   }

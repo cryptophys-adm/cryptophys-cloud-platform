@@ -240,3 +240,40 @@ consumed = {
 assert consumed == {"dec-success", "dec-failed"}, f"unexpected consumption backfill: {consumed}"
 assert full_db.execute("PRAGMA foreign_key_check").fetchall() == []
 full_db.close()
+
+
+# Migration 0053: one acknowledgement per critical report, a bounded reason, and a real report behind it.
+ack_db = sqlite3.connect(":memory:")
+ack_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    ack_db.executescript(migration.read_text(encoding="utf-8"))
+ack_db.execute(
+    """INSERT INTO agent_reports
+       (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at)
+       VALUES ('rpt-ack', 'supervisor', 'platform_digest', 'critical', 'deploy failed', '{}', 'deterministic', NULL, 't0'),
+              ('rpt-ack-2', 'supervisor', 'platform_digest', 'critical', 'rollback failed', '{}', 'deterministic', NULL, 't0')"""
+)
+ack_db.execute(
+    """INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at)
+       VALUES ('rpt-ack', 'owner@example.com', 'cause fixed and live', 't1')"""
+)
+expect_integrity_error("second acknowledgement of one report", lambda: ack_db.execute(
+    """INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at)
+       VALUES ('rpt-ack', 'owner@example.com', 'acknowledged twice', 't2')"""
+))
+expect_integrity_error("acknowledgement of an unknown report", lambda: ack_db.execute(
+    """INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at)
+       VALUES ('rpt-missing', 'owner@example.com', 'no such report here', 't2')"""
+))
+expect_integrity_error("acknowledgement reason under 10 characters", lambda: ack_db.execute(
+    """INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at)
+       VALUES ('rpt-ack-2', 'owner@example.com', 'short', 't2')"""
+))
+expect_integrity_error("acknowledgement reason over 500 characters", lambda: ack_db.execute(
+    """INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at)
+       VALUES ('rpt-ack-2', 'owner@example.com', ?, 't2')""", ("x" * 501,)
+))
+assert {row[2] for row in ack_db.execute("PRAGMA foreign_key_list(agent_report_acknowledgements)")} == {"agent_reports"}
+assert ack_db.execute("PRAGMA foreign_key_check").fetchall() == []
+ack_db.close()
+print("PASS: 0053 agent report acknowledgements (primary key, reason bounds, report foreign key)")

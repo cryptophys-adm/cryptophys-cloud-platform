@@ -72,7 +72,7 @@ const rows = (service: ConsoleService, method: string, paths: string[]): AllowRu
  */
 export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("kernel", "GET", ["/v1/kernel", "/v1/status", "/v1/notices", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh"]),
-  ...rows("kernel", "POST", ["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject"]),
+  ...rows("kernel", "POST", ["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge"]),
   ...rows("kernel", "DELETE", ["/v1/agents/{id}/principals/{id}"]),
   ...rows("recovery", "GET", ["/v1/plans", "/v1/plans/{id}"]),
   // Hardening 2026-11-08: manual START/FINISH of executions left the Console; the AI runs approved plans.

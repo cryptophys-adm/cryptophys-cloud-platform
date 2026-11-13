@@ -24,7 +24,7 @@ test("TP-015 counts", async () => {
 
   const env: any = baseEnv("cryptophys-ai-kernel", db);
   const res: any = await observe(env as never, NOW);
-  assert.deepEqual(res.agent_reports_24h.counts, { critical: 2, warning: 1, info: 3 });
+  assert.deepEqual(res.agent_reports_24h.counts, { critical: 2, warning: 1, info: 3, critical_acknowledged: 0 });
   assert.equal(res.agent_reports_24h.since, new Date(NOW - 24 * 3600_000).toISOString());
 });
 
@@ -94,7 +94,7 @@ test("TP-015 empty", async () => {
   const db = migratedDb();
   const env: any = baseEnv("cryptophys-ai-kernel", db);
   const res: any = await observe(env as never, NOW);
-  assert.deepEqual(res.agent_reports_24h.counts, { critical: 0, warning: 0, info: 0 });
+  assert.deepEqual(res.agent_reports_24h.counts, { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 });
   assert.deepEqual(res.agent_reports_24h.latest_attention, []);
   assert.deepEqual(res.agent_reports_24h.latest_critical, []);
   assert.equal(res.agent_reports_24h.critical_fingerprint, createHash("sha256").update("").digest("hex"));

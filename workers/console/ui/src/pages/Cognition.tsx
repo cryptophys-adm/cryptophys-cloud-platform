@@ -6,6 +6,7 @@ import { usePoll } from "../lib/usePoll";
 import { ago, listOf } from "../lib/format";
 import { explainCode } from "../lib/plain";
 import CognitionPanel from "../components/CognitionPanel";
+import CriticalReports from "../components/CriticalReports";
 import { ActivityChart, BarList, DataTable, STATUS, StatusBar, bucketize } from "../components/viz";
 
 const SEVERITY = [
@@ -35,6 +36,7 @@ export default function Cognition() {
     <div className="flex flex-col gap-3">
     {/* The AI Cognition rail sits in the right column only on very wide screens (2xl); show it here otherwise (2026-11-07). */}
     <div className="2xl:hidden"><CognitionPanel /></div>
+    <CriticalReports />
     {rows.length > 0 && (
       <div className="grid gap-3 lg:grid-cols-2">
         <Panel title={`Reports over time · last ${rows.length}`} icon={<LineChart className="h-3.5 w-3.5 text-cyan-300" />}>
@@ -57,6 +59,9 @@ export default function Cognition() {
       {loading && !data ? <Skeleton rows={5} /> : error ? <Empty>{error}</Empty> : (
         <DataTable rows={rows} rowKey={(r) => r.report_id} initialSort={{ key: "when", dir: "desc" }} maxHeight={520} empty="No reports." expand={(r) => <JsonView value={r.body ?? r} />} columns={[
           { key: "sev", header: "severity", sort: (r) => ({ critical: 3, warning: 2 } as Record<string, number>)[r.severity] ?? 1, cell: (r) => <Badge tone={severityTone(r.severity)}>{r.severity}</Badge> },
+          { key: "ack", header: "acknowledged", sort: (r) => r.acknowledgement?.acknowledged_at ?? "", cell: (r) => r.acknowledgement
+            ? <span className="text-[11px] text-emerald-300" title={`${r.acknowledgement.acknowledged_at}: ${r.acknowledgement.reason}`}>by {r.acknowledgement.acknowledged_by} {ago(r.acknowledgement.acknowledged_at)}</span>
+            : <span className="text-[11px] text-slate-600">—</span> },
           { key: "subject", header: "subject", className: "wrap", sort: (r) => r.subject, cell: (r) => <span className="text-slate-200">{r.subject}</span> },
           { key: "agent", header: "agent", sort: (r) => r.agent_id, cell: (r) => <span className="mono text-[11px] text-cyan-300">{r.agent_id}</span> },
           { key: "kind", header: "kind", sort: (r) => r.kind, cell: (r) => <span className="text-[11px] text-slate-400">{r.kind}</span> },

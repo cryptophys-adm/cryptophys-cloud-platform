@@ -21,7 +21,7 @@ import {
 } from "./kernel.ts";
 import { handleMcp } from "./mcp.ts";
 import { KERNEL_HOST } from "./kernel.ts";
-import { listReports } from "./reports.ts";
+import { REPORT_ID_RE, ReportAcknowledgeError, acknowledgeReport, listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { pruneSyscallConsumptions } from "./retention.ts";
@@ -63,6 +63,7 @@ export default {
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
           "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
           "POST /v1/agents/{id}/principals (APPROVER_IDENTITIES)", "DELETE /v1/agents/{id}/principals/{access_identity} (APPROVER_IDENTITIES)",
@@ -170,6 +171,22 @@ export default {
         if (!/^cns_[0-9a-f-]{36}$/.test(id)) return errorResponse(404, "not_found");
         const found = await getProposal(env, id);
         return found ? json(found) : errorResponse(404, "not_found");
+      }
+      const ackMatch = /^\/v1\/reports\/([^/]+)\/acknowledge$/.exec(path);
+      if (ackMatch) {
+        // ADR-0009 amendment 2026-11-13: an approver, a person, acknowledges a critical report as handled, so it
+        // no longer counts as open for the consensus baseline. Operators and service tokens are refused.
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "acknowledging a critical report needs an approver");
+        if (!REPORT_ID_RE.test(ackMatch[1])) return errorResponse(404, "not_found", "unknown report");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        try {
+          return json(await acknowledgeReport(env.DB, ackMatch[1], operator.actor, body.value.confirm, body.value.reason));
+        } catch (err) {
+          if (err instanceof ReportAcknowledgeError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
       }
       if (path === "/v1/reports" && request.method === "GET") {
         return json(await listReports(env.DB, {
