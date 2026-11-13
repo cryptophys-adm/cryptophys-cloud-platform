@@ -48,6 +48,11 @@ export interface SyscallEnv extends BaseEnv {
   DEPLOY?: DeployRpcBinding;
   /** ADR-0013 §3 (#262): the Forge's head of canonical main, read from Artifacts at call time. */
   CANONICAL_MAIN?: { mainHead(): Promise<{ main_sha: string | null }> };
+  /** ADR-0012 G3b: the Forge's change-request state for a merge vote, and the merge executor (MergeRpc). */
+  FORGE_MERGE?: {
+    changeState(crId: string): Promise<import("../../control-plane-shared/src/merge-path.ts").ChangeEvidence | null>;
+    mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<JsonObject>;
+  };
   VOTE_PLATFORM_API?: VoteRpcBinding;
   VOTE_DEPLOYMENT_ORCHESTRATOR?: VoteRpcBinding;
   VOTE_PLATFORM_REGISTRY?: VoteRpcBinding;

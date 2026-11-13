@@ -8,12 +8,13 @@ import { CAPABILITIES, PROHIBITED_CAPABILITY, TRADING_CAPABILITY } from "./capab
 import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy-params.ts";
 import { DOCTRINE_ACTIONS, doctrineProblem } from "./doctrine.ts";
 import { EXTERNAL_ORIGINS, externalCeilingViolations } from "./organism.ts";
+import type { ChangeEvidence } from "./merge-path.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
 
 /** The action catalog. Anything not listed is refused; ADR-0009 §1 classes. */
-export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: "service" | "agent" | "platform"; description: string }> = {
+export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: "service" | "agent" | "platform" | "change"; description: string }> = {
   observe_drift: { class: "routine", target: "platform", description: "Run a drift observation now" },
   redeploy_desired_version: { class: "routine", target: "service", description: "Redeploy the registry desired version of a Worker" },
   rollback_worker_version: { class: "routine", target: "service", description: "Roll a Worker back to a version recorded as healthy" },
@@ -42,7 +43,31 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   // Owner 2026-11-11: the Knowledge Council's daily doctrine amendments (control-plane-shared/src/doctrine.ts).
   amend_doctrine: { class: "routine", target: "platform", description: "Amend an operational doctrine rule of the Aether Canon to the measured state, inside its hard bounds" },
   amend_constitution: { class: "critical", target: "platform", description: "Amend a constitutional doctrine rule, or a fact without bounds; one owner approval click" },
+  // ADR-0012 G3b (owner 2026-11-13, "kejar cut-over hari ini"): the Forge merges a change request into canonical main.
+  // A routine change merges by consensus; one that touches a guard path (ADR-0012 §2.4) needs the owner's click.
+  merge_change: { class: "routine", target: "change", description: "Fast-forward canonical main to a change request whose checks passed (routine paths only)" },
+  merge_owner_change: { class: "critical", target: "change", description: "Fast-forward canonical main to a change request that touches a guard path; one owner approval click" },
 };
+
+export const MERGE_ACTIONS: ReadonlySet<string> = new Set(["merge_change", "merge_owner_change"]);
+
+/**
+ * Every voter's rule for a merge (G3b), from the change request's state the Forge computed (Evidence.change). It
+ * returns null for any other action. The merge itself re-checks all of it (MergeRpc.mergeForConsensus).
+ */
+export function mergeVote(p: Proposal, e: Evidence): { vote: Vote["vote"]; reason: string } | null {
+  if (!MERGE_ACTIONS.has(p.action)) return null;
+  const c = e.change;
+  if (!c) return { vote: "reject", reason: "the Forge did not report the change request's state" };
+  if (c.cr_id !== p.target) return { vote: "reject", reason: "the evidence is for another change request" };
+  if (c.status !== "open") return { vote: "reject", reason: `the change request is ${c.status}` };
+  if (c.source !== "forge") return { vote: "reject", reason: "only change requests pushed to platform-work merge on the Forge" };
+  if (String(p.params.head_sha ?? "") !== c.head_sha) return { vote: "reject", reason: "the change request's head moved after the proposal" };
+  if (!c.main_sha || !c.contains_main) return { vote: "reject", reason: "the head does not contain the current main (not a fast-forward)" };
+  const want = p.action === "merge_change" ? "would_merge" : "needs_owner";
+  if (c.verdict !== want) return { vote: "reject", reason: `the Forge's verdict is ${c.verdict}, not ${want}` };
+  return { vote: "approve", reason: p.action === "merge_change" ? "every check passed and only routine paths change" : "every check passed; it touches a guard path, so the owner decides" };
+}
 
 /**
  * The founding council (ADR-0009 §2). Since ADR-0013 phase 3 the council is data: the agents with
@@ -156,6 +181,8 @@ export interface Evidence {
   critical_reports_24h: number;
   executing_plan_targets: string[];
   recent_same: number;
+  /** G3b: the change request a merge proposal names (merge actions only). */
+  change?: ChangeEvidence | null;
 }
 
 export interface Proposal { action: string; target: string; params: JsonObject; class: ConsensusClass }
@@ -179,6 +206,8 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   if (base && p.action !== "agents_enable") return v("reject", base);
   const registration = registrationVote(voter, p, e);
   if (registration) return v(registration.vote, registration.reason);
+  const merge = mergeVote(p, e);
+  if (merge) return v(merge.vote, merge.reason);
   const svc = e.services[p.target];
   const reg = e.registry[p.target];
   const version = String(p.params.version ?? "");

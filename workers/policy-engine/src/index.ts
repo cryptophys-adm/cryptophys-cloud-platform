@@ -1,3 +1,5 @@
+import { MERGE_ACTIONS } from "../../control-plane-shared/src/consensus-rules.ts";
+import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { describeResource, explainReason } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
@@ -91,6 +93,10 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     checks.push(check("not_prohibited", cls !== "prohibited" && !PROHIBITED_CAPABILITY.test(resource), "fund movements never execute"));
     checks.push(check("trading_is_critical", !TRADING_CAPABILITY.test(act) || cls === "critical", "a trading action executes only as critical, after the owner's click"));
     checks.push(check("consensus_passed", context.passed === true, "a simple majority of eligible voters must approve"));
+    // ADR-0012 G3b: the Forge writes canonical main only once the cut-over flipped the merge path (migration 0057).
+    if (MERGE_ACTIONS.has(act)) {
+      checks.push(check("merge_path_forge", (await mergePath(db)) === "forge", "the Forge merges into canonical main only after the cut-over (forge_controls.merge_path = forge)"));
+    }
     if (cls === "critical" && context.stage === "execute") {
       const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?")
         .bind(String(context.proposal_id ?? "")).first<{ decision: string }>();

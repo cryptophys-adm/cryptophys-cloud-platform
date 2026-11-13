@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated SQLite tests for the control-plane D1 migrations; never connects to Cloudflare."""
 from pathlib import Path
+import re
 import sqlite3
 
 ROOT = Path(__file__).resolve().parent
@@ -378,3 +379,22 @@ for bad in [
     raise AssertionError(f"0056 accepted {bad}")
 alert_db.close()
 print("PASS: 0056 alert channels (additive, default seed, no token column, CHECKs)")
+
+# Migration 0057 (ADR-0012 G3b, 2026-11-13): where canonical main moves. Additive; the default is github, so
+# applying it changes nothing until a reviewed migration flips the row at the cut-over.
+merge_db = sqlite3.connect(":memory:")
+merge_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    merge_db.executescript(migration.read_text(encoding="utf-8"))
+merge_sql = (ROOT / "0057_forge_merge_path.sql").read_text(encoding="utf-8")
+merge_code = "\n".join(line.split("--", 1)[0] for line in merge_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|ALTER|UPDATE)\b", merge_code), "0057 is additive"
+assert merge_db.execute("SELECT control, value FROM forge_controls").fetchall() == [("merge_path", "github")], "0057 keeps GitHub merging"
+for bad in [("merge_path", "anything"), ("other", "github")]:
+    try:
+        merge_db.execute("INSERT OR REPLACE INTO forge_controls VALUES (?, ?, 'x', 't')", bad)
+    except sqlite3.IntegrityError:
+        continue
+    raise AssertionError(f"0057 accepted {bad}")
+merge_db.close()
+print("PASS: 0057 forge merge path (additive, default github, CHECKs)")

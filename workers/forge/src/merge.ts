@@ -334,14 +334,18 @@ export async function refHead(repo: Pick<ArtifactsReader, "log">, ref: string): 
  * does not contain the current base must be updated first. After the push the branch is read back
  * through the binding and must equal `head`.
  */
-export async function forgeMerge(binding: MergeBinding, repoName: string, opts: { head: string; base: string; branch?: string }, fetchImpl: Fetch = (i, init) => fetch(i, init)): Promise<MergeResult> {
+/**
+ * The canonical repository is refused unless `allow.canonical` is set, which only consensus-merge.ts does, after it
+ * verified the consensus proposal, its policy decision and the cut-over's merge path (ADR-0012 G3b).
+ */
+export async function forgeMerge(binding: MergeBinding, repoName: string, opts: { head: string; base: string; branch?: string }, fetchImpl: Fetch = (i, init) => fetch(i, init), allow: { canonical?: boolean } = {}): Promise<MergeResult> {
   const branch = opts.branch ?? "main";
   const ref = `refs/heads/${branch}`;
   const { head, base } = opts;
   const refuse = (reason: string): MergeResult => ({ ok: false, ref, from: validSha(base) ? base : "", to: validSha(head) ? head : "", reason });
   if (!validBranch(branch)) return refuse("invalid_branch");
   if (!validSha(head) || !validSha(base) || head === ZERO_SHA || base === ZERO_SHA) return refuse("invalid_sha");
-  if (repoName === CANONICAL_REPO) return refuse("canonical_not_enabled");
+  if (repoName === CANONICAL_REPO && allow.canonical !== true) return refuse("canonical_not_enabled");
   if (head === base) return refuse("nothing_to_merge");
   const repo = await binding.get(repoName);
   try {

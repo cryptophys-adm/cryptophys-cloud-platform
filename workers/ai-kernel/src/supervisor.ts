@@ -19,7 +19,8 @@ import { expireOwnerProposals } from "./consensus.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
 import { latestCensusRow, proposalFor } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
-import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS } from "../../control-plane-shared/src/consensus-rules.ts";
+import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "../../control-plane-shared/src/consensus-rules.ts";
+import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -415,6 +416,39 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       }
     } catch (err) {
       report.findings.push({ kind: "deploy", action: "none", why: `pending deploys unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
+    }
+  }
+
+  // ADR-0012 G3b: after the cut-over (merge path forge), a change request on platform-work whose every check passed is
+  // proposed for merge, one per cycle: merge_change for routine paths, merge_owner_change (the owner's click) when it
+  // touches a guard path. Once per request and head; a policy veto (shadow_blocked) is retried after an hour.
+  if (env.FORGE_MERGE && trigger !== "operator" && (await mergePath(env.DB)) === "forge") {
+    try {
+      const open = (await env.DB.prepare(
+        "SELECT cr_id, head_sha FROM forge_change_requests WHERE status = 'open' AND source = 'forge' AND blocked_reason IS NULL ORDER BY updated_at ASC LIMIT 10",
+      ).all<{ cr_id: string; head_sha: string }>()).results ?? [];
+      const hourAgo = new Date(now - 3_600_000).toISOString();
+      for (const cr of open) {
+        if (!TARGET.test(cr.cr_id)) {
+          report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "none", why: "the change request's id cannot name a consensus target (letters, digits and dashes only)" });
+          continue;
+        }
+        const seen = await env.DB.prepare(
+          `SELECT 1 AS x FROM consensus_proposals WHERE action IN ('merge_change', 'merge_owner_change') AND target = ? AND json_extract(params_json, '$.head_sha') = ?
+             AND (status <> 'shadow_blocked' OR created_at >= ?) LIMIT 1`,
+        ).bind(cr.cr_id, cr.head_sha, hourAgo).first();
+        if (seen) continue;
+        const state = await env.FORGE_MERGE.changeState(cr.cr_id);
+        if (!state || state.head_sha !== cr.head_sha || !state.contains_main) continue;
+        const action = state.verdict === "would_merge" ? "merge_change" : state.verdict === "needs_owner" ? "merge_owner_change" : null;
+        if (!action) continue;
+        const r = await syscall(env, AGENT_ID, "consensus.propose", { action, target: cr.cr_id, params: { head_sha: cr.head_sha } });
+        report.actions.push(r);
+        report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "consensus.propose", outcome: r.outcome });
+        break;
+      }
+    } catch (err) {
+      report.findings.push({ kind: "merge", action: "none", why: `merge proposals unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
   }
 

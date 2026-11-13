@@ -113,6 +113,8 @@ const ACTION_TEXT: Record<string, string> = {
   set_policy_parameter: "change the policy parameter",
   retire_worker: "retire",
   change_access: "update Cloudflare Access for the",
+  merge_change: "merge the change request",
+  merge_owner_change: "merge the change request that touches a guarded path,",
   "consensus.execute": "carry out",
   "recovery.execute": "run the recovery plan for",
   deploy: "deploy",
