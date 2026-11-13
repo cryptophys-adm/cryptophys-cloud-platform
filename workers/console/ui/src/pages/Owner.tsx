@@ -116,6 +116,9 @@ function ProposalItem({ p, mode, reload }: { p: any; mode: string | null; reload
       <div className="mt-0.5 break-words text-[11px] text-slate-500">
         <span className="mono">{p.action}</span> → <span className="mono">{p.target}</span> · proposed by <span className="mono">{p.proposer_agent_id}</span> · agents {count(p.approvals)} for, {count(p.rejections)} against of {count(p.eligible)} · expires {until(p.expires_at)}
       </div>
+      {Array.isArray(p.changes) && p.changes.length > 0 && (
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[11px] text-slate-300">{p.changes.map((c: string) => <li key={c} className="break-words">{c}</li>)}</ul>
+      )}
       {p.executable !== true && <div className="mt-1 text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject to close it.</div>}
       {p.executable === true && !ownerClickMode(mode) && <div className="mt-1 text-[11px] text-amber-300">Approval executes only in consensus mode deploy or critical (now {mode ?? "—"}).</div>}
       {who.approver ? (

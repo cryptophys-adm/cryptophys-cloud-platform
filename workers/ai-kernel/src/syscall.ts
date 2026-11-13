@@ -33,6 +33,9 @@ export interface DeployRpcBinding {
   deployForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
   retireForConsensus(proposalId: string, decisionId: string, target: string): Promise<JsonObject>;
   rollbackForConsensus?(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
+  /** ADR-0012 G6 gate 9: the Access plan (read only) and an owner-approved change_access. */
+  accessPlan?(): Promise<{ configured: boolean; ok: boolean; in_sync?: boolean; digest?: string; changes?: string[]; reason?: string }>;
+  accessForConsensus?(proposalId: string, decisionId: string, digest: string): Promise<JsonObject>;
 }
 
 export interface SyscallEnv extends BaseEnv {

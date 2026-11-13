@@ -11,6 +11,7 @@ import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFinger
 import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
+import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
 
 interface DurableObjectStorageLike {
@@ -54,6 +55,8 @@ export interface Env extends NativeRollbackEnv {
   ACCESS_AUD?: string;
   /** ADR-0012 G2b: the Forge's bundles (R2 cryptophys-forge-bundles), read only. */
   BUNDLES?: BundleReader;
+  /** ADR-0012 G6 gate 9: Access apps/policies Edit, groups and IdPs Edit, service tokens Read (owner 2026-11-13). */
+  CF_ACCESS_TOKEN?: string;
 }
 
 const SERVICE = "cryptophys-deployment-orchestrator";
@@ -1069,6 +1072,60 @@ export async function retireForConsensus(env: Env, proposalId: string, decisionI
   });
   if (dispatch.status !== 204) { await releaseLock(env, `consensus:retire:${target}`, "0".repeat(40)); throw new Error(`dispatch_failed_${dispatch.status}`); }
   return { dispatched: true, request_id: requestId, workflow: "retire-worker.yml", worker: target };
+}
+
+// ---------------------------------------------------------------- gate 9: Access without provision-access.yml
+const nativeAccessConfigured = (env: Env) => Boolean(env.CF_ACCESS_TOKEN && env.CF_DEPLOY_TOKEN && env.CF_ACCOUNT_ID && /^[0-9a-f]{32}$/.test(env.CF_ACCOUNT_ID));
+function accessClients(env: Env, fetcher: typeof fetch = fetch) {
+  return { access: new CloudflareApi(env.CF_ACCESS_TOKEN!, env.CF_ACCOUNT_ID!, fetcher), scripts: new CloudflareApi(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher) };
+}
+
+/**
+ * ADR-0012 G6 gate 9: read-only, for the Supervisor. Whether the Access application matches the platform's definition;
+ * when it does not, the bounded list of changes and the digest a `change_access` proposal carries.
+ */
+export async function accessPlanSummary(env: Env, fetcher: typeof fetch = fetch): Promise<{ configured: boolean; ok: boolean; in_sync?: boolean; digest?: string; changes?: string[]; reason?: string }> {
+  if (!nativeAccessConfigured(env)) return { configured: false, ok: false, reason: "not_configured" };
+  const { access, scripts } = accessClients(env, fetcher);
+  const plan: AccessPlan = await planAccess(access, scripts);
+  if (!plan.ok) return { configured: true, ok: false, reason: plan.reason };
+  return { configured: true, ok: true, in_sync: plan.in_sync, digest: plan.digest, changes: plan.changes.slice(0, 12).map((c) => c.slice(0, 120)) };
+}
+
+/**
+ * ADR-0012 G6 gate 9: execute an owner-approved `change_access` (critical). Re-verifies the proposal (with the owner's
+ * click), runs once per proposal, plans again and applies only the plan whose digest was approved.
+ */
+export async function accessForConsensus(env: Env, proposalId: string, decisionId: string, digest: string, fetcher: typeof fetch = fetch): Promise<Record<string, unknown>> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, "change_access", "platform");
+  if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("invalid_plan_digest");
+  if (!nativeAccessConfigured(env) || !env.DEPLOYMENT_LOCK) throw new Error("not_configured");
+  const key = "consensus:access:" + proposalId;
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(key))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: "0".repeat(40) }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return { applied: false, reason: "already_executed" };
+  const { access, scripts } = accessClients(env, fetcher);
+  const run = await applyAccess(access, scripts, digest);
+  const actor = "consensus:" + proposalId;
+  await appendAuditEvent(env.DB, {
+    event_type: run.ok ? "access.applied" : "access.apply_failed", actor, subject: "access:cryptophys-cloud-platform", outcome: run.ok ? "succeeded" : "failed",
+    payload: { proposal_id: proposalId, policy_decision_id: decisionId, digest, ...run },
+  });
+  if (!run.ok) {
+    await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
+      kind: "platform_digest", severity: run.changed ? "critical" : "warning",
+      subject: run.changed ? "Access change stopped part way" : "Access change refused",
+      body: {
+        proposal_id: proposalId, reason: run.reason ?? null, changed: run.changed, steps: run.steps,
+        action_required: run.changed
+          ? "The Access application or a Worker stub was changed, but the update did not verify. Run provision-access.yml once, then check sign-in to the Console."
+          : "Nothing was changed. The agents propose the change again when the plan is current.",
+      },
+    });
+    throw new Error("access_change_failed: " + String(run.reason ?? "unknown"));
+  }
+  return { applied: true, changed: run.changed, steps: run.steps, changes: run.changes ?? [] };
 }
 
 /**

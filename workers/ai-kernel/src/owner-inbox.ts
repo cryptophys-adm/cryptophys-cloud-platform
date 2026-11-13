@@ -89,8 +89,8 @@ export async function pendingApprovals(db: D1Database): Promise<PendingApprovals
     "SELECT plan_id, service_id, plan_version, steps_json, created_by, created_at, approve_by FROM recovery_plans WHERE status = 'draft' ORDER BY created_at LIMIT ?",
   ).bind(INBOX_LIMIT).all<{ plan_id: string; service_id: string; plan_version: string; steps_json: string; created_by: string; created_at: string; approve_by: string | null }>();
   const critical = await db.prepare(
-    "SELECT proposal_id, action, target, proposer_agent_id, approvals, rejections, eligible, created_at FROM consensus_proposals WHERE status = 'pending_owner' ORDER BY created_at LIMIT ?",
-  ).bind(INBOX_LIMIT).all<{ proposal_id: string; action: string; target: string; proposer_agent_id: string; approvals: number; rejections: number; eligible: number; created_at: string }>();
+    "SELECT proposal_id, action, target, proposer_agent_id, approvals, rejections, eligible, params_json, created_at FROM consensus_proposals WHERE status = 'pending_owner' ORDER BY created_at LIMIT ?",
+  ).bind(INBOX_LIMIT).all<{ proposal_id: string; action: string; target: string; proposer_agent_id: string; approvals: number; rejections: number; eligible: number; params_json: string | null; created_at: string }>();
   let knowledge: { proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id: string; item_json: string; created_at: string }[] = [];
   try {
     knowledge = (await db.prepare(
@@ -115,6 +115,8 @@ export async function pendingApprovals(db: D1Database): Promise<PendingApprovals
       expires_at: plus(c.created_at, OWNER_DECISION_WINDOW_MS),
       approvals: Number(c.approvals ?? 0), rejections: Number(c.rejections ?? 0), eligible: Number(c.eligible ?? 0),
       executable: PHASE4_EXECUTABLE.has(c.action),
+      // Gate 9: a change_access proposal lists what it changes, so the owner approves exactly that plan.
+      changes: changesOf(c.params_json),
     })),
     knowledge: knowledge.map((k) => ({
       proposal_id: k.proposal_id, item_id: k.item_id, item_version: Number(k.item_version), kind: k.kind, proposer_agent_id: k.proposer_agent_id,
@@ -156,6 +158,12 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
     production_problems: problems,
     counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length },
   };
+}
+
+/** The bounded `changes` list a proposal's params carry (change_access), or an empty list. */
+function changesOf(paramsJson: unknown): string[] {
+  const p = parse(paramsJson);
+  return Array.isArray(p?.changes) ? (p!.changes as unknown[]).filter((c): c is string => typeof c === "string").slice(0, 12).map((c) => c.slice(0, 120)) : [];
 }
 
 function reasonsOf(evidenceJson: unknown): string[] {
