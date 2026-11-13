@@ -15,6 +15,10 @@ repository `cryptophys/platform`. No GitHub, no Container.
    The same build then installs `../console/ui` and runs its `npm run build` (the UI's own
    `tsc --noEmit` and the Vite build, as GitHub CI's "Build the Console UI" step) and reports it in
    the same request as `console_build` (conclusion, errors, diagnostics, output size).
+   On a build of `main` (`WORKERS_CI_BRANCH` is `main`, or empty for an Artifacts build of main) whose
+   Console UI built, the script first posts the built `dist` to the Forge (`POST /v1/forge/console-dist`,
+   the same headers and CI service token; ADR-0012 §5l step 7). The Forge keeps it for the Orchestrator's
+   native Console deploy. A failed dist post still reports the checks and fails the build (exit 3).
 3. The Forge records the report (`forge_typecheck_reports`, migration 0035) and folds it into its
    check of the same commit as the `typecheck` step. A type error or a failed Console build fails that
    check. Until the report arrives the step reads `pending`. A check is **ready** when its tests and

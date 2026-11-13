@@ -14,6 +14,8 @@
 // Requests are queued in deployment_requests and executed by this Worker's own cron, which fires
 // only at minutes outside the drift and kernel cron windows (wait-cron-window.sh SAFE).
 
+import { AssetsUploader, assetsMetadata, type AssetsConfig } from "./assets-upload.ts";
+
 export const NATIVE_EXECUTOR = "native:rollback";
 /** Must stay a subset of SAFE in .github/scripts/wait-cron-window.sh. */
 export const SAFE_MINUTES = [2, 10, 17, 25, 32, 40, 47, 55];
@@ -76,6 +78,15 @@ export interface VersionMetadata {
    * Absent: the code-only upload of G2b (every platform binding type kept, none sent).
    */
   config?: { bindings: Array<{ type: string; name: string; [field: string]: unknown }>; keep_bindings: string[]; limits?: Record<string, unknown>; placement?: Record<string, unknown> };
+  /**
+   * ADR-0012 G2c-2 step 6: a Worker that serves static assets (the Console). Either the assets of the previously
+   * uploaded version are kept (`keep_assets: true`), or the completion token of a fresh upload is sent with the
+   * `[assets]` routing config (`assets: { jwt, config }`). A version upload of such a Worker without either would
+   * drop its assets, so the executor never uploads one without this. `binding` is the `[assets]` binding name: on
+   * a code-only upload it is sent as `{ type: "assets", name }` (Cloudflare's direct-upload example); a planned
+   * configuration already carries it in `config.bindings`.
+   */
+  assets?: { keep: true; binding: string | null } | { keep?: false; jwt: string; config: AssetsConfig; binding: string | null };
 }
 
 /** ADR-0012 G2c-2: a version as `GET …/scripts/{name}/versions/{id}` returns it (the API's `result`). */
@@ -107,7 +118,8 @@ export class CloudflareWorkers {
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
     // A multipart body (a version upload) sets its own content type with the boundary.
     const type: Record<string, string> = init.body instanceof FormData ? {} : { "content-type": "application/json" };
-    const res = await this.fetcher(`${API}/accounts/${this.account}/workers/scripts/${path}`, {
+    // An empty path is the account's script list itself.
+    const res = await this.fetcher(`${API}/accounts/${this.account}/workers/scripts${path ? `/${path}` : ""}`, {
       ...init,
       headers: { authorization: `Bearer ${this.token}`, ...type, ...(init.headers ?? {}) },
     });
@@ -151,15 +163,32 @@ export class CloudflareWorkers {
     }
     const config = metadata.config;
     if (config && (!Array.isArray(config.bindings) || !config.keep_bindings.every((t) => t === "secret_text" || t === "secret_key"))) throw new Error("invalid_config_upload");
+    // G2c-2 step 6: exactly one of keep_assets and a completion token, never both, never an empty token.
+    const assets = metadata.assets;
+    let assetsFields: Record<string, unknown> = {};
+    let assetsBinding: Array<{ type: string; name: string }> = [];
+    if (assets) {
+      if (assets.binding !== null && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(assets.binding)) throw new Error("invalid_assets_upload");
+      if (assets.keep === true) {
+        if ("jwt" in assets) throw new Error("invalid_assets_upload");
+        assetsFields = { keep_assets: true };
+      } else {
+        assetsFields = { assets: assetsMetadata(assets.jwt, assets.config) };
+      }
+      if (assets.binding && !config) assetsBinding = [{ type: "assets", name: assets.binding }];
+      if (assets.binding && config && !config.bindings.some((b) => b.type === "assets" && b.name === assets.binding)) throw new Error("invalid_assets_upload");
+    }
     const form = new FormData();
     form.append("metadata", new Blob([JSON.stringify({
       main_module: metadata.main_module,
       compatibility_date: metadata.compatibility_date,
       compatibility_flags: metadata.compatibility_flags,
-      // G2c-2: a planned configuration sends its bindings and keeps only the secrets; G2b keeps every type.
+      // G2c-2: a planned configuration sends its bindings and keeps only the secrets; G2b keeps every type
+      // (and, for a Worker with static assets, sends its assets binding, which is not a kept type).
       ...(config
         ? { bindings: config.bindings, keep_bindings: [...config.keep_bindings], ...(config.limits ? { limits: config.limits } : {}), ...(config.placement ? { placement: config.placement } : {}) }
-        : { keep_bindings: [...KEEP_BINDINGS] }),
+        : { ...(assetsBinding.length ? { bindings: assetsBinding } : {}), keep_bindings: [...KEEP_BINDINGS] }),
+      ...assetsFields,
       annotations: { "workers/tag": metadata.tag, "workers/message": metadata.message.slice(0, 100) },
     })], { type: "application/json" }));
     form.append(moduleName, new Blob([moduleText], { type: "application/javascript+module" }), moduleName);
@@ -205,6 +234,46 @@ export class CloudflareWorkers {
   async scriptSetting(script: string, step: { method: "PUT"; path: "schedules"; body: Array<{ cron: string }> } | { method: "PATCH"; path: "script-settings"; body: Record<string, unknown> }): Promise<unknown> {
     if (!(step.method === "PUT" && step.path === "schedules") && !(step.method === "PATCH" && step.path === "script-settings")) throw new Error("invalid_script_setting");
     return this.call<unknown>(`${script}/${step.path}`, { method: step.method, body: JSON.stringify(step.body) });
+  }
+
+  /**
+   * ADR-0012 G2c-2 step 6: the routes Cloudflare associates with one script, read from the account's script list
+   * (`GET /accounts/{a}/workers/scripts`, "List Worker Scripts", which Workers Scripts Read or Edit may call; each
+   * item has `routes: [{ id, pattern, script }]`, documented as nullable). The zone routes API (`GET
+   * /zones/{zone}/workers/routes`) needs the zone permission Workers Routes Read, which CF_DEPLOY_TOKEN does not
+   * hold. Returns null when the list does not report the script's routes; throws when it cannot be read.
+   */
+  async scriptRoutes(script: string): Promise<Array<{ pattern: string; script: string | null }> | null> {
+    if (!/^[a-z0-9-]{1,63}$/.test(script)) throw new Error("invalid_script_name");
+    const r = await this.call<unknown>("");
+    if (!Array.isArray(r)) throw new Error("script_list_unreadable");
+    const items = r.filter((x) => (x as { id?: unknown })?.id === script) as Array<{ routes?: unknown }>;
+    if (items.length !== 1) return null;
+    const routes = items[0].routes;
+    if (!Array.isArray(routes)) return null;
+    const out: Array<{ pattern: string; script: string | null }> = [];
+    for (const x of routes as Array<{ pattern?: unknown; script?: unknown }>) {
+      if (typeof x?.pattern !== "string") return null;
+      if (x.script !== undefined && x.script !== null && typeof x.script !== "string") return null;
+      out.push({ pattern: x.pattern, script: typeof x.script === "string" ? x.script : null });
+    }
+    return out;
+  }
+
+  /**
+   * ADR-0012 G2c-2 step 6: the id of the script's latest uploaded version, the one `keep_assets` and
+   * `keep_bindings` copy from. Cloudflare's List Versions: "The first version in the list is the latest version."
+   */
+  async latestVersionId(script: string): Promise<string> {
+    const r = await this.call<{ items?: Array<{ id?: unknown }> }>(`${script}/versions?per_page=1`);
+    const id = r?.items?.[0]?.id;
+    if (typeof id !== "string" || !UUID.test(id)) throw new Error("versions_unreadable");
+    return id;
+  }
+
+  /** ADR-0012 G2c-2 step 6: the static-assets upload client, with the same token, account and fetcher. */
+  assetsUploader(): AssetsUploader {
+    return new AssetsUploader(this.token, this.account, this.fetcher);
   }
 
   /** The bindings of one version as sorted `type:name` strings. */

@@ -13,6 +13,8 @@
 //   4. the version upload then sends `assets: { jwt, config }` in its metadata (`assetsMetadata`).
 // When every file is already held, `buckets` is empty and the session JWT is the completion token.
 // Nothing here deploys; the version that uses the completion JWT receives no traffic until it is deployed.
+// Wired into the native deploy by step 6 (native-deploy.ts: readAssetsPlan and the executor), which also uses
+// `indexHtmlRefusal` (the deploy workflow's CSP check of index.html) and `sameConsoleDist` (keep or upload).
 
 const API = "https://api.cloudflare.com/client/v4";
 /** Workers Free static-asset limits: 25 MiB per file, 20,000 files per version. */
@@ -118,7 +120,9 @@ export class AssetsUploader {
     if (!/^[0-9a-f]{32}$/.test(account)) throw new Error("invalid_account_id");
     this.token = token;
     this.account = account;
-    this.fetcher = fetcher;
+    // Called as a plain function, as in CloudflareWorkers (native-rollback.ts): the runtime's global fetch throws
+    // "Illegal invocation" when it is called as a method of another object (this.fetcher(...)), which workerd does.
+    this.fetcher = (input, init) => fetcher(input, init);
   }
 
   private async json<T>(res: Response): Promise<{ status: number; result: T }> {
@@ -226,23 +230,72 @@ export function parseConsoleDistList(text: string, commit: string): ConsoleDistL
   return m as ConsoleDistList;
 }
 
+export const consoleDistListKey = (commit: string) => `bundles/${commit}/console-dist.json`;
+export const consoleDistFileKey = (commit: string, path: string) => `bundles/${commit}/console-dist/${path}`;
+/** A read failure of the stored dist: its reason and the R2 key it concerns. */
+const distError = (code: string, file: string) => Object.assign(new Error(code), { file });
+
+/** A commit's `console-dist.json` alone (no file is read), or null when it is absent or unreadable. */
+export async function readConsoleDistList(bucket: DistReader, commit: string): Promise<ConsoleDistList | null> {
+  if (!HEX40.test(commit)) return null;
+  const obj = await bucket.get(consoleDistListKey(commit));
+  return obj ? parseConsoleDistList(await obj.text(), commit) : null;
+}
+
 /**
- * Read a commit's Console dist from the Forge's bucket into a file map, checking every file's SHA-256 and size
- * against the list. Throws `console_dist_missing`, `console_dist_unreadable` or `console_dist_hash_mismatch`.
+ * Read a commit's Console dist from the Forge's bucket into a file map, with its list, checking every file's
+ * SHA-256 and size against the list. Throws `console_dist_missing`, `console_dist_unreadable` or
+ * `console_dist_hash_mismatch`; the error's `file` is the R2 key concerned.
  */
-export async function readConsoleDist(bucket: DistReader, commit: string): Promise<AssetFileMap> {
+export async function readConsoleDistWithList(bucket: DistReader, commit: string): Promise<{ list: ConsoleDistList; files: AssetFileMap }> {
   if (!HEX40.test(commit)) throw new Error("invalid_commit_sha");
-  const obj = await bucket.get(`bundles/${commit}/console-dist.json`);
-  if (!obj) throw new Error("console_dist_missing");
+  const listKey = consoleDistListKey(commit);
+  const obj = await bucket.get(listKey);
+  if (!obj) throw distError("console_dist_missing", listKey);
   const list = parseConsoleDistList(await obj.text(), commit);
-  if (!list) throw new Error("console_dist_unreadable");
+  if (!list) throw distError("console_dist_unreadable", listKey);
   const files: AssetFileMap = {};
   for (const f of list.files) {
-    const o = await bucket.get(`bundles/${commit}/console-dist/${f.path}`);
-    if (!o) throw new Error("console_dist_missing");
+    const key = consoleDistFileKey(commit, f.path);
+    const o = await bucket.get(key);
+    if (!o) throw distError("console_dist_missing", key);
     const bytes = new Uint8Array(await o.arrayBuffer());
-    if (bytes.length !== f.size || await sha256Hex(bytes) !== f.sha256) throw new Error("console_dist_hash_mismatch");
+    if (bytes.length !== f.size || await sha256Hex(bytes) !== f.sha256) throw distError("console_dist_hash_mismatch", key);
     files[f.path] = { bytes, contentType: f.content_type };
   }
-  return files;
+  return { list, files };
+}
+
+/** The file map of `readConsoleDistWithList`. */
+export async function readConsoleDist(bucket: DistReader, commit: string): Promise<AssetFileMap> {
+  return (await readConsoleDistWithList(bucket, commit)).files;
+}
+
+/**
+ * Whether two stored dists hold the same files: the same paths with the same SHA-256, size and content type.
+ * Equal lists give equal asset hashes (`assetHash` depends only on the content and the extension), so the assets
+ * the Workers API holds for one are the assets of the other.
+ */
+export function sameConsoleDist(a: ConsoleDistList, b: ConsoleDistList): boolean {
+  const canon = (l: ConsoleDistList) => JSON.stringify([...l.files].map((f) => [f.path, f.sha256, f.size, f.content_type]).sort());
+  return canon(a) === canon(b);
+}
+
+/**
+ * The deploy workflow's check of the built `index.html`, repeated on the stored one (ADR-0012 §5l step 6). The
+ * Console sends CSP `script-src 'self'`, so an inline script would not run and the page would break:
+ * deploy-console.yml fails on `grep -Eq '<script>|<script [^>]*>[^<]' dist/index.html` (line by line). This is that
+ * test, and stricter, fail closed: every `<script>` element must be closed, carry a `src` and have no content;
+ * no inline event handler attribute (`on…=`) and no `javascript:` URL, which `script-src 'self'` blocks as well.
+ * Returns the reason, or null when the page passes.
+ */
+export function indexHtmlRefusal(html: string): string | null {
+  for (const line of html.split("\n")) if (/<script>|<script [^>]*>[^<]/.test(line)) return "inline_script";
+  const opened = html.match(/<script\b/gi)?.length ?? 0;
+  const elements = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+  if (elements.length !== opened) return "inline_script";
+  for (const [, attrs, body] of elements) if (!/\ssrc\s*=/i.test(` ${attrs}`) || body.trim() !== "") return "inline_script";
+  if (/<[a-z][^>]*\son[a-z]+\s*=/i.test(html)) return "inline_event_handler";
+  if (/javascript:/i.test(html)) return "inline_script";
+  return null;
 }

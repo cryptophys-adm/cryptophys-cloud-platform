@@ -30,8 +30,15 @@
 // kept), the target's compatibility settings and limits, and checked against the plan (bindings and
 // `script_runtime`) before any traffic moves. Script settings a version cannot carry (cron schedules,
 // observability) are applied only after the new version is verified live, and restored on any later failure.
-// Anything else (static assets, a running version without a bundle or a stored config, a plan refusal, a
-// migration that is not additive) stays on the unit's GitHub workflow, which also renders config.
+// Anything else (a running version without a bundle or a stored config, a plan refusal, a migration that is not
+// additive) stays on the unit's GitHub workflow, which also renders config.
+//
+// G2c-2 step 6 (§5l) adds static assets (the Console). The Forge keeps the Console build of each main commit
+// (`console-dist.json` and its files); the Worker is eligible only when that build is stored and every file matches
+// it, its `[assets]` table is unchanged, its `index.html` passes the deploy workflow's CSP check (no inline script),
+// and the zone route the workflow attaches with a zone token (ZONE_ROUTES) is reported for the script, read only.
+// The assets are uploaded before the version and sent as `assets: { jwt, config }`, also when the build is
+// unchanged: keep_assets is not used, because it is not verified that it keeps `run_worker_first`.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -40,9 +47,13 @@ import {
 } from "../../control-plane-shared/src/migration-rules.ts";
 import {
   CloudflareWorkers, MODULE_NAME, MODULE_TYPES, nativeRollbackConfigured, sameDeployment, sleep, VERIFY_ATTEMPTS, VERIFY_DELAY_MS,
-  type DeploymentVersions, type DriftProbeBinding, type ExtraModule, type ModuleType, type NativeRollbackEnv, type RegistryRollbackBinding, type VersionRecord,
+  type DeploymentVersions, type DriftProbeBinding, type ExtraModule, type ModuleType, type NativeRollbackEnv, type RegistryRollbackBinding, type VersionMetadata, type VersionRecord,
 } from "./native-rollback.ts";
-import { configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings, type ConfigPlan, type PlanStep } from "./config-diff.ts";
+import {
+  assetsConfigFromToml, configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings,
+  type AssetsConfig, type ConfigPlan, type PlanStep,
+} from "./config-diff.ts";
+import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
 
 export const NATIVE_DEPLOY_EXECUTOR = "native:deploy";
 /** The one unit whose deploy applies D1 migrations (SSOT: "Migrations are applied only by the Control Plane deploy"). */
@@ -173,7 +184,20 @@ export async function manifestForTag(bucket: BundleReader, tag: string): Promise
  * both configs again and plans again against the deployment it captures, right before the upload.
  */
 export interface PlannedConfig { running_commit: string; running: BundleWorker; changes: ConfigPlan["changes"]; steps: PlanStep["kind"][] }
-export interface PlannedService { service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig }
+/**
+ * G2c-2 step 6: a Worker with static assets. `keep` when the running commit's stored build equals the target's
+ * (`running_dist: "same"`); the executor still uploads when the active version is not the script's latest upload.
+ */
+export interface PlannedAssets {
+  mode: "keep" | "upload";
+  running_commit: string;
+  running_dist: "same" | "different" | "missing";
+  files: number;
+  total_bytes: number;
+  binding: string | null;
+  config: AssetsConfig;
+}
+export interface PlannedService { service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig; assets?: PlannedAssets }
 /** A migration the deploy applies before its Workers, in this order. */
 export interface PlannedMigration { file: string; sha256: string }
 export type Eligibility =
@@ -269,8 +293,85 @@ export function planWorkerConfig(runningToml: string, targetToml: string, active
   return plan.eligible ? { plan } : { reason: plan.reason };
 }
 
-/** The read-only Cloudflare calls eligibility makes: the active deployment and one version's full record. */
-export type VersionReader = Pick<CloudflareWorkers, "active" | "version">;
+/**
+ * The read-only Cloudflare calls eligibility makes: the active deployment, one version's full record and (G2c-2
+ * step 6) the routes the account's script list reports for a Worker.
+ */
+export type VersionReader = Pick<CloudflareWorkers, "active" | "version"> & Partial<Pick<CloudflareWorkers, "scriptRoutes">>;
+
+/**
+ * G2c-2 step 6: zone routes a Worker with static assets needs that its wrangler.toml does not manage. deploy-console.yml attaches
+ * `nexus.cryptophys.work/console*` after each deploy with a zone token (ensure-zone-route.sh), because the Workers
+ * deploy token cannot hold Workers Routes Edit (owner decision 2026-11-06). The Orchestrator holds only
+ * CF_DEPLOY_TOKEN, so the native path never attaches a route: it only checks, read only, that the route exists and
+ * points at the script, or the Worker stays on its workflow. A test keeps this equal to the workflow's
+ * ROUTE_PATTERN and SCRIPT.
+ */
+export const ZONE_ROUTES: Readonly<Record<string, readonly string[]>> = { "cryptophys-console": ["nexus.cryptophys.work/console*"] };
+
+/**
+ * The route check, read only. `route_unverifiable` when the script list cannot be read or does not report the
+ * script's routes (the field is nullable, and a token without zone permissions may not see zone routes);
+ * `route_missing:<pattern>` when it reports them without the pattern pointing at this script. Fail closed.
+ */
+export async function zoneRouteRefusal(cf: Partial<Pick<CloudflareWorkers, "scriptRoutes">>, service: string): Promise<string | null> {
+  const want = ZONE_ROUTES[service] ?? [];
+  if (!want.length) return null;
+  if (!cf.scriptRoutes) return "route_unverifiable";
+  let routes: Array<{ pattern: string; script: string | null }> | null;
+  try { routes = await cf.scriptRoutes(service); } catch { return "route_unverifiable"; }
+  if (!routes) return "route_unverifiable";
+  for (const pattern of want) {
+    if (!routes.some((r) => r.pattern === pattern && (r.script === null || r.script === service))) return `route_missing:${pattern}`;
+  }
+  return null;
+}
+
+/** The bundle bucket as the dist reader of assets-upload.ts (an object without bytes reads as unreadable). */
+const distReader = (b: BundleReader): DistReader => ({
+  async get(key: string) {
+    const o = await b.get(key);
+    if (!o) return null;
+    return { text: () => o.text(), arrayBuffer: async () => { if (!o.arrayBuffer) throw new Error("console_dist_unreadable"); return o.arrayBuffer(); } };
+  },
+});
+
+/**
+ * G2c-2 step 6: what a Worker with static assets needs, read from R2 only. The target's stored config gives the
+ * `[assets]` routing config (it equals the running one: a changed `[assets]` table is refused earlier with
+ * `assets_config_changed`); the target's stored Console build must be present with every file matching its list
+ * (`console_dist_missing`, `console_dist_unreadable`, `console_dist_hash_mismatch`, with the R2 key in `file`);
+ * its `index.html` must pass `indexHtmlRefusal` (`index_html_missing`, `inline_script`, `inline_event_handler`).
+ * The running commit's build decides `keep` or `upload`; a running build that is not stored means `upload`.
+ */
+export async function readAssetsPlan(bundles: BundleReader, commit: string, worker: BundleWorker, runningCommit: string):
+  Promise<{ assets: PlannedAssets; files: AssetFileMap } | { reason: string; file?: string }> {
+  const bucket = distReader(bundles);
+  const cfg = await readConfig(bundles, commit, worker);
+  if ("reason" in cfg) return cfg;
+  const toml = parseToml(cfg.toml);
+  if (!toml) return { reason: "config_unparsed" };
+  const ac = assetsConfigFromToml(toml);
+  if (!ac) return { reason: "assets_config_missing" };
+  if (ac.config === null) return { reason: ac.reason };
+  let read: Awaited<ReturnType<typeof readConsoleDistWithList>>;
+  try { read = await readConsoleDistWithList(bucket, commit); } catch (err) {
+    return { reason: String((err as Error)?.message ?? err).slice(0, 100), ...((err as { file?: string })?.file ? { file: (err as { file: string }).file } : {}) };
+  }
+  const index = read.files["index.html"];
+  if (!index?.bytes) return { reason: "index_html_missing", file: consoleDistFileKey(commit, "index.html") };
+  const refused = indexHtmlRefusal(new TextDecoder().decode(index.bytes));
+  if (refused) return { reason: refused, file: consoleDistFileKey(commit, "index.html") };
+  const running = await readConsoleDistList(bucket, runningCommit);
+  const runningDist = !running ? "missing" : sameConsoleDist(running, read.list) ? "same" : "different";
+  return {
+    assets: {
+      mode: runningDist === "same" ? "keep" : "upload", running_commit: runningCommit, running_dist: runningDist,
+      files: read.list.files.length, total_bytes: read.list.total_bytes, binding: ac.binding, config: ac.config,
+    },
+    files: read.files,
+  };
+}
 
 /** The main module of one Worker, read from R2 and checked against the manifest; null when missing or different. */
 async function readMainModule(bucket: BundleReader, commit: string, worker: BundleWorker): Promise<string | null> {
@@ -348,6 +449,11 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
  * (`workerConfigRefusal`), checked for every Worker before any Cloudflare call; then `planWorkerConfig` against
  * the active version's full binding records, read through `cf`. Without `cf` such a Worker keeps the G2b answer
  * (`config_changed`, or `limits` when only [limits] calls for a plan).
+ *
+ * G2c-2 step 6: a Worker with static assets is eligible only when its `[assets]` table is unchanged (else
+ * `assets_config_changed`, from the plan's checks or a differing manifest flag), the target's Console build is
+ * stored and matches (`readAssetsPlan`), and, last, its zone routes are reported for the script (`zoneRouteRefusal`).
+ * Without a reader that can list the routes, it keeps the G2b answer, `assets`.
  */
 export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader): Promise<Eligibility> {
   if (!env.BUNDLES) return { eligible: false, reason: "not_configured" };
@@ -369,7 +475,8 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
     for (const service of services) {
       const worker = target.workers.find((w) => w.name === service);
       if (!worker) return { eligible: false, reason: "service_not_in_bundle", service };
-      if (worker.assets) return { eligible: false, reason: "assets", service };
+      // G2c-2 step 6: static assets need the route check (a Cloudflare read); without a reader, the G2b answer.
+      if (worker.assets && !cf?.scriptRoutes) return { eligible: false, reason: "assets", service };
       if (!worker.single_module && !worker.modules) return { eligible: false, reason: "multi_module", service };
       if (!worker.compatibility_date) return { eligible: false, reason: "config_unreadable", service };
       const reg = registry.get(service);
@@ -405,7 +512,15 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
         if (refused) return { eligible: false, reason: refused, service };
         toPlan.push({ index: planned.length, service, runningCommit: now.commit, was, runningToml: run.toml, targetToml: tgt.toml });
       }
-      planned.push({ service, worker, running_tag: tag.slice(0, 12) });
+      // G2c-2 step 6, after the configs (a changed [assets] table is assets_config_changed above): the stored build.
+      let assets: PlannedAssets | undefined;
+      if (worker.assets || was.assets) {
+        if (worker.assets !== was.assets) return { eligible: false, reason: "assets_config_changed", service };
+        const a = await readAssetsPlan(env.BUNDLES, targetSha, worker, now.commit);
+        if ("reason" in a) return { eligible: false, reason: a.reason, service, ...(a.file ? { file: a.file } : {}) };
+        assets = a.assets;
+      }
+      planned.push({ service, worker, running_tag: tag.slice(0, 12), ...(assets ? { assets } : {}) });
     }
     // Pass 2 (G2c-2): only now Cloudflare is read, for the Workers that need a plan.
     for (const p of toPlan) {
@@ -419,6 +534,12 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       const r = planWorkerConfig(p.runningToml, p.targetToml, record.resources?.bindings);
       if ("reason" in r) return { eligible: false, reason: r.reason, service };
       planned[p.index] = { ...planned[p.index], config: { running_commit: p.runningCommit, running: p.was, changes: r.plan.changes, steps: r.plan.steps.map((s) => s.kind) } };
+    }
+    // G2c-2 step 6: the zone routes the workflow attaches with its zone token, verified read only.
+    for (const p of planned) {
+      if (!p.worker.assets) continue;
+      const refused = await zoneRouteRefusal(cf!, p.service);
+      if (refused) return { eligible: false, reason: refused, service: p.service };
     }
     return { eligible: true, commit: targetSha, services: planned, migrations: migrations ?? [] };
   } catch {
@@ -447,6 +568,12 @@ export interface DeployRun {
   restore_point_at?: string;
   /** G2c-2: the script settings applied after a live check, `<service>:<kind>`, in order (restored on failure). */
   settings_applied?: string[];
+  /**
+   * G2c-2 step 6: per Worker with static assets, how its assets reached the version: kept from the active version
+   * (`keep`), or uploaded (`upload`, with the files Cloudflare asked for and the bucket count). `keep_refused` says
+   * why a planned keep became an upload.
+   */
+  assets?: Record<string, { mode: "keep" | "upload"; uploaded?: number; buckets?: number; keep_refused?: string }>;
 }
 
 /** Every key of `want` is in `got` with an equal value (objects compared recursively, arrays exactly). */
@@ -494,7 +621,8 @@ async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof
 
 /**
  * Execute one queued native deploy over the eligible plan: the migrations first (G2c-1), then each Worker in unit
- * order: capture, (G2c-2) plan the configuration again against the captured version, upload, verify the bindings
+ * order: capture, (G2c-2) plan the configuration again against the captured version, (step 6) check the route and
+ * the stored build again and keep or upload the static assets, upload the version, verify the bindings
  * (and the planned settings), deploy, verify live, then (G2c-2) apply the plan's script settings. The desired
  * version is recorded after every Worker. Never throws; the caller records the outcome. On any failure the
  * applied script settings are restored first (newest first), then every changed service to its captured
@@ -511,6 +639,7 @@ export async function executeNativeDeploy(
   const changed: { service: string; captured: DeploymentVersions }[] = [];
   // G2c-2: script settings, recorded before each call so an ambiguous failure is restored as well.
   const settings: { service: string; step: PlanStep }[] = [];
+  const assetsRun: NonNullable<DeployRun["assets"]> = {};
   const applied: string[] = [];
   const migrations = opts.migrations ?? [];
   let migrating: string | null = null;
@@ -543,7 +672,7 @@ export async function executeNativeDeploy(
       }
       migrating = null;
     }
-    for (const { service, worker, config } of plan) {
+    for (const { service, worker, config, assets: plannedAssets } of plan) {
       current = service;
       const captured = await cf.active(service);
       if (captured.length !== 1 || captured[0].percentage !== 100) throw new Error("active_deployment_split");
@@ -565,6 +694,28 @@ export async function executeNativeDeploy(
       } else {
         active = await cf.versionBindingSet(service, captured[0].version_id);
       }
+      // G2c-2 step 6: a Worker with static assets. The route again (read only), the stored build again (hashes,
+      // index.html), then the assets, before the version that uses them.
+      let assetsPart: VersionMetadata["assets"];
+      if (worker.assets) {
+        if (!plannedAssets) throw new Error("assets_upload_missing");
+        const route = await zoneRouteRefusal(cf, service);
+        if (route) throw new Error(route);
+        steps.push(`${service}:route_verified`);
+        const a = await readAssetsPlan(env.BUNDLES, commit, worker, plannedAssets.running_commit);
+        if ("reason" in a) throw new Error(a.reason);
+        // keep_assets is never used (2026-11-13): it is not verified that a kept asset set keeps the
+        // `run_worker_first = true` of the [assets] config, and without it assets would be served before the
+        // Console Worker's own checks. An unchanged build is uploaded again with its config sent explicitly; the
+        // upload session asks only for the files Cloudflare does not hold, so it costs no bucket.
+        const keepRefused = a.assets.mode === "keep" ? "run_worker_first_unverified" : undefined;
+        const up = await cf.assetsUploader().upload(service, a.files);
+        assetsPart = { jwt: up.jwt, config: a.assets.config, binding: a.assets.binding };
+        assetsRun[service] = { mode: "upload", uploaded: up.uploaded, buckets: up.buckets, ...(keepRefused ? { keep_refused: keepRefused } : {}) };
+        steps.push(`${service}:assets_uploaded`);
+      }
+      // An explicit upload of a Worker with assets that neither keeps nor sends them would drop them.
+      if (worker.assets && !assetsPart) throw new Error("assets_upload_missing");
       const obj = await env.BUNDLES.get(`${BUNDLE_PREFIX}${commit}/${worker.module}`);
       const text = obj ? await obj.text() : null;
       if (text === null) throw new Error("bundle_module_missing");
@@ -580,10 +731,12 @@ export async function executeNativeDeploy(
           main_module: worker.main_module, compatibility_date: configPlan.metadata.compatibility_date, compatibility_flags: configPlan.metadata.compatibility_flags,
           tag, message: `native deploy commit ${commit}`,
           config: { bindings: uploadBindings(configPlan), keep_bindings: configPlan.keep_bindings, limits: configPlan.metadata.limits, placement: configPlan.metadata.placement },
+          ...(assetsPart ? { assets: assetsPart } : {}),
         }
         : {
           main_module: worker.main_module, compatibility_date: worker.compatibility_date!, compatibility_flags: worker.compatibility_flags,
           tag, message: `native deploy commit ${commit}`,
+          ...(assetsPart ? { assets: assetsPart } : {}),
         }, extra);
       versions[service] = versionId;
       steps.push(`${service}:uploaded`);
@@ -629,6 +782,7 @@ export async function executeNativeDeploy(
     return {
       ok: true, versions, steps, ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
       ...(settings.length ? { settings_applied: settings.map((x) => `${x.service}:${x.step.kind}`) } : {}),
+      ...(Object.keys(assetsRun).length ? { assets: assetsRun } : {}),
     };
   } catch (err) {
     const reason = String((err as Error)?.message ?? err).slice(0, 200);
@@ -653,6 +807,7 @@ export async function executeNativeDeploy(
       ok: false, reason, ...(current ? { service: current } : {}), restored, production_changed: changed.length > 0 || applied.length > 0 || settings.length > 0, versions, steps,
       ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
       ...(settings.length ? { settings_applied: settings.map((x) => `${x.service}:${x.step.kind}`) } : {}),
+      ...(Object.keys(assetsRun).length ? { assets: assetsRun } : {}),
       ...(migrating ? { migration_failed: migrating } : {}),
     };
   }

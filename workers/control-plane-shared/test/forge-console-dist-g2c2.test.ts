@@ -105,11 +105,65 @@ test("FD3. storage: bundles/<sha>/console-dist/<path> with content types, the li
   assert.deepEqual(Object.keys((await buildAssetsManifest(files)).manifest).sort(), ["/assets/font.woff2", "/assets/index-Bx1.js", "/index.html"]);
 });
 
-test("FD4. wiring: one route line in the Forge, the handler in its own file; the build script stays owner-only", () => {
+test("FD4. wiring: one route line in the Forge, the handler in its own file; the build script posts the dist before the report", () => {
   const index = readFileSync(new URL("../../forge/src/index.ts", import.meta.url), "utf8");
   assert.equal(index.match(/\/v1\/forge\/console-dist"\) return await handleConsoleDist\(/g)?.length, 1);
   assert.match(index, /import \{ handleConsoleDist \} from "\.\/console-dist\.ts";/);
   const handler = readFileSync(new URL("../../forge/src/console-dist.ts", import.meta.url), "utf8");
   assert.match(handler, /identity\.type !== "service_token"\) return errorResponse\(403, "service_token_required"\)/);
-  assert.doesNotMatch(readFileSync(new URL("../../forge-typecheck/typecheck-and-report.mjs", import.meta.url), "utf8"), /console-dist/, "the dist post is a separate, owner-visible change");
+  // ADR-0012 §5l step 7 (owner-visible): a build of main whose Console UI built posts its dist, then the report.
+  const script = readFileSync(new URL("../../forge-typecheck/typecheck-and-report.mjs", import.meta.url), "utf8");
+  assert.match(script, /new URL\("\/v1\/forge\/console-dist", forgeUrl\)/);
+  assert.match(script, /JSON\.stringify\(\{ confirm: "UPLOAD", commit, files \}\)/);
+  assert.match(script, /if \(uiBuild\.status === 0 && postsConsoleDist\(env\.WORKERS_CI_BRANCH\)\) \{/);
+  const main = script.slice(script.indexOf("const selfUrl"));
+  assert.ok(main.indexOf("await postDist(") > 0 && main.indexOf("await postDist(") < main.indexOf("await report(body, env)"), "the dist goes before the report");
+  assert.match(main, /if \(distFailed\) process\.exit\(3\);/, "a failed dist post fails the build, as a failed report does");
+});
+
+test("FD5. the build script's dist post: every file of dist as the Forge validates it, headers as the report, failures refused", async () => {
+  const { collectConsoleDist, distContentType, postConsoleDist, postsConsoleDist, MAX_DIST_BODY_BYTES } = await import("../../forge-typecheck/typecheck-and-report.mjs");
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  assert.deepEqual(["a.html", "a.js", "a.css", "a.svg", "a.json", "a.png", "a.woff2", "a.map", "LICENSE"].map(distContentType),
+    ["text/html; charset=utf-8", "text/javascript", "text/css", "image/svg+xml", "application/json", "image/png", "font/woff2", "application/octet-stream", "application/octet-stream"]);
+  assert.deepEqual(["main", "", undefined, " main ", "cr/12", "claude/x", "MAIN"].map(postsConsoleDist), [true, true, true, true, false, false, false]);
+  assert.equal(MAX_DIST_BODY_BYTES, 36 * 1024 * 1024, "the Forge's request limit");
+
+  const tmp = mkdtempSync(join(tmpdir(), "console-dist-"));
+  try {
+    // A fresh directory inside the temp one: the Forge's workerd runner seeds its temp directories with a file.
+    const dir = join(tmp, "dist");
+    mkdirSync(join(dir, "assets"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), "<!doctype html><script type=module src=./assets/index-a.js></script>");
+    writeFileSync(join(dir, "assets", "index-a.js"), "export{}");
+    // Text content only: the workerd runner's fs shim does not keep arbitrary bytes (the Forge tests above cover binary files).
+    writeFileSync(join(dir, "assets", "font.woff2"), "wOF2");
+    const files = collectConsoleDist(dir);
+    assert.deepEqual(files.map((f: { path: string }) => f.path), ["assets/font.woff2", "assets/index-a.js", "index.html"]);
+    assert.deepEqual(files.map((f: { content_base64: string }) => f.content_base64), [b64("wOF2"), b64("export{}"), b64("<!doctype html><script type=module src=./assets/index-a.js></script>")]);
+    assert.deepEqual(files.map((f: { content_type: string }) => f.content_type), ["font/woff2", "text/javascript", "text/html; charset=utf-8"]);
+    // What the script collects is what the Forge validates and stores.
+    const valid = await validateConsoleDist({ commit: SHA, files });
+    assert.equal(valid.files.length, 3);
+
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const answer = (status: number, json: unknown) => async (url: URL, init: RequestInit) => { seen.push({ url: String(url), init }); return new Response(typeof json === "string" ? json : JSON.stringify(json), { status }); };
+    const ok = await postConsoleDist(answer(200, { commit: SHA, files: 3, total_bytes: 10, stored: true }), "https://forge.example.workers.dev", "id.access", "secret", SHA, files);
+    assert.equal(ok.stored, true);
+    assert.equal(seen[0].url, "https://forge.example.workers.dev/v1/forge/console-dist");
+    assert.equal(seen[0].init.method, "POST");
+    assert.equal(seen[0].init.redirect, "manual");
+    assert.deepEqual(seen[0].init.headers, { "content-type": "application/json", "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "secret" });
+    assert.deepEqual(JSON.parse(String(seen[0].init.body)), { confirm: "UPLOAD", commit: SHA, files });
+    await assert.rejects(postConsoleDist(answer(302, ""), "https://f.example", "i", "s", SHA, files), /Access refused the CI service token \(HTTP 302/);
+    await assert.rejects(postConsoleDist(answer(409, { error: "console_dist_conflict" }), "https://f.example", "i", "s", SHA, files), /did not store the dist \(HTTP 409\)/);
+    await assert.rejects(postConsoleDist(answer(200, { commit: "e".repeat(40) }), "https://f.example", "i", "s", SHA, files), /commit mismatch/);
+    await assert.rejects(postConsoleDist(answer(200, "<html>sign in</html>"), "https://f.example", "i", "s", SHA, files), /invalid JSON/);
+    const huge = [{ path: "big.js", content_base64: "A".repeat(MAX_DIST_BODY_BYTES), content_type: "text/javascript" }];
+    const before = seen.length;
+    await assert.rejects(postConsoleDist(answer(200, {}), "https://f.example", "i", "s", SHA, huge), /over the Forge's limit/);
+    assert.equal(seen.length, before, "an oversized dist is never sent");
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
 });
