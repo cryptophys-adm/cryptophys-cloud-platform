@@ -224,6 +224,18 @@ test("G4-3. discovery lists refs/heads/* of platform-work with a 120 s read toke
   assert.equal(auditOf(db).filter((a: any) => a.event_type === "forge.change_registered").length, 3);
 });
 
+test("G4-3b. the tick calls ARTIFACTS.list as a method of the binding, never through Function.prototype.bind (an RPC stub has no local bind)", async () => {
+  const ns = standard();
+  ns.push("platform-work", "claude/feature-x", A, [A]);
+  const realList = (ns.binding as any).list;
+  // A Workers RPC stub turns any property access, `bind` included, into a remote method name.
+  const list = function (this: unknown, opts?: unknown) { assert.equal(this, stub, "called with the binding as receiver"); return realList.call(ns.binding, opts); };
+  Object.defineProperty(list, "bind", { get() { throw new Error('The RPC receiver does not implement the method "bind".'); } });
+  const stub = { get: (n: string) => (ns.binding as any).get(n), list };
+  const out = await workBranchesTick({ DB: migratedDb() as never, ARTIFACTS: stub as never }, Date.now(), gitServer(ns.repos).fetchImpl);
+  assert.deepEqual([out.outcome, out.registered], ["discovered", ["fg-claude-feature-x"]]);
+});
+
 test("G4-4. base = canonical main when it is an ancestor of the head; otherwise blocked not_based_on_main (and never checked)", async () => {
   const ns = standard();
   ns.push("platform-work", "claude/based", B, [A, B]);
