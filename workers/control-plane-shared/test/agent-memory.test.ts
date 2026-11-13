@@ -295,8 +295,9 @@ test("failing or missing MEMORY binding or embedding failure never fails a super
 
   const supCycle = await runCycle(noMem.env as never, noMem.supMem, "scheduled");
   assert.equal(supCycle.memory, "unavailable");
+  // The metabolism finding depends on the wall clock (market closed on weekends: computeMarketStatus), not on memory.
   assert.deepEqual(
-    supCycle.findings.map((f) => `${f.kind}:${f.action}:${f.outcome}`),
+    supCycle.findings.filter((f) => f.kind !== "metabolism").map((f) => `${f.kind}:${f.action}:${f.outcome}`),
     ["drift:recovery.propose:succeeded", "drift:consensus.propose:succeeded"],
   );
 

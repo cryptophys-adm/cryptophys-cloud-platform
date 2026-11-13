@@ -320,7 +320,9 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   drift(db, "cryptophys-policy-engine", false, 20);
   drift(db, "cryptophys-policy-engine", true, 5); // transient: not persistent
   const report = await runCycle(env as never, mem, "scheduled");
-  const kinds = report.findings.map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
+  // The metabolism finding depends on the wall clock (survival while the XAUUSD market is closed, Friday 22:00 to
+  // Sunday 22:00 UTC: computeMarketStatus), not on drift; it is not this test's subject.
+  const kinds = report.findings.filter((f) => f.kind !== "metabolism").map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
   assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded", "drift:cryptophys-platform-api:consensus.propose:succeeded"]);
   const plan = db.raw.prepare("SELECT plan_id, status, created_by, steps_json FROM recovery_plans").get() as any;
   assert.deepEqual([JSON.parse(plan.steps_json).title, plan.status, plan.created_by], ["Redeploy Platform API", "draft", "agent:supervisor"]);
