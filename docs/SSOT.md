@@ -2,7 +2,7 @@
 
 `CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0013). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
-Last reviewed: 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
+Last reviewed: 2026-11-13 (critical report acknowledgement); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
 ## Platform rules
 
@@ -35,7 +35,7 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 50-route allow-list, CSP, CSRF | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 60-route allow-list, CSP, CSRF | — |
 | `cryptophys-platform-api` | Overview for the Console | — |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
@@ -79,6 +79,7 @@ These hold everywhere:
 - **Limits.** One executed action per action and target per hour, and ten deploys or rollbacks per 24 hours by default (owner 2026-11-10, was six); the council then set `daily-deploy-limit` to its bound of 20, and on 2026-11-12 the owner raised the bound to 40 and the value to 40. Deploys run only at SAFE minutes.
 - **Council-adjustable policy (owner 2026-11-10).** The council may change two Policy Engine parameters by consensus alone (`set_policy_parameter`, routine): `daily-deploy-limit` (1–40) and `target-actions-per-hour` (1–3). The hard bounds live in `control-plane-shared/src/policy-params.ts`; a stored value outside them is clamped. Each change is written with a `policy.parameter_changed` audit event. Everything else in the Policy Engine stays code: no trading or funds, the owner click for critical actions, the kill switch, mode shadow and Access.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
+- **Critical reports (owner 2026-11-13).** Every voter rejects routine actions while a critical agent report of the last 24 hours is open. An approver who is a person can acknowledge a handled critical report: `POST /v1/reports/{id}/acknowledge` on the AI Kernel, with the phrase `ACKNOWLEDGE {id13}` and a reason of 10–500 characters, from the Console Cognition page. An acknowledged report no longer counts as open (`counts.critical`; `counts.critical_acknowledged` counts the acknowledged ones), and the owner notice closes with it. Unacknowledged ones block as before, and warnings and info cannot be acknowledged. Each acknowledgement is written with a `report.acknowledged` audit event (migration 0053) and is idempotent. Before 0053 is applied, nothing counts as acknowledged (ADR-0009 amendment 2026-11-13).
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.
 - **Digital metabolism (power mode, #263, #264, #265).** The Supervisor reads deal results from XAUUSD (read only; nothing places orders or moves funds) and the infrastructure burn, then sets `metabolism_controls.power_mode`. Owner rules (2026-11-10):
   - **Survival** (market closed, a drawdown over $100 in 24 h, or under 7 days of runway) throttles only AI spending: `memory.remember`, `knowledge.propose` and AI budgets at 25 %. It never throttles `consensus.propose`, so deploys, rollbacks and suspensions keep working.

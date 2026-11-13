@@ -78,7 +78,7 @@ Object.assign(MOCK, {
   "/api/platform/v1/overview": { overview: { observed_at: at(1), agents_enabled: true,
     services: SVC.map((s, i) => ({ service_id: s, drifted: i === 3 || i === 9, persistent: i === 9, observed_at: at(i) })),
     open_agent_plans: [{ plan_id: "plan_00000000-0000-0000-0000-000000000000", service_id: SVC[9], status: "draft", created_at: at(40) }],
-    agent_reports_24h: { counts: { critical: 1, warning: 4, info: 31 }, latest_attention: [
+    agent_reports_24h: { counts: { critical: 1, warning: 4, info: 31, critical_acknowledged: 1 }, latest_attention: [
       { report_id: "r1", agent_id: "auditor", kind: "audit_digest", severity: "critical", subject: "Audit chain verified; 3 denied syscalls by platform-api in one hour, which is a long subject that wraps", created_at: at(30) },
       { report_id: "r2", agent_id: "supervisor", kind: "platform_digest", severity: "warning", subject: "Console drifts persistently", created_at: at(70) }] },
     xauusd_latest: { decision: "HOLD", confidence: 0.61, candle_key: "XAUUSD:60:2026-11-09T12:00", decided_at: at(20), reported_at: at(19) } } },
@@ -94,7 +94,9 @@ Object.assign(MOCK, {
   ] },
   "/api/kernel/v1/reports": { reports: Array.from({ length: 40 }, (_, i) => ({ report_id: `rep_${i}`, agent_id: ["auditor", "supervisor", "signal-analyst", "platform-api"][i % 4], kind: ["audit_digest", "platform_digest", "xauusd_digest", "platform_digest"][i % 4],
     severity: i % 13 === 0 ? "critical" : i % 4 === 1 ? "warning" : "info", subject: `Digest ${i}: everything nominal except a long sentence that must wrap inside the table cell`, ai_status: i % 5 ? "ok" : "unavailable",
-    body: { decision: ["BUY", "SELL", "HOLD"][i % 3], confidence: 0.5 + (i % 5) / 10 }, created_at: at(i * 23) })) },
+    body: { decision: ["BUY", "SELL", "HOLD"][i % 3], confidence: 0.5 + (i % 5) / 10 }, created_at: at(i * 23),
+    // ADR-0009 amendment 2026-11-13: one critical report acknowledged by an approver, the others open.
+    acknowledgement: i === 13 ? { acknowledged_by: "owner@example.com", reason: "Cause fixed and live; production unchanged by the failed deploy.", acknowledged_at: at(i * 23 - 5) } : null })) },
   "/api/audit/v1/events": { events: Array.from({ length: 120 }, (_, i) => ({ event_id: `evt_${i}`, event_type: ["consensus.tallied", "consensus.executed", "agent.syscall", "deployment.dispatched", "forge.check", "drift.observed", "policy.decided", "recovery.plan_created", "account.updated"][i % 9],
     actor: i % 4 ? "agent:supervisor" : "owner@example.com", subject: SVC[i % SVC.length], outcome: i % 11 ? "succeeded" : "failed", event_hash: "ab".repeat(32), created_at: at(i * 9) })) },
   "/api/policy/v1/decisions": { decisions: Array.from({ length: 80 }, (_, i) => ({ decision_id: `dec_${i}`, subject: "agent:supervisor", action: ["consensus.execute", "agent.syscall", "deploy", "registry.update"][i % 4],
