@@ -20,7 +20,8 @@ import {
   setAgentStatus, setAgentsEnabled, wakeAgent, type KernelHttpEnv,
 } from "./kernel.ts";
 import { handleMcp } from "./mcp.ts";
-import { KERNEL_HOST } from "./kernel.ts";
+import { KERNEL_HOST, alertVaultOf } from "./kernel.ts";
+import { AlertChannelError, createChannel, deleteChannel, listChannels, testChannel, updateChannel } from "./alert-channels.ts";
 import { REPORT_ID_RE, ReportAcknowledgeError, acknowledgeReport, listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
@@ -29,7 +30,7 @@ import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { OwnerDecisionError, agreementReport, getProposal, listProposals, ownerDecide, setConsensusMode } from "./consensus.ts";
 import { KnowledgeDecisionError, decideKnowledge, getKnowledge, listKnowledge } from "./knowledge.ts";
-import { OWNER_CHANNEL_TOPICS, collectNotices, emailConfigured, reconcileNotices } from "./owner-notices.ts";
+import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, TOPICS, channelOf, collectNotices, emailConfigured, reconcileNotices } from "./owner-notices.ts";
 import { ownerInbox } from "./owner-inbox.ts";
 import { metabolismView } from "./metabolism-view.ts";
 import { meshView } from "./mesh-view.ts";
@@ -65,6 +66,7 @@ export default {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
           "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
+          "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
           "POST /v1/agents/{id}/suspend", "POST /v1/agents/{id}/resume (APPROVER_IDENTITIES)",
           "POST /v1/agents/{id}/principals (APPROVER_IDENTITIES)", "DELETE /v1/agents/{id}/principals/{access_identity} (APPROVER_IDENTITIES)",
@@ -177,6 +179,40 @@ export default {
         const found = await getProposal(env, id);
         return found ? json(found) : errorResponse(404, "not_found");
       }
+      // Owner 2026-11-13 (Alerts page): the owner's Telegram alert channels. Operators read; approvers change.
+      if (path === "/v1/alerts" || path.startsWith("/v1/alerts/")) {
+        const alertEnv = { DB: env.DB, ALERT_VAULT: alertVaultOf(env), OWNER_TELEGRAM: env.OWNER_TELEGRAM };
+        const m = /^\/v1\/alerts(?:\/([^/]+))?(\/test)?$/.exec(path);
+        if (!m) return errorResponse(404, "not_found");
+        const [, id, test] = m;
+        try {
+          if (!id && request.method === "GET") {
+            const channels = await listChannels(env.DB);
+            return json({
+              channels: channels ?? [], available: channels !== null, vault: Boolean(alertEnv.ALERT_VAULT),
+              topics: TOPICS.map((t) => ({ topic: t, owner_channel: channelOf(t) === "owner" })),
+              email: emailConfigured(env) ? "configured" : "off",
+            });
+          }
+          if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "changing alert channels needs an approver");
+          if (!id && request.method === "POST") {
+            const body = await readJsonObject(request);
+            if (!body.ok) return body.response;
+            return json({ channel: await createChannel(alertEnv, operator.actor, body.value, TOPICS) }, 201);
+          }
+          if (id && test && request.method === "POST") return json(await testChannel(alertEnv, operator.actor, id, OWNER_PANEL_URL));
+          if (id && !test && request.method === "POST") {
+            const body = await readJsonObject(request);
+            if (!body.ok) return body.response;
+            return json({ channel: await updateChannel(alertEnv, operator.actor, id, body.value, TOPICS) });
+          }
+          if (id && !test && request.method === "DELETE") return json(await deleteChannel(alertEnv, operator.actor, id));
+          return errorResponse(405, "method_not_allowed");
+        } catch (err) {
+          if (err instanceof AlertChannelError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
+      }
       const ackMatch = /^\/v1\/reports\/([^/]+)\/acknowledge$/.exec(path);
       if (ackMatch) {
         // ADR-0009 amendment 2026-11-13: an approver, a person, acknowledges a critical report as handled, so it
@@ -278,7 +314,7 @@ export default {
     }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
     if (minute === 22 || minute === 52) {
-      ctx.waitUntil(reconcileNotices(env, event.scheduledTime).then(() => undefined, (err) => {
+      ctx.waitUntil(reconcileNotices({ ...env, ALERT_VAULT: alertVaultOf(env) }, event.scheduledTime).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "owner_notices_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }

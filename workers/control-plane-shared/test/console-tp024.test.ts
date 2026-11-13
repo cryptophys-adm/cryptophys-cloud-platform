@@ -69,6 +69,12 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.mesh", "kernel", "GET", "/v1/mesh", false, null],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
   ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
+  // Owner 2026-11-13: the Alerts page (Telegram alert channels), approvers only.
+  ["kernel.alerts", "kernel", "GET", "/v1/alerts", false, null],
+  ["kernel.alert_create", "kernel", "POST", "/v1/alerts", true, "ADD ALERT"],
+  ["kernel.alert_update", "kernel", "POST", "/v1/alerts/{id}", true, "UPDATE {id13}"],
+  ["kernel.alert_test", "kernel", "POST", "/v1/alerts/{id}/test", true, "TEST {id13}"],
+  ["kernel.alert_delete", "kernel", "DELETE", "/v1/alerts/{id}", true, "DELETE {id13}"],
   ["kernel.agents", "kernel", "GET", "/v1/agents", false, null],
   ["kernel.agent", "kernel", "GET", "/v1/agents/{id}", false, null],
   ["kernel.agent_actions", "kernel", "GET", "/v1/agents/{id}/actions", false, null],
@@ -116,8 +122,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 63 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 63);
+test("1. route table: exactly the 68 ids with those fields, matching allow-list rows", async () => {
+  assert.equal(UI_ROUTES.length, 68);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -126,7 +132,7 @@ test("1. route table: exactly the 63 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 63);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 68);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -134,9 +140,9 @@ test("1. route table: exactly the 63 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the seventeen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes; since 2026-11-13 the acknowledgement of a critical report)", () => {
+test("2. approver flags: exactly the twenty-one approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes; since 2026-11-13 the acknowledgement of a critical report and the alert channels)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
+  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -213,7 +219,8 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
   // + the Owner page's read-only inbox (owner 2026-11-13).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 62);
+  // + the Alerts page's five rows (owner 2026-11-13).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 67);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

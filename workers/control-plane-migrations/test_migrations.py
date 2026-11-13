@@ -342,3 +342,39 @@ for migration in sorted(ROOT.glob("*.sql")):
         home_db.executescript(migration.read_text(encoding="utf-8"))
 home_db.close()
 print("PASS: 0055 retire cryptophys-home (row kept and disabled, nothing else changed, idempotent)")
+
+# Migration 0056 (owner 2026-11-13, Alerts page): the owner's Telegram alert channels. Additive: one table and the
+# seed row for the existing xauusd bot. A row never holds a bot token: a custom channel needs a chat id and the
+# token's last four characters only; the default channel has neither.
+alert_db = sqlite3.connect(":memory:")
+alert_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    alert_db.executescript(migration.read_text(encoding="utf-8"))
+alerts_sql = (ROOT / "0056_alert_channels.sql").read_text(encoding="utf-8")
+alerts_code = "\n".join(line.split("--", 1)[0] for line in alerts_sql.splitlines()).upper()
+assert "DROP" not in alerts_code and "DELETE" not in alerts_code and "ALTER" not in alerts_code, "0056 is additive"
+assert alert_db.execute("SELECT channel_id, kind, chat_id, token_hint, enabled FROM alert_channels").fetchall() == [
+    ("alc_default", "telegram_default", None, None, 1)
+], "0056 seeds the existing bot only"
+assert {r[1] for r in alert_db.execute("PRAGMA table_info(alert_channels)")} == {
+    "channel_id", "name", "kind", "chat_id", "topics_json", "enabled", "token_hint",
+    "created_by", "created_at", "updated_by", "updated_at",
+}, "no column can hold a bot token"
+ok_row = ("alc_x", "Cerebrum", "telegram", "-100123", '["critical_reports"]', 1, "Ab9z", "o@e.com", "t", "o@e.com", "t")
+alert_db.execute("INSERT INTO alert_channels VALUES (?,?,?,?,?,?,?,?,?,?,?)", ok_row)
+for bad in [
+    ("alc_y", "x", "telegram", None, "[]", 1, "Ab9z", "o", "t", "o", "t"),            # a custom channel needs a chat id
+    ("alc_y", "x", "telegram", "1", "[]", 1, None, "o", "t", "o", "t"),               # and a token hint
+    ("alc_y", "x", "telegram", "1", "[]", 1, "123456:full-token", "o", "t", "o", "t"),  # never more than four characters
+    ("alc_y", "x", "telegram_default", "1", "[]", 1, None, "o", "t", "o", "t"),       # the default has no chat id
+    ("alc_y", "x", "email", "1", "[]", 1, "Ab9z", "o", "t", "o", "t"),                # telegram only
+    ("bad_y", "x", "telegram", "1", "[]", 1, "Ab9z", "o", "t", "o", "t"),             # ids start with alc_
+    ("alc_y", "x", "telegram", "1", "{}", 1, "Ab9z", "o", "t", "o", "t"),             # topics are an array
+]:
+    try:
+        alert_db.execute("INSERT INTO alert_channels VALUES (?,?,?,?,?,?,?,?,?,?,?)", bad)
+    except sqlite3.IntegrityError:
+        continue
+    raise AssertionError(f"0056 accepted {bad}")
+alert_db.close()
+print("PASS: 0056 alert channels (additive, default seed, no token column, CHECKs)")

@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox } from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -123,6 +123,7 @@ function AccountMenu() {
           <div className="mono break-all text-[12px] text-slate-200">{who.actor}</div>
           <div className="mt-1 text-[11px] text-cyan-200">{roleLabel(who)}</div>
         </div>
+        <a role="menuitem" href="#/alerts" className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><BellRing className="h-4 w-4 text-slate-500" />Alerts</a>
         <a role="menuitem" href={SWITCH_ACCOUNT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
         <a role="menuitem" href={ACCESS_LOGOUT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-rose-200 hover:bg-rose-500/10"><LogOut className="h-4 w-4" />Sign out</a>
       </div>

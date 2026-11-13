@@ -35,6 +35,7 @@ import { describeAction, explainReason, serviceName } from "../../control-plane-
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
 import { STALE_MS, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
+import { listChannels, sendToChannel, type AlertVault } from "./alert-channels.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
 /** The one Console page every owner email and Telegram message links to (owner 2026-11-13). */
@@ -80,7 +81,11 @@ export interface NoticeEnv {
    * production sets "telegram" (wrangler.toml). Unset: both, wherever their bindings are configured.
    */
   OWNER_NOTICE_CHANNELS?: string;
+  /** Owner 2026-11-13 (Alerts page): the bot tokens of the Telegram alert channels (migration 0056). */
+  ALERT_VAULT?: AlertVault;
 }
+/** A failed delivery is retried at most this many times per notice state, and only on the destinations that failed. */
+export const MAX_DELIVERY_RETRIES = 3;
 
 const channelOn = (env: NoticeEnv, name: "email" | "telegram") =>
   env.OWNER_NOTICE_CHANNELS === undefined || env.OWNER_NOTICE_CHANNELS.split(",").map((c) => c.trim().toLowerCase()).includes(name);
@@ -264,9 +269,8 @@ export function telegramConfigured(env: NoticeEnv, topic: Topic): boolean {
   return channelOn(env, "telegram") && typeof env.OWNER_TELEGRAM?.notify === "function" && channelOf(topic) === "owner";
 }
 const emailFor = (env: NoticeEnv, topic: Topic) => channelOf(topic) === "owner" && emailConfigured(env);
-const anyChannel = (env: NoticeEnv, topic: Topic) => emailFor(env, topic) || telegramConfigured(env, topic);
 
-async function deliverTelegram(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
+async function deliverTelegram(env: NoticeEnv, change: Change, n: Notice): Promise<string> {
   try {
     const r = await env.OWNER_TELEGRAM!.notify({ change, title: n.title, lines: n.lines.slice(0, 20), link: n.link });
     return r?.sent === true ? "sent" : `failed: ${String(r?.reason ?? "not sent").slice(0, 120)}`;
@@ -275,19 +279,46 @@ async function deliverTelegram(env: NoticeEnv, change: "opened" | "changed" | "c
   }
 }
 
+type Change = "opened" | "changed" | "closed";
+interface Target { key: string; send: () => Promise<string> }
+
 /**
- * Every configured channel of an owner-channel topic; "sent" only when each one sent. A console-only topic is never
- * delivered: its delivery is recorded as "console_only", and it is never retried.
+ * The destinations of a notice. Email: owner-channel topics, when configured and on (OWNER_NOTICE_CHANNELS). Telegram:
+ * since migration 0056 every enabled alert channel whose topics list it (the owner chooses on the Alerts page; the
+ * seed channel is the xauusd bot with the owner-channel topics); before 0056, the xauusd bot for owner-channel topics.
  */
-async function deliver(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
-  if (channelOf(n.topic) !== "owner") return "console_only";
-  const results: string[] = [];
-  if (emailFor(env, n.topic)) results.push(await deliverEmail(env, change, n));
-  if (telegramConfigured(env, n.topic)) results.push(await deliverTelegram(env, change, n));
-  if (!results.length) return "not_configured";
-  if (results.length === 1 || results.every((r) => r === "sent")) return results.length === 1 ? results[0] : "sent";
-  const names = [emailFor(env, n.topic) ? "email" : null, telegramConfigured(env, n.topic) ? "telegram" : null].filter(Boolean);
-  return names.map((c, i) => `${c}: ${results[i]}`).join("; ").slice(0, 300);
+async function targetsFor(env: NoticeEnv, change: Change, n: Notice): Promise<Target[]> {
+  const out: Target[] = [];
+  if (emailFor(env, n.topic)) out.push({ key: "email", send: () => deliverEmail(env, change, n) });
+  if (channelOn(env, "telegram")) {
+    const channels = await listChannels(env.DB);
+    if (channels === null) {
+      if (telegramConfigured(env, n.topic)) out.push({ key: "telegram", send: () => deliverTelegram(env, change, n) });
+    } else {
+      for (const c of channels) {
+        // The default channel is the xauusd bot: a destination only where that Service Binding exists.
+        if (c.kind === "telegram_default" && typeof env.OWNER_TELEGRAM?.notify !== "function") continue;
+        if (c.enabled && c.topics.includes(n.topic)) out.push({ key: c.channel_id, send: () => sendToChannel(env, c, { change, title: n.title, lines: n.lines, link: n.link }) });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Deliver to every destination (or, for a retry, only to those that failed); "sent" only when each one sent. A topic
+ * with no destination is "console_only" (console topics) or "not_configured", and is never retried.
+ */
+async function deliver(env: NoticeEnv, change: Change, n: Notice, only?: string[]): Promise<{ delivery: string; channels: Record<string, string> }> {
+  const all = await targetsFor(env, change, n);
+  const targets = only ? all.filter((t) => only.includes(t.key)) : all;
+  if (!all.length) return { delivery: channelOf(n.topic) === "owner" ? "not_configured" : "console_only", channels: {} };
+  const channels: Record<string, string> = {};
+  for (const t of targets) channels[t.key] = await t.send();
+  const results = Object.entries(channels);
+  if (results.every(([, r]) => r === "sent")) return { delivery: "sent", channels };
+  if (results.length === 1) return { delivery: results[0][1], channels };
+  return { delivery: results.map(([k, r]) => `${k === "email" || k === "telegram" ? k : k === "alc_default" ? "telegram" : k}: ${r}`).join("; ").slice(0, 300), channels };
 }
 
 async function deliverEmail(env: NoticeEnv, change: "opened" | "changed" | "closed", n: Notice): Promise<string> {
@@ -310,11 +341,11 @@ async function deliverEmail(env: NoticeEnv, change: "opened" | "changed" | "clos
 }
 
 /** The last notice event per topic: open with its fingerprint, or closed. */
-async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean; fingerprint: string; delivery: string; eventType: string }> {
+async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean; fingerprint: string; delivery: string; eventType: string; channels: Record<string, string> | null; retries: number }> {
   const row = await db.prepare("SELECT event_type, payload_json FROM audit_events WHERE event_type IN ('owner.notice_opened','owner.notice_changed','owner.notice_closed','owner.notice_delivery_retry') AND subject = ? ORDER BY rowid DESC LIMIT 1")
     .bind(topic).first<{ event_type: string; payload_json: string }>();
-  if (!row) return { open: false, fingerprint: "", delivery: "unknown", eventType: "" };
-  let p: { fingerprint?: unknown; delivery?: unknown; state?: unknown } = {};
+  if (!row) return { open: false, fingerprint: "", delivery: "unknown", eventType: "", channels: null, retries: 0 };
+  let p: { fingerprint?: unknown; delivery?: unknown; state?: unknown; channels?: unknown; retries?: unknown } = {};
   try { p = JSON.parse(row.payload_json); } catch { p = {}; }
   const open = row.event_type === "owner.notice_closed" ? false : row.event_type === "owner.notice_delivery_retry" ? p.state !== "closed" : true;
   return {
@@ -322,6 +353,8 @@ async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean;
     fingerprint: typeof p.fingerprint === "string" ? p.fingerprint : "",
     delivery: typeof p.delivery === "string" ? p.delivery : "unknown",
     eventType: row.event_type,
+    channels: p.channels && typeof p.channels === "object" && !Array.isArray(p.channels) ? p.channels as Record<string, string> : null,
+    retries: row.event_type === "owner.notice_delivery_retry" && typeof p.retries === "number" ? p.retries : row.event_type === "owner.notice_delivery_retry" ? 1 : 0,
   };
 }
 
@@ -332,22 +365,29 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
     const last = await lastState(env.DB, n.topic);
     const change = n.active && !last.open ? "opened" : n.active && last.fingerprint !== n.fingerprint ? "changed" : !n.active && last.open ? "closed" : null;
     if (!change) {
-      const retryChange = anyChannel(env, n.topic) && last.delivery !== "sent"
+      // Owner 2026-11-13 ("tidak perlu notif cerebrum terlalu sering"): a failed delivery is retried only on the
+      // destinations that failed, at most MAX_DELIVERY_RETRIES times per state. Before, a failing email made the
+      // Telegram message repeat every 30 minutes.
+      const retryChange = last.delivery !== "sent" && last.delivery !== "console_only" && last.delivery !== "not_configured" && last.retries < MAX_DELIVERY_RETRIES
         && ((n.active && last.open && last.fingerprint === n.fingerprint) || (!n.active && !last.open && last.eventType !== ""))
         ? (n.active ? "opened" : "closed") : null;
-      if (!retryChange) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
-      const delivery = await deliver(env, retryChange, n);
+      const failed = last.channels ? Object.entries(last.channels).filter(([, r]) => r !== "sent").map(([k]) => k) : undefined;
+      if (!retryChange || (failed && !failed.length)) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
+      const { delivery, channels } = await deliver(env, retryChange, n, failed);
+      if (!Object.keys(channels).length) { out.push({ topic: n.topic, change: "unchanged" }); continue; }
+      const merged = { ...(last.channels ?? {}), ...channels };
+      const allSent = Object.values(merged).every((r) => r === "sent");
       await appendAuditEvent(env.DB, {
         event_type: "owner.notice_delivery_retry", actor: "agent:supervisor", subject: n.topic, outcome: "delivery_retry",
-        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.lines.length, title: n.title, delivery },
+        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.lines.length, title: n.title, delivery: allSent ? "sent" : delivery, channels: merged, retries: last.retries + 1 },
       });
       out.push({ topic: n.topic, change: "delivery_retry", delivery });
       continue;
     }
-    const delivery = await deliver(env, change, n);
+    const { delivery, channels } = await deliver(env, change, n);
     await appendAuditEvent(env.DB, {
       event_type: `owner.notice_${change}`, actor: "agent:supervisor", subject: n.topic, outcome: change,
-      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.lines.length, title: n.title, delivery },
+      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.lines.length, title: n.title, delivery, channels },
     });
     out.push({ topic: n.topic, change, delivery });
   }

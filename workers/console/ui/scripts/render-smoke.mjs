@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -213,6 +213,13 @@ MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "
 MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
 
 // Owner 2026-11-13: the Owner page (#/owner) reads GET /v1/owner/inbox: approvals and open critical reports only.
+// Owner 2026-11-13: the Alerts page (Telegram alert channels; the token is never returned, only its last four).
+MOCK["/api/kernel/v1/alerts"] = { available: true, vault: true, email: "off",
+  topics: ["owner_attention", "drift", "critical_reports", "organism", "build_minutes", "dependencies", "production_unhandled"].map((t) => ({ topic: t, owner_channel: ["owner_attention", "critical_reports", "production_unhandled"].includes(t) })),
+  channels: [
+    { channel_id: "alc_default", name: "Owner Telegram (xauusd bot)", kind: "telegram_default", chat_id: null, topics: ["owner_attention", "critical_reports", "production_unhandled"], enabled: true, token_hint: null, updated_by: "migration:0056", updated_at: at(60) },
+    { channel_id: "alc_00000000-0000-4000-8000-000000000001", name: "Cerebrum alerts with a rather long name that wraps on a phone", kind: "telegram", chat_id: "-1001234567890", topics: ["critical_reports", "drift"], enabled: false, token_hint: "Ab9z", updated_by: "owner@example.com", updated_at: at(5) },
+  ] };
 MOCK["/api/kernel/v1/owner/inbox"] = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "critical",
   approvals: {
     recovery_plans: [{ plan_id: "plan_00000000-0000-4000-8000-000000000000", service_id: SVC[9], plan_version: "7eaf570a4ed5", created_by: "agent:supervisor", created_at: at(40), approve_by: at(-60 * 71),
