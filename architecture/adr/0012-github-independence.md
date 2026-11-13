@@ -743,6 +743,39 @@ Phase 5 says "the R2 git bundles are the off-Artifacts copy", and the Consequenc
 
   If any of these is wrong, the run records `discovery_failed:…`, `fetch_http_<status>`, `fetch_not_smart_http`, `remote_error:…`, `no_acknowledgement`, `pack_checksum_mismatch` or `pack_too_large`, writes nothing, and the Console shows the failure.
 
+### 5n. Gate 10: Worker retirement through the Orchestrator (2026-11-13)
+
+Gate 10 of `docs/GITHUB-CUTOVER.md`. An owner-approved consensus `retire_worker` (critical, ADR-0009 phase 4) no longer needs `retire-worker.yml` once the native credentials are set (`CF_DEPLOY_TOKEN`, `CF_ACCOUNT_ID` and the Forge's `BUNDLES`, as for native deploys). The code is `workers/deployment-orchestrator/src/native-retire.ts`.
+
+- **The same gates as the workflow, from the Forge's records.**
+  - Only a Worker in `RETIRABLE`. This is the owner's list, the same as the workflow's: a test (NR1) parses `retire-worker.yml` and requires the same Workers, Workflows and custom domains.
+  - The registry row must be `disabled`, and the Worker must belong to no deploy unit.
+  - Instead of a checkout of main, the plan reads the Forge's bundles for main's head (`forge_deploy_plans`, G2a):
+    - main must be `ready` and no deploy pending (otherwise a live Worker may still run a config other than main's);
+    - no Worker of that name is built (`source_still_on_main`);
+    - no stored wrangler.toml names it (`still_bound_on_main`) or still declares a custom domain to detach (`domain_still_declared_on_main`).
+  - Every custom domain to detach is read and must be on the expected Worker before any is detached (`domain_on_unexpected_worker`).
+  - The script and its Workflow are read; anything but 200 or 404 refuses.
+- **Queue and execution.** `retireForConsensus` plans (read only) and queues a signed `deployment_requests` row with executor `native:retire`, one per proposal (`consensus:retire:<worker>:<proposal>`); a replay of the proposal is a no-op. The Orchestrator's cron runs it at a SAFE minute under the one-time Durable Object claim, like native rollbacks and deploys, within 3 hours of the click. It plans again first. Then it:
+  1. detaches each custom domain and verifies its hostname has none left;
+  2. deletes the Workflow, if any;
+  3. deletes the script without `force`, so Cloudflare refuses while another Worker still binds to it;
+  4. verifies both are gone.
+
+  D1 is never touched.
+- **Outcomes.**
+  - Success: `deployment.retire_succeeded`, and no report.
+  - A refusal, or a failure before anything changed: the request fails, nothing changed, and the owner gets a **warning** report ("Retirement refused"). A new proposal may be approved after the cause is fixed.
+  - A failure after something was detached or deleted (`changed: true`): a **critical** report ("stopped part way"), because production is between two states. The fix is `retire-worker.yml`, or a new proposal; a second run against a Worker already partly gone finds less to do and verifies it absent.
+- **The workflow stays the fallback.**
+  - Without the native credentials, `retire_worker` dispatches `retire-worker.yml` exactly as before.
+  - The workflow is also used when the only refusal is that `CF_DEPLOY_TOKEN` may not read something (HTTP 401 or 403). Detaching a custom domain needs Zone → Workers Routes → Edit; the workflow retries with `CLOUDFLARE_ACCESS_API_TOKEN`, which the Orchestrator does not hold.
+  - A safety refusal never falls back.
+- **Not covered.**
+  - In consensus mode `deploy`, a critical proposal never reaches `pending_owner`; only mode `critical` asks for the click (open owner question).
+  - The live run is not yet proven. `cryptophys-home` is retired with `retire-worker.yml` (an ops request, the owner's 2026-11-13 decision), not by this path.
+  - Gate 10 is met when one owner-approved native retirement succeeds live.
+
 ### 6. Owner decisions (2026-11-08)
 
 1. **Build runner: Dynamic Workers only.** No Workers Builds and no managed build environment. Every check, build and bundle runs in our own isolates. The test harness is ported to workerd (§2.1).

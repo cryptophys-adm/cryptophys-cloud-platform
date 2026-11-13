@@ -84,6 +84,18 @@ Deleting a Worker is irreversible and critical (ADR-0009 §1). `retire-worker.ym
 - `cryptophys-signal-engine` (owner 2026-11-05, TP-018): Workflow `cryptophys-signal-ingest`.
 - `cryptophys-home` (owner 2026-11-13, ADR-0010 amendment): no Workflow; detaches `home.cryptophys.work` from `cryptophys-home` and `console.cryptophys.work` from `cryptophys-console`. `cryptophys-console` is not deleted. Ops request: `{"workflow":"retire-worker.yml","inputs":{"worker":"cryptophys-home","confirm_production":"DELETE"}}`. After it, run Provision Access once so the Access application's destinations match `PLATFORM_WORKERS`.
 
+**Without GitHub (ADR-0012 G6 gate 10, §5n).** An owner-approved consensus `retire_worker` is retired by the Orchestrator itself once `CF_DEPLOY_TOKEN`, `CF_ACCOUNT_ID` and the Forge's bundles are set.
+- **Plan.** It plans read-only first, with the same gates read from the Forge's records for main:
+  - `RETIRABLE` (kept equal to this workflow's list by a test);
+  - registry `disabled`;
+  - no build, binding or custom domain declaration for it on main, and no pending deploy;
+  - every domain on the expected Worker.
+- **Run.** The cron then runs it at a SAFE minute: it detaches, deletes without `force`, and verifies.
+- **Outcomes.**
+  - A refusal changes nothing and raises a warning.
+  - A failure after something changed raises a critical report.
+  - It uses this workflow only when `CF_DEPLOY_TOKEN` may not read something (401/403), for example a custom domain, which needs Zone → Workers Routes → Edit.
+
 **Rollback.** A deleted Worker comes back only by redeploying it from Git history. The deploy workflows deploy main's head only, so revert the retirement commit on main in a reviewed pull request (for Home this restores `workers/home/`, `deploy-home.yml`, the lists and the Console's `console.cryptophys.work` custom domain), add a forward migration that sets the registry row back to `registered` (applied migrations are never edited), then run Provision Access (its bootstrap step recreates the Worker as a private stub and puts it back in the Access application), Deploy Control Plane, Deploy Home and Deploy Console; Wrangler re-attaches the custom domains it is given.
 
 ## Data retention
