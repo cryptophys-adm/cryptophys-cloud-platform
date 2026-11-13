@@ -328,7 +328,17 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     // an engine, a council seat) is proposed for registration, one per cycle, each action and
     // target (an engine: each task) at most once a day. Seats and privileged agents are critical: they reach the owner.
     const census = await latestCensusRow(env);
-    for (const f of census?.findings ?? []) {
+    // 2026-11-13: eleven XAUUSD engines stayed unregistered for a day. Their proposals were rejected 8-0 only because
+    // the brake held (an open critical report), and each rejection then held its engine for the 24 h cooldown although
+    // the brake was off hours later. So: nothing is proposed while the brake holds (every voter would reject it), and
+    // a registration rejected only by the brake is proposed again once it is off. Unreadable counts as on (fail closed).
+    let registrationBrakeOff = false;
+    try { registrationBrakeOff = (await openCriticalReportRows(env.DB, now, 1)).length === 0; } catch { registrationBrakeOff = false; }
+    const waiting = (census?.findings ?? []).filter((f) => census && proposalFor(census, f)).length;
+    if (!registrationBrakeOff && waiting > 0) {
+      report.findings.push({ kind: "organism", action: "none", why: `${waiting} registration(s) wait: a critical report is open, so the council would reject them` });
+    }
+    for (const f of registrationBrakeOff ? census?.findings ?? [] : []) {
       const prop = census ? proposalFor(census, f) : null;
       if (!prop) continue;
       // An engine's target is its service, so its task is part of the key: a Worker's second new AI task is not
@@ -337,7 +347,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       const task = prop.action === "register_engine" ? String(prop.params.task ?? "") : null;
       const recent = await env.DB.prepare(
         `SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ?
-           AND (status <> 'shadow_blocked' OR created_at >= ?)${task !== null ? " AND json_extract(params_json, '$.task') = ?" : ""} LIMIT 1`,
+           AND (status <> 'shadow_blocked' OR created_at >= ?)
+           AND NOT (status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0)${task !== null ? " AND json_extract(params_json, '$.task') = ?" : ""} LIMIT 1`,
       ).bind(...[prop.action, prop.target, new Date(now - REGISTRATION_COOLDOWN_MS).toISOString(), new Date(now - 3_600_000).toISOString(), ...(task !== null ? [task] : [])]).first();
       if (recent) continue;
       // The Policy Engine executes at most one action per action and target an hour (target-actions-per-hour).
