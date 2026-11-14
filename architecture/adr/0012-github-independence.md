@@ -200,9 +200,11 @@ Every phase keeps all tests green, keeps Access as is, and leaves the brake (mod
   2. **Bundle.** esbuild-wasm runs in the Forge isolate: the test files, plus sql.js once per isolate. Measured: 43 files in about 5 s of CPU, with 31 MB of wasm memory.
   3. **Run.** Each Dynamic Worker (Worker Loader) runs up to 8 files: 6 Workers per run, under the 32 Worker invocations one request may make.
      - The test Workers have no network access (`globalOutbound: null`) and a 60 s CPU limit each.
-     - TP-025 calls back to the Forge's `ForgeBundler` entrypoint (`ctx.exports`, with the commit as props), because the test Workers have no esbuild.
+     - TP-025 calls back to the Forge's `ForgeBundler` entrypoint (`ctx.exports`), because the test Workers have no esbuild. (Amended 2026-11-14: the commit comes with each request, not as props.)
+     - **Amended 2026-11-14 (owner, cost).** Dynamic Workers are billed per unique Worker ID and code per day. A test Worker's code now holds no commit data: the commit and its snapshot come in the POST body of each request, and the Worker is loaded with `LOADER.get(id)`, where `id = forge-test-` + SHA-256 of its code (modules, compatibility date, limits, outbound). An unchanged group of test bundles keeps its Worker across runs and commits. Every test file is still bundled and run on every check; the run's `steps.workers` records groups, distinct ids and `get` calls.
   4. **Record.** One row per commit in D1 `forge_check_runs` (migration 0031), plus the audit event `forge.checks_completed`. Operators read the runs at `GET /v1/forge/checks`.
   - **Schedule.** A cron at `:04/:19/:34/:49` checks at most one commit per tick: the oldest unchecked one among the newest 5 on `main`. A run still `running` after 30 minutes is retried.
+    - **Amended 2026-11-14 (owner, cost).** Only `main`'s head is checked: a new head, a head checked only as a change request, or a lost run. A commit a newer head superseded is not checked. Once per UTC day the head runs again (first tick after 00:00 UTC), so clock-dependent tests run daily; during those minutes the head's row is `running` and `forgeReady` reads `forge_checks_pending`.
   - **Same code locally.** `tools/forge-runner/run.mjs` runs this same checks code in local workerd. The only stand-in is the Artifacts repo, built from the working tree. Result: 329/329 in 38 s.
   - **Informational until parity.** Forge checks are not in the deploy gate until they agree with GitHub CI on 20 consecutive commits of `main`.
   - **Live since 2026-11-08 09:19 UTC.** The first run checked `8588e21` on Cloudflare: 43 files, 321 passed and 1 failed, in 43 s. The failure was expected. That commit predates the Forge bundler, so its TP-025 still called `npx wrangler`.
@@ -435,7 +437,7 @@ The Consequences below require replacements for GitHub's Dependabot and secret s
   - G5 adds one rule, `npm_token`. The rules now cover private keys and GitHub, AWS, Slack, Google, OpenAI, Anthropic, Stripe live, Artifacts and npm tokens, plus JWTs.
 - **What the secret scan does not cover.** Unlike GitHub's scanning, it does not cover:
   - binary files, and files of 2 MB or more;
-  - commits the Forge never checks. A tick checks the oldest unchecked of main's five newest commits, so a secret added and removed within a longer push stays in history unscanned;
+  - commits the Forge never checks. A tick checks only main's head (since 2026-11-14; before, the oldest unchecked of main's five newest commits), so a secret added and removed between two heads stays in history unscanned;
   - credential formats without a fixed prefix, such as Cloudflare API tokens.
 
   The Forge also has no push protection: it sees a commit only once it is on main, or on a change request.
