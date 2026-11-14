@@ -10,6 +10,10 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { cloudflareUsage } from "../../control-plane-shared/src/cf-usage.ts";
+import { observerView, runSenses, sweepObserver, SENSES_MINUTE, type Finding } from "../../control-plane-shared/src/observer.ts";
+import { runInventory } from "../../control-plane-shared/src/observer-inventory.ts";
+import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
+import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The kernel's read-only RPC surface (workers/ai-kernel/src/worker.ts KernelRpc). */
 export interface KernelRpcBinding { overview(): Promise<Record<string, unknown>> }
@@ -32,6 +36,8 @@ export interface Env {
   CF_ANALYTICS_TOKEN?: string;
   CF_BILLING_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
+  /** AI Kernel AgentRpc (host_worker pinned to this Worker): the Observer's advisory report as agent platform-api. */
+  AGENTS?: { syscall(agentId: string, capability: string, input: Record<string, unknown>): Promise<Record<string, unknown>> };
 }
 
 const SERVICE = "cryptophys-platform-api";
@@ -107,7 +113,7 @@ export default {
     if (url.pathname === "/health" || url.pathname === "/healthz") return json(platformHealth(env));
     if (url.pathname === "/ready" || url.pathname === "/readyz") return readiness(env);
     if (url.pathname === "/") {
-      return json({ service: env.PLATFORM_NAME, api_version: env.API_CONTRACT_VERSION, endpoints: ["/health", "/ready", "/v1/overview[?advisory=true]", "/v1/usage"],
+      return json({ service: env.PLATFORM_NAME, api_version: env.API_CONTRACT_VERSION, endpoints: ["/health", "/ready", "/v1/overview[?advisory=true]", "/v1/usage", "/v1/observer"],
         operating_system: "AI Worker OS (ADR-0007): agents and the MCP front door live in cryptophys-ai-kernel" });
     }
     if (url.pathname === "/v1/overview") {
@@ -132,6 +138,64 @@ export default {
       if (!operator.ok) return operator.response;
       return json(await cloudflareUsage(env));
     }
+    if (url.pathname === "/v1/observer") {
+      // The account-wide Observer's vitals, findings and deploys (read only, from D1; no Cloudflare call).
+      const operator = await requireOperator(request, env);
+      if (!operator.ok) return operator.response;
+      return json(await observerView(env));
+    }
     return json({ error: "not_found" }, 404);
   },
+
+  /** The Observer (owner 2026-11-14): senses at :27 (the last complete hour), the account inventory at :27 and :57. */
+  async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    ctx.waitUntil(runObserver(env, event.scheduledTime || Date.now()));
+  },
 };
+
+/** The external origins' services (EXT_ORGANISM_*), for the inventory's "DNA not read" rule. */
+const EXTERNAL_SERVICES: Record<string, readonly string[]> = Object.fromEntries(EXTERNAL_ORIGINS.map((o) => [o.origin, o.services]));
+
+export async function runObserver(env: Env, now = Date.now(), fetcher: (input: string, init?: RequestInit) => Promise<Response> = (i, init) => fetch(i, init)): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const minute = new Date(now).getUTCMinutes();
+  try {
+    if (minute >= SENSES_MINUTE && minute < SENSES_MINUTE + 30) {
+      const senses = await runSenses(env, now, fetcher);
+      out.senses = { outcome: senses.outcome, hour: senses.hour, vitals: senses.vitals, findings: senses.findings?.length ?? 0 };
+      if (senses.findings?.length) out.report = await publishAdvisory(env, senses.hour ?? "", senses.findings);
+      if (env.DB && new Date(now).getUTCHours() === 3) await sweepObserver(env.DB, now);
+    }
+  } catch (err) {
+    out.senses = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+  }
+  try {
+    out.inventory = await runInventory(env, now, fetcher, EXTERNAL_SERVICES);
+  } catch (err) {
+    out.inventory = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+  }
+  console.log(JSON.stringify({ service: SERVICE, event: "observer_run", ...out }));
+  return out;
+}
+
+/**
+ * One advisory report per sensing hour with new anomalies or early warnings, as this Worker's agent (reports.publish,
+ * tier 1, policy-gated by the kernel). Always a warning, never critical: the Observer does not engage the brake.
+ */
+async function publishAdvisory(env: Env, hour: string, findings: Finding[]): Promise<string> {
+  const notable = findings.filter((f) => f.kind === "anomaly" || f.kind === "early_warning");
+  if (!notable.length || !env.AGENTS) return "none";
+  try {
+    const r = await env.AGENTS.syscall("platform-api", "reports.publish", {
+      kind: "platform_digest", severity: "warning", ai_status: "not_used",
+      subject: `Observer: ${notable.length} anomaly finding(s) in the hour from ${hour.slice(11, 16)} UTC`.slice(0, 200),
+      body: {
+        source: "observer", hour,
+        findings: notable.slice(0, 10).map((f) => ({ worker: f.worker, metric: f.metric, value: f.value, baseline_7d: f.baseline_7d, z: f.z, since_deploy: f.since_deploy, detail: f.detail.slice(0, 300) })),
+      },
+    });
+    return String(r?.outcome ?? "unknown");
+  } catch {
+    return "unavailable";
+  }
+}

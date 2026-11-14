@@ -2,7 +2,7 @@
 
 `CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0016). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
-Last reviewed: 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
+Last reviewed: 2026-11-14 (the account-wide Observer); 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
 ## Platform rules
 
@@ -35,8 +35,8 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 68-route allow-list, CSP, CSRF | — |
-| `cryptophys-platform-api` | Overview for the Console | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 69-route allow-list, CSP, CSRF | — |
+| `cryptophys-platform-api` | Overview and Cloudflare usage for the Console; the account-wide Observer (senses at :27, inventory at :27 and :57) | :27/:57 |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
 | `cryptophys-audit-ledger` | Hash-chained audit events | — |
@@ -59,7 +59,7 @@ These hold everywhere:
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
 - **Drift observations on change (owner, resource audit decision 1, 2026-11-14, migration 0061).** The Drift Detector records a `drift_observations` row only when a service's state changes (drifted, desired and observed hash, sorted reasons); the same state on a later run raises the row's `streak` to 2 once. Persistent drift is "the newest row drifted and its streak is 2 or the row before it drifted" (`control-plane-shared/src/drift-state.ts`). `service_registry.updated_at`, set by every run, is the heartbeat: staleness, verification freshness and the Console's "last observed" use it. `drift.observation` is audited only for a run that changed a state or published a report.
-- **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). `forge_dependency_audits` and `forge_dependency_findings` (G5, migration 0051) keep 90 days. `forge_git_backups` (gate 8, migration 0054) keeps 90 days, except rows whose bundle is still in R2. Other tables are kept.
+- **Retention.** `observer_vitals` and `observer_runs` keep 30 days and `observer_findings` 90 days (migration 0063, swept in code at 03:27 UTC). `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). `forge_dependency_audits` and `forge_dependency_findings` (G5, migration 0051) keep 90 days. `forge_git_backups` (gate 8, migration 0054) keeps 90 days, except rows whose bundle is still in R2. Other tables are kept.
 - **Forge bundles (G2a, 2026-11-12).** The R2 bucket `cryptophys-forge-bundles` holds the Worker modules and a manifest of every passed main commit, for 14 days (`workers/forge/src/bundles.ts`).
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).
 - **Repository backup (ADR-0012 gate 8, §5m, 2026-11-13).** Once per UTC day per head of main, the Forge clones `cryptophys/platform` over Git smart HTTP. It writes the result as a git bundle to `cryptophys-forge-bundles` at `git-backups/platform/<UTC date>-<main sha>.bundle`, with its SHA-256 in D1 and in the object's metadata. It keeps the newest bundle of each of the last 30 days (`GIT_BACKUP_RETAINED_DAYS`).
@@ -75,6 +75,15 @@ These hold everywhere:
   - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `deploy` or `critical` (owner 2026-11-13).
   - The kernel takes the gene from the census, never from the proposal, so only merged DNA can register. Tier 3, unknown and fund-movement capabilities are never registered; a trading capability registers only as privileged (the owner's click).
   - A new seat must vote through a reviewed vote binding; without one it is refused. A seat the DNA no longer asks for is reported, never removed by an agent.
+
+## The Observer (owner 2026-11-14: "setuju"; "gak perlu shadow, langsung production")
+
+- **Where.** `cryptophys-platform-api`, cron `27,57 * * * *`, with the read-only `CF_ANALYTICS_TOKEN` (or `CF_BILLING_TOKEN`) and `CF_ACCOUNT_ID` it already holds for `GET /v1/usage`. Code: `control-plane-shared/src/observer.ts` and `observer-inventory.ts`; the Supervisor's side is `ai-kernel/src/observer-watch.ts`.
+- **Senses (hourly, :27, the last complete UTC hour).** Six GraphQL Analytics calls, one per dataset, for every Worker on the account (platform, XAUUSD, Aether): `workersInvocationsAdaptive` (requests, errors, CPU and wall time p50/p99, exceededCpu / exceededMemory / exception counts by status), `d1AnalyticsAdaptiveGroups` and `d1QueriesAdaptiveGroups` (rows read and written, queries, the top queries by rows read), `kvOperationsAdaptiveGroups`, `durableObjectsInvocationsAdaptiveGroups`, `aiInferenceAdaptiveGroups` (neurons by model). A dataset that fails or is empty is recorded as such and adds nothing. Top error messages come from the Workers Observability telemetry query API; a token without `Account > Workers Observability > Read` is the finding `observability_permission_missing`, and the call waits 24 h.
+- **Inventory (:27 and :57).** Live Workers (scripts list and the scripts seen by the analytics), D1, KV, R2, Queues and Durable Object namespaces against the union of all DNA in the Forge's latest census (including `EXT_ORGANISM_*`) and the resources this repository's wrangler files bind. Findings: `undeclared_worker`, `undeclared_resource` (informational until storage DNA exists), `orphaned_declaration`, `idle_worker` (7 days without traffic, only once the Observer has 7 days of senses). Preview and environment copies, Workers disabled in the registry and organs of an origin whose DNA was not read are never reported. A list the token may not read is a finding naming the permission.
+- **Storage.** One vitals row per Worker (and per D1 database, KV and DO namespace, AI model) and hour; findings only for anomalies, warnings, inventory differences and missing permissions, each `{worker, metric, value, baseline_7d, z, since_deploy, sample}`. `GET /v1/observer` (operator, read only) feeds the Console's Organism page.
+- **Rollback (production, no shadow phase).** An error- or exception-rate spike of a platform Worker right after its most recent deploy becomes one `rollback_worker_version` proposal (to the previous recorded version) through normal consensus, only when: the Worker has at least 3 days and 24 usable hours of baseline; the hour has at least 200 requests and 20 errors (exceptions), a rate of at least 5 %, at least 3x the 7-day baseline and z >= 3; the hour overlaps the first 2 h after that deploy and the proposal is made within 3 h of it; no rollback of that Worker was proposed in the last 6 h; and no critical report is open. The consensus, every voter's brake, the Supervisor's rate window and the Policy Engine still decide. Trading Workers (`xauusd-ai-trading-assistant`, `xauusd-omega`, `xauusd-tradingview-pull-adapter`), Aether, the AI Kernel itself and Workers without a platform deploy unit are reported only. A commit rolled back this way is not proposed for deployment again by the deploy loop for 24 h.
+- **Advisory only.** D1, KV, Durable Object and AI load spikes (naming the top D1 query) and CPU p99 at 80 % of the Worker's limit (30,000 ms on Workers Paid unless its wrangler `[limits]` say otherwise) are cycle findings and one `platform_digest` warning report per hour by agent `platform-api`, never critical.
 
 ## Organs as cells (ADR-0015)
 

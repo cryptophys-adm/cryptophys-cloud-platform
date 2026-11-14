@@ -52,6 +52,7 @@ async function run(env: unknown, r: Request) {
 const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][] = [
   ["platform.overview", "platform", "GET", "/v1/overview", false, null],
   ["platform.usage", "platform", "GET", "/v1/usage", false, null],
+  ["platform.observer", "platform", "GET", "/v1/observer", false, null],
   ["forge.status", "forge", "GET", "/v1/forge/status", false, null],
   ["forge.commits", "forge", "GET", "/v1/forge/commits", false, null],
   ["forge.checks", "forge", "GET", "/v1/forge/checks", false, null],
@@ -124,8 +125,9 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 69 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 69);
+test("1. route table: exactly the 70 ids with those fields, matching allow-list rows", async () => {
+  // + the Observer's read-only view (owner 2026-11-14).
+  assert.equal(UI_ROUTES.length, 70);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -134,7 +136,7 @@ test("1. route table: exactly the 69 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 69);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 70);
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -223,7 +225,8 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the Owner page's read-only inbox (owner 2026-11-13).
   // + the Alerts page's five rows (owner 2026-11-13).
   // + the Vision page's read-only row (ADR-0016 T0).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 68);
+  // + the Observer's read-only view (owner 2026-11-14).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 69);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));

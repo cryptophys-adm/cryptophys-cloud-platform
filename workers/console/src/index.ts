@@ -87,7 +87,7 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("audit", "GET", ["/v1/events", "/v1/events/{id}", "/v1/verify"]),
   ...rows("orchestrator", "GET", ["/v1/deployments"]),
   ...rows("orchestrator", "POST", ["/v1/deployments"]),
-  ...rows("platform", "GET", ["/v1/overview", "/v1/usage"]),
+  ...rows("platform", "GET", ["/v1/overview", "/v1/usage", "/v1/observer"]),
   // ADR-0012 phase 1b: the Code page reads the Forge (no write route is forwarded); phase 3 adds checks, phase 4 change requests.
   ...rows("aether", "GET", ["/v1/overview"]),
   ...rows("forge", "GET", ["/v1/forge/status", "/v1/forge/commits", "/v1/forge/checks", "/v1/forge/changes", "/v1/forge/deploy-plans", "/v1/forge/census", "/v1/forge/build-usage", "/v1/forge/dependency-audit", "/v1/forge/git-backup"]),
