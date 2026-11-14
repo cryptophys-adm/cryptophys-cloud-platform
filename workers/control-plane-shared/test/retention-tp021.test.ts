@@ -199,3 +199,15 @@ test("TP-021 failure-safe", async () => {
   // Accept either; main point logged. We'll just assert no crash of test.
   assert.ok(true);
 });
+
+test("TP-021 the retention counts at most 2 newer rows per candidate (resource audit 2026-11-14)", async () => {
+  const db = migratedDb();
+  // One service with many recent rows: every old row is pruned, the 2 newest stay, and the count stays bounded.
+  seedDrift(db, "cryptophys-platform-api", 30, 100, 400);
+  const env: any = baseEnv("cryptophys-drift-detector", db);
+  const res = await pruneDriftObservations(env, Date.now());
+  assert.equal(res.deleted, 30);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM drift_observations").get() as any).n, 400);
+  const src = (await import("node:fs")).readFileSync(new URL("../../drift-detector/src/index.ts", import.meta.url), "utf8");
+  assert.match(src, /SELECT COUNT\(\*\) FROM \(SELECT 1 FROM drift_observations i WHERE i\.service_id = o\.service_id AND i\.observed_at > o\.observed_at LIMIT 2\)\) = 2/);
+});

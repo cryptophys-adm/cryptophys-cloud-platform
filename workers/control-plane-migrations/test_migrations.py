@@ -411,3 +411,17 @@ cut_code = "\n".join(line.split("--", 1)[0] for line in cut_sql.splitlines()).up
 assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT)\b", cut_code) and cut_code.count("UPDATE ") == 1 and "WHERE CONTROL = 'MERGE_PATH'" in cut_code, "0058 changes one row"
 cut_db.close()
 print("PASS: 0058 cut-over (merge path forge, one row)")
+
+# Migration 0059 (resource audit 2026-11-14): an index on drift_observations(observed_at); additive, no row changes.
+idx_db = sqlite3.connect(":memory:")
+idx_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    idx_db.executescript(migration.read_text(encoding="utf-8"))
+assert idx_db.execute("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_drift_observed'").fetchone()[0].replace(" ", "") == "CREATEINDEXidx_drift_observedONdrift_observations(observed_at)", "0059 indexes observed_at"
+plan = " ".join(r[3] for r in idx_db.execute("EXPLAIN QUERY PLAN SELECT observation_id FROM drift_observations WHERE observed_at < '2026-01-01' ORDER BY observed_at LIMIT 10").fetchall())
+assert "idx_drift_observed" in plan, f"the retention scan uses the index: {plan}"
+idx_sql = (ROOT / "0059_drift_observed_index.sql").read_text(encoding="utf-8")
+idx_code = "\n".join(line.split("--", 1)[0] for line in idx_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT|UPDATE)\b", idx_code) and idx_code.count("CREATE INDEX") == 1, "0059 only adds an index"
+idx_db.close()
+print("PASS: 0059 drift observed_at index (additive)")

@@ -349,6 +349,12 @@ export default {
 };
 
 
+/**
+ * Daily retention (owner 2026-11-05): observations older than 90 days go, but every service keeps its 2 newest.
+ * "Has at least 2 newer rows" is counted with LIMIT 2, so each candidate reads at most 2 index entries; counting
+ * every newer row read ~15k rows per candidate at full retention (resource audit 2026-11-14). The outer scan by
+ * observed_at uses idx_drift_observed (migration 0059).
+ */
 export async function pruneDriftObservations(env: Env, now = Date.now()): Promise<{ deleted: number; cutoff: string; batches: number }> {
   const cutoff = new Date(now - DRIFT_RETENTION_DAYS * 86_400_000).toISOString();
   let deleted = 0;
@@ -358,7 +364,7 @@ export async function pruneDriftObservations(env: Env, now = Date.now()): Promis
       `DELETE FROM drift_observations WHERE observation_id IN (
          SELECT o.observation_id FROM drift_observations o
          WHERE o.observed_at < ?
-           AND (SELECT COUNT(*) FROM drift_observations i WHERE i.service_id = o.service_id AND i.observed_at > o.observed_at) >= 2
+           AND (SELECT COUNT(*) FROM (SELECT 1 FROM drift_observations i WHERE i.service_id = o.service_id AND i.observed_at > o.observed_at LIMIT 2)) = 2
          ORDER BY o.observed_at LIMIT ?)`,
     ).bind(cutoff, RETENTION_BATCH).run();
     const n = res.meta.changes ?? 0;
