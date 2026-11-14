@@ -1,5 +1,5 @@
 {
-  "$comment": "DRAFT for the owner's review (2026-11-14), written by the orchestrator from the owner's directions. The core is owner-only; the growth layer is proposed and amended through evidence (ADR-0016).",
+  "$comment": "Accepted by the owner on 2026-11-14. Written in English. The core is owner-only; the growth layer is proposed and amended through evidence (ADR-0016).",
   "schema": "organism.vision.v1",
   "core": {
     "mission": "A living, self-aware AI Operating System whose core is the AI Neuron: it reads markets and itself, decides by measured evidence, and keeps evolving to become smarter, more resilient and more adaptive, independent of outside ecosystems where it can be.",
