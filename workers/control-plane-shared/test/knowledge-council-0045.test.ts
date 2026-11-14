@@ -59,6 +59,10 @@ test("K2. hard bounds: operational facts only, inside their bounds; weights sum 
   assert.equal(boundProblem("decision.witness_weights", { D1: 0.3, H4: 0.3, H1: 0.2, M15: 0.2 }), null);
   assert.match(String(boundProblem("decision.witness_weights", { D1: 0.5, H4: 0.5 })), /from 0 to 0.3/);
   assert.match(String(boundProblem("decision.witness_weights", { D1: 0.2, H4: 0.2 })), /sum to 1/);
+  // The weights in force since 2026-11-13 (xauusd #319): 14 witnesses, CALENDAR and STRATEGY_AGENTS among them.
+  const inForce = { D1: 0.1263, H4: 0.1263, H1: 0.1263, M15: 0.0947, NEWS: 0.0632, MACRO: 0.0315, STRATEGY: 0.0632, KEY_LEVELS: 0.0395, REGIME: 0.0395, TREND_TF: 0.0395, MACRO_DRIVERS: 0.0237, SESSION: 0.02, CALENDAR: 0.08, STRATEGY_AGENTS: 0.1263 };
+  assert.equal(boundProblem("decision.witness_weights", inForce), null);
+  assert.match(String(boundProblem("decision.witness_weights", { ...inForce, STRATEGY_AGENTS: 0.0263, NOPE: 0.1 })), /unknown witness NOPE/);
   assert.equal(doctrineProblem("amend_doctrine", "engine-thresholds", routine().params), null);
   assert.match(String(doctrineProblem("amend_doctrine", "engine-thresholds", routine({ seats: { nexus: "object", aether: "agree" } }).params)), /nexus seat does not agree/);
   assert.match(String(doctrineProblem("amend_doctrine", "engine-thresholds", routine({ seats: { nexus: "agree" } }).params)), /Aether seat must agree/);
