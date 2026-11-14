@@ -12,6 +12,10 @@
 //       - base = canonical platform main's head, when it is an ancestor of the branch head (read through
 //         platform-work, which holds the fork's objects and every push). Otherwise blocked_reason =
 //         not_based_on_main: the branch must contain main so that a later merge (G3b) is a fast-forward;
+//       - the linear-history guard (incident 2026-11-14, migration 0066): main's head must also be on the branch
+//         head's first-parent chain (merge.ts mainPosition, at most FIRST_PARENT_WALK = 500 commits). A head that
+//         contains main only through a second parent gets history_blocked_reason = main_not_first_parent and is not
+//         checked: the fast-forward would take main's previous heads off main's first-parent history;
 //       - changed paths and owner-only reasons from the same tree diff as GitHub-sourced requests;
 //       - a branch that disappeared closes its request, with the verdict at that moment frozen.
 // Discovery that fails changes nothing (no request is closed on a failed read). The token goes only into the
@@ -20,7 +24,7 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checkOf, type ArtifactsReader } from "./checks.ts";
 import { changedPaths, changeVerdict, criticalReasons, MAX_PATHS_STORED, type ChangeRow } from "./changes.ts";
-import { CANONICAL_REPO, discoverRefs, isAncestor, refHead, repoStatus, trustedRemoteFor, validBranch, type Fetch } from "./merge.ts";
+import { CANONICAL_REPO, discoverRefs, mainPosition, refHead, repoStatus, trustedRemoteFor, validBranch, type Fetch } from "./merge.ts";
 
 export const WORK_REPO = "platform-work";
 export const WORK_READ_TOKEN_TTL_S = 120;
@@ -115,13 +119,15 @@ function describe(commit: Record<string, unknown> | null, branch: string): { tit
   return { title: message || branch, author: name || "unknown" };
 }
 
-type ForgeRow = Pick<ChangeRow, "cr_id" | "branch" | "head_sha" | "base_sha" | "status" | "created_at" | "critical" | "blocked_reason">;
+type ForgeRow = Pick<ChangeRow, "cr_id" | "branch" | "head_sha" | "base_sha" | "status" | "created_at" | "critical" | "blocked_reason" | "history_blocked_reason">;
 
 async function registerWorkChange(db: D1Database, repo: WorkReader, p: { id: string; branch: string; head: string; main: string; existing: ForgeRow | undefined }, nowMs: number): Promise<{ registered: boolean; blocked: boolean }> {
   const commit = await repo.readCommit(p.head) as Record<string, unknown> | null;
   if (!commit) return { registered: false, blocked: false }; // the push is not readable through the binding yet
   // main's head must be readable in platform-work (pushed with the branch) before the ancestry walk is worth it.
-  const based = Boolean(await repo.readCommit(p.main)) && await isAncestor(repo, p.main, p.head);
+  // first_parent: checked; merged_in: main_not_first_parent (the linear-history guard); absent: not_based_on_main.
+  const position = (await repo.readCommit(p.main)) ? await mainPosition(repo, p.main, p.head) : "absent";
+  const based = position === "first_parent";
   let paths: string | null = null;
   let critical: string | null = null;
   if (based) {
@@ -129,23 +135,25 @@ async function registerWorkChange(db: D1Database, repo: WorkReader, p: { id: str
     paths = JSON.stringify(changes.slice(0, MAX_PATHS_STORED).map((c) => `${c.change[0].toUpperCase()} ${c.path}`));
     critical = JSON.stringify(await criticalReasons(repo, changes, truncated));
   }
-  const blocked = based ? null : "not_based_on_main";
+  const blocked = position === "absent" ? "not_based_on_main" : null;
+  const history = position === "merged_in" ? "main_not_first_parent" : null;
   const { title, author } = describe(commit, p.branch);
   const now = new Date(nowMs).toISOString();
   await db.prepare(
-    `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, changed_paths, critical, created_at, updated_at, repo, blocked_reason)
-     VALUES (?, 'forge', 0, ?, ?, ?, ?, ?, ?, NULL, 'open', ?, ?, ?, ?, 'platform-work', ?)
+    `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, changed_paths, critical, created_at, updated_at, repo, blocked_reason, history_blocked_reason)
+     VALUES (?, 'forge', 0, ?, ?, ?, ?, ?, ?, NULL, 'open', ?, ?, ?, ?, 'platform-work', ?, ?)
      ON CONFLICT(cr_id) DO UPDATE SET branch = excluded.branch, source_branch = excluded.source_branch, title = excluded.title, author = excluded.author,
        head_sha = excluded.head_sha, base_sha = excluded.base_sha, status = 'open', changed_paths = excluded.changed_paths, critical = excluded.critical,
-       blocked_reason = excluded.blocked_reason, verdict_at_outcome = NULL, merge_sha = NULL, agrees = NULL, outcome_at = NULL, updated_at = excluded.updated_at
+       blocked_reason = excluded.blocked_reason, history_blocked_reason = excluded.history_blocked_reason,
+       verdict_at_outcome = NULL, merge_sha = NULL, agrees = NULL, outcome_at = NULL, updated_at = excluded.updated_at
      WHERE forge_change_requests.source = 'forge'`,
-  ).bind(p.id, p.branch, p.branch, title, author, p.head, p.main, paths, critical, p.existing?.created_at ?? now, now, blocked).run();
+  ).bind(p.id, p.branch, p.branch, title, author, p.head, p.main, paths, critical, p.existing?.created_at ?? now, now, blocked, history).run();
   const outcome = !p.existing || p.existing.status !== "open" ? "opened" : p.existing.head_sha !== p.head ? "head_changed" : "base_changed";
   await appendAuditEvent(db, {
     event_type: "forge.change_registered", actor: ACTOR, subject: p.id, outcome,
-    payload: { source: "forge", repo: WORK_REPO, branch: p.branch, head_sha: p.head, base_sha: p.main, blocked_reason: blocked, critical: critical ? JSON.parse(critical).length : null },
+    payload: { source: "forge", repo: WORK_REPO, branch: p.branch, head_sha: p.head, base_sha: p.main, blocked_reason: blocked, history_blocked_reason: history, critical: critical ? JSON.parse(critical).length : null },
   });
-  return { registered: true, blocked: Boolean(blocked) };
+  return { registered: true, blocked: Boolean(blocked || history) };
 }
 
 /** One tick of branch discovery on platform-work. Throws only for an infrastructure failure (audited by the tick). */
@@ -181,7 +189,7 @@ export async function workBranchesTick(env: WorkTickEnv, nowMs = Date.now(), fet
       if (workBranchAllowed(name)) branches.set(name, sha); else ignored++;
     }
 
-    const rows = (await env.DB.prepare("SELECT cr_id, branch, head_sha, base_sha, status, created_at, critical, blocked_reason FROM forge_change_requests WHERE source = 'forge'").all<ForgeRow>()).results ?? [];
+    const rows = (await env.DB.prepare("SELECT cr_id, branch, head_sha, base_sha, status, created_at, critical, blocked_reason, history_blocked_reason FROM forge_change_requests WHERE source = 'forge'").all<ForgeRow>()).results ?? [];
     const byId = new Map(rows.map((r) => [r.cr_id, r]));
     const taken = new Map<string, string>();
     const registered: string[] = []; const collisions: string[] = []; const unreadable: string[] = [];
