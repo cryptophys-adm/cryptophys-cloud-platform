@@ -157,7 +157,7 @@ test("memory.recall only returns the caller's memories and passes metadata filte
   assert.equal(CAPABILITIES["memory.recall"].tier, 0);
   assert.deepEqual(
     [CAPABILITIES["memory.remember"].tier, CAPABILITIES["memory.remember"].reversible, CAPABILITIES["memory.remember"].max_per_hour],
-    [1, true, 12],
+    [1, true, undefined],
   );
 
   // Store one memory for supervisor and one memory for signal-analyst.
@@ -207,9 +207,9 @@ test("memory.recall only returns the caller's memories and passes metadata filte
   assert.deepEqual(((recalledForged.result as any).memories as any[]).map((m) => m.memory_id), [supMemoryId]);
 });
 
-// ---------------------------------------------------------------- AC 2: memory.remember writes D1 & Vectorize with same memory_id, metadata { agent_id, kind }, and rate limit
+// ---------------------------------------------------------------- AC 2: memory.remember writes D1 & Vectorize with same memory_id, metadata { agent_id, kind }, and no rate limit (learning mandate, owner 2026-11-14)
 
-test("memory.remember writes D1 row and vector with identical memory_id and metadata { agent_id, kind }, enforces decision verification, and is rate-limited by policy", async () => {
+test("memory.remember writes D1 row and vector with identical memory_id and metadata { agent_id, kind }, enforces decision verification, and is never rate-limited (learning mandate)", async () => {
   const { env, db, vec } = memoryTestEnv();
 
   const res = await syscall(env as never, AUDITOR_ID, "memory.remember", {
@@ -257,7 +257,8 @@ test("memory.remember writes D1 row and vector with identical memory_id and meta
     0,
   );
 
-  // Rate limit: max_per_hour is 12 for memory.remember. 2 decisions were already consumed above for auditor.
+  // No rate limit (owner 2026-11-14, the learning mandate; until then 12/hour). 2 decisions were already consumed above
+  // for auditor; the 13th memory of the hour, which used to be denied by rate_limit, is written like the others.
   for (let i = 0; i < 10; i++) {
     const ok = await syscall(env as never, AUDITOR_ID, "memory.remember", {
       kind: "audit_digest",
@@ -267,10 +268,10 @@ test("memory.remember writes D1 row and vector with identical memory_id and meta
   }
   const thirteenth = await syscall(env as never, AUDITOR_ID, "memory.remember", {
     kind: "audit_digest",
-    text: "Exceeds 12/hour rate limit",
+    text: "The 13th memory in one hour is allowed",
   });
-  assert.equal(thirteenth.outcome, "denied");
-  assert.match(thirteenth.reason, /rate_limit/);
+  assert.equal(thirteenth.outcome, "succeeded", JSON.stringify(thirteenth));
+  assert.doesNotMatch(JSON.stringify(thirteenth), /rate_limit/);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 

@@ -6,12 +6,21 @@
  * reviewed code and never in the database. Everything else in the Policy Engine stays code: no
  * trading or funds, the owner click for critical actions, the kill switch, mode shadow and Access.
  * A value in policy_parameters (migration 0044) outside the bounds is clamped, never trusted.
+ *
+ * infra-budget-usd-month (owner 2026-11-14: monthly infrastructure budget $30): the Supervisor enters survival when the
+ * projected month of Cloudflare spend exceeds it (supervisor.ts evaluateMetabolismState). It replaced a hard $0.20/day
+ * "free tier" threshold that kept the organism in survival on the Workers Paid plan, where $0.40-0.49/day is normal.
+ * The bounds keep the council near the owner's decision: at least the Workers Paid base fee ($5), at most $50.
+ * Migration 0065 admits the name in policy_parameters and seeds the owner's $30. The name is written with hyphens, as
+ * the other parameters are, because a consensus target must match consensus-rules.ts TARGET (no underscores); the
+ * metabolism observation reports the value as infra_budget_usd_month.
  */
 import type { D1Database } from "./types.ts";
 
 export const POLICY_PARAMETERS = {
   "daily-deploy-limit": { default: 10, min: 1, max: 40, description: "Executed deploys or rollbacks per 24 h across the platform" },
   "target-actions-per-hour": { default: 1, min: 1, max: 3, description: "Executed actions per action and target per hour" },
+  "infra-budget-usd-month": { default: 30, min: 5, max: 50, description: "Monthly infrastructure budget in USD; survival when the projected month of Cloudflare spend exceeds it" },
 } as const;
 export type PolicyParameter = keyof typeof POLICY_PARAMETERS;
 

@@ -1,6 +1,7 @@
 // The platform's guard paths: changes that stay with the owner under ADR-0012 §2.4, extended by ADR-0014 §3
 // (the evolution loop's own limits, the evolver's registration and capabilities, and the GitHub workflows and
-// scripts) and by ADR-0016 §1 (the vision's core and its schema). The Forge's merge verdict (forge/src/changes.ts criticalReasons) and the evolver's refusals
+// scripts), by ADR-0016 §1 (the vision's core and its schema) and by the owner's learning mandate (2026-11-14,
+// power-mode.ts). The Forge's merge verdict (forge/src/changes.ts criticalReasons) and the evolver's refusals
 // (evolution-limits.ts) read this one list, so the two can never disagree about what is guarded.
 //
 // This file is itself a guard path.
@@ -27,6 +28,13 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // amendment, including one the Strategist proposes, takes effect only through merge_owner_change.
   [/^organism\/vision\.json$/, "vision_core"],
   [/^workers\/control-plane-shared\/src\/vision\.ts$/, "vision_core"],
+  // The learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"):
+  // power-mode.ts says what learning is and that no mode, budget or rate limit applies to it. No agent or evolver
+  // reintroduces a learning limit there without the owner's click.
+  [/^workers\/control-plane-shared\/src\/power-mode\.ts$/, "learning_mandate"],
+  // The learning mandate's invariant tests: a limit put back in knowledge.ts, memory.ts or ai-engine.ts fails them,
+  // and the tests themselves change only by the owner's click.
+  [/^workers\/control-plane-shared\/test\/learning-(mandate|observe)-2026-11-14\.test\.ts$/, "learning_mandate"],
 ];
 
 /** The guard-path reason of one repository path, or null for a routine path. */
