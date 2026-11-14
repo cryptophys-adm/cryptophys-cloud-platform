@@ -138,7 +138,11 @@ export interface CycleReport {
   actions: SyscallResult[];
 }
 
-/** Evaluates digital metabolism health, updates adaptive power mode, and appends a cycle audit. */
+/** The heartbeat interval of metabolism_cycles when nothing changes, with 2 minutes' slack for cycle jitter. */
+export const METABOLISM_HEARTBEAT_MS = 3_600_000 - 120_000;
+export const METABOLISM_RETENTION_MS = 30 * 86_400_000;
+
+/** Evaluates digital metabolism health, updates adaptive power mode, and records the cycle when it carries news. */
 export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()): Promise<JsonObject | null> {
   try {
     const obs = await observeMetabolism(env, now);
@@ -187,22 +191,40 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
       modeChanged = true;
     }
 
-    const cycleId = newId("mtb");
     const evaluatedAt = new Date(now).toISOString();
     const actionsJson = JSON.stringify({ mode_changed: modeChanged, previous_mode: currentMode, target_mode: targetMode });
+    const modeReason = reason.slice(0, 300);
 
-    await env.DB.prepare(
-      `INSERT INTO metabolism_cycles (
-        cycle_id, evaluated_at, market_status, trading_net_pnl_24h, infra_burn_cost_24h,
-        metabolic_ratio, treasury_reserve_usd, runway_days, power_mode, mode_reason, actions_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      cycleId, evaluatedAt, marketStatus, tradingNetPnl, infraBurn,
-      metabolicRatio, treasuryReserve, runwayDays, targetMode, reason.slice(0, 300), actionsJson
-    ).run();
+    // Resource audit (owner 2026-11-14): a cycle is recorded when something changed (the mode, the market status, the
+    // reason, the treasury reserve or the runway) and otherwise once an hour as the heartbeat, instead of every
+    // 15-minute cycle with the same state.
+    const last = await env.DB.prepare(
+      "SELECT cycle_id, evaluated_at, market_status, power_mode, mode_reason, treasury_reserve_usd, runway_days FROM metabolism_cycles ORDER BY evaluated_at DESC LIMIT 1",
+    ).first<{ cycle_id: string; evaluated_at: string; market_status: string; power_mode: string; mode_reason: string | null; treasury_reserve_usd: number | null; runway_days: number | null }>();
+    const record = modeChanged || !last || now - Date.parse(last.evaluated_at) >= METABOLISM_HEARTBEAT_MS
+      || last.market_status !== marketStatus || last.power_mode !== targetMode || last.mode_reason !== modeReason
+      || (last.treasury_reserve_usd ?? null) !== (treasuryReserve ?? null) || (last.runway_days ?? null) !== (runwayDays ?? null);
+    let cycleId = last?.cycle_id ?? null;
+    if (record) {
+      cycleId = newId("mtb");
+      await env.DB.prepare(
+        `INSERT INTO metabolism_cycles (
+          cycle_id, evaluated_at, market_status, trading_net_pnl_24h, infra_burn_cost_24h,
+          metabolic_ratio, treasury_reserve_usd, runway_days, power_mode, mode_reason, actions_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        cycleId, evaluatedAt, marketStatus, tradingNetPnl, infraBurn,
+        metabolicRatio, treasuryReserve, runwayDays, targetMode, modeReason, actionsJson
+      ).run();
+      // Retention: 30 days (the Console shows 14), swept once a day with the 03:00 UTC hour's record.
+      if (new Date(now).getUTCHours() === 3) {
+        await env.DB.prepare("DELETE FROM metabolism_cycles WHERE evaluated_at < ?").bind(new Date(now - METABOLISM_RETENTION_MS).toISOString()).run();
+      }
+    }
 
     return {
       cycle_id: cycleId,
+      recorded: record,
       market_status: marketStatus,
       power_mode: targetMode,
       mode_changed: modeChanged,
