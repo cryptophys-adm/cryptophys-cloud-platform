@@ -11,13 +11,15 @@ import type { D1Database } from "./types.ts";
 
 export const SHARED_SRC = "workers/control-plane-shared/src/";
 export const MIGRATIONS_DIR = "workers/control-plane-migrations/";
+/** ADR-0016 T0: the AI Kernel bundles the organism's vision and serves it (GET /v1/vision), so a change to it redeploys the kernel. */
+export const VISION_FILE = "organism/vision.json";
 export const DEPLOY_UNITS = [
   // Deploy the orchestrator first: the following Control Plane deployment binds the kernel to DeployRpc.
   { unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml", services: ["cryptophys-deployment-orchestrator"], paths: ["workers/deployment-orchestrator/", SHARED_SRC] },
   {
     unit: "control-plane", workflow: "deploy-control-plane.yml",
     services: ["cryptophys-policy-engine", "cryptophys-audit-ledger", "cryptophys-platform-registry", "cryptophys-recovery-manager", "cryptophys-drift-detector", "cryptophys-ai-kernel"],
-    paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", MIGRATIONS_DIR, SHARED_SRC],
+    paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", MIGRATIONS_DIR, SHARED_SRC, VISION_FILE],
   },
   // Directory prefixes include manifests, lockfiles, bundler config and static assets, not just source files.
   { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/", SHARED_SRC] },

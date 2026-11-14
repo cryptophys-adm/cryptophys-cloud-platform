@@ -1,6 +1,6 @@
 # Single source of truth: current topology
 
-`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0015). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
+`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0016). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
 Last reviewed: 2026-11-14 (the account-wide Observer; `cryptophys-signal-engine` and `cryptophys-home` retired from the registry, migration 0064); 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
@@ -14,7 +14,7 @@ These hold everywhere:
 - **The owner creates every secret and credential.** None is created by an agent or stored in the repository.
 - **Data deletion and irreversible actions are critical.** The owner decides them.
 - **The brake always works.** Consensus mode `shadow` and the kill switch (`kernel_controls.agents_enabled`) can be used at any time.
-- **Repositories out of scope.** `cryptophys-adm/xauusd-ai-trading-assistant` (Nexus) and `cryptophys-adm/cryptophys-aether` are not changed from this repository.
+- **Repositories out of scope.** `cryptophys-adm/xauusd-ai-trading-assistant` (Nexus) and `cryptophys-adm/cryptophys-aether` are not changed from this repository. Since 2026-11-14 (owner; ADR-0016), agents may change Aether in its own repository only after its bootstrap PR (DNA, CI DNA tests, guard paths) is merged, and then only through its CI, with its guard paths needing the owner's click. Until then Aether is read-only for agents.
 
 ## Entry point and sign-in (ADR-0008, ADR-0010, ADR-0011)
 
@@ -35,7 +35,7 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 68-route allow-list, CSP, CSRF | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 69-route allow-list, CSP, CSRF | — |
 | `cryptophys-platform-api` | Overview and Cloudflare usage for the Console; the account-wide Observer (senses at :27, inventory at :27 and :57) | :27/:57 |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
@@ -89,6 +89,16 @@ These hold everywhere:
 
 - Accepted 2026-11-14. The AI Neuron is the only core; every other organ becomes an event-driven cell (a Durable Object actor) that pushes snapshots to the Console and writes D1 only on change. D1 is the ledger of facts; telemetry goes to Analytics Engine; long memory goes to R2.
 - Not built yet. Platform phases, each in shadow first: (1) push hub for the Console plus the Cache API, (2) the Supervisor's snapshot in its DO, (3) telemetry to Analytics Engine, (4) retention with an R2 archive. The resource audit's P0 fixes come first.
+
+## Telos (ADR-0016)
+
+- Accepted 2026-11-14 ("setuju"). The organism gets a living vision in two layers: a core (mission, identity, constitution) that only the owner changes, and a growth layer of goals with measurable KPIs.
+- **T0 is built.**
+  - `organism/vision.json` holds the owner's draft, validated by `control-plane-shared/src/vision.ts` (`organism.vision.v1`) in CI.
+  - Both files are guard paths (reason `vision_core`), so a change to either is `merge_owner_change`.
+  - The AI Kernel bundles the vision and serves it read-only at `GET /v1/vision`; a change to the vision redeploys the Control Plane unit.
+  - The Console's Vision page (`#/vision`) shows it. A KPI without a measured baseline or a set target reads "not measured yet".
+- **Not built yet:** T1 (the daily self-model), T2 (the Strategist in shadow), T3 (intents to the evolver and the experience ledger), T4 (vision growth) and T5 (morphogenesis).
 
 ## Autonomy (ADR-0007, ADR-0009)
 

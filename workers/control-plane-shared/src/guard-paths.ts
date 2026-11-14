@@ -1,6 +1,6 @@
 // The platform's guard paths: changes that stay with the owner under ADR-0012 §2.4, extended by ADR-0014 §3
 // (the evolution loop's own limits, the evolver's registration and capabilities, and the GitHub workflows and
-// scripts). The Forge's merge verdict (forge/src/changes.ts criticalReasons) and the evolver's refusals
+// scripts) and by ADR-0016 §1 (the vision's core and its schema). The Forge's merge verdict (forge/src/changes.ts criticalReasons) and the evolver's refusals
 // (evolution-limits.ts) read this one list, so the two can never disagree about what is guarded.
 //
 // This file is itself a guard path.
@@ -23,6 +23,10 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^workers\/control-plane-shared\/src\/(evolution-limits|guard-paths|capabilities)\.ts$/, "evolution_guard"],
   [/^workers\/ai-kernel\/(organism\.json|src\/evolver\.ts)$/, "evolution_guard"],
   [/^workers\/forge\/src\/(evolution|git-write)\.ts$/, "evolution_guard"],
+  // ADR-0016 §1 (Telos): the vision's core (mission, identity, constitution) and its schema are the owner's; an
+  // amendment, including one the Strategist proposes, takes effect only through merge_owner_change.
+  [/^organism\/vision\.json$/, "vision_core"],
+  [/^workers\/control-plane-shared\/src\/vision\.ts$/, "vision_core"],
 ];
 
 /** The guard-path reason of one repository path, or null for a routine path. */

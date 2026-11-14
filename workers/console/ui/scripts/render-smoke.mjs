@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "vision"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -252,6 +252,19 @@ MOCK["/api/kernel/v1/owner/inbox"] = { schema: "owner-inbox.v1", observed_at: at
     { code: "recovery_failed", subject: "plan_00000000-0000-4000-8000-000000000009", detail: "Recovery plan for Cerebrum Console failed at 2026-11-13T02:00:00.000Z", since: at(90), link: "#/recovery/plan_00000000-0000-4000-8000-000000000009" },
   ],
   counts: { approvals: 4, critical_reports: 1, production_problems: 3 } };
+// ADR-0016 T0: the Vision page reads GET /v1/vision (organism/vision.json, validated by the kernel). A null baseline
+// or target is shown as "not measured yet", never as a number.
+MOCK["/api/kernel/v1/vision"] = { schema: "organism.vision-view.v1", source: "organism/vision.json", vision_schema: "organism.vision.v1", status: "valid", problems: [],
+  vision: { $comment: "DRAFT for the owner's review, a note long enough to wrap on a phone screen without any horizontal scrolling at all.", schema: "organism.vision.v1",
+    core: { mission: "A living, self-aware AI Operating System whose core is the AI Neuron, in a sentence long enough to wrap on a phone.",
+      identity: { core_organ: "AI Neuron (Workers AI inference by the agents)", organs: ["Cerebrum (Console)", "Nexus", "Aether", "AI Kernel (Supervisor)", "Forge", "Observer", "Strategist"] },
+      constitution: ["A trading action needs the owner's click.", "Guard paths and this core change only by the owner's click."] },
+    growth: { goals: [
+      { id: "g-accuracy", horizon: "quarter", organs: ["AI Neuron", "Nexus"], kpis: [
+        { id: "decision_hit_rate_15m_with_a_rather_long_identifier_that_wraps", baseline: null, target: null, source: "outcome_scores" },
+        { id: "agent_grounding_rate", baseline: null, target: 0.95, source: "metric_shadow" }], evidence: "owner 2026-11-14: AI must interpret metrics, not narrate" },
+      { id: "g-self-knowledge", horizon: "now", organs: ["Forge", "Observer"], kpis: [{ id: "undeclared_components", baseline: 3, target: 0, source: "census inventory diff" }], evidence: "owner 2026-11-13/14" },
+    ] } } };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -291,6 +304,15 @@ for (const width of [390, 1440]) {
     if (overflow > 1) problems.push(`${width}px #/${route}: horizontal scroll of ${overflow}px`);
     const text = await page.evaluate(() => document.body.innerText.length);
     if (text < 40) problems.push(`${width}px #/${route}: blank page`);
+    if (route === "vision") {
+      // ADR-0016 T0: every section of the vision, and an unmeasured KPI as "not measured yet" (never a default number).
+      const body = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      for (const want of ["A living, self-aware AI Operating System", "AI Neuron (Workers AI inference by the agents)", "Guard paths and this core change only by the owner's click.", "g-accuracy", "agent_grounding_rate", "0.95", "not measured yet", "undeclared_components", "census inventory diff", "DRAFT for the owner's review"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/vision: does not show "${want}"`);
+      }
+      const unmeasured = (body.match(/not measured yet/g) ?? []).length;
+      if (unmeasured !== 3) problems.push(`${width}px #/vision: ${unmeasured} values shown as "not measured yet", expected the 3 null ones`);
+    }
     if (route === "code") {
       // ADR-0012 gate 8: the git backup panel shows the measured values of GET /v1/forge/git-backup.
       const body = await page.evaluate(() => document.body.innerText);
