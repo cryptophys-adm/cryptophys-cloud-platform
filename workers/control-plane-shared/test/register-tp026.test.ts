@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, call, migratedDb, req } from "./harness.ts";
 import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
+import { isRetiredService } from "../src/retired.ts";
 import registry from "../../platform-registry/src/index.ts";
 import drift, { observe, targets } from "../../drift-detector/src/index.ts";
 
@@ -77,13 +78,16 @@ test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge 
   assert.equal(homeMeta.purpose, "Read-only home portal and navigation (ADR-0008)");
   assert.equal(homeMeta.data_classification, "internal");
   assert.equal(homeMeta.source, "workers/home");
+  // 0064 (owner 2026-11-14): retired for good; only the marker is added, every other key is kept.
+  assert.equal(homeMeta.retired_by, "migration:0064");
+  assert.equal(isRetiredService(homeRow), true);
 
   assert.equal(REQUIRED_MIGRATION, "0029_knowledge_proposals.sql");
   const env = baseEnv("cryptophys-drift-detector", db);
   assert.equal(await schemaReady(env), true);
 });
 
-test("2. Probed and healthy: console is probed, healthy, drifted: false, desired_version_unset; retired home is disabled, never drift", async () => {
+test("2. Probed and healthy: console is probed, healthy, drifted: false, desired_version_unset; retired home is not observed", async () => {
   const db = migratedDb();
   const env = driftTestEnv(db, {
     SVC_CONSOLE: healthy("aaaaaaaaaaaa"),
@@ -100,12 +104,13 @@ test("2. Probed and healthy: console is probed, healthy, drifted: false, desired
   assert.ok(c.reasons.includes("desired_version_unset"));
   assert.equal(c.observed_version, "aaaaaaaaaaaa");
 
-  const h = by["cryptophys-home"];
-  assert.ok(h);
+  // Retired by 0064: not observed at all (no probe, no row, no heartbeat), while its registry row is kept.
+  assert.equal(by["cryptophys-home"], undefined, "the retired Home is not in the run");
+  const h = db.raw.prepare("SELECT status, observed_version, metadata_json, updated_at FROM service_registry WHERE service_id = 'cryptophys-home'").get() as any;
   assert.equal(h.status, "disabled");
-  assert.equal(h.drifted, false);
-  assert.deepEqual(h.reasons, ["disabled"]);
-  assert.equal(h.observed_version, null);
+  assert.equal(isRetiredService(h), true);
+  assert.deepEqual([h.observed_version, h.updated_at], [null, "2026-11-14T12:00:00.000Z"], "no heartbeat for a retired service");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM drift_observations WHERE service_id = 'cryptophys-home'").get() as any).n, 0);
   assert.equal(report.drifted, 0, "the retired Worker without a binding is not drift");
 });
 
