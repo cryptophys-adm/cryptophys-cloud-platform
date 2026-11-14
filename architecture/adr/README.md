@@ -19,3 +19,4 @@ Store one numbered Markdown file per material architecture decision. Include sta
 - [ADR-0013: The living platform: DNA, census and self-registration](0013-living-platform.md)
 - [ADR-0014: The evolution loop: the platform writes, merges and deploys its own improvements](0014-evolution-loop.md)
 - [ADR-0015: Organs as cells: Durable Object actors, push to the senses, D1 as the ledger of facts](0015-organs-as-cells.md)
+- [ADR-0016: Telos: a living vision, a self-model, and the Strategist that grows the organism](0016-telos.md)

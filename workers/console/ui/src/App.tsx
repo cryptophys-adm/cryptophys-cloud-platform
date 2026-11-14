@@ -18,6 +18,7 @@ import Code from "./pages/Code";
 import Organism from "./pages/Organism";
 import Owner from "./pages/Owner";
 import Alerts from "./pages/Alerts";
+import Vision from "./pages/Vision";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -41,6 +42,8 @@ export default function App() {
     case "metabolism": page = <Organism />; current = "organism"; break;
     // Owner 2026-11-13: the one page where the platform needs a person; every owner email and Telegram message links here.
     case "owner": page = <Owner />; break;
+    // ADR-0016 T0: the organism's vision (mission, identity, constitution, goals and KPIs), read-only.
+    case "vision": page = <Vision />; break;
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;
