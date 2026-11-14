@@ -67,7 +67,11 @@ export const overviewTask: AiTask<Summary> = {
     "Never give trading advice and never claim an action was taken. " +
     "Services without an expected (desired) version, disabled services, and services outside the platform's own deploys " +
     "(for example Aether, the Signal Engine and the XAUUSD services) are normal by design: do not mention them unless they are unhealthy. " +
-    "Mention repeated deploy refusals caused by the daily or hourly deploy limits only once, as a single short note.",
+    "Mention repeated deploy refusals caused by the daily or hourly deploy limits only once, as a single short note. " +
+    // Owner 2026-11-14: the kernel lists open warnings only; an alert its agent reported resolved is left out.
+    "agent_reports_24h lists open warnings only: never present a resolved alert as open; if warnings_resolved_24h is above 0, " +
+    'say at most "resolved in last 24 h: n" once.',
+
   maxInputChars: 8000,
   maxOutputTokens: 400,
   validate(output) {
