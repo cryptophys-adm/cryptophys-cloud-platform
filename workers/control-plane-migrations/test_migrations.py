@@ -448,3 +448,36 @@ assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT|UPDATE)\b", hot_code) and hot
 hot_db.close()
 print("PASS: 0060 hot query indexes (additive, each used by its query)")
 
+
+# Migration 0061 (resource audit decision 1, 2026-11-14): drift rows are recorded on change; streak counts the runs
+# that saw a row's state. Additive: a NOT NULL column with default 1 and CHECK (streak >= 1); existing rows keep 1.
+streak_db = sqlite3.connect(":memory:")
+streak_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name >= "0061_":
+        continue
+    streak_db.executescript(migration.read_text(encoding="utf-8"))
+streak_db.execute(
+    """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+       VALUES ('obs-legacy', 'cryptophys-platform-api', 'd', 'o', 1, '{}', '2026-11-01T00:00:00.000Z')"""
+)
+streak_sql = (ROOT / "0061_drift_streak.sql").read_text(encoding="utf-8")
+streak_db.executescript(streak_sql)
+column = [c for c in streak_db.execute("PRAGMA table_info(drift_observations)").fetchall() if c[1] == "streak"]
+assert len(column) == 1 and column[0][2].upper() == "INTEGER" and column[0][3] == 1 and column[0][4] == "1", f"0061 adds streak INTEGER NOT NULL DEFAULT 1: {column}"
+assert streak_db.execute("SELECT streak FROM drift_observations WHERE observation_id = 'obs-legacy'").fetchone() == (1,), "existing rows keep streak 1"
+streak_db.execute(
+    """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+       VALUES ('obs-new', 'cryptophys-platform-api', 'd', 'o', 0, '{}', '2026-11-14T00:00:00.000Z')"""
+)
+assert streak_db.execute("SELECT streak FROM drift_observations WHERE observation_id = 'obs-new'").fetchone() == (1,), "a new row starts at streak 1"
+streak_db.execute("UPDATE drift_observations SET streak = 2 WHERE observation_id = 'obs-new'")
+for bad in (0, -1):
+    expect_integrity_error(f"0061 streak {bad}", lambda bad=bad: streak_db.execute("UPDATE drift_observations SET streak = ? WHERE observation_id = 'obs-new'", (bad,)))
+expect_integrity_error("0061 streak NULL", lambda: streak_db.execute("UPDATE drift_observations SET streak = NULL WHERE observation_id = 'obs-new'"))
+streak_code = "\n".join(line.split("--", 1)[0] for line in streak_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", streak_code) and streak_code.count("ALTER TABLE DRIFT_OBSERVATIONS ADD COLUMN STREAK") == 1, "0061 only adds the column"
+# The Forge's destructive-SQL rule (workers/forge/src/changes.ts DESTRUCTIVE_SQL) must not match the file.
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", streak_sql, re.I), "0061 is not destructive"
+streak_db.close()
+print("PASS: 0061 drift streak (additive, default 1, CHECK streak >= 1)")

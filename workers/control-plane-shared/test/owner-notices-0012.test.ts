@@ -11,13 +11,14 @@ const ROOT = new URL("../../../", import.meta.url);
 const NOW = Date.parse("2026-11-08T03:22:00Z");
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 
-/** Every non-disabled registered service observed in sync 5 minutes ago. */
+/** Every non-disabled registered service observed in sync 5 minutes ago (its row, and the registry heartbeat the run sets). */
 function healthy(db: any) {
   const services = db.raw.prepare("SELECT service_id FROM service_registry WHERE status != 'disabled'").all() as { service_id: string }[];
   let i = 0;
   for (const s of services) {
     db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES (?, ?, 'h', 'h', 0, '{"reasons":[]}', ?)`)
       .run(`obs_${i++}`, s.service_id, at(5 * 60_000));
+    db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at(5 * 60_000), s.service_id);
   }
   return services.map((s) => s.service_id);
 }
@@ -77,7 +78,12 @@ test("O3. drift: drifted, never observed and stale services; disabled services a
   const [a, b] = services;
   db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES ('obs_d', ?, 'h', 'x', 1, ?, ?)`)
     .run(a, JSON.stringify({ reasons: ["version_mismatch"], probe: { version_tag: "bbbbbbbbbbbb" } }), at(60_000));
+  // b: the Drift Detector last observed it (its heartbeat, service_registry.updated_at) more than STALE_MS ago.
   db.raw.prepare("UPDATE drift_observations SET observed_at = ? WHERE service_id = ?").run(at(STALE_MS + 60_000), b);
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at(STALE_MS + 60_000), b);
+  // c: in sync for two days, so its only row is old (rows are recorded on change, 0061), but observed 5 minutes ago.
+  const c = services[2];
+  db.raw.prepare("UPDATE drift_observations SET observed_at = ? WHERE service_id = ?").run(at(48 * 3_600_000), c);
   db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, metadata_json, created_at, updated_at) VALUES ('cryptophys-new', 'New', 'production', 'registered', NULL, '{}', ?, ?)").run(at(0), at(0));
   db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, metadata_json, created_at, updated_at) VALUES ('cryptophys-gone', 'Gone', 'production', 'disabled', NULL, '{}', ?, ?)").run(at(0), at(0));
   const d = (await collectNotices(db as never, NOW))[1];
@@ -85,6 +91,7 @@ test("O3. drift: drifted, never observed and stale services; disabled services a
   assert.equal(d.lines.length, 3);
   assert.ok(d.lines.some((l) => /running bbbbbbbbbbbb/.test(l) && /differs from the expected version/i.test(l)));
   assert.ok(d.lines.some((l) => /not observed since/.test(l)));
+  assert.equal(d.lines.filter((l) => /not observed since/.test(l)).length, 1, "an old row with a fresh heartbeat is not stale");
   assert.ok(d.lines.some((l) => /New: never observed/.test(l)));
   assert.ok(!d.lines.some((l) => /Gone/.test(l)));
 });
@@ -134,6 +141,12 @@ test("O7. invalid or future observation timestamps fail closed as drift notices"
   const d = (await collectNotices(db as never, NOW))[1];
   assert.equal(d.active, true);
   assert.equal(d.lines.filter((line) => /invalid observation timestamp/.test(line)).length, 2);
+  // The heartbeat fails closed the same way (0061: it is the freshness signal).
+  const [, , badSeen, futureSeen] = services;
+  db.raw.prepare('UPDATE service_registry SET updated_at = ? WHERE service_id = ?').run('not-a-date', badSeen);
+  db.raw.prepare('UPDATE service_registry SET updated_at = ? WHERE service_id = ?').run('2099-01-01T00:00:00.000Z', futureSeen);
+  const d2 = (await collectNotices(db as never, NOW))[1];
+  assert.equal(d2.lines.filter((line) => /invalid observation timestamp/.test(line)).length, 4);
 });
 
 test("O8. critical reports with future timestamps are not treated as current", async () => {

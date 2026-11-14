@@ -57,6 +57,41 @@ test("B3. agreement: redeploy proposals agree when the service is back in sync w
   assert.equal((r.by_action as any).redeploy_desired_version.agree, 1);
 });
 
+test("B3. agreement with change-only drift rows (0061): in sync through the window counts when the detector observed it", async () => {
+  const db = migratedDb();
+  const seen = (svc: string, hoursAgo: number) => db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(new Date(Date.now() - hoursAgo * H).toISOString(), svc);
+  // c1: already in sync before the proposal, no row in the window, observed since (heartbeat): in sync, acted.
+  proposal(db, "c1", "redeploy_desired_version", "cryptophys-policy-engine", "shadow_passed", true, 5);
+  observe(db, "cryptophys-policy-engine", false, 10);
+  seen("cryptophys-policy-engine", 0.1);
+  // c2: the same rows, but the Drift Detector stopped before the window: not measured, not acted.
+  proposal(db, "c2", "redeploy_desired_version", "cryptophys-audit-ledger", "shadow_passed", true, 5);
+  observe(db, "cryptophys-audit-ledger", false, 10);
+  seen("cryptophys-audit-ledger", 6);
+  // c3: drifted before, an in-sync row inside the window: acted.
+  proposal(db, "c3", "redeploy_desired_version", "cryptophys-console", "shadow_passed", true, 5);
+  observe(db, "cryptophys-console", true, 6);
+  observe(db, "cryptophys-console", false, 4);
+  seen("cryptophys-console", 0.1);
+  // c4: drifted before and no row since, observed lately: still drifted, not acted.
+  proposal(db, "c4", "redeploy_desired_version", "cryptophys-platform-api", "shadow_passed", true, 5);
+  observe(db, "cryptophys-platform-api", true, 6);
+  seen("cryptophys-platform-api", 0.1);
+  // c5: in sync at the start, drifted inside the window and never back: not acted (no run is shown in sync in it).
+  proposal(db, "c5", "rollback_worker_version", "cryptophys-recovery-manager", "shadow_passed", true, 5);
+  observe(db, "cryptophys-recovery-manager", false, 10);
+  observe(db, "cryptophys-recovery-manager", true, 4.5);
+  seen("cryptophys-recovery-manager", 0.1);
+  // c6: a refused proposal for a service in sync through the window: a false negative, as an in-sync per-run row in
+  // the window scored before 0061.
+  proposal(db, "c6", "redeploy_desired_version", "cryptophys-forge", "shadow_blocked", false, 5);
+  observe(db, "cryptophys-forge", false, 10);
+  seen("cryptophys-forge", 0.1);
+  const r = await agreementReport({ DB: db } as never, 7);
+  const v = Object.fromEntries((r.items as any[]).map((i) => [i.proposal_id.slice(4, 6), i.verdict]));
+  assert.deepEqual(v, { c1: "agree", c2: "false_positive", c3: "agree", c4: "false_positive", c5: "false_positive", c6: "false_negative" });
+});
+
 test("B3. agreement: an empty window reports no rate; the window is bounded", async () => {
   const r = await agreementReport({ DB: migratedDb() } as never, 999);
   assert.equal(r.window_days, 30);

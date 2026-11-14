@@ -11,6 +11,7 @@ import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
 import { appendAuditEvent, verifyAuditChain, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
+import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift } from "../../control-plane-shared/src/drift-state.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
@@ -75,20 +76,22 @@ async function sha256Hex(value: string): Promise<string> {
 export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
   // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
   const latest = await env.DB.prepare(
-    `SELECT o.service_id, o.drifted, o.evidence_json, o.observed_at FROM service_registry r
+    `SELECT o.service_id, o.drifted, o.evidence_json, o.observed_at, r.updated_at AS last_seen_at FROM service_registry r
      JOIN drift_observations o ON o.observation_id = (
        SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
      ORDER BY r.service_id`,
-  ).all<{ service_id: string; drifted: number; evidence_json: string; observed_at: string }>();
+  ).all<{ service_id: string; drifted: number; evidence_json: string; observed_at: string; last_seen_at: string }>();
   const services = [];
   for (const r of latest.results) {
     const ev = JSON.parse(r.evidence_json) as JsonObject;
-    // Persistent drift: the two most recent observations of the service both drifted.
-    const lastTwo = await env.DB.prepare("SELECT drifted FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 2")
-      .bind(r.service_id).all<{ drifted: number }>();
+    // Persistent drift: two runs in a row saw the service drifted (drift-state.ts: the newest row drifted and either
+    // its streak is 2 or the row before it drifted too). Rows are recorded on change (0061), so observed_at is when
+    // the state was first seen; last_seen_at (service_registry.updated_at, set by every run) is when it was last seen.
+    const lastTwo = await env.DB.prepare(LAST_TWO_OBSERVATIONS_SQL)
+      .bind(r.service_id).all<{ drifted: number; streak: number; observed_at: string }>();
     services.push({
-      service_id: r.service_id, drifted: r.drifted === 1, observed_at: r.observed_at,
-      persistent: lastTwo.results.length === 2 && lastTwo.results.every((x) => x.drifted === 1),
+      service_id: r.service_id, drifted: r.drifted === 1, observed_at: r.observed_at, last_seen_at: r.last_seen_at,
+      persistent: isPersistentDrift(lastTwo.results),
       reasons: (ev.reasons as string[] | undefined) ?? [], desired_version: (ev.desired_version as string | null | undefined) ?? null,
       observed_version: ((ev.probe as JsonObject | undefined)?.version_tag as string | null | undefined) ?? null,
     });

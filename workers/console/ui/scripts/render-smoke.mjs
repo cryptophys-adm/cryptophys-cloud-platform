@@ -84,7 +84,7 @@ const STATUSES = ["executed", "shadow_passed", "shadow_blocked", "rejected", "fa
 const ACTIONS = ["deploy_commit", "observe_drift", "suspend_agent", "register_agent", "admit_voter", "rollback_worker_version"];
 Object.assign(MOCK, {
   "/api/platform/v1/overview": { overview: { observed_at: at(1), agents_enabled: true,
-    services: SVC.map((s, i) => ({ service_id: s, drifted: i === 3 || i === 9, persistent: i === 9, observed_at: at(i) })),
+    services: SVC.map((s, i) => ({ service_id: s, drifted: i === 3 || i === 9, persistent: i === 9, observed_at: at(i * 40), last_seen_at: at(i) })),
     open_agent_plans: [{ plan_id: "plan_00000000-0000-0000-0000-000000000000", service_id: SVC[9], status: "draft", created_at: at(40) }],
     agent_reports_24h: { counts: { critical: 1, warning: 4, info: 31, critical_acknowledged: 1 }, latest_attention: [
       { report_id: "r1", agent_id: "auditor", kind: "audit_digest", severity: "critical", subject: "Audit chain verified; 3 denied syscalls by platform-api in one hour, which is a long subject that wraps", created_at: at(30) },
@@ -110,7 +110,7 @@ Object.assign(MOCK, {
   "/api/policy/v1/decisions": { decisions: Array.from({ length: 80 }, (_, i) => ({ decision_id: `dec_${i}`, subject: "agent:supervisor", action: ["consensus.execute", "agent.syscall", "deploy", "registry.update"][i % 4],
     resource: `deploy_commit:${SVC[i % SVC.length]}`, decision: i % 6 ? "allow" : "deny", reason: i % 6 ? "all policy checks passed" : "failed: target_rate_limit, platform_daily_limit", created_at: at(i * 14) })) },
   "/api/registry/v1/services": { services: SVC.map((s, i) => ({ service_id: s, display_name: s.replace("cryptophys-", ""), status: i === 10 ? "disabled" : "healthy", desired_version: "7eaf570a4ed5" })) },
-  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", observed_at: at(i * 3) })) },
+  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", streak: i === 9 ? 1 : 2, observed_at: at(i * 60), last_seen_at: at(i * 3) })) },
   "/api/recovery/v1/plans": { plans: Array.from({ length: 14 }, (_, i) => ({ plan_id: `plan_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, service_id: SVC[i % 5], title: `Recover ${SVC[i % 5]} from version mismatch`, status: ["draft", "approved", "executing", "completed", "failed", "disabled"][i % 6], created_by: "agent:supervisor", created_at: at(i * 90), steps: [{}, {}] })) },
 });
 {

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { migratedDb } from "./harness.ts";
 import { observe } from "../../ai-kernel/src/syscall.ts";
+import { LAST_TWO_OBSERVATIONS_SQL } from "../src/drift-state.ts";
 
 function obs(db: any, id: string, service: string, drifted: boolean, at: string) {
   db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
@@ -43,6 +44,8 @@ test("D2. migration 0046 indexes the time-window and event-type reads", () => {
   assert.match(plan("SELECT actor FROM audit_events WHERE event_type = 'metabolism.power_mode_changed' ORDER BY created_at DESC LIMIT 20"), /idx_audit_events_type_created/);
   assert.match(plan(`SELECT o.service_id FROM service_registry r JOIN drift_observations o ON o.observation_id = (
     SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)`), /idx_drift_service_observed/);
+  // The two newest rows the persistence rule reads (drift-state.ts, 0061) go through the same index.
+  assert.match(plan(LAST_TWO_OBSERVATIONS_SQL.replace("?", "'cryptophys-console'")), /idx_drift_service_observed/);
 });
 
 test("D3. without migration 0046 the same reads return the same rows (indexes change cost, not results)", async () => {

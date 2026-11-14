@@ -1,5 +1,6 @@
 import { explainCode, serviceName } from "../../control-plane-shared/src/plain.ts";
-import type { BaseEnv, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
+import type { BaseEnv, D1PreparedStatement, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
+import { driftSignature } from "../../control-plane-shared/src/drift-state.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
@@ -136,11 +137,14 @@ export interface ServiceDrift {
   managed: boolean;
   reasons: string[];
   status: string;
+  /** The service's newest observation: the row this run recorded, or the unchanged one it confirmed. */
   observation_id: string;
+  /** True when this run recorded a new row (the state changed; see record()). */
+  recorded: boolean;
   probe: Probe;
 }
 
-interface RegistryRow { service_id: string; desired_version: string | null; status: string; metadata_json: string | null }
+interface RegistryRow { service_id: string; desired_version: string | null; status: string; metadata_json: string | null; updated_at: string }
 
 function healthPath(row: RegistryRow): string {
   try {
@@ -176,30 +180,26 @@ export async function observeForConsensus(env: Env, proposalId: string, decision
 export async function observe(env: Env, trigger: string, actor: string): Promise<{ run_id: string; observed_at: string; services: ServiceDrift[]; drifted: number }> {
   const runId = newId("drift");
   const observedAt = nowIso();
-  const rows = await env.DB.prepare("SELECT service_id, desired_version, status, metadata_json FROM service_registry ORDER BY service_id").all<RegistryRow>();
+  // updated_at is read before this run's batches set it: the time of the previous run (driftEpisode).
+  const rows = await env.DB.prepare("SELECT service_id, desired_version, status, metadata_json, updated_at FROM service_registry ORDER BY service_id").all<RegistryRow>();
+  const latest = await latestRows(env);
   const map = targets(env);
   const external = externalTargets(env);
   const services: ServiceDrift[] = [];
+  const previousRunAt = new Map<string, string>();
   for (const row of rows.results) {
+    previousRunAt.set(row.service_id, row.updated_at);
     if (row.status === "disabled") {
-      const observationId = newId("obs");
       const p = { reachable: true, healthy: true, version_tag: null, error: null };
-      await env.DB.batch([
-        env.DB.prepare(
-          `INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(
-          observationId, row.service_id,
-          await sha256Hex(canonicalJson({ desired_version: row.desired_version, healthy: true })),
-          await sha256Hex(canonicalJson({ desired_version: null, healthy: true })),
-          0,
-          JSON.stringify({ run_id: runId, trigger, reasons: ["disabled"], probe: p, desired_version: row.desired_version }),
-          observedAt,
-        ),
-        env.DB.prepare("UPDATE service_registry SET observed_version = ?, status = ?, updated_at = ? WHERE service_id = ?")
-          .bind(null, "disabled", observedAt, row.service_id),
-      ]);
-      services.push({ service_id: row.service_id, desired_version: row.desired_version, observed_version: null, drifted: false, managed: Boolean(row.desired_version), reasons: ["disabled"], status: "disabled", observation_id: observationId, probe: p });
+      const reasons = ["disabled"];
+      const { observationId, recorded } = await record(env, latest.get(row.service_id), trigger, {
+        serviceId: row.service_id, observedAt, drifted: false, reasons,
+        desiredHash: await sha256Hex(canonicalJson({ desired_version: row.desired_version, healthy: true })),
+        observedHash: await sha256Hex(canonicalJson({ desired_version: null, healthy: true })),
+        evidence: { run_id: runId, trigger, reasons, probe: p, desired_version: row.desired_version },
+      }, env.DB.prepare("UPDATE service_registry SET observed_version = ?, status = ?, updated_at = ? WHERE service_id = ?")
+        .bind(null, "disabled", observedAt, row.service_id));
+      services.push({ service_id: row.service_id, desired_version: row.desired_version, observed_version: null, drifted: false, managed: Boolean(row.desired_version), reasons, status: "disabled", observation_id: observationId, recorded, probe: p });
       continue;
     }
     let p: Probe;
@@ -220,37 +220,33 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
     else if (p.version_tag !== row.desired_version) reasons.push("version_mismatch");
     const drifted = !p.healthy || (managed && p.version_tag !== row.desired_version);
     const status = row.status === "disabled" ? "disabled" : !p.healthy ? "unavailable" : drifted ? "degraded" : "healthy";
-    const observationId = newId("obs");
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        observationId, row.service_id,
-        await sha256Hex(canonicalJson({ desired_version: row.desired_version, healthy: true })),
-        await sha256Hex(canonicalJson({ desired_version: p.version_tag, healthy: p.healthy })),
-        drifted ? 1 : 0,
-        JSON.stringify({ run_id: runId, trigger, reasons, probe: p, desired_version: row.desired_version }),
-        observedAt,
-      ),
-      env.DB.prepare("UPDATE service_registry SET observed_version = ?, status = ?, updated_at = ? WHERE service_id = ?")
-        .bind(p.version_tag, status, observedAt, row.service_id),
-    ]);
-    services.push({ service_id: row.service_id, desired_version: row.desired_version, observed_version: p.version_tag, drifted, managed, reasons, status, observation_id: observationId, probe: p });
+    const { observationId, recorded } = await record(env, latest.get(row.service_id), trigger, {
+      serviceId: row.service_id, observedAt, drifted, reasons,
+      desiredHash: await sha256Hex(canonicalJson({ desired_version: row.desired_version, healthy: true })),
+      observedHash: await sha256Hex(canonicalJson({ desired_version: p.version_tag, healthy: p.healthy })),
+      evidence: { run_id: runId, trigger, reasons, probe: p, desired_version: row.desired_version },
+    }, env.DB.prepare("UPDATE service_registry SET observed_version = ?, status = ?, updated_at = ? WHERE service_id = ?")
+      .bind(p.version_tag, status, observedAt, row.service_id));
+    services.push({ service_id: row.service_id, desired_version: row.desired_version, observed_version: p.version_tag, drifted, managed, reasons, status, observation_id: observationId, recorded, probe: p });
   }
   const driftedServices = services.filter((s) => s.drifted);
   const drifted = driftedServices.length;
+  const changed = services.filter((s) => s.recorded).map((s) => s.service_id);
   // One report per drift episode, not one per run (2026-11-08: a secret change left the Orchestrator
   // untagged for two hours and produced eight identical warnings). Deploy-time observations
   // (manual) never report; versions are in flux then.
-  const report = drifted > 0 && trigger === "scheduled" ? await driftEpisode(env, driftedServices, observedAt) : null;
-  await appendAuditEvent(env.DB, {
-    event_type: "drift.observation",
-    actor,
-    subject: "control-plane",
-    outcome: drifted ? "drift_detected" : "in_sync",
-    payload: { run_id: runId, trigger, report, drifted: driftedServices.map((s) => ({ service_id: s.service_id, reasons: s.reasons })) },
-  });
+  const report = drifted > 0 && trigger === "scheduled" ? await driftEpisode(env, driftedServices, observedAt, previousRunAt) : null;
+  // The run is audited when it recorded a state change, and when it published a report (a reminder changes no
+  // state), so every drift report stays in the hash chain. An unchanged run writes only the heartbeat.
+  if (changed.length > 0 || report) {
+    await appendAuditEvent(env.DB, {
+      event_type: "drift.observation",
+      actor,
+      subject: "control-plane",
+      outcome: drifted ? "drift_detected" : "in_sync",
+      payload: { run_id: runId, trigger, report, changed, drifted: driftedServices.map((s) => ({ service_id: s.service_id, reasons: s.reasons })) },
+    });
+  }
   if (report) {
     // Advisory: the Drift Detector's own agent (tier 1). Never blocks observation.
     await publishAgentReport(env.AGENTS, "drift-detector", {
@@ -260,6 +256,63 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
     });
   }
   return { run_id: runId, observed_at: observedAt, services, drifted };
+}
+
+interface LatestRow { service_id: string; observation_id: string; drifted: number; desired_hash: string; observed_hash: string; streak: number; reasons: string | null; run_trigger: string | null }
+
+/** The newest observation of every registered service, as observe() compares it (one indexed read per service). */
+async function latestRows(env: Env): Promise<Map<string, LatestRow>> {
+  const res = await env.DB.prepare(
+    `SELECT o.service_id, o.observation_id, o.drifted, o.desired_hash, o.observed_hash, o.streak,
+            json_extract(o.evidence_json, '$.reasons') AS reasons, json_extract(o.evidence_json, '$.trigger') AS run_trigger
+     FROM service_registry r
+     JOIN drift_observations o ON o.observation_id = (
+       SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)`,
+  ).all<LatestRow>();
+  return new Map((res.results ?? []).map((r) => [r.service_id, r]));
+}
+
+function parseReasons(json: string | null): string[] {
+  try {
+    const v = JSON.parse(json ?? "[]");
+    return Array.isArray(v) ? v.filter((r): r is string => typeof r === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+interface Observed { serviceId: string; observedAt: string; drifted: boolean; reasons: string[]; desiredHash: string; observedHash: string; evidence: JsonObject }
+
+/**
+ * Owner decision 1 (resource audit, 2026-11-14; migration 0061): a row only when the state changes. The state is
+ * driftSignature(drifted, desired_hash, observed_hash, sorted reasons); reasons are fixed codes (probe errors are
+ * "timeout", "rpc_failed", "fetch_failed", "health_check_failed", "http_<status>", "no_observation_binding"), never
+ * free text, so an unchanged situation keeps its signature. The same state as the newest row raises that row's
+ * streak to 2 once (persistent drift needs two runs) and is otherwise not written. One exception: a scheduled run
+ * records its state when the newest row came from a manual or consensus run, so the scheduled history alone always
+ * tells the state of every scheduled run (driftEpisode ignores deploy-time observations). That costs one row after
+ * each deploy-time observation that changed the state. The registry heartbeat is written in the same batch.
+ */
+async function record(env: Env, prev: LatestRow | undefined, trigger: string, o: Observed, heartbeat: D1PreparedStatement): Promise<{ observationId: string; recorded: boolean }> {
+  const same = prev !== undefined
+    && driftSignature(prev.drifted, prev.desired_hash, prev.observed_hash, parseReasons(prev.reasons)) === driftSignature(o.drifted, o.desiredHash, o.observedHash, o.reasons)
+    && !(trigger === "scheduled" && prev.run_trigger !== "scheduled");
+  if (same) {
+    const statements = (prev.streak ?? 1) < 2
+      ? [env.DB.prepare("UPDATE drift_observations SET streak = 2 WHERE observation_id = ? AND streak < 2").bind(prev.observation_id), heartbeat]
+      : [heartbeat];
+    await env.DB.batch(statements);
+    return { observationId: prev.observation_id, recorded: false };
+  }
+  const observationId = newId("obs");
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(observationId, o.serviceId, o.desiredHash, o.observedHash, o.drifted ? 1 : 0, JSON.stringify(o.evidence), o.observedAt),
+    heartbeat,
+  ]);
+  return { observationId, recorded: true };
 }
 
 interface Summary { summary: string; likely_causes: string[] }
@@ -311,20 +364,22 @@ export default {
       }
       if (path === "/v1/drift" && request.method === "GET") {
         // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
+        // Rows are recorded on change (0061): observed_at is when the state was first seen, streak how many runs saw
+        // it (1 or 2), and last_seen_at (service_registry.updated_at, set by every run) when it was last observed.
         const rows = await env.DB.prepare(
-          `SELECT o.service_id, o.observation_id, o.drifted, o.evidence_json, o.observed_at
+          `SELECT o.service_id, o.observation_id, o.drifted, o.streak, o.evidence_json, o.observed_at, r.updated_at AS last_seen_at
            FROM service_registry r
            JOIN drift_observations o ON o.observation_id = (
              SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
            ORDER BY r.service_id`,
-        ).all<{ service_id: string; observation_id: string; drifted: number; evidence_json: string; observed_at: string }>();
+        ).all<{ service_id: string; observation_id: string; drifted: number; streak: number; evidence_json: string; observed_at: string; last_seen_at: string }>();
         return json({ services: rows.results.map((r) => ({ ...r, drifted: r.drifted === 1, evidence_json: undefined, evidence: JSON.parse(r.evidence_json) })) });
       }
       const match = /^\/v1\/drift\/([a-z0-9-]{2,63})$/.exec(path);
       if (match && request.method === "GET") {
         const rows = await env.DB.prepare(
-          "SELECT observation_id, drifted, evidence_json, observed_at FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 20",
-        ).bind(match[1]).all<{ observation_id: string; drifted: number; evidence_json: string; observed_at: string }>();
+          "SELECT observation_id, drifted, streak, evidence_json, observed_at FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 20",
+        ).bind(match[1]).all<{ observation_id: string; drifted: number; streak: number; evidence_json: string; observed_at: string }>();
         return json({ service_id: match[1], observations: rows.results.map((r) => ({ ...r, drifted: r.drifted === 1, evidence_json: undefined, evidence: JSON.parse(r.evidence_json) })) });
       }
       return errorResponse(404, "not_found");
@@ -386,15 +441,24 @@ export async function pruneDriftObservations(env: Env, now = Date.now()): Promis
 
 /** While a drift episode lasts unchanged, it is reported again every this long. */
 export const DRIFT_REMINDER_MS = 2 * 60 * 60_000;
-const STREAK_LOOKBACK = 200; // scheduled runs: 50 hours at one run every 15 minutes
+const STREAK_LOOKBACK = 200; // scheduled rows: state changes since 0061 (before it, one per run: 50 hours)
 
 /**
  * Should this scheduled run report its drift? "new" when a drifted service was in sync (or never
  * observed) at its previous scheduled observation; "changed" when its reasons changed; "reminder"
  * when the unchanged episode has just passed another DRIFT_REMINDER_MS since it started; null
  * otherwise. Only scheduled observations count: deploy-time (manual) runs see versions in flux.
+ *
+ * Rows are recorded on change (0061), and record() makes a scheduled run record its state whenever the newest row
+ * came from another trigger, so the newest scheduled row at or before a scheduled run holds that run's state. The
+ * previous scheduled state is therefore the newest scheduled row other than the one this run recorded (when this run
+ * recorded nothing, that is the unchanged current row). The episode starts at the oldest of the consecutive
+ * scheduled rows with the same drift. The previous run's time is not in the rows any more: it is the service's
+ * service_registry.updated_at as read before this run (`previousRunAt`). If a manual run or a registry write came
+ * after the previous scheduled run, that time is later than it, and a reminder boundary in between is reported
+ * at the next one instead (never twice).
  */
-export async function driftEpisode(env: Env, drifted: ServiceDrift[], observedAt: string): Promise<"new" | "changed" | "reminder" | null> {
+export async function driftEpisode(env: Env, drifted: ServiceDrift[], observedAt: string, previousRunAt: ReadonlyMap<string, string> = new Map()): Promise<"new" | "changed" | "reminder" | null> {
   let change: "new" | "changed" | null = null;
   let remind = false;
   const now = Date.parse(observedAt);
@@ -403,7 +467,7 @@ export async function driftEpisode(env: Env, drifted: ServiceDrift[], observedAt
       `SELECT drifted, observed_at, json_extract(evidence_json, '$.reasons') AS reasons FROM drift_observations
        WHERE service_id = ? AND observation_id != ? AND observed_at <= ? AND json_extract(evidence_json, '$.trigger') = 'scheduled'
        ORDER BY observed_at DESC, rowid DESC LIMIT ?`,
-    ).bind(s.service_id, s.observation_id, observedAt, STREAK_LOOKBACK).all<{ drifted: number; observed_at: string; reasons: string | null }>();
+    ).bind(s.service_id, s.recorded ? s.observation_id : "", observedAt, STREAK_LOOKBACK).all<{ drifted: number; observed_at: string; reasons: string | null }>();
     const history = rows.results ?? [];
     const key = (reasons: string | null) => { try { return (JSON.parse(reasons ?? "[]") as string[]).join(","); } catch { return ""; } };
     const current = s.reasons.join(",");
@@ -416,8 +480,10 @@ export async function driftEpisode(env: Env, drifted: ServiceDrift[], observedAt
       if (r.drifted !== 1 || key(r.reasons) !== current) break;
       startedAt = Date.parse(r.observed_at);
     }
+    const seen = Date.parse(previousRunAt.get(s.service_id) ?? "");
+    const prevRun = Number.isFinite(seen) && seen <= now ? Math.max(seen, Date.parse(prev.observed_at)) : Date.parse(prev.observed_at);
     const bucket = (t: number) => Math.floor((t - startedAt) / DRIFT_REMINDER_MS);
-    if (bucket(now) > bucket(Date.parse(prev.observed_at))) remind = true;
+    if (bucket(now) > bucket(prevRun)) remind = true;
   }
   return change ?? (remind ? "reminder" : null);
 }

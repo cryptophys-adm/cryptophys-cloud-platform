@@ -82,10 +82,17 @@ const setStage = (env: AutonomousEnv, planId: string, id: string, patch: Partial
     if (st) Object.assign(st, patch);
   });
 
-async function latestObservation(env: AutonomousEnv, serviceId: string): Promise<{ drifted: number; observed_at: string; evidence: Record<string, any> } | null> {
-  const row = await env.DB.prepare("SELECT drifted, observed_at, evidence_json FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 1")
-    .bind(serviceId).first<{ drifted: number; observed_at: string; evidence_json: string }>();
-  return row ? { drifted: row.drifted, observed_at: row.observed_at, evidence: JSON.parse(row.evidence_json || "{}") } : null;
+/**
+ * The service's newest drift observation. Rows are recorded on change (0061): observed_at is when that state was first
+ * seen, and last_seen_at (service_registry.updated_at, which every Drift Detector run sets) when it was last observed.
+ */
+async function latestObservation(env: AutonomousEnv, serviceId: string): Promise<{ drifted: number; observed_at: string; last_seen_at: string | null; evidence: Record<string, any> } | null> {
+  const row = await env.DB.prepare(
+    `SELECT o.drifted, o.observed_at, o.evidence_json, r.updated_at AS last_seen_at FROM drift_observations o
+     LEFT JOIN service_registry r ON r.service_id = o.service_id
+     WHERE o.service_id = ? ORDER BY o.observed_at DESC, o.rowid DESC LIMIT 1`,
+  ).bind(serviceId).first<{ drifted: number; observed_at: string; evidence_json: string; last_seen_at: string | null }>();
+  return row ? { drifted: row.drifted, observed_at: row.observed_at, last_seen_at: row.last_seen_at ?? null, evidence: JSON.parse(row.evidence_json || "{}") } : null;
 }
 
 const sleep = async (step: WorkflowStepLike, name: string, d: string) => { if (step.sleep) await step.sleep(name, d); };
@@ -246,9 +253,12 @@ export async function executeAutonomously(env: AutonomousEnv, planId: string, in
     let detail = "no fresh drift observation within 30 minutes";
     for (let i = 1; i <= VERIFY_POLLS; i++) {
       const obs = await step.do(`verify poll ${i}`, () => latestObservation(env, start.service_id));
-      // The deploy workflows observe drift themselves when they finish, so a fresh row is usually there already.
-      const fresh = obs && (Date.parse(obs.observed_at) >= Date.parse(since) - 15 * 60_000);
-      if (fresh && obs!.drifted === 0) { verified = true; detail = `in sync and healthy (observed ${obs!.observed_at})`; break; }
+      // The deploy workflows observe drift themselves when they finish, so a fresh observation is usually there
+      // already. Fresh is the heartbeat (last_seen_at): an unchanged state adds no row (0061), so the newest row's
+      // observed_at can be older than any recent run that confirmed it.
+      const seen = obs ? obs.last_seen_at ?? obs.observed_at : null;
+      const fresh = obs && seen !== null && (Date.parse(seen) >= Date.parse(since) - 15 * 60_000);
+      if (fresh && obs!.drifted === 0) { verified = true; detail = `in sync and healthy (observed ${seen}, in sync since ${obs!.observed_at})`; break; }
       if (fresh && obs!.drifted === 1 && i === VERIFY_POLLS) { detail = `still drifted: ${JSON.stringify(obs!.evidence?.reasons ?? [])}`; break; }
       await sleep(step, `verify wait ${i}`, "5 minutes");
     }

@@ -26,18 +26,23 @@ import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
 import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
+import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
 /** Open critical reports are read from this window, as for the consensus brake. */
 export const CRITICAL_WINDOW_MS = 24 * 3_600_000;
 
-/** Observations older than this (45 min, three missed Drift Detector runs) count as stale. */
+/**
+ * A service the Drift Detector has not observed for this long (45 min, three missed runs) is stale. "Observed" is the
+ * heartbeat service_registry.updated_at, which every run sets; drift rows are recorded only on change (0061).
+ */
 export const STALE_MS = 45 * 60_000;
 /** The Workers the Supervisor never plans for: itself (supervisor.ts skips SERVICE) and the observer of every drift. */
 export const SELF_SERVICES: readonly string[] = ["cryptophys-ai-kernel", "cryptophys-drift-detector"];
 /**
- * A persistent drift counts as unhandled only once the older of its two drifted observations is this old: the
+ * A persistent drift counts as unhandled only once it has lasted this long (persistentDriftSince() in
+ * drift-state.ts: since the older of two drifted rows, or since the drifted row a later run confirmed): the
  * Supervisor (every 15 minutes) has then had at least one cycle to propose a plan, so a drift that just became
  * persistent does not email the owner and close again half an hour later.
  */
@@ -175,10 +180,11 @@ function reasonsOf(evidenceJson: unknown): string[] {
  * Production problems no agent is handling. Each condition is one line item, and each closes a case where a broken
  * production reached the owner through neither an approval nor a critical report (ADR-0009 amendment 2026-11-13):
  *
- *  1. self_unhealthy: the AI Kernel or the Drift Detector itself is persistently drifted or unhealthy (the last two
- *     observations drifted, as in syscall.ts observe()); the Supervisor never plans for its own Worker.
+ *  1. self_unhealthy: the AI Kernel or the Drift Detector itself is persistently drifted or unhealthy (two runs in a
+ *     row drifted, isPersistentDrift() as in syscall.ts observe()); the Supervisor never plans for its own Worker.
  *  2. observations_stale: a registered service has no observation for STALE_MS (registered at least that long ago),
- *     or its latest one is older, unreadable or in the future: the Drift Detector stopped.
+ *     or the Drift Detector's heartbeat for it (service_registry.updated_at) is older, unreadable or in the future,
+ *     or its latest row's time is unreadable or in the future: the Drift Detector stopped.
  *  3. drift_unhandled: a service is persistently drifted or unhealthy (the Supervisor's own exclusions apply: an
  *     untagged healthy version, an unset desired version alone), past HANDLING_GRACE_MS, and agents are switched off,
  *     or no recovery plan for it is draft, approved or executing and no deploy, redeploy or rollback proposal for it
@@ -191,13 +197,13 @@ function reasonsOf(evidenceJson: unknown): string[] {
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
-  const services = (await db.prepare("SELECT service_id, created_at FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
-    .all<{ service_id: string; created_at: string | null }>()).results;
+  const services = (await db.prepare("SELECT service_id, created_at, updated_at FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
+    .all<{ service_id: string; created_at: string | null; updated_at: string | null }>()).results;
   let agentsOn = true;
   try { agentsOn = await agentsEnabled(db); } catch { agentsOn = false; }
   for (const s of services) {
-    const obs = (await db.prepare("SELECT drifted, evidence_json, observed_at FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC, rowid DESC LIMIT 2")
-      .bind(s.service_id).all<{ drifted: number; evidence_json: string; observed_at: string }>()).results;
+    const obs = (await db.prepare(LAST_TWO_OBSERVATIONS_SQL)
+      .bind(s.service_id).all<{ drifted: number; streak: number; evidence_json: string; observed_at: string }>()).results;
     const name = serviceName(s.service_id);
     if (!obs.length) {
       const registered = Date.parse(String(s.created_at ?? ""));
@@ -209,16 +215,17 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     const reasons = reasonsOf(obs[0].evidence_json);
     if (reasons.includes("disabled")) continue;
     const latestAt = Date.parse(obs[0].observed_at);
-    if (!Number.isFinite(latestAt) || latestAt > now || now - latestAt > STALE_MS) {
-      stale.push({ code: "observations_stale", subject: s.service_id, detail: `${name}: not observed since ${obs[0].observed_at}; the Drift Detector may have stopped`, since: obs[0].observed_at, link: "#/infrastructure" });
+    const seenAt = Date.parse(String(s.updated_at ?? ""));
+    if (!Number.isFinite(latestAt) || latestAt > now || !Number.isFinite(seenAt) || seenAt > now || now - seenAt > STALE_MS) {
+      const seen = Number.isFinite(latestAt) && latestAt <= now ? s.updated_at : obs[0].observed_at;
+      stale.push({ code: "observations_stale", subject: s.service_id, detail: `${name}: not observed since ${seen}; the Drift Detector may have stopped`, since: seen, link: "#/infrastructure" });
       continue;
     }
-    const persistent = obs.length === 2 && obs.every((o) => o.drifted === 1);
-    if (!persistent) continue;
+    if (!isPersistentDrift(obs)) continue;
     // The Supervisor's exclusions (supervisor.ts): a healthy service whose only finding is a missing version tag, or
     // a service with no desired version and nothing else wrong, is not a recovery case.
     if (onlyUntaggedVersion({ reasons }) || (reasons.length === 1 && reasons[0] === "desired_version_unset")) continue;
-    const since = obs[1].observed_at;
+    const since = persistentDriftSince(obs)!;
     const why = reasons.join(", ") || "drifted";
     if (SELF_SERVICES.includes(s.service_id)) {
       self.push({ code: "self_unhealthy", subject: s.service_id, detail: `${name} is drifted or unhealthy (${why}); the agents do not recover their own Worker`, since, link: "#/infrastructure" });

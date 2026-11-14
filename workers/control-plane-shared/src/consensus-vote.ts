@@ -4,7 +4,7 @@
  * kernel's snapshot is a starting point only: the facts each voter owns are re-read here, by
  * that Worker's code, at vote time.
  *   platform-registry  -> the target's registry row
- *   drift-detector     -> the target's last two drift observations
+ *   drift-detector     -> the target's last two drift observations (persistent: drift-state.ts)
  *   policy-engine      -> recent proposals for the same action and target
  *   audit-ledger       -> the audit chain (incremental verification)
  *   recovery-manager   -> recovery plans that are executing
@@ -12,6 +12,7 @@
  */
 import type { D1Database } from "./types.ts";
 import { verifyAuditChainIncremental } from "./audit.ts";
+import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift } from "./drift-state.ts";
 import { VOTERS, castVote, type Evidence, type Proposal, type Vote, type Voter } from "./consensus-rules.ts";
 
 export async function castDomainVote(db: D1Database, voter: Voter, proposal: Proposal, snapshot: Evidence, now = Date.now()): Promise<Vote> {
@@ -27,14 +28,14 @@ export async function castDomainVote(db: D1Database, voter: Voter, proposal: Pro
       break;
     }
     case "drift-detector": {
-      const obs = await db.prepare("SELECT drifted, evidence_json FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 2").bind(t).all<{ drifted: number; evidence_json: string }>();
+      const obs = await db.prepare(LAST_TWO_OBSERVATIONS_SQL).bind(t).all<{ drifted: number; streak: number; evidence_json: string; observed_at: string }>();
       if (obs.results.length) {
         const latest = obs.results[0];
         const ev = (() => { try { return JSON.parse(latest.evidence_json || "{}"); } catch { return {}; } })() as Record<string, any>;
         e.services[t] = {
           service_id: t,
           drifted: latest.drifted === 1,
-          persistent: obs.results.length === 2 && obs.results.every((o) => o.drifted === 1),
+          persistent: isPersistentDrift(obs.results),
           desired_version: ev.desired_version ?? e.services[t]?.desired_version ?? null,
           observed_version: ev.probe?.version_tag ?? e.services[t]?.observed_version ?? null,
         };

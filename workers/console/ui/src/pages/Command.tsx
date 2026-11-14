@@ -155,7 +155,7 @@ export default function Command() {
               <div key={s.service_id} className={`glass-inner flex items-center gap-2.5 px-3 py-2.5 ${s.drifted ? "border-rose-400/20" : ""}`}>
                 <Dot tone={s.drifted ? (s.persistent ? "red" : "amber") : "green"} pulse={s.drifted} />
                 <span className="mono min-w-0 flex-1 truncate text-[11px] text-slate-200">{s.service_id}</span>
-                <span className="shrink-0 text-[10px] text-slate-600">{ago(s.observed_at)}</span>
+                <span className="shrink-0 text-[10px] text-slate-600">{ago(s.last_seen_at ?? s.observed_at)}</span>
               </div>
             ))}
           </div>

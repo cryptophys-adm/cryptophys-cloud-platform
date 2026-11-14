@@ -438,7 +438,13 @@ export async function expireOwnerProposals(env: SyscallEnv, now = Date.now()): P
  * For each proposal older than its scoring delay, did people do the same thing on their own?
  *  - deploy_commit X@S: the registry recorded S as X's desired version within 24 h (a person,
  *    or a deploy workflow a person dispatched, deployed it).
- *  - redeploy_desired_version / rollback_worker_version X: X was observed in sync within 2 h.
+ *  - redeploy_desired_version / rollback_worker_version X: X was observed in sync within 2 h. Drift rows are
+ *    recorded on change (0061), so "observed in sync in [created, created + 2 h]" is: a drifted = 0 row recorded in
+ *    the window, or no row recorded in the window while the newest row before it is drifted = 0 (the in-sync state
+ *    held through the window) and the Drift Detector observed X after the window opened (its heartbeat,
+ *    service_registry.updated_at, is at or after created). Per-run history from before 0061 has a row in every
+ *    window and reads as before. In sync at the start and then drifted inside the window, never back, reads as not
+ *    acted: the rows cannot show that a run saw the in-sync state before the drift.
  *  - other actions: a non-agent audit event on X within 24 h.
  * agree = (passed and people acted) or (not passed and people did not); a passed proposal people
  * did not act on is a false positive; a refused one they acted on, a false negative.
@@ -479,6 +485,13 @@ export async function agreementReport(env: SyscallEnv, days = 7, now = Date.now(
           "SELECT COUNT(*) AS n FROM drift_observations WHERE service_id = ? AND drifted = 0 AND observed_at BETWEEN ? AND ?",
         ).bind(p.target, p.created_at, end).first<{ n: number }>();
         acted = (ok?.n ?? 0) > 0;
+        if (!acted) {
+          const held = await env.DB.prepare(
+            `SELECT o.drifted, o.observed_at, r.updated_at AS last_seen_at FROM drift_observations o JOIN service_registry r ON r.service_id = o.service_id
+             WHERE o.service_id = ? AND o.observed_at <= ? ORDER BY o.observed_at DESC, o.rowid DESC LIMIT 1`,
+          ).bind(p.target, end).first<{ drifted: number; observed_at: string; last_seen_at: string }>();
+          acted = held !== null && held.drifted === 0 && held.observed_at < p.created_at && held.last_seen_at >= p.created_at;
+        }
         evidence = acted ? `${p.target} back in sync within 2 h` : `${p.target} still drifted after 2 h`;
       } else {
         const ev = await env.DB.prepare(

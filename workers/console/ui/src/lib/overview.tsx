@@ -5,7 +5,8 @@ import { usePoll } from "./usePoll";
 export interface Overview {
   observed_at?: string;
   agents_enabled?: boolean;
-  services?: { service_id: string; drifted: boolean; observed_at?: string; persistent?: boolean }[];
+  /** observed_at: when the current state was first seen; last_seen_at: when the Drift Detector last observed it (0061). */
+  services?: { service_id: string; drifted: boolean; observed_at?: string; last_seen_at?: string; persistent?: boolean }[];
   open_agent_plans?: { plan_id: string; service_id?: string; status?: string; created_at?: string }[];
   agent_reports_24h?: {
     /** critical: open (not acknowledged) critical reports; critical_acknowledged: acknowledged by an approver (ADR-0009, 2026-11-13). */

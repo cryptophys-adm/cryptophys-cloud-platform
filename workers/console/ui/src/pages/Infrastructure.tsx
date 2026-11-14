@@ -8,6 +8,8 @@ import { ago, fmt, listOf } from "../lib/format";
 import { BarList, DataTable, STATUS, StatusBar } from "../components/viz";
 
 const ageMin = (iso?: string) => { const t = iso ? Date.parse(iso) : NaN; return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60_000)) : null; };
+/** When the Drift Detector last observed the service: last_seen_at (its heartbeat; rows are recorded only on change, 0061), else the row's observed_at. */
+const seenAt = (d: any): string | undefined => d?.last_seen_at ?? d?.observed_at;
 
 function Editor({ id, onDone }: { id: string; onDone: () => void }) {
   const { who, act, notify } = useSession();
@@ -79,7 +81,7 @@ export default function Infrastructure() {
                   { key: "unk", label: "not observed / disabled", value: services.filter((s: any) => s.status === "disabled" || byId.get(s.service_id)?.drifted === undefined).length, color: STATUS.neutral },
                 ]} /></div>
               <div><div className="mb-1.5 text-[10px] uppercase tracking-widest text-slate-500">Minutes since last observation</div>
-                <BarList max={6} unit=" min" color={STATUS.info} items={services.map((s: any) => ({ label: String(s.service_id).replace(/^cryptophys-/, ""), value: ageMin(byId.get(s.service_id)?.observed_at) ?? 0 }))} /></div>
+                <BarList max={6} unit=" min" color={STATUS.info} items={services.map((s: any) => ({ label: String(s.service_id).replace(/^cryptophys-/, ""), value: ageMin(seenAt(byId.get(s.service_id))) ?? 0 }))} /></div>
             </div>
           )}
           <DataTable rows={services} rowKey={(s) => s.service_id} maxHeight={560} initialSort={{ key: "drift", dir: "desc" }} empty="No services registered." columns={[
@@ -88,7 +90,7 @@ export default function Infrastructure() {
             { key: "drift", header: "drift", sort: (s) => { const d: any = byId.get(s.service_id); return d?.drifted ? 2 : d ? 0 : 1; }, cell: (s) => { const d: any = byId.get(s.service_id) ?? {}; return <span className="inline-flex items-center gap-1.5"><Dot tone={d.drifted === undefined ? "slate" : d.drifted ? "red" : "green"} pulse={d.drifted} />{d.drifted === undefined ? "—" : d.drifted ? "drifted" : "in sync"}</span>; } },
             { key: "desired", header: "desired", sort: (s) => byId.get(s.service_id)?.desired_version ?? s.desired_version, cell: (s) => <span className="mono text-[11px]">{fmt(byId.get(s.service_id)?.desired_version ?? s.desired_version)}</span> },
             { key: "observed", header: "observed", sort: (s) => byId.get(s.service_id)?.observed_version, cell: (s) => <span className="mono text-[11px]">{fmt(byId.get(s.service_id)?.observed_version)}</span> },
-            { key: "seen", header: "last observed", sort: (s) => -(ageMin(byId.get(s.service_id)?.observed_at) ?? 1e9), cell: (s) => <span className="text-slate-500">{ago(byId.get(s.service_id)?.observed_at)}</span> },
+            { key: "seen", header: "last observed", sort: (s) => -(ageMin(seenAt(byId.get(s.service_id))) ?? 1e9), cell: (s) => <span className="text-slate-500">{ago(seenAt(byId.get(s.service_id)))}</span> },
             { key: "edit", header: "", cell: (s) => <button type="button" className="btn py-1 text-[11px]" onClick={() => setEdit(s.service_id)}><Pencil className="h-3 w-3" />Edit</button> },
           ]} />
         </>)}

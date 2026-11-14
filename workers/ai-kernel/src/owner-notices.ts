@@ -110,8 +110,10 @@ async function ownerAttention(db: D1Database): Promise<Notice> {
 }
 
 async function drift(db: D1Database, now: number): Promise<Notice> {
-  const services = await db.prepare("SELECT service_id, desired_version FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
-    .all<{ service_id: string; desired_version: string | null }>();
+  // updated_at is the Drift Detector's heartbeat: every run sets it for every service, while drift rows are recorded
+  // only when a service's state changes (0061), so the newest row's observed_at can be days old for a healthy service.
+  const services = await db.prepare("SELECT service_id, desired_version, updated_at FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
+    .all<{ service_id: string; desired_version: string | null; updated_at: string }>();
   // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
   const latest = await db.prepare(
     `SELECT d.service_id, d.drifted, d.evidence_json, d.observed_at FROM service_registry r
@@ -128,10 +130,12 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     const reasons = Array.isArray(ev.reasons) ? ev.reasons.filter((r): r is string => typeof r === "string") : [];
     if (reasons.includes("disabled")) continue;
     const observedAt = Date.parse(o.observed_at);
-    if (!Number.isFinite(observedAt) || observedAt > now) {
-      problems.push({ service: s.service_id, code: "invalid_observation_time", line: `${serviceName(s.service_id)}: invalid observation timestamp ${o.observed_at}` });
-    } else if (now - observedAt > STALE_MS) {
-      problems.push({ service: s.service_id, code: "stale_observation", line: `${serviceName(s.service_id)}: not observed since ${o.observed_at} (check the Drift Detector cron)` });
+    const seenAt = Date.parse(s.updated_at);
+    if (!Number.isFinite(observedAt) || observedAt > now || !Number.isFinite(seenAt) || seenAt > now) {
+      const bad = !Number.isFinite(observedAt) || observedAt > now ? o.observed_at : s.updated_at;
+      problems.push({ service: s.service_id, code: "invalid_observation_time", line: `${serviceName(s.service_id)}: invalid observation timestamp ${bad}` });
+    } else if (now - seenAt > STALE_MS) {
+      problems.push({ service: s.service_id, code: "stale_observation", line: `${serviceName(s.service_id)}: not observed since ${s.updated_at} (check the Drift Detector cron)` });
     } else if (o.drifted) {
       const running = typeof ev.probe?.version_tag === "string" ? ev.probe.version_tag : "unknown";
       problems.push({ service: s.service_id, code: reasons.join(",") || "drifted",

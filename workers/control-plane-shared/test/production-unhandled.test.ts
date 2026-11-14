@@ -16,9 +16,15 @@ const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 const MIN = 60_000, H = 3_600_000;
 let seq = 0;
 
+/** A Drift Detector run that recorded a row; it also sets the registry heartbeat (service_registry.updated_at, 0061). */
 function observe(db: Db, service: string, drifted: boolean, msAgo: number, reasons: string[] = []) {
   db.raw.prepare("INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES (?, ?, 'h', ?, ?, ?, ?)")
     .run(`obs_${seq++}`, service, drifted ? "x" : "h", drifted ? 1 : 0, JSON.stringify({ reasons }), at(msAgo));
+  heartbeat(db, service, msAgo);
+}
+/** A run that saw the same state: no row (0061), only the heartbeat, never moved back in time. */
+function heartbeat(db: Db, service: string, msAgo: number) {
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ? AND updated_at < ?").run(at(msAgo), service, at(msAgo));
 }
 /** Every non-disabled registered service observed in sync twice, 20 and 5 minutes ago. */
 function healthy(db: Db): string[] {
@@ -67,6 +73,11 @@ test("P2. condition 2: observations stale or missing for STALE_MS: the Drift Det
   healthy(db);
   observe(db, "cryptophys-policy-engine", false, STALE_MS + 10 * MIN);
   db.raw.prepare("DELETE FROM drift_observations WHERE service_id = 'cryptophys-policy-engine' AND observed_at > ?").run(at(STALE_MS + 5 * MIN));
+  // The Drift Detector's last run for it (the heartbeat, 0061) was then too.
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = 'cryptophys-policy-engine'").run(at(STALE_MS + 10 * MIN));
+  // In sync for a day: its only row is old (rows are recorded on change), but it was observed 5 minutes ago.
+  db.raw.prepare("DELETE FROM drift_observations WHERE service_id = 'cryptophys-console'").run();
+  observe(db, "cryptophys-console", false, 24 * H);
   const reg = db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, metadata_json, created_at, updated_at) VALUES (?, ?, 'production', 'registered', NULL, '{}', ?, ?)");
   reg.run("cryptophys-new", "New", at(10 * MIN), at(10 * MIN));
   reg.run("cryptophys-old", "Old", at(2 * H), at(2 * H));
@@ -74,6 +85,7 @@ test("P2. condition 2: observations stale or missing for STALE_MS: the Drift Det
     "a service registered 10 minutes ago is not missing yet; one registered 2 hours ago is");
   const p = (await unhandledProblems(db as never, NOW)).find((x) => x.subject === "cryptophys-policy-engine")!;
   assert.match(p.detail, /not observed since .*the Drift Detector may have stopped/);
+  assert.equal(p.since, at(STALE_MS + 10 * MIN), "since is the heartbeat");
 });
 
 test("P3. condition 3: a persistent drift with agents off, or with no plan and no deploy under way, past the Supervisor's grace", async () => {
@@ -168,4 +180,26 @@ test("P7. production_unhandled is emailed and sent to Telegram with the Owner pa
   assert.deepEqual(await topic(), { topic: "production_unhandled", change: "closed", delivery: "sent" });
   assert.match(mail[1].subject, /^\[Cryptophys\] Resolved: /);
   assert.equal(tg.at(-1).change, "closed");
+});
+
+test("P8. change-only drift rows (0061): persistence from the streak, grace from when the drift began, freshness from the heartbeat", async () => {
+  const db = migratedDb();
+  healthy(db);
+  const one = (service: string, msAgo: number, streak: number) => {
+    db.raw.prepare("DELETE FROM drift_observations WHERE service_id = ?").run(service);
+    observe(db, service, false, 6 * H);
+    observe(db, service, true, msAgo, ["version_mismatch"]);
+    db.raw.prepare("UPDATE drift_observations SET streak = ? WHERE observation_id = ?").run(streak, `obs_${seq - 1}`);
+    heartbeat(db, service, 3 * MIN);
+  };
+  one("cryptophys-console", HANDLING_GRACE_MS + 10 * MIN, 2);      // drifted 40 min, seen on two runs: unhandled
+  one("cryptophys-policy-engine", HANDLING_GRACE_MS - 10 * MIN, 2); // drifted 20 min: within the grace
+  one("cryptophys-audit-ledger", HANDLING_GRACE_MS + 10 * MIN, 1);  // one drifted run only: not persistent
+  one("cryptophys-drift-detector", 10 * MIN, 2);                    // the observer itself: no grace
+  const problems = await unhandledProblems(db as never, NOW);
+  assert.deepEqual(problems.map((p) => `${p.code}:${p.subject}`), ["self_unhealthy:cryptophys-drift-detector", "drift_unhandled:cryptophys-console"]);
+  assert.equal(problems[1].since, at(HANDLING_GRACE_MS + 10 * MIN), "since: when the drifted state was first seen");
+  // The same drift with a stale heartbeat is a stopped Drift Detector, not a drift.
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = 'cryptophys-console'").run(at(STALE_MS + MIN));
+  assert.deepEqual(await codes(db), ["self_unhealthy:cryptophys-drift-detector", "observations_stale:cryptophys-console"]);
 });
