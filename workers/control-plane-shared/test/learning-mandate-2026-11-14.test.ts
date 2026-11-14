@@ -254,7 +254,9 @@ test("LM8. the constitution's first line is the learning mandate", () => {
 test("LM9. power-mode.ts is a guard path (learning_mandate): the Forge reports it and the evolver refuses it", async () => {
   assert.equal(criticalPathReason("workers/control-plane-shared/src/power-mode.ts"), "learning_mandate");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/power-mode.ts.bak"), null);
-  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "learning_mandate").length, 1);
+  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "learning_mandate").length, 2);
+  assert.equal(criticalPathReason("workers/control-plane-shared/test/learning-mandate-2026-11-14.test.ts"), "learning_mandate");
+  assert.equal(criticalPathReason("workers/control-plane-shared/test/learning-observe-2026-11-14.test.ts"), "learning_mandate");
   const repo = { readBlob: async () => null } as never;
   const reasons = await criticalReasons(repo, [{ path: "workers/control-plane-shared/src/power-mode.ts", change: "modified", base: "x", head: "y" }] as never, false);
   assert.deepEqual(reasons, ["learning_mandate: workers/control-plane-shared/src/power-mode.ts"]);

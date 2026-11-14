@@ -32,6 +32,9 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // power-mode.ts says what learning is and that no mode, budget or rate limit applies to it. No agent or evolver
   // reintroduces a learning limit there without the owner's click.
   [/^workers\/control-plane-shared\/src\/power-mode\.ts$/, "learning_mandate"],
+  // The learning mandate's invariant tests: a limit put back in knowledge.ts, memory.ts or ai-engine.ts fails them,
+  // and the tests themselves change only by the owner's click.
+  [/^workers\/control-plane-shared\/test\/learning-(mandate|observe)-2026-11-14\.test\.ts$/, "learning_mandate"],
 ];
 
 /** The guard-path reason of one repository path, or null for a routine path. */
