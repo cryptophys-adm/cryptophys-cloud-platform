@@ -13,6 +13,7 @@ import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConf
 import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
+import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -418,6 +419,69 @@ export async function deployForRecovery(env: Env, planId: string, decisionId: st
   return { dispatched: true, request_id: requestId, workflow: unit.workflow, unit: unit.unit, commit_sha: sha };
 }
 
+/**
+ * Hardening (d), 2026-11-14: the break-glass step force_redeploy_unit of an approved, executing recovery plan
+ * (recovery-deploy.ts). The same plan and Policy Engine checks as deployForRecovery, then the plan itself again
+ * (written and approved by people, one full commit, the destructive migrations it names). No drift precondition and
+ * no deploy planner: the unit of `serviceId` at main's head, natively only (there is no workflow fallback; that is
+ * the point). Refusals change nothing and are audited. A held deploy lock or another deploy of the unit under way
+ * refuses as well; a retried step gets the request it queued before.
+ */
+export async function forceDeployForRecovery(env: Env, planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>> {
+  if (!/^[0-9a-f]{40}$/.test(version)) throw new Error("invalid_version");
+  const plan = await verifyRecoveryExecution(env, planId, decisionId, serviceId);
+  if (plan.plan_version !== version) throw new Error("plan_not_executing");
+  const { destructive_migrations: named } = await readBreakGlassPlan(env.DB, planId);
+  const unit = unitForService(serviceId);
+  if (!unit) throw new Error("no_deploy_unit_for_service");
+  if (!env.DEPLOYMENT_LOCK || !nativeDeployConfigured(env)) throw new Error("native_deploy_not_configured");
+  const actor = `recovery:${planId}`;
+  const lockName = breakGlassLockName(unit, version);
+  const prior = await env.DB.prepare("SELECT request_id FROM deployment_requests WHERE idempotency_key = ? AND requested_by = ? ORDER BY created_at DESC LIMIT 1")
+    .bind(breakGlassRequestKey(unit, version, planId), actor).first<{ request_id: string }>();
+  if (prior) return { dispatched: false, reason: "already_dispatched", executor: BREAK_GLASS_EXECUTOR, mode: "force", unit: unit.unit, commit_sha: version, request_id: prior.request_id };
+  const refuse = async (reason: string, extra: Record<string, unknown> = {}): Promise<never> => {
+    await appendAuditEvent(env.DB, {
+      event_type: "deployment.break_glass_refused", actor, subject: serviceId, outcome: "refused",
+      payload: { plan_id: planId, policy_decision_id: decisionId, unit: unit.unit, commit_sha: version, reason, ...extra },
+    });
+    throw new Error(`break_glass_refused: ${reason}`);
+  };
+  const busy = await unitDeployInProgress(env.DB, unit, planId);
+  if (busy) return refuse("unit_deploy_in_progress", { request_id: busy });
+  const choice = await breakGlassChoice(env as never, unit, version, named, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!));
+  if (!choice.ok) return refuse(choice.reason, { ...(choice.service ? { service: choice.service } : {}), ...(choice.file ? { file: choice.file } : {}), ...(choice.head !== undefined ? { main_head: choice.head } : {}) });
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(lockName))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: version }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return refuse("deploy_lock_held", { lock: lockName });
+  return queueBreakGlassDeploy(env, planId, decisionId, serviceId, unit, version, named, choice, lockName);
+}
+
+async function queueBreakGlassDeploy(env: Env, planId: string, decisionId: string, target: string, unit: DeployUnit, sha: string, named: string[],
+  choice: Extract<BreakGlassChoice, { ok: true }>, lockName: string): Promise<Record<string, unknown>> {
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  const actor = `recovery:${planId}`;
+  const row: NativeSignedRow = { request_id: requestId, service_id: target, requested_version: sha, requested_by: actor, approval_id: planId, idempotency_key: breakGlassRequestKey(unit, sha, planId), created_at: at };
+  try {
+    await insertSignedNativeRequest(env, NATIVE_EXECUTORS[BREAK_GLASS_EXECUTOR], row, {
+      executor: BREAK_GLASS_EXECUTOR, unit: unit.unit, commit_sha: sha, version_tag: sha.slice(0, 12), services: [...unit.services],
+      plan_id: planId, policy_decision_id: decisionId, destructive_migrations: named,
+    });
+  } catch (err) {
+    await releaseLock(env, lockName, sha);
+    throw err;
+  }
+  await appendAuditEvent(env.DB, {
+    event_type: "deployment.break_glass_queued", actor, subject: target, outcome: "approved",
+    payload: { request_id: requestId, executor: BREAK_GLASS_EXECUTOR, commit_sha: sha, unit: unit.unit, plan_id: planId, policy_decision_id: decisionId,
+      running: choice.services.map((s) => `${s.service}@${s.running_tag}`), migrations: choice.migrations.map((m) => m.file),
+      destructive_migrations: choice.migrations.filter((m) => m.destructive).map((m) => m.file) },
+  });
+  return { dispatched: true, executor: BREAK_GLASS_EXECUTOR, mode: "force", request_id: requestId, unit: unit.unit, commit_sha: sha, migrations: choice.migrations.map((m) => m.file) };
+}
+
 /** Read-only: the newest dispatched run of one deploy (or rollback) workflow on one commit (for pipeline progress). */
 export async function runStatus(env: Env, workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }> {
   if (!(DEPLOY_UNITS.some((u) => u.workflow === workflow) || workflow === ROLLBACK_WORKFLOW) || !/^[0-9a-f]{40}$/.test(commitSha) || !env.GH_ACTIONS_TOKEN) return { found: false };
@@ -535,6 +599,12 @@ const NATIVE_EXECUTORS: Record<string, NativeExecutorSpec> = {
     queuePrefix: "cryptophys.native-deploy.queue.v1|", claimPrefix: "cryptophys.native-deploy.execution.v1|",
     maxAgeMs: NATIVE_DEPLOY_MAX_AGE_MS, succeededEvent: "deployment.native_deploy_succeeded", failedEvent: "deployment.native_deploy_failed",
   },
+  // Hardening (d): an owner-approved recovery plan's break-glass deploy (recovery-deploy.ts).
+  [BREAK_GLASS_EXECUTOR]: {
+    executor: BREAK_GLASS_EXECUTOR, label: "break-glass deploy", reasonPrefix: "break_glass",
+    queuePrefix: "cryptophys.break-glass.queue.v1|", claimPrefix: "cryptophys.break-glass.execution.v1|",
+    maxAgeMs: NATIVE_DEPLOY_MAX_AGE_MS, succeededEvent: "deployment.break_glass_succeeded", failedEvent: "deployment.break_glass_failed",
+  },
   // ADR-0012 G6 gate 10: an owner-approved retire_worker, without retire-worker.yml.
   [NATIVE_RETIRE_EXECUTOR]: {
     executor: NATIVE_RETIRE_EXECUTOR, label: "native retirement", reasonPrefix: "native_retire",
@@ -547,6 +617,7 @@ function executorSpecOf(details: Record<string, unknown> | null, raw: string): N
   const named = typeof details?.executor === "string" && Object.hasOwn(NATIVE_EXECUTORS, details.executor) ? NATIVE_EXECUTORS[details.executor] : undefined;
   if (named) return named;
   if (raw.includes('"executor":"' + NATIVE_RETIRE_EXECUTOR + '"')) return NATIVE_EXECUTORS[NATIVE_RETIRE_EXECUTOR];
+  if (raw.includes('"executor":"' + BREAK_GLASS_EXECUTOR + '"')) return NATIVE_EXECUTORS[BREAK_GLASS_EXECUTOR];
   return raw.includes('"executor":"' + NATIVE_DEPLOY_EXECUTOR + '"') ? NATIVE_EXECUTORS[NATIVE_DEPLOY_EXECUTOR] : NATIVE_EXECUTORS[NATIVE_EXECUTOR];
 }
 
@@ -637,6 +708,9 @@ async function claimNativeExecution(env: Env, spec: NativeExecutorSpec, requestI
 async function failNativeRequest(env: Env, spec: NativeExecutorSpec, row: NativeSignedRow, details: Record<string, unknown>, reason: string, now: number): Promise<void> {
   await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status IN ('approved', 'running')")
     .bind(JSON.stringify({ ...details, outcome: { reason } }), new Date(now).toISOString(), row.request_id).run();
+  // A break-glass deploy's lock is freed when its request ends, so the owner can approve another plan for the commit.
+  const unit = spec.executor === BREAK_GLASS_EXECUTOR ? unitForService(row.service_id) : null;
+  if (unit && /^[0-9a-f]{40}$/.test(row.requested_version)) await releaseLock(env, breakGlassLockName(unit, row.requested_version), row.requested_version);
   await auditQuietly(env, {
     event_type: spec.failedEvent, actor: "agent:deployment-orchestrator", subject: row.service_id, outcome: "failed",
     payload: { request_id: row.request_id, executor: spec.executor, version_tag: String(row.requested_version ?? "").slice(0, 12), reason },
@@ -739,6 +813,15 @@ function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, detail
   const proposalId = typeof details.proposal_id === "string" ? details.proposal_id : null;
   const fromProposal = proposalId !== null && planId === null && r.requested_by === "consensus:" + proposalId && r.approval_id === proposalId;
   const fromPlan = planId !== null && proposalId === null && r.requested_by === "recovery:" + planId && r.approval_id === planId;
+  if (spec.executor === BREAK_GLASS_EXECUTOR) {
+    // Hardening (d): only a recovery plan, keyed by its unit's break-glass lock, naming only migration files.
+    return fromPlan
+      && /^[0-9a-f]{40}$/.test(r.requested_version)
+      && details.commit_sha === r.requested_version
+      && details.unit === unit.unit
+      && Array.isArray(details.destructive_migrations) && details.destructive_migrations.every((f) => typeof f === "string" && /^[0-9]{4}_[a-z0-9_]{1,80}\.sql$/.test(f))
+      && r.idempotency_key === breakGlassRequestKey(unit, r.requested_version, planId!);
+  }
   if (spec.executor === NATIVE_DEPLOY_EXECUTOR) {
     // G2c-1: a recovery plan's redeploy is keyed like its workflow lock (recovery:<workflow>:<sha>).
     return (fromProposal || fromPlan)
@@ -839,7 +922,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       await failNativeRequest(env, spec, r, details, "invalid_" + spec.reasonPrefix + "_signature", now);
       continue;
     }
-    const isDeploy = spec.executor === NATIVE_DEPLOY_EXECUTOR;
+    const isBreakGlass = spec.executor === BREAK_GLASS_EXECUTOR;
+    const isDeploy = spec.executor === NATIVE_DEPLOY_EXECUTOR || isBreakGlass;
     const isRetire = spec.executor === NATIVE_RETIRE_EXECUTOR;
     if (isDeploy || isRetire ? !nativeDeployConfigured(env) : !nativeRollbackConfigured(env)) continue;
     // A deploy uploads and verifies every Worker of a unit; one per run keeps the cron within its time.
@@ -850,7 +934,24 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     let plan: PlannedService[] = [];
     let migrations: PlannedMigration[] = [];
     const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher);
-    if (isDeploy) {
+    const named = isBreakGlass ? (details.destructive_migrations as string[]) : [];
+    if (isBreakGlass) {
+      // Hardening (d): main's head (from the Forge's checks, not the planner), its readiness, the Workers' plan and
+      // the pending migrations again. A refusal is terminal, moves nothing and is reported to the owner.
+      let refusal: string | null = null;
+      try {
+        const c = await breakGlassChoice(env as never, unitForService(r.service_id)!, r.requested_version, named, cf);
+        if (c.ok) { plan = c.services; migrations = c.migrations.map((m) => ({ file: m.file, sha256: m.sha256 })); }
+        else refusal = "refused: " + c.reason + (c.service ? " (" + c.service + ")" : "") + (c.file ? " (" + c.file + ")" : "");
+      } catch (err) {
+        refusal = "forge_unavailable: " + String((err as Error)?.message ?? err).slice(0, 100);
+      }
+      if (refusal) {
+        await failNativeRequest(env, spec, r, details, refusal, now);
+        await reportBreakGlass(env.AGENTS, { request_id: r.request_id, plan_id: String(details.plan_id), unit: String(details.unit), commit_sha: r.requested_version, outcome: "refused", reason: refusal });
+        continue;
+      }
+    } else if (isDeploy) {
       let refusal: string | null = null;
       try {
         const head = await forgeMainHead(env.DB);
@@ -912,7 +1013,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean };
     if (isDeploy) {
       deploysRun++;
-      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations });
+      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations, ...(isBreakGlass ? { destructive: named } : {}) });
     } else if (isRetire) {
       run = await executeRetire(new CloudflareRetire(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher), retirePlan!, opts);
     } else {
@@ -925,12 +1026,20 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     await auditQuietly(env, {
       event_type: run.ok ? spec.succeededEvent : spec.failedEvent, actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
       payload: isDeploy
-        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...run }
+        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named } : {}), ...run }
         : isRetire
           ? { request_id: r.request_id, executor: spec.executor, worker: r.service_id, proposal_id: String(details.proposal_id), ...run }
           : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
     });
-    if (isRetire) {
+    if (isBreakGlass) {
+      // Every outcome reaches the owner (Telegram, critical_reports); the lock is freed for a later plan.
+      await releaseLock(env, breakGlassLockName(unitForService(r.service_id)!, r.requested_version), r.requested_version);
+      await reportBreakGlass(env.AGENTS, {
+        request_id: r.request_id, plan_id: String(details.plan_id), unit: String(details.unit), commit_sha: r.requested_version, outcome: run.ok ? "succeeded" : "failed",
+        reason: run.reason ?? null, restored: run.restored, migrations_applied: run.migrations_applied, migration_failed: run.migration_failed ?? null,
+        restore_point_at: run.restore_point_at ?? null, steps: run.steps,
+      });
+    } else if (isRetire) {
       if (!run.ok) {
         await publishRetireReport(env, r, details, { ok: false, reason: run.reason, changed: run.changed === true, steps: run.steps });
       }
