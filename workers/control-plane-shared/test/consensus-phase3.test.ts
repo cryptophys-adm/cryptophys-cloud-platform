@@ -293,6 +293,15 @@ test("7. deploy mode: a commit that is not current main, or red CI, fails withou
     assert.equal(p.status, "failed");
     assert.match(JSON.parse(p.outcome_json).error, /github_main_not_mirrored/);
     assert.deepEqual(gh.dispatched, []);
+    // A deploy with no path is never silent: the refusal is audited with the native path's reason (2026-11-13).
+    const noPath = db.raw.prepare("SELECT actor, subject, outcome, payload_json FROM audit_events WHERE event_type = 'deployment.no_path' ORDER BY rowid").all() as any[];
+    assert.deepEqual(noPath.map((e) => [e.subject, e.outcome, JSON.parse(e.payload_json).github_gate]), [
+      ["cryptophys-console", "refused", "commit_not_current_main"],
+      ["cryptophys-platform-api", "refused", "ci_not_green"],
+      ["cryptophys-forge", "refused", "github_main_not_mirrored"],
+    ]);
+    assert.equal(noPath[2].actor, `consensus:${p.proposal_id}`);
+    assert.ok(noPath.every((e) => JSON.parse(e.payload_json).native_deploy?.reason), "the native path's reason is recorded");
   } finally { globalThis.fetch = realFetch; }
 });
 

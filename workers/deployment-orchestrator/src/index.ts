@@ -241,6 +241,24 @@ async function forgeGate(env: Env, sha: string): Promise<{ workflows: { name: st
   return decision;
 }
 
+/**
+ * forgeGate for a deploy the native path refused. A refusal (the commit is not current main, its checks are not
+ * ready, or GitHub's main is not the same commit) is audited as deployment.no_path together with the native path's
+ * reason, then rethrown: after the cut-over a commit can have no deploy path at all, and that must never be silent
+ * (2026-11-13 19:08: ef08ac7 failed with github_main_not_mirrored while the native reason, no_bundle, was not recorded).
+ */
+async function fallbackGate(env: Env, sha: string, actor: string, subject: string, unit: DeployUnit, nativeChoice: NativeChoice): Promise<{ workflows: { name: string; conclusion: string | null }[] }> {
+  try {
+    return await forgeGate(env, sha);
+  } catch (e) {
+    await appendAuditEvent(env.DB, {
+      event_type: "deployment.no_path", actor, subject, outcome: "refused",
+      payload: { commit_sha: sha, unit: unit.unit, workflow: unit.workflow, github_gate: String((e as Error)?.message ?? e).slice(0, 120), native_deploy: ineligibility(nativeChoice) },
+    }).catch(() => undefined);
+    throw e;
+  }
+}
+
 type NativeChoice = { eligible: true; services: PlannedService[]; migrations: PlannedMigration[] } | { eligible: false; reason: string; service?: string; file?: string };
 
 /**
@@ -289,7 +307,7 @@ export async function deployForConsensus(env: Env, proposalId: string, decisionI
     }
     if (!env.GH_ACTIONS_TOKEN) throw new Error("not_configured");
   }
-  const ci = await forgeGate(env, sha);
+  const ci = await fallbackGate(env, sha, actor, target, unit, nativeChoice);
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`consensus:${unit.workflow}:${sha}`))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
   const lock = await lockResponse.json() as { claimed?: boolean };
@@ -377,8 +395,8 @@ export async function deployForRecovery(env: Env, planId: string, decisionId: st
     }
     if (!env.GH_ACTIONS_TOKEN) throw new Error("not_configured");
   }
-  const ci = await forgeGate(env, sha);
   const actor = `recovery:${planId}`;
+  const ci = await fallbackGate(env, sha, actor, serviceId, unit, nativeChoice);
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(`recovery:${unit.workflow}:${sha}`))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
   const lock = await lockResponse.json() as { claimed?: boolean };
