@@ -12,7 +12,7 @@
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
-import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
+import { CAPABILITIES, RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
@@ -126,6 +126,26 @@ export function templateProposal(s: ServiceObs): Proposal {
         { action: "rollback_worker_version", description: "If the active version is faulty, roll back to the previous version." },
       ],
   };
+}
+
+/**
+ * Owner 2026-11-14: consensus.propose's hourly window as the Policy Engine counts it (capabilities.ts, check
+ * rate_limit): the syscalls this agent CONSUMED in the last hour (agent_syscall_consumptions, written by
+ * verifySyscallDecision when an allowed call is dispatched) against max_per_hour (4). A denied attempt is never
+ * consumed, so it does not move the window; it only adds a denied syscall (19 in one day, measured 2026-11-14).
+ * The window reopens when its oldest counting consumption is an hour old. The Policy Engine stays the authority:
+ * this only avoids calls it is certain to refuse.
+ */
+export async function consensusProposeWindow(db: KernelEnv["DB"], agentId: string, now = Date.now()): Promise<{ used: number; limit: number; full: boolean; reopens_at: string | null }> {
+  const limit = CAPABILITIES["consensus.propose"].max_per_hour ?? Number.POSITIVE_INFINITY;
+  const rows = (await db.prepare(
+    "SELECT consumed_at FROM agent_syscall_consumptions WHERE agent_id = ? AND capability = 'consensus.propose' AND consumed_at >= ? ORDER BY consumed_at ASC",
+  ).bind(agentId, new Date(now - 3_600_000).toISOString()).all<{ consumed_at: string }>()).results ?? [];
+  const used = rows.length;
+  const full = used >= limit;
+  // With n >= limit consumptions, a call is allowed again once n - limit + 1 of them have left the window.
+  const reopens_at = full ? new Date(Date.parse(rows[used - limit].consumed_at) + 3_600_000).toISOString() : null;
+  return { used, limit, full, reopens_at };
 }
 
 export interface CycleReport {
@@ -251,6 +271,25 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   if (observed.outcome !== "succeeded") { await memory.put("last_cycle", report); return report; }
   const obs = observed.result as unknown as Observation;
 
+  // Every consensus.propose of this cycle goes through here (same order as before: drift, agents, organism, deploy,
+  // merge, Access). When the hourly window is full the attempt is skipped and the cycle records ONE finding instead
+  // of a denied syscall per attempt. Date.now(), not `now`: the Policy Engine's rate_limit counts on its own clock.
+  let windowFull = false;
+  const proposeConsensus = async (input: JsonObject): Promise<SyscallResult | null> => {
+    if (!windowFull) {
+      const w = await consensusProposeWindow(env.DB, AGENT_ID, Date.now());
+      if (w.full) {
+        windowFull = true;
+        report.findings.push({
+          kind: "rate_window", action: "none", capability: "consensus.propose", used: w.used, limit: w.limit, reopens_at: w.reopens_at,
+          why: `consensus.propose window full until ${w.reopens_at ? w.reopens_at.slice(11, 16) : "later"} UTC (${w.used} of ${w.limit} in the last hour); proposals wait`,
+        });
+      }
+    }
+    if (windowFull) return null;
+    return syscall(env, AGENT_ID, "consensus.propose", input);
+  };
+
   // Drift -> tier 1 proposal.
   const proposals = (await memory.get<Record<string, number>>("proposals")) ?? {};
   const open = new Set(obs.open_agent_plans.map((p) => p.service_id));
@@ -278,12 +317,14 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     // ADR-0009: the same remediation goes to the control-plane consensus. In shadow mode it is
     // voted, tallied and policy-checked but never executed.
     if (s.desired_version) {
-      const consensus = await syscall(env, AGENT_ID, "consensus.propose", {
+      const consensus = await proposeConsensus({
         action: "redeploy_desired_version", target: s.service_id,
         params: { version: s.desired_version, observed_version: s.observed_version, reasons: s.reasons.slice(0, 5) },
       });
-      report.actions.push(consensus);
-      report.findings.push({ kind: "drift", service_id: s.service_id, action: "consensus.propose", outcome: consensus.outcome });
+      if (consensus) {
+        report.actions.push(consensus);
+        report.findings.push({ kind: "drift", service_id: s.service_id, action: "consensus.propose", outcome: consensus.outcome });
+      }
     }
     if (result.outcome === "succeeded") {
       proposals[s.service_id] = now;
@@ -313,12 +354,14 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       const recent = await env.DB.prepare("SELECT 1 AS x FROM consensus_proposals WHERE action = 'suspend_agent' AND target = ? AND created_at >= ? LIMIT 1")
         .bind(noisy.agent_id, new Date(now - 6 * 3_600_000).toISOString()).first();
       if (!recent) {
-        const r = await syscall(env, AGENT_ID, "consensus.propose", {
+        const r = await proposeConsensus({
           action: "suspend_agent", target: noisy.agent_id,
           params: { reason: `${noisy.n} denied or failed syscalls in the last hour` },
         });
-        report.actions.push(r);
-        report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
+        if (r) {
+          report.actions.push(r);
+          report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
+        }
       }
     }
     // Owner 2026-11-11 ("dismantle dan delete agent yang sudah tidak berkontribusi"): one enabled agent per
@@ -339,12 +382,14 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
        ORDER BY g.created_at, g.agent_id LIMIT 1`,
     ).bind(idleSince, new Date(now - 7 * 86_400_000).toISOString(), ...exempt).first<{ agent_id: string }>();
     if (idle) {
-      const r = await syscall(env, AGENT_ID, "consensus.propose", {
+      const r = await proposeConsensus({
         action: "retire_agent", target: idle.agent_id,
         params: { reason: `no action, report or vote for ${RETIRE_IDLE_DAYS} days` },
       });
-      report.actions.push(r);
-      report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${RETIRE_IDLE_DAYS} days: retire_agent` });
+      if (r) {
+        report.actions.push(r);
+        report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${RETIRE_IDLE_DAYS} days: retire_agent` });
+      }
     }
     // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
     // an engine, a council seat) is proposed for registration, one per cycle, each action and
@@ -383,7 +428,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         ).bind(prop.action, prop.target, new Date(now - 3_600_000).toISOString()).first<{ n: number }>();
         if ((ran?.n ?? 0) >= perHour) continue;
       }
-      const r = await syscall(env, AGENT_ID, "consensus.propose", prop);
+      const r = await proposeConsensus(prop);
+      if (!r) break;
       report.actions.push(r);
       report.findings.push({ kind: "organism", service_id: prop.target, action: "consensus.propose", outcome: r.outcome, why: `${prop.action}: ${f.detail}`.slice(0, 300) });
       break;
@@ -439,10 +485,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
              AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
         ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString(), brakeOff ? 1 : 0).first();
         if (seen) continue;
-        const r = await syscall(env, AGENT_ID, "consensus.propose", {
+        const r = await proposeConsensus({
           action: "deploy_commit", target: u.target,
           params: { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, reason: u.reason.slice(0, 200) },
         });
+        if (!r) break;
         proposed += 1;
         report.actions.push(r);
         report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome });
@@ -475,7 +522,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         if (!state || state.head_sha !== cr.head_sha || !state.contains_main) continue;
         const action = state.verdict === "would_merge" ? "merge_change" : state.verdict === "needs_owner" ? "merge_owner_change" : null;
         if (!action) continue;
-        const r = await syscall(env, AGENT_ID, "consensus.propose", { action, target: cr.cr_id, params: { head_sha: cr.head_sha } });
+        const r = await proposeConsensus({ action, target: cr.cr_id, params: { head_sha: cr.head_sha } });
+        if (!r) break;
         report.actions.push(r);
         report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "consensus.propose", outcome: r.outcome });
         break;
@@ -506,9 +554,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           report.findings.push({ kind: "access", action: "none", why: "the Access change is already proposed; it waits for the owner" });
         } else {
           const changes = (plan.changes ?? []).slice(0, 12).map((c) => String(c).slice(0, 120));
-          const r = await syscall(env, AGENT_ID, "consensus.propose", { action: "change_access", target: "platform", params: { digest: plan.digest, changes } });
-          report.actions.push(r);
-          report.findings.push({ kind: "access", action: "consensus.propose", outcome: r.outcome, why: `${changes.length} Access change(s): ${changes.slice(0, 3).join("; ")}`.slice(0, 300) });
+          const r = await proposeConsensus({ action: "change_access", target: "platform", params: { digest: plan.digest, changes } });
+          if (r) {
+            report.actions.push(r);
+            report.findings.push({ kind: "access", action: "consensus.propose", outcome: r.outcome, why: `${changes.length} Access change(s): ${changes.slice(0, 3).join("; ")}`.slice(0, 300) });
+          }
         }
       }
     } catch (err) {

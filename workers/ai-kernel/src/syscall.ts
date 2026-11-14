@@ -16,6 +16,7 @@ import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.
 import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
 import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
+import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -67,6 +68,22 @@ export type SyscallResult =
   | { outcome: "succeeded"; capability: string; tier: number; decision_id: string | null; result: JsonObject }
   | { outcome: "denied" | "failed"; capability: string; tier: number; decision_id: string | null; reason: string };
 
+/**
+ * Owner 2026-11-14: a warning that its own agent has since reported resolved is not open. Agents that track an
+ * alert carry its key in the report body (xauusd-risk-manager's health alerts: body.alert_key, body.state "open" |
+ * "resolved", and a "Resolved: <subject>" info report when the alert clears). A warning report `r` is resolved
+ * when the same agent published a later report with the same body.alert_key whose body.state is "resolved" or
+ * whose subject starts with "Resolved:". A warning without an alert_key, or one reopened after its resolution
+ * (a newer warning), stays open. Critical reports are untouched: only an approver's acknowledgement closes them.
+ */
+export function resolvedLaterSql(r: string): string {
+  return `(${r}.severity = 'warning' AND json_extract(${r}.body_json, '$.alert_key') IS NOT NULL AND EXISTS (
+    SELECT 1 FROM agent_reports z WHERE z.agent_id = ${r}.agent_id
+      AND z.created_at >= ${r}.created_at AND (z.created_at > ${r}.created_at OR z.rowid > ${r}.rowid)
+      AND json_extract(z.body_json, '$.alert_key') = json_extract(${r}.body_json, '$.alert_key')
+      AND (json_extract(z.body_json, '$.state') = 'resolved' OR z.subject LIKE 'Resolved:%')))`;
+}
+
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -110,23 +127,31 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     const acks = await acknowledgementsReadable(env.DB);
     const ackJoin = acks ? "LEFT JOIN agent_report_acknowledgements a ON a.report_id = r.report_id" : "";
     const open = acks ? "a.report_id IS NULL" : "1 = 1";
+    // counts.warning and latest_attention hold open warnings only; warnings_resolved_24h counts the alerts (agent and
+    // alert_key) whose warning in the window was later reported resolved (resolvedLaterSql, owner 2026-11-14).
     const countRows = await env.DB.prepare(
-      `SELECT r.severity AS severity, COUNT(*) AS n, SUM(CASE WHEN ${open} THEN 0 ELSE 1 END) AS acknowledged
+      `SELECT r.severity AS severity, COUNT(*) AS n, SUM(CASE WHEN ${open} THEN 0 ELSE 1 END) AS acknowledged,
+         SUM(CASE WHEN r.severity = 'warning' AND ${resolvedLaterSql("r")} THEN 1 ELSE 0 END) AS resolved,
+         COUNT(DISTINCT CASE WHEN r.severity = 'warning' AND ${resolvedLaterSql("r")} THEN r.agent_id || ':' || json_extract(r.body_json, '$.alert_key') END) AS resolved_alerts
        FROM agent_reports r ${ackJoin} WHERE r.created_at > ? GROUP BY r.severity`,
-    ).bind(since).all<{ severity: string; n: number; acknowledged: number | null }>();
+    ).bind(since).all<{ severity: string; n: number; acknowledged: number | null; resolved: number | null; resolved_alerts: number | null }>();
     const counts = { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 };
+    let warningsResolved = 0;
     for (const r of countRows.results) {
       if (r.severity === "critical") {
         const acknowledged = Number(r.acknowledged ?? 0);
         counts.critical = Number(r.n) - acknowledged;
         counts.critical_acknowledged = acknowledged;
-      } else if (r.severity === "warning" || r.severity === "info") {
-        counts[r.severity] = Number(r.n);
+      } else if (r.severity === "warning") {
+        counts.warning = Number(r.n) - Number(r.resolved ?? 0);
+        warningsResolved = Number(r.resolved_alerts ?? 0);
+      } else if (r.severity === "info") {
+        counts.info = Number(r.n);
       }
     }
     const latestRows = await env.DB.prepare(
       `SELECT r.report_id, r.agent_id, r.kind, r.severity, r.subject, r.created_at FROM agent_reports r ${ackJoin}
-       WHERE r.created_at > ? AND (r.severity = 'warning' OR (r.severity = 'critical' AND ${open})) ORDER BY r.created_at DESC, r.rowid DESC LIMIT 5`,
+       WHERE r.created_at > ? AND ((r.severity = 'warning' AND NOT ${resolvedLaterSql("r")}) OR (r.severity = 'critical' AND ${open})) ORDER BY r.created_at DESC, r.rowid DESC LIMIT 5`,
     ).bind(since).all<{ report_id: string; agent_id: string; kind: string; severity: string; subject: string; created_at: string }>();
     const latestAttention = latestRows.results.map((r) => ({
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: r.severity,
@@ -147,13 +172,13 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, created_at: r.created_at,
     }));
     agentReports24h = {
-      since, counts, latest_attention: latestAttention,
+      since, counts, warnings_resolved_24h: warningsResolved, latest_attention: latestAttention,
       critical_fingerprint: criticalFingerprint, latest_critical: latestCritical,
     };
   } catch (err) {
     console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "agent_reports_overview_failed", message: String((err as Error)?.message ?? err) }));
     agentReports24h = {
-      since, counts: { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 }, latest_attention: [],
+      since, counts: { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 }, warnings_resolved_24h: 0, latest_attention: [],
       critical_fingerprint: null, latest_critical: [], error: "reports_unavailable",
     };
   }
@@ -482,15 +507,16 @@ export function withoutLevels(text: string): string {
 export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" | "incremental" = "full"): Promise<JsonObject> {
   const chain = mode === "incremental" ? await verifyAuditChainIncremental(env.DB) : await verifyAuditChain(env.DB);
   const since = new Date(now - 24 * 3_600_000).toISOString();
-  const actionRows = await env.DB.prepare(
-    `SELECT agent_id, outcome, COUNT(*) AS count FROM agent_actions
-     WHERE outcome IN ('denied', 'failed') AND created_at >= ?
-     GROUP BY agent_id, outcome ORDER BY agent_id, outcome`,
-  ).bind(since).all<{ agent_id: string; outcome: "denied" | "failed"; count: number }>();
+  // Denied rows carry their policy reason so the Auditor can tell expected guard outcomes apart (denials.ts).
+  const agentOutcomeRows = await env.DB.prepare(
+    `SELECT agent_id, outcome, CASE WHEN outcome = 'denied' THEN json_extract(result_json, '$.reason') END AS reason, COUNT(*) AS count
+     FROM agent_actions WHERE outcome IN ('denied', 'failed') AND created_at >= ?
+     GROUP BY agent_id, outcome, reason ORDER BY agent_id, outcome`,
+  ).bind(since).all<AgentOutcomeRow>();
   const byAgentMap = new Map<string, { agent_id: string; denied: number; failed: number }>();
   let deniedTotal = 0;
   let failedTotal = 0;
-  for (const r of actionRows.results) {
+  for (const r of agentOutcomeRows.results) {
     const cur = byAgentMap.get(r.agent_id) ?? { agent_id: r.agent_id, denied: 0, failed: 0 };
     if (r.outcome === "denied") {
       cur.denied += r.count;
@@ -501,11 +527,6 @@ export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" |
     }
     byAgentMap.set(r.agent_id, cur);
   }
-  const policyRows = await env.DB.prepare(
-    `SELECT action, COUNT(*) AS count FROM policy_decisions
-     WHERE decision = 'deny' AND created_at >= ?
-     GROUP BY action ORDER BY action`,
-  ).bind(since).all<{ action: string; count: number }>();
   const govRows = await env.DB.prepare(
     `SELECT event_type, COUNT(*) AS count FROM audit_events
      WHERE event_type IN ('agent.suspended', 'agent.resumed', 'kernel.agents_enabled') AND created_at >= ?
@@ -522,6 +543,17 @@ export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" |
   const planRow = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM recovery_plans WHERE created_by LIKE 'agent:%' AND created_at >= ?",
   ).bind(since).first<{ count: number }>();
+  // Owner 2026-11-14: denials classified as expected guard outcomes or unexpected, with the 7 days before the last
+  // 24 h as the baseline (denials.ts). Grouped rows only, through the (decision, created_at) index (0060).
+  const baselineSince = new Date(now - (DENIAL_BASELINE_DAYS + 1) * 86_400_000).toISOString();
+  const denialRows = await env.DB.prepare(
+    `SELECT subject, action, reason, CASE WHEN created_at >= ?1 THEN 1 ELSE 0 END AS recent, COUNT(*) AS count FROM policy_decisions
+     WHERE decision = 'deny' AND created_at >= ?2
+     GROUP BY subject, action, reason, recent`,
+  ).bind(since, baselineSince).all<DenialRow>();
+  const policyByAction = new Map<string, number>();
+  for (const r of denialRows.results) if (Number(r.recent) === 1) policyByAction.set(r.action, (policyByAction.get(r.action) ?? 0) + Number(r.count));
+  const policyRows = [...policyByAction.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([action, count]) => ({ action, count }));
 
   return {
     observed_at: new Date(now).toISOString(),
@@ -534,10 +566,11 @@ export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" |
       agent_actions_by_agent: [...byAgentMap.values()],
       denied_agent_syscalls: deniedTotal,
       failed_agent_syscalls: failedTotal,
-      policy_denies_by_action: policyRows.results,
+      policy_denies_by_action: policyRows,
       governance_audit_events: governanceEvents,
       agent_recovery_plans: planRow?.count ?? 0,
     },
+    denials: classifyDenials(denialRows.results, agentOutcomeRows.results) as unknown as JsonObject,
   };
 }
 

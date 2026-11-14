@@ -5,11 +5,14 @@
  *  - Tier 0: reads full audit chain verification and 24-hour governance event counts via audit.verify.
  *  - Deterministic trigger:
  *      * chain invalid -> critical
- *      * > 3 denied agent syscalls in 24h OR any kernel.agents_enabled change in 24h -> warning
+ *      * unexpected policy denials above the 7-day baseline, or a new unexpected reason code (denials.ts),
+ *        OR any kernel.agents_enabled change in 24h -> warning. Expected guard outcomes (survival mode,
+ *        rate limit, CI not green, vote not passed) are counted as info and never warn (owner 2026-11-14).
  *      * otherwise once daily on the 00:37 UTC cycle -> info
  *  - AI task draft_audit_digest drafts human-readable text; validator rejects any output whose
- *    claim about chain validity contradicts the deterministic verification result.
- *  - Body carries the deterministic verification result and 24h counts verbatim.
+ *    claim about chain validity contradicts the deterministic verification result, and any output that
+ *    calls expected guard outcomes a problem when there are no unexpected denials.
+ *  - Body carries the deterministic verification result, the 24h counts and the denial metrics verbatim.
  *  - The auditor never fixes anything: it never suspends agents, alters data, or proposes recovery.
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
@@ -20,6 +23,7 @@ import type { ReportSeverity } from "./reports.ts";
 import { pruneExpiredMemories, recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import type { CycleReport, KernelEnv, Memory } from "./supervisor.ts";
 import { syscall } from "./syscall.ts";
+import { EXPECTED_DENIAL_CHECKS, type DenialMetrics } from "./denials.ts";
 
 export const AUDITOR_ID = "auditor";
 const SERVICE = "cryptophys-ai-kernel";
@@ -66,6 +70,8 @@ export interface AuditObservation {
   valid: boolean;
   events_checked: number;
   counts_24h: AuditCounts24h;
+  /** Expected vs unexpected denials with the 7-day baseline (denials.ts); absent only in old observations. */
+  denials?: DenialMetrics;
 }
 
 export interface AuditDigestDraft {
@@ -87,13 +93,36 @@ function contradictsChainValidity(text: string, deterministicValid: boolean): bo
   return claimsInvalid && !negated;
 }
 
+/**
+ * Owner 2026-11-14: with zero unexpected denials, every refusal in the window was a guard working as designed
+ * (survival mode, a rate limit, CI not green, a vote that did not pass). A draft that calls them a problem, an
+ * increase to worry about, or a reason to review an agent's instructions misleads the owner and is rejected.
+ * One sentence at a time; a sentence that negates the claim ("no problem", "nothing to review") is accepted.
+ */
+export function callsExpectedDenialsAProblem(text: string, denials: DenialMetrics | undefined): boolean {
+  if (!denials || denials.unexpected_24h !== 0) return false;
+  // Telling someone to review or fix an agent's instructions is never a reading of expected guard outcomes.
+  if (/\b(?:supervisor|agent|auditor|analyst|curator)(?:'s|s'|s)?\s+(?:instructions?|prompts?|configuration|config|logic|behaviou?r)\b/i.test(text)) return true;
+  for (const sentence of text.split(/[.!?;\n]+/)) {
+    const aboutDenials = /\b(?:den(?:y|ied|ials?)|refus(?:ed|als?)|block(?:ed|s)?|reject(?:ed|ions?)|system\s+calls?|syscalls?|requests?)\b/i.test(sentence);
+    if (!aboutDenials) continue;
+    const problem = /\b(?:increas\w*|spik\w*|surg\w*|ris(?:e|ing)|jump\w*|anomal\w*|unusual|suspicious|concern\w*|alarm\w*|worr\w*|problem\w*|issues?|misbehav\w*|misconfigur\w*|malfunction\w*|investigat\w*|review|needs?\s+(?:a\s+)?(?:look|attention))\b/i.test(sentence);
+    if (!problem) continue;
+    const negated = /\b(?:no|not|none|nothing|without|never)\b/i.test(sentence);
+    if (!negated) return true;
+  }
+  return false;
+}
+
 export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestDraft> {
   return {
     name: "draft_audit_digest",
     instructions:
       "You are the advisory Platform Auditor of the cryptophys control plane. Summarize the deterministic audit chain verification and 24-hour governance counts accurately. " +
       'Return {"headline": at most 160 characters, "summary": at most 800 characters, "items": array of 1..8 strings each at most 200 characters}. ' +
-      "Never contradict the deterministic chain validity result.",
+      "Never contradict the deterministic chain validity result. " +
+      `Report metrics, not narrative: the denials object counts expected guard outcomes (${(obs.denials?.expected_reasons ?? EXPECTED_DENIAL_CHECKS).join(", ")}) and unexpected refusals, each against its 7-day daily baseline. ` +
+      "Expected guard outcomes are the platform's brakes working as designed: never call them a problem, an increase to worry about, or a reason to review an agent's instructions.",
     maxInputChars: 6000,
     maxOutputTokens: 500,
     validate(raw): AuditDigestDraft | null {
@@ -114,6 +143,7 @@ export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestD
       if (typeof v.chain_valid === "boolean" && v.chain_valid !== obs.chain.valid) return null;
       const combined = `${headline}\n${summary}\n${items.join("\n")}`;
       if (contradictsChainValidity(combined, obs.chain.valid)) return null;
+      if (callsExpectedDenialsAProblem(combined, obs.denials)) return null;
       return { headline, summary, items };
     },
     diagnose(raw): string {
@@ -131,6 +161,7 @@ export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestD
       if (typeof v.chain_valid === "boolean" && v.chain_valid !== obs.chain.valid) return "chain_valid_mismatch";
       const combined = `${headline}\n${summary}\n${(v.items as unknown[]).slice(0, 8).join("\n")}`;
       if (contradictsChainValidity(combined, obs.chain.valid)) return "chain_contradiction";
+      if (callsExpectedDenialsAProblem(combined, obs.denials)) return "expected_denials_called_a_problem";
       return "unknown";
     },
   };
@@ -146,6 +177,8 @@ export function templateAuditDigest(
   const plainReason = (r: string) => {
     const [code, n] = r.split(":");
     if (code === "denied_agent_syscalls") return `${n} agent request(s) were refused by policy`;
+    if (code === "unexpected_denials") return `${n} unexpected refusal(s) by policy (not a guard working as designed)`;
+    if (code.startsWith("new_denial_reason_")) return `a new refusal reason, ${code.slice("new_denial_reason_".length).replace(/_/g, " ")} (${n})`;
     if (code === "failed_agent_syscalls") return `${n} agent request(s) failed`;
     if (code === "kernel_agents_enabled_changed") return "the agents' kill switch was changed";
     if (code === "agent_suspended") return `${n ?? "an"} agent was paused`;
@@ -162,24 +195,43 @@ export function templateAuditDigest(
     : `The audit log is NOT intact: entry ${obs.chain.first_invalid_event_id ?? "unknown"} does not match (${obs.chain.reason ?? "hash mismatch"}) after ${obs.chain.events_checked} entries.`;
 
   const gov = c.governance_audit_events;
+  const d = obs.denials;
+  // Owner 2026-11-14: metrics, not narrative. Expected guard outcomes and unexpected refusals, each against its baseline.
+  const refusals = d
+    ? `Refusals by policy in the last 24 hours: ${d.expected_24h} expected guard outcome(s) (baseline ${d.baseline_daily_expected}/day) and ${d.unexpected_24h} unexpected (baseline ${d.baseline_daily_unexpected}/day); ${c.failed_agent_syscalls} agent request(s) failed. `
+    : `In the last 24 hours, ${c.denied_agent_syscalls} agent request(s) were refused by policy and ${c.failed_agent_syscalls} failed. `;
   const summary =
-    `${chainLine} In the last 24 hours, ${c.denied_agent_syscalls} agent request(s) were refused by policy and ${c.failed_agent_syscalls} failed. ` +
+    (`${chainLine} ${refusals}` +
     `Agents paused: ${gov["agent.suspended"]}, resumed: ${gov["agent.resumed"]}; kill-switch changes: ${gov["kernel.agents_enabled"]}. ` +
-    `Recovery plans written by agents: ${c.agent_recovery_plans}.`.slice(0, 800);
+    `Recovery plans written by agents: ${c.agent_recovery_plans}.`).slice(0, 800);
 
-  const items: string[] = [
-    obs.chain.valid
-      ? `Audit log intact (${obs.chain.events_checked} entries checked)`
-      : `Audit log altered at entry ${obs.chain.first_invalid_event_id ?? "unknown"}: ${obs.chain.reason ?? "tampered"}`.slice(0, 200),
-    `Agent requests in 24 hours: ${c.denied_agent_syscalls} refused, ${c.failed_agent_syscalls} failed`,
-    `Agents paused ${gov["agent.suspended"]}, resumed ${gov["agent.resumed"]}; kill-switch changes ${gov["kernel.agents_enabled"]}`,
-    `Recovery plans written by agents in 24 hours: ${c.agent_recovery_plans}`,
-  ];
-  for (const a of c.agent_actions_by_agent.slice(0, 2)) {
-    items.push(`Agent ${a.agent_id}: ${a.denied} refused, ${a.failed} failed`.slice(0, 200));
+  const chainItem = obs.chain.valid
+    ? `Audit log intact (${obs.chain.events_checked} entries checked)`
+    : `Audit log altered at entry ${obs.chain.first_invalid_event_id ?? "unknown"}: ${obs.chain.reason ?? "tampered"}`.slice(0, 200);
+  const items: string[] = d
+    ? [
+      chainItem,
+      ...d.interpretation,
+      `Agents paused ${gov["agent.suspended"]}, resumed ${gov["agent.resumed"]}; kill-switch changes ${gov["kernel.agents_enabled"]}`,
+      `Recovery plans written by agents in 24 hours: ${c.agent_recovery_plans}`,
+    ]
+    : [
+      chainItem,
+      `Agent requests in 24 hours: ${c.denied_agent_syscalls} refused, ${c.failed_agent_syscalls} failed`,
+      `Agents paused ${gov["agent.suspended"]}, resumed ${gov["agent.resumed"]}; kill-switch changes ${gov["kernel.agents_enabled"]}`,
+      `Recovery plans written by agents in 24 hours: ${c.agent_recovery_plans}`,
+    ];
+  if (d) {
+    for (const a of d.by_agent.filter((x) => x.denied + x.failed > 0).slice(0, 2)) {
+      items.push(`Agent ${a.agent_id}: ${a.denied_expected} expected refusal(s), ${a.denied_unexpected} unexpected, ${a.failed} failed`.slice(0, 200));
+    }
+  } else {
+    for (const a of c.agent_actions_by_agent.slice(0, 2)) {
+      items.push(`Agent ${a.agent_id}: ${a.denied} refused, ${a.failed} failed`.slice(0, 200));
+    }
   }
   for (const p of c.policy_denies_by_action.slice(0, 2)) {
-    items.push(`Policy refused "${p.action.replace(/[._]/g, " ")}" ${p.count} time(s)`.slice(0, 200));
+    items.push(`Policy refused "${p.action === "agent.syscall" ? "agent request" : p.action.replace(/[._]/g, " ")}" ${p.count} time(s)`.slice(0, 200));
   }
   return {
     headline: headline.slice(0, 160),
@@ -226,7 +278,19 @@ function evaluateAuditTriggers(
     severity = "critical";
     reasons.push("audit_chain_invalid");
   }
-  if (obs.counts_24h.denied_agent_syscalls > 3) {
+  if (obs.denials) {
+    // Owner 2026-11-14: expected guard outcomes never warn; unexpected ones warn above the 7-day baseline or
+    // when their reason code is new (denials.ts). An invalid chain above stays critical whatever the denials.
+    if (obs.denials.warn) {
+      if (severity !== "critical") severity = "warning";
+      reasons.push(`unexpected_denials:${obs.denials.unexpected_24h}`);
+      for (const code of obs.denials.new_unexpected_reasons.slice(0, 3)) {
+        const n = obs.denials.by_reason.find((m) => m.reason === code)?.count_24h ?? 0;
+        reasons.push(`new_denial_reason_${code}:${n}`);
+      }
+    }
+  } else if (obs.counts_24h.denied_agent_syscalls > 3) {
+    // An observation without denial metrics (an older kernel): the previous rule.
     if (severity !== "critical") severity = "warning";
     reasons.push(`denied_agent_syscalls:${obs.counts_24h.denied_agent_syscalls}`);
   }
@@ -297,6 +361,7 @@ export async function runAuditCycle(
     trigger_reasons: reasons,
     chain: obs.chain as unknown as JsonObject,
     counts_24h: obs.counts_24h as unknown as JsonObject,
+    ...(obs.denials ? { denials: obs.denials as unknown as JsonObject } : {}),
   };
   const aiInput = recalled && recalled.length > 0 ? { ...baseInput, context: recalled } : baseInput;
   const ai = await engineFor(env, SERVICE, [task.name]).run(
@@ -314,6 +379,9 @@ export async function runAuditCycle(
     events_checked: obs.chain.events_checked,
     chain: obs.chain as unknown as JsonObject,
     counts_24h: obs.counts_24h as unknown as JsonObject,
+    // Owner 2026-11-14: structured metrics (counts per reason, per subject and per agent; expected vs unexpected;
+    // deltas against the 7-day baseline) and their deterministic interpretation, whatever the AI wrote.
+    ...(obs.denials ? { denials: obs.denials as unknown as JsonObject, metrics: obs.denials.interpretation } : {}),
     trigger_reasons: reasons,
   };
 
