@@ -224,6 +224,27 @@ test("FC7. a run in progress is not taken twice; a lost one is retried after 30 
   assert.deepEqual(ran, [h("1")]);
 });
 
+test("FC7b. a commit of main checked only as a change request head is checked again as main, once (cut-over, 2026-11-13)", async () => {
+  const db = migratedDb();
+  const t0 = Date.parse("2026-11-13T23:04:00Z");
+  // The change request's head passed as a change; the Forge then fast-forwarded main to it.
+  assert.equal(await claim(db, h("1"), t0, "change"), true);
+  db.raw.prepare("UPDATE forge_check_runs SET status = 'passed', finished_at = ? WHERE commit_sha = ?").run(new Date(t0 + 120_000).toISOString(), h("1"));
+  assert.equal(await claim(db, h("1"), t0 + 180_000, "change"), false, "another change run does not take it over");
+  const { repo } = fakeRepo({ commits: [h("1")] });
+  const env = { DB: db, ARTIFACTS: { get: async () => repo } };
+  const ran: string[] = [];
+  const later = t0 + 15 * 60_000;
+  assert.deepEqual(await checksTick(env, REPO, passingDeps(ran), () => later), { outcome: "checked", commit: h("1"), status: "passed", pass: 1, fail: 0 });
+  const row = db.raw.prepare("SELECT status, source, started_at FROM forge_check_runs WHERE commit_sha = ?").get(h("1")) as any;
+  assert.deepEqual([row.status, row.source, row.started_at], ["passed", "main", new Date(later).toISOString()]);
+  assert.deepEqual(await checksTick(env, REPO, passingDeps(ran), () => later + 15 * 60_000), { outcome: "up_to_date" }, "once");
+  assert.deepEqual(ran, [h("1")]);
+  // A live change run is never taken over by main.
+  assert.equal(await claim(db, h("2"), later, "change"), true);
+  assert.equal(await claim(db, h("2"), later + 60_000, "main"), false);
+});
+
 test("FC8. an infrastructure error is recorded as an error, not as a test failure", async () => {
   const db = migratedDb();
   const { repo, trees } = fakeRepo({ commits: [h("1")] });

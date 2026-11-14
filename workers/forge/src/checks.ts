@@ -147,20 +147,28 @@ export interface CheckRow {
 }
 
 /**
- * Pick the commit to check: among main's newest commits, the oldest that has no run, or whose run
- * was lost (still "running" after 30 minutes). Returns null when every one has been checked.
+ * Pick the commit to check: among main's newest commits, the oldest that has no run, whose run
+ * was lost (still "running" after 30 minutes), or that was checked only as a change request head.
+ * Returns null when every one has been checked as a commit of main.
+ *
+ * After the cut-over (ADR-0012 G6) the Forge fast-forwards main to a change request's head, which
+ * already has a passed run with source 'change'. Only a run of main stores the commit's Worker
+ * bundles (G2a), so without a second run every merged commit had no bundles and the native deploy
+ * refused it (no_bundle; 2026-11-13, 6e7fdb7 to 6eedf61).
  */
 export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
   const log = await repo.log({ ref: "main", limit: LOOKBACK_COMMITS });
   const shas = log.map((c) => (typeof c.hash === "string" ? c.hash : "")).filter((h) => HEX40.test(h));
   if (shas.length === 0) return null;
   const placeholders = shas.map(() => "?").join(",");
-  const rows = await db.prepare(`SELECT commit_sha, status, started_at FROM forge_check_runs WHERE commit_sha IN (${placeholders})`).bind(...shas).all<Pick<CheckRow, "commit_sha" | "status" | "started_at">>();
+  const rows = await db.prepare(`SELECT commit_sha, status, started_at, source FROM forge_check_runs WHERE commit_sha IN (${placeholders})`).bind(...shas)
+    .all<Pick<CheckRow, "commit_sha" | "status" | "started_at"> & { source: CheckSource | null }>();
   const done = new Map((rows.results ?? []).map((r) => [r.commit_sha, r]));
   for (const sha of [...shas].reverse()) {
     const row = done.get(sha);
     if (!row) return sha;
     if (row.status === "running" && Date.parse(row.started_at) < nowMs - STALE_RUN_MS) return sha;
+    if (row.source === "change" && row.status !== "running") return sha;
   }
   return null;
 }
@@ -168,7 +176,10 @@ export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: n
 /** What a check was of (migration 0039): a commit of main, or a change request head. */
 export type CheckSource = "main" | "change";
 
-/** Claim a commit for this tick. False if another tick holds a live run of it. */
+/**
+ * Claim a commit for this tick. False if another tick holds a live run of it. A run of main also takes over a
+ * finished run of the same commit as a change request head (nextCommit), so that the commit's bundles are stored.
+ */
 export async function claim(db: D1Database, commit: string, nowMs: number, source: CheckSource = "main"): Promise<boolean> {
   const startedAt = new Date(nowMs).toISOString();
   const staleBefore = new Date(nowMs - STALE_RUN_MS).toISOString();
@@ -176,7 +187,8 @@ export async function claim(db: D1Database, commit: string, nowMs: number, sourc
     `INSERT INTO forge_check_runs (commit_sha, status, runner, started_at, source) VALUES (?, 'running', ?, ?, ?)
      ON CONFLICT(commit_sha) DO UPDATE SET status = 'running', runner = excluded.runner, started_at = excluded.started_at, source = excluded.source,
        files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL, steps = NULL, guard_status = NULL
-     WHERE forge_check_runs.status = 'running' AND forge_check_runs.started_at < ?`,
+     WHERE (forge_check_runs.status = 'running' AND forge_check_runs.started_at < ?)
+        OR (excluded.source = 'main' AND forge_check_runs.source = 'change' AND forge_check_runs.status <> 'running')`,
   ).bind(commit, RUNNER_ID, startedAt, source, staleBefore).run();
   return (r.meta?.changes ?? 0) > 0;
 }
