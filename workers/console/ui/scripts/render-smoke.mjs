@@ -210,6 +210,19 @@ MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "
     { key: "kv_writes", label: "KV writes", today: 0, limit: 1000, unit: "writes", pct: 0 },
   ],
   workers_today: SVC.map((s, i) => ({ script: s, requests: 9000 - i * 700 })), workers_errors_today: 4, source: "Cloudflare GraphQL Analytics & Billable Usage API" };
+// Owner 2026-11-14: the Observer on the Organism page (GET /v1/observer; measured vitals, one labelled estimate).
+MOCK["/api/platform/v1/observer"] = { schema: "observer.v1", observed_at: at(0), configured: true, available: true, cron: "27,57 * * * *",
+  organs: SVC.slice(0, 6).map((s, i) => ({ worker: s, last_hour: at(60), measured: { requests: 1200 - i * 100, errors: i, error_rate: i / 1000, cpu_p99_ms: 3.5 + i, exceptions: i, exceeded_cpu: 0, exceeded_memory: 0 },
+    series: Array.from({ length: 48 }, (_, h) => ({ hour: at(60 * (48 - h)), requests: 1000 + h, error_rate: h === 40 && i === 0 ? 0.3 : 0.002, cpu_p99_ms: 3 + (h % 5) })) })),
+  resources: [{ subject: "d1:5d6c1e2f-0000-4000-8000-000000000000-with-a-long-identifier", kind: "d1", last_hour: at(60), measured: { requests: 5500, rows_read: 900000, rows_written: 2000, neurons: null, rows_per_query: 163.6 }, series: Array.from({ length: 48 }, (_, h) => ({ hour: at(60 * (48 - h)), value: 10000 + h * 100 })) }],
+  estimates: { rows_per_request: { value: 41.2, hour: at(60), measured: false, basis: "estimated: all D1 rows read on the account divided by all Worker requests in the hour" } },
+  anomalies: [
+    { finding_id: "obs_1", worker: SVC[0], metric: "error_rate", kind: "anomaly", severity: "warning", bucket: at(120), value: 0.3, baseline_7d: 0.002, z: 41.5, since_deploy: { version: "e0bd92815ac9", deployed_at: at(150) }, sample: {}, detail: "300 errors in 1000 requests (30.0 %) in the hour; a long detail line that has to wrap on a phone screen", report_only: false, created_at: at(90) },
+    { finding_id: "obs_2", worker: "account", metric: "observability_permission_missing", kind: "capability", severity: "info", bucket: "2026-11-14", value: null, baseline_7d: null, z: null, since_deploy: null, sample: {}, detail: "The token may not read Workers Observability; needs Account > Workers Observability > Read", report_only: true, created_at: at(90) },
+  ],
+  deploys: [{ worker: SVC[0], version: "e0bd92815ac9", previous: "6fafa095ce3e", deployed_at: at(150), actor: "ci", rollback: false }],
+  last_senses: { bucket: at(120), ran_at: at(93), status: "partial", datasets: { workers: "ok", d1: "ok", d1_queries: "ok", kv: "no_data", do: "error: unknown field", ai: "ok", observability: "error: http 403" }, findings: [] },
+  last_inventory: { bucket: at(3), ran_at: at(3), status: "partial", datasets: {}, findings: [{ worker: "rogue-worker", metric: "undeclared_worker", severity: "warning", detail: "rogue-worker is live with 42 requests in 7 days but no DNA declares it" }] } };
 MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
 
 // Owner 2026-11-13: the Owner page (#/owner) reads GET /v1/owner/inbox: approvals and open critical reports only.
@@ -283,6 +296,13 @@ for (const width of [390, 1440]) {
       const body = await page.evaluate(() => document.body.innerText);
       for (const want of ["5f1c0de2b7a94e3c", "5114 objects · 41 branches", "2.3 MiB", "discovery_failed:discovery_http_401"]) {
         if (!body.includes(want)) problems.push(`${width}px #/code: git backup panel does not show "${want}"`);
+      }
+    }
+    if (route === "organism") {
+      // Owner 2026-11-14: the Observer panel shows the measured values of GET /v1/observer and labels the estimate.
+      const body = await page.evaluate(() => document.body.innerText);
+      for (const want of ["Measured once an hour", "30.0 %", "41.2 · estimated", "e0bd92815ac9", "rogue-worker is live"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/organism: Observer panel does not show "${want}"`);
       }
     }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });
