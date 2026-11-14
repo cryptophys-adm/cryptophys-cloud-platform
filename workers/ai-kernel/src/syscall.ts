@@ -9,6 +9,8 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
+import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
+import { LEARNING_CAPABILITIES } from "../../control-plane-shared/src/power-mode.ts";
 import { appendAuditEvent, verifyAuditChain, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift } from "../../control-plane-shared/src/drift-state.ts";
@@ -507,12 +509,15 @@ export function withoutLevels(text: string): string {
 export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" | "incremental" = "full"): Promise<JsonObject> {
   const chain = mode === "incremental" ? await verifyAuditChainIncremental(env.DB) : await verifyAuditChain(env.DB);
   const since = new Date(now - 24 * 3_600_000).toISOString();
-  // Denied rows carry their policy reason so the Auditor can tell expected guard outcomes apart (denials.ts).
+  // Denied rows carry their policy reason so the Auditor can tell expected guard outcomes apart (denials.ts), and a
+  // learning capability (memory.remember, knowledge.propose) so a blocked learning call is counted on its own.
+  const learningSlots = LEARNING_CAPABILITIES.map((_, i) => `?${i + 2}`).join(", ");
   const agentOutcomeRows = await env.DB.prepare(
-    `SELECT agent_id, outcome, CASE WHEN outcome = 'denied' THEN json_extract(result_json, '$.reason') END AS reason, COUNT(*) AS count
-     FROM agent_actions WHERE outcome IN ('denied', 'failed') AND created_at >= ?
-     GROUP BY agent_id, outcome, reason ORDER BY agent_id, outcome`,
-  ).bind(since).all<AgentOutcomeRow>();
+    `SELECT agent_id, outcome, CASE WHEN outcome = 'denied' THEN json_extract(result_json, '$.reason') END AS reason,
+       CASE WHEN outcome = 'denied' AND capability IN (${learningSlots}) THEN capability END AS learning_capability, COUNT(*) AS count
+     FROM agent_actions WHERE outcome IN ('denied', 'failed') AND created_at >= ?1
+     GROUP BY agent_id, outcome, reason, learning_capability ORDER BY agent_id, outcome`,
+  ).bind(since, ...LEARNING_CAPABILITIES).all<AgentOutcomeRow>();
   const byAgentMap = new Map<string, { agent_id: string; denied: number; failed: number }>();
   let deniedTotal = 0;
   let failedTotal = 0;
@@ -546,11 +551,13 @@ export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" |
   // Owner 2026-11-14: denials classified as expected guard outcomes or unexpected, with the 7 days before the last
   // 24 h as the baseline (denials.ts). Grouped rows only, through the (decision, created_at) index (0060).
   const baselineSince = new Date(now - (DENIAL_BASELINE_DAYS + 1) * 86_400_000).toISOString();
+  const denialSlots = LEARNING_CAPABILITIES.map((_, i) => `?${i + 3}`).join(", ");
   const denialRows = await env.DB.prepare(
-    `SELECT subject, action, reason, CASE WHEN created_at >= ?1 THEN 1 ELSE 0 END AS recent, COUNT(*) AS count FROM policy_decisions
+    `SELECT subject, action, reason, CASE WHEN action = 'agent.syscall' AND resource IN (${denialSlots}) THEN resource END AS learning_capability,
+       CASE WHEN created_at >= ?1 THEN 1 ELSE 0 END AS recent, COUNT(*) AS count FROM policy_decisions
      WHERE decision = 'deny' AND created_at >= ?2
-     GROUP BY subject, action, reason, recent`,
-  ).bind(since, baselineSince).all<DenialRow>();
+     GROUP BY subject, action, reason, learning_capability, recent`,
+  ).bind(since, baselineSince, ...LEARNING_CAPABILITIES).all<DenialRow>();
   const policyByAction = new Map<string, number>();
   for (const r of denialRows.results) if (Number(r.recent) === 1) policyByAction.set(r.action, (policyByAction.get(r.action) ?? 0) + Number(r.count));
   const policyRows = [...policyByAction.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([action, count]) => ({ action, count }));
@@ -646,7 +653,11 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     } catch {}
   }
 
+  // The daily burn comes from the Billable Usage API (cf-usage.ts persistBillableMetrics: the billing cycle's cost to
+  // date divided by the days observed, written to infra_burn_metrics on every GET /v1/usage). When no row exists, the
+  // old fallback estimate stays for the runway figure, and is marked as an estimate: it never decides the budget rule.
   let infraBurn24h = 0.15;
+  let burnSource: "billable_usage" | "billable_usage_recent" | "estimate" = "estimate";
   try {
     const dayStr = new Date(now).toISOString().slice(0, 10);
     const burnRow = await env.DB.prepare(
@@ -654,12 +665,17 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     ).bind(dayStr).first<{ total_burn: number }>();
     if (burnRow && typeof burnRow.total_burn === "number" && burnRow.total_burn > 0) {
       infraBurn24h = Math.round(burnRow.total_burn * 100) / 100;
+      burnSource = "billable_usage";
     } else {
+      // No reading today (GET /v1/usage writes one when it is called): the newest day of the last 7 that has one. Each
+      // day's row is already the cycle's average daily cost, so it is taken as is; dividing a few days' rows by 7 (the
+      // rule until 2026-11-14) understated the burn whenever fewer than 7 days had a reading.
       const recentBurn = await env.DB.prepare(
-        "SELECT SUM(estimated_cost_usd) AS total_burn FROM infra_burn_metrics WHERE period_day >= ? AND estimated_cost_usd > 0"
-      ).bind(new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)).first<{ total_burn: number }>();
+        "SELECT period_day, SUM(estimated_cost_usd) AS total_burn FROM infra_burn_metrics WHERE period_day >= ? AND estimated_cost_usd > 0 GROUP BY period_day ORDER BY period_day DESC LIMIT 1"
+      ).bind(new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)).first<{ period_day: string; total_burn: number }>();
       if (recentBurn && typeof recentBurn.total_burn === "number" && recentBurn.total_burn > 0) {
-        infraBurn24h = Math.round((recentBurn.total_burn / 7) * 100) / 100;
+        infraBurn24h = Math.round(recentBurn.total_burn * 100) / 100;
+        burnSource = "billable_usage_recent";
       } else {
         const aiUsage = await env.DB.prepare(
           "SELECT SUM(requests) AS total_requests FROM ai_usage WHERE day = ?"
@@ -669,6 +685,14 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
       }
     }
   } catch {}
+
+  // Owner 2026-11-14: a monthly budget, not the free tier. The platform stores a daily burn, not the month's spend, so
+  // the month is projected as that burn x the days of the current UTC month (Cloudflare's billing cycle may differ).
+  // Only a burn read from the Billable Usage API is projected; an estimate is "not measured" (null).
+  const budgetUsdMonth = await readPolicyParameter(env.DB, "infra-budget-usd-month");
+  const d = new Date(now);
+  const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  const projectedMonthUsd = burnSource === "estimate" ? null : Math.round(infraBurn24h * daysInMonth * 100) / 100;
 
   const metabolicRatio = infraBurn24h > 0 ? Math.round((tradingNetPnl24h / infraBurn24h) * 100) / 100 : null;
   const runwayDays = treasurySource === "ledger" && treasuryReserve !== null && infraBurn24h > 0 ? Math.round((treasuryReserve / infraBurn24h) * 10) / 10 : null;
@@ -684,6 +708,10 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     treasury_source: treasurySource,
     runway_days: runwayDays,
     infra_burn_cost_24h: infraBurn24h,
+    infra_burn_source: burnSource,
+    infra_budget_usd_month: budgetUsdMonth,
+    infra_projected_month_usd: projectedMonthUsd,
+    infra_projection_days: daysInMonth,
     trading_net_pnl_24h: tradingNetPnl24h,
     metabolic_ratio: metabolicRatio,
   };

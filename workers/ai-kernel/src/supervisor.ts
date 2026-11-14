@@ -171,6 +171,13 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
     const marketStatus = obs.market_status as "open" | "closed" | "holiday";
     const tradingNetPnl = (obs.trading_net_pnl_24h as number) ?? 0;
     const infraBurn = (obs.infra_burn_cost_24h as number) ?? 0.15;
+    // Owner 2026-11-14: a monthly budget (policy parameter infra-budget-usd-month, default $30), not the free tier. The
+    // platform stores a daily burn from the Billable Usage API, so the month is projected as burn x days of the UTC
+    // month (observeMetabolism); a burn that is only an estimate is not projected and never triggers survival.
+    const budget = typeof obs.infra_budget_usd_month === "number" ? obs.infra_budget_usd_month : POLICY_PARAMETERS["infra-budget-usd-month"].default;
+    const projected = typeof obs.infra_projected_month_usd === "number" ? obs.infra_projected_month_usd : null;
+    const projectionDays = typeof obs.infra_projection_days === "number" ? obs.infra_projection_days : null;
+    const overBudget = projected !== null && projected > budget;
     // No invented values: a placeholder or missing treasury has no runway, and runway rules are skipped.
     const treasuryReserve = typeof obs.treasury_reserve_usd === "number" ? obs.treasury_reserve_usd : 0;
     const runwayDays = typeof obs.runway_days === "number" ? obs.runway_days : null;
@@ -189,10 +196,10 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
     } else if (marketStatus === "closed") {
       targetMode = "survival";
       reason = "market closed (weekend): entering survival hibernation to conserve AI tokens and compute";
-    } else if (infraBurn > 0.20 || tradingNetPnl < -100 || (runwayDays !== null && runwayDays < 7)) {
+    } else if (overBudget || tradingNetPnl < -100 || (runwayDays !== null && runwayDays < 7)) {
       targetMode = "survival";
-      reason = infraBurn > 0.20
-        ? `billable infrastructure burn ($${infraBurn}/day exceeding free tier): entering survival mode to throttle compute and preserve free tier`
+      reason = overBudget
+        ? `projected infrastructure spend $${projected}/month ($${infraBurn}/day x ${projectionDays} days) exceeds the $${budget}/month budget: entering survival mode to throttle AI spending`
         : `drawdown or low runway (net 24h: $${tradingNetPnl}, ${runwayText}): throttling compute`;
     } else if (tradingNetPnl > 50 && (runwayDays === null || runwayDays > 90)) {
       // Growth raises budgets, so the supervisor never enters it on its own: it only reports that
@@ -596,7 +603,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     });
   }
 
-  // Audit real billable usage overages and report throttling intent to maintain free tier
+  // Report the billable costs recorded in the last 30 days (Workers Paid). The monthly budget above decides the mode;
+  // this finding throttles nothing.
   try {
     const thirtyDaysAgo = new Date(now - 30 * 86_400_000).toISOString().slice(0, 10);
     const overages = await env.DB.prepare(
@@ -607,9 +615,9 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         kind: "billable_usage_overage",
         service_id: o.service_id,
         period_day: o.period_day,
-        action: "throttle_free_tier",
-        outcome: "throttled",
-        why: `incurred billable cost of ${o.estimated_cost_usd.toFixed(2)} USD on ${o.period_day}; throttled to preserve Free Tier`,
+        action: "report_billable_cost",
+        outcome: "reported",
+        why: `billable cost of ${o.estimated_cost_usd.toFixed(2)} USD a day recorded on ${o.period_day}; the power mode follows the monthly infrastructure budget`,
       });
     }
   } catch {}

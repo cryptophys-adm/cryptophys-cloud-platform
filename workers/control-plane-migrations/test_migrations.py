@@ -555,3 +555,36 @@ assert obs_code.count("CREATE TABLE IF NOT EXISTS") == 3 and obs_code.count("CRE
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", obs_sql, re.I), "0063 is not destructive"
 obs_db.close()
 print("PASS: 0063 observer vitals, findings and runs (additive, unique per bucket, retention in code)")
+
+
+# Migration 0065 (owner 2026-11-14: monthly infrastructure budget $30): policy_parameters is rebuilt, as in 0050, to admit
+# infra-budget-usd-month with its own bound (5-50, the same as control-plane-shared/src/policy-params.ts); every row is
+# kept, the other parameters keep 1-40, and the owner's 30 is seeded.
+bud_db = sqlite3.connect(":memory:")
+bud_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0065_":
+        bud_db.executescript(migration.read_text(encoding="utf-8"))
+bud_db.execute("UPDATE policy_parameters SET value = 40, updated_by = 'owner', updated_at = 't1' WHERE name = 'daily-deploy-limit'")
+before_rows = sorted(bud_db.execute("SELECT name, value, updated_by, updated_at FROM policy_parameters").fetchall())
+expect_integrity_error("before 0065 the budget name is refused", lambda: bud_db.execute(
+    "INSERT INTO policy_parameters (name, value, updated_by, updated_at) VALUES ('infra-budget-usd-month', 30, 'x', 't')"))
+bud_sql = (ROOT / "0065_infra_budget_parameter.sql").read_text(encoding="utf-8")
+bud_db.executescript(bud_sql)
+after_rows = sorted(bud_db.execute("SELECT name, value, updated_by, updated_at FROM policy_parameters").fetchall())
+assert [r for r in after_rows if r[0] != "infra-budget-usd-month"] == before_rows, f"0065 keeps every row: {after_rows}"
+assert ("infra-budget-usd-month", 30, "migration:0065", "2026-11-14T12:00:00.000Z") in after_rows, "0065 seeds the owner's $30"
+for bad_value in (4, 51, 0, -30):
+    expect_integrity_error(f"0065 budget {bad_value}", lambda v=bad_value: bud_db.execute(
+        "UPDATE policy_parameters SET value = ? WHERE name = 'infra-budget-usd-month'", (v,)))
+for good_value in (5, 50, 30):
+    bud_db.execute("UPDATE policy_parameters SET value = ? WHERE name = 'infra-budget-usd-month'", (good_value,))
+expect_integrity_error("0065 keeps daily-deploy-limit at most 40", lambda: bud_db.execute(
+    "UPDATE policy_parameters SET value = 41 WHERE name = 'daily-deploy-limit'"))
+expect_integrity_error("0065 keeps target-actions-per-hour at least 1", lambda: bud_db.execute(
+    "UPDATE policy_parameters SET value = 0 WHERE name = 'target-actions-per-hour'"))
+expect_integrity_error("0065 admits only the three names", lambda: bud_db.execute(
+    "INSERT INTO policy_parameters (name, value, updated_by, updated_at) VALUES ('free-tier-burn', 1, 'x', 't')"))
+assert {r[0] for r in bud_db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'policy_parameters%'")} == {"policy_parameters"}, "no copy left behind"
+bud_db.close()
+print("PASS: 0065 infra-budget-usd-month (rows kept, bound 5-50, other parameters still 1-40, owner's 30 seeded)")

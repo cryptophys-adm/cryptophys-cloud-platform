@@ -8,6 +8,8 @@
  *      * unexpected policy denials above the 7-day baseline, or a new unexpected reason code (denials.ts),
  *        OR any kernel.agents_enabled change in 24h -> warning. Expected guard outcomes (survival mode,
  *        rate limit, CI not green, vote not passed) are counted as info and never warn (owner 2026-11-14).
+ *      * learning blocked: any denied memory.remember or knowledge.propose in 24h -> warning (owner 2026-11-14,
+ *        "learning is core"; denials.ts).
  *      * otherwise once daily on the 00:37 UTC cycle -> info
  *  - AI task draft_audit_digest drafts human-readable text; validator rejects any output whose
  *    claim about chain validity contradicts the deterministic verification result, and any output that
@@ -100,7 +102,8 @@ function contradictsChainValidity(text: string, deterministicValid: boolean): bo
  * One sentence at a time; a sentence that negates the claim ("no problem", "nothing to review") is accepted.
  */
 export function callsExpectedDenialsAProblem(text: string, denials: DenialMetrics | undefined): boolean {
-  if (!denials || denials.unexpected_24h !== 0) return false;
+  // Blocked learning is a problem (owner 2026-11-14), so a draft may say so.
+  if (!denials || denials.unexpected_24h !== 0 || (denials.learning_blocked_24h ?? 0) > 0) return false;
   // Telling someone to review or fix an agent's instructions is never a reading of expected guard outcomes.
   if (/\b(?:supervisor|agent|auditor|analyst|curator)(?:'s|s'|s)?\s+(?:instructions?|prompts?|configuration|config|logic|behaviou?r)\b/i.test(text)) return true;
   for (const sentence of text.split(/[.!?;\n]+/)) {
@@ -122,7 +125,8 @@ export function draftAuditDigestTask(obs: AuditObservation): AiTask<AuditDigestD
       'Return {"headline": at most 160 characters, "summary": at most 800 characters, "items": array of 1..8 strings each at most 200 characters}. ' +
       "Never contradict the deterministic chain validity result. " +
       `Report metrics, not narrative: the denials object counts expected guard outcomes (${(obs.denials?.expected_reasons ?? EXPECTED_DENIAL_CHECKS).join(", ")}) and unexpected refusals, each against its 7-day daily baseline. ` +
-      "Expected guard outcomes are the platform's brakes working as designed: never call them a problem, an increase to worry about, or a reason to review an agent's instructions.",
+      "Expected guard outcomes are the platform's brakes working as designed: never call them a problem, an increase to worry about, or a reason to review an agent's instructions. " +
+      "Learning blocked (denied memory or knowledge proposals) is never expected: learning is core, so report it as a warning.",
     maxInputChars: 6000,
     maxOutputTokens: 500,
     validate(raw): AuditDigestDraft | null {
@@ -178,6 +182,7 @@ export function templateAuditDigest(
     const [code, n] = r.split(":");
     if (code === "denied_agent_syscalls") return `${n} agent request(s) were refused by policy`;
     if (code === "unexpected_denials") return `${n} unexpected refusal(s) by policy (not a guard working as designed)`;
+    if (code === "learning_blocked") return `${n} learning request(s) refused (memory or knowledge proposals; learning is core)`;
     if (code.startsWith("new_denial_reason_")) return `a new refusal reason, ${code.slice("new_denial_reason_".length).replace(/_/g, " ")} (${n})`;
     if (code === "failed_agent_syscalls") return `${n} agent request(s) failed`;
     if (code === "kernel_agents_enabled_changed") return "the agents' kill switch was changed";
@@ -198,7 +203,7 @@ export function templateAuditDigest(
   const d = obs.denials;
   // Owner 2026-11-14: metrics, not narrative. Expected guard outcomes and unexpected refusals, each against its baseline.
   const refusals = d
-    ? `Refusals by policy in the last 24 hours: ${d.expected_24h} expected guard outcome(s) (baseline ${d.baseline_daily_expected}/day) and ${d.unexpected_24h} unexpected (baseline ${d.baseline_daily_unexpected}/day); ${c.failed_agent_syscalls} agent request(s) failed. `
+    ? `Refusals by policy in the last 24 hours: ${d.expected_24h} expected guard outcome(s) (baseline ${d.baseline_daily_expected}/day), ${d.unexpected_24h} unexpected (baseline ${d.baseline_daily_unexpected}/day) and ${d.learning_blocked_24h ?? 0} blocked learning request(s); ${c.failed_agent_syscalls} agent request(s) failed. `
     : `In the last 24 hours, ${c.denied_agent_syscalls} agent request(s) were refused by policy and ${c.failed_agent_syscalls} failed. `;
   const summary =
     (`${chainLine} ${refusals}` +
@@ -223,7 +228,7 @@ export function templateAuditDigest(
     ];
   if (d) {
     for (const a of d.by_agent.filter((x) => x.denied + x.failed > 0).slice(0, 2)) {
-      items.push(`Agent ${a.agent_id}: ${a.denied_expected} expected refusal(s), ${a.denied_unexpected} unexpected, ${a.failed} failed`.slice(0, 200));
+      items.push(`Agent ${a.agent_id}: ${a.denied_expected} expected refusal(s), ${a.denied_learning ?? 0} learning blocked, ${a.denied_unexpected} unexpected, ${a.failed} failed`.slice(0, 200));
     }
   } else {
     for (const a of c.agent_actions_by_agent.slice(0, 2)) {
@@ -281,13 +286,20 @@ function evaluateAuditTriggers(
   if (obs.denials) {
     // Owner 2026-11-14: expected guard outcomes never warn; unexpected ones warn above the 7-day baseline or
     // when their reason code is new (denials.ts). An invalid chain above stays critical whatever the denials.
-    if (obs.denials.warn) {
+    // An observation of an older kernel has no unexpected_warn: its warn meant unexpected denials only.
+    const unexpectedWarn = obs.denials.unexpected_warn ?? obs.denials.warn;
+    if (unexpectedWarn) {
       if (severity !== "critical") severity = "warning";
       reasons.push(`unexpected_denials:${obs.denials.unexpected_24h}`);
       for (const code of obs.denials.new_unexpected_reasons.slice(0, 3)) {
         const n = obs.denials.by_reason.find((m) => m.reason === code)?.count_24h ?? 0;
         reasons.push(`new_denial_reason_${code}:${n}`);
       }
+    }
+    // Owner 2026-11-14: learning is core; any blocked learning request in 24 h warns, whatever check refused it.
+    if (obs.denials.learning_warn) {
+      if (severity !== "critical") severity = "warning";
+      reasons.push(`learning_blocked:${obs.denials.learning_blocked_24h}`);
     }
   } else if (obs.counts_24h.denied_agent_syscalls > 3) {
     // An observation without denial metrics (an older kernel): the previous rule.

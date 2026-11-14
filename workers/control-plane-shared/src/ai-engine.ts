@@ -1,5 +1,6 @@
 import type { AiBinding, D1Database } from "./types.ts";
 import { redact } from "./http.ts";
+import { GROWTH_AI_BUDGET_RATIO, SURVIVAL_AI_BUDGET } from "./power-mode.ts";
 
 /**
  * Per-Worker AI Engine (architecture/AI-ENGINE-REQUIREMENT.md).
@@ -187,16 +188,17 @@ export class AiEngine {
       // Graceful fallback if table does not exist in early migration tests
     }
 
+    // Survival throttles AI-heavy work here, for every model call (power-mode.ts); learning itself is never denied.
     const effectiveDailyLimit = mode === "survival"
-      ? Math.min(20, Math.floor(this.dailyLimit * 0.25))
+      ? Math.min(SURVIVAL_AI_BUDGET.max_per_service, Math.floor(this.dailyLimit * SURVIVAL_AI_BUDGET.ratio))
       : mode === "growth"
-        ? Math.floor(this.dailyLimit * 2.0)
+        ? Math.floor(this.dailyLimit * GROWTH_AI_BUDGET_RATIO)
         : this.dailyLimit;
 
     const effectiveAccountLimit = mode === "survival"
-      ? Math.min(50, Math.floor(this.accountDailyLimit * 0.25))
+      ? Math.min(SURVIVAL_AI_BUDGET.max_account, Math.floor(this.accountDailyLimit * SURVIVAL_AI_BUDGET.ratio))
       : mode === "growth"
-        ? Math.floor(this.accountDailyLimit * 2.0)
+        ? Math.floor(this.accountDailyLimit * GROWTH_AI_BUDGET_RATIO)
         : this.accountDailyLimit;
 
     // One conditional UPSERT is required: a separate SUM then INSERT lets concurrent Workers
