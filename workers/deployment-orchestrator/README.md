@@ -1,21 +1,15 @@
 # Deployment Orchestrator
 
-This Worker coordinates production deployment of `.github/workflows/deploy-platform-api.yml`. It is configured for the production environment and dispatches only after the exact current `main` commit has completed all required CI checks successfully.
+This Worker carries out the platform's deploys. Since 2026-11-14 (owner: "hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration") the only paths to production are consensus (`deploy_commit`: the native deploy, or the unit's GitHub workflow as the consensus-driven fallback), the owner's click on critical actions, and native rollback (`docs/SSOT.md`, "Paths to production"). The AI Kernel and the Recovery Manager reach it over RPC (`DeployRpc`); it has no HTTP route that deploys.
+
+## HTTP
+
+- `GET /health`, `GET /ready`: behind Cloudflare Access like every `/v1` call.
+- `GET /v1/deployments`: the read-only deployments list for the Console's Pipelines page (operators and viewer accounts).
+- Any other method on `/v1/deployments` answers 405. The manual `POST /v1/deployments` (a GitHub ref lookup and CI gate, then a dispatch of `deploy-platform-api.yml`) and its allow-list `DEPLOY_ALLOWED_IDENTITIES` were removed on 2026-11-14.
 
 ## Required gates
 
-- `GH_ACTIONS_TOKEN`: least-privilege repository token stored as a Cloudflare Worker secret. Fine-grained PAT permissions: Actions: Read and write (read workflow runs for the CI gate, dispatch deployments), Commit statuses: Read, Contents: Read, Metadata: Read. The Checks API is not used because fine-grained PATs cannot be granted it.
-- `DEPLOY_ALLOWED_IDENTITIES` (var, set by the deploy workflow): Cloudflare Access identities allowed to `POST /v1/deployments` — the CI service token's Client ID and the operator emails. Callers authenticate through Cloudflare Access; the Worker verifies the Access JWT and checks the identity. There is no shared bearer secret. Never commit `GH_ACTIONS_TOKEN`.
-- `POST /v1/deployments` requires bearer authentication, `SERVICE_ENVIRONMENT=production`, a full lowercase 40-character SHA equal to current `main`, and exact `confirm_production=DEPLOY`.
-- Commit statuses, every check run, and every check suite must be complete and successful. Queued, in-progress, failed, cancelled, skipped, missing, or truncated results fail closed.
-- A Durable Object atomically claims each SHA to prevent duplicate production dispatches. Ambiguous failures require manual reconciliation; do not delete claims blindly.
-- The production workflow independently validates the SHA against the dispatched workflow ref and checks out that exact SHA.
-- The deployment job uses GitHub Environment `production`; any configured reviewer approval remains authoritative.
-- `workers_dev = false`; routes and custom domains are managed separately.
-
-## Production activation
-
-1. Store secrets through Cloudflare secret management; do not place secret values in source or chat.
-2. Merge this reviewed change only after CI and required reviewer approval succeed.
-3. Verify the live Worker health/readiness and inspect GitHub Actions deployment status after activation.
-4. The orchestrator does not bypass GitHub Environment protections. An accepted dispatch is not proof that deployment completed.
+- `GH_ACTIONS_TOKEN`: least-privilege repository token stored as a Cloudflare Worker secret, for the consensus-driven workflow fallback, the rollback workflow before the native path, and the ledger reconcile. Fine-grained PAT permissions: Actions: Read and write, Commit statuses: Read, Contents: Read, Metadata: Read. Never commit it.
+- A consensus or recovery deploy re-verifies its proposal or plan, requires the commit to be the Forge's main head with the Forge's checks `ready` (and, for the fallback, GitHub's main to be the same commit), and claims a Durable Object lock per workflow and commit, so a commit is queued natively or dispatched once. A refused fallback is audited as `deployment.no_path`.
+- The deploy workflows independently validate the SHA against the dispatched workflow ref, check out that exact SHA and roll back automatically on failure. Any configured reviewer approval on the GitHub Environment remains authoritative.

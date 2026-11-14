@@ -1,9 +1,9 @@
-import { explainCode, serviceName } from "../../control-plane-shared/src/plain.ts";
+import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import type { AiBinding, D1Database, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
+import { boundedString, boundedStringArray, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
-import { accessConfigured, actorOf, authenticate, identityAllowed, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, authenticate, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { healthBody } from "../../control-plane-shared/src/http.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
@@ -31,12 +31,8 @@ export interface Env extends NativeRollbackEnv {
   SERVICE_NAME: string;
   SERVICE_ENVIRONMENT: string;
   API_CONTRACT_VERSION: string;
+  /** The consensus-driven GitHub workflow fallback (deploys the native path refuses), rollback before native, ledger reconcile. */
   GH_ACTIONS_TOKEN: string;
-  /**
-   * Comma-separated Cloudflare Access identities allowed to request production deployments:
-   * service-token Client IDs and/or operator emails. Replaces the former shared secret.
-   */
-  DEPLOY_ALLOWED_IDENTITIES?: string;
   /** Operators (the same list); with D1 accounts they may read the deployments list (viewers too). */
   OPERATOR_IDENTITIES?: string;
   APPROVER_IDENTITIES?: string;
@@ -60,12 +56,15 @@ export interface Env extends NativeRollbackEnv {
 }
 
 const SERVICE = "cryptophys-deployment-orchestrator";
-const TARGET_SERVICE = "cryptophys-platform-api";
 
 interface RiskSummary { summary: string; risk_level: "low" | "medium" | "high"; notes: string[] }
 
-/** Advisory only: never consulted for authorization, CI gating, locking or dispatch. */
-const riskTask: AiTask<RiskSummary> = {
+/**
+ * The Orchestrator's own AI engine (AI-ENGINE-REQUIREMENT.md; its DNA declares this task). Advisory only: never
+ * consulted for authorization, CI gating, locking or dispatch. Its only caller was the manual POST /v1/deployments
+ * (`?advisory=true`), removed 2026-11-14 by the owner; the engine stays declared until the owner rewires or retires it.
+ */
+export const riskTask: AiTask<RiskSummary> = {
   name: "summarize_deployment_risk",
   instructions:
     'Summarize an already-dispatched production deployment for operators from the supplied evidence. Return ' +
@@ -93,7 +92,6 @@ async function auditQuietly(env: Env, event: Parameters<typeof appendAuditEvent>
 }
 
 const REPOSITORY = "cryptophys-adm/cryptophys-cloud-platform";
-const WORKFLOW = "deploy-platform-api.yml";
 const API = "https://api.github.com";
 const headers = {
   "content-type": "application/json; charset=utf-8",
@@ -1222,9 +1220,10 @@ export function presentDeploymentRequest(r: Record<string, unknown>) {
 }
 
 /**
- * What is deploying now and what was deployed: the Orchestrator's request ledger (Platform API,
- * consensus deploys, native rollbacks), consensus proposals still in flight, and every version a
- * deploy workflow or a person recorded in the registry (registry.desired_version_set).
+ * What is deploying now and what was deployed: the Orchestrator's request ledger (consensus and recovery deploys,
+ * native rollbacks and retirements; older rows also hold the manual Platform API requests removed 2026-11-14),
+ * consensus proposals still in flight, and every version a deploy workflow or a person recorded in the registry
+ * (registry.desired_version_set). Read only.
  */
 export async function listDeployments(env: Pick<Env, "DB">, limit = 25) {
   const n = Math.min(Math.max(Number.isFinite(limit) ? Math.trunc(limit) : 25, 1), 100);
@@ -1264,7 +1263,6 @@ export default {
       const checks = {
         production_environment: env.SERVICE_ENVIRONMENT === "production",
         github_token_configured: Boolean(env.GH_ACTIONS_TOKEN),
-        deploy_identities_configured: Boolean(env.DEPLOY_ALLOWED_IDENTITIES?.trim()),
         deployment_lock_binding: Boolean(env.DEPLOYMENT_LOCK),
         database_schema: Boolean(env.DB) && await schemaReady(env as never),
         ai_binding: Boolean(env.AI),
@@ -1290,173 +1288,11 @@ export default {
       if (!reader.ok) return reader.response;
       return json(await listDeployments(env, Number(url.searchParams.get("limit") ?? 25)));
     }
-    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    if (env.SERVICE_ENVIRONMENT !== "production") {
-      return json({ error: "production_worker_required", production_dispatch_enabled: false }, 503);
-    }
-    // Authorization: the Access-verified identity must be on the deployment allow-list.
-    if (!identityAllowed(auth.identity, env.DEPLOY_ALLOWED_IDENTITIES)) {
-      return json({ error: "forbidden", detail: "this Access identity may not request production deployments" }, 403);
-    }
-    if (!env.GH_ACTIONS_TOKEN || !env.DEPLOYMENT_LOCK || !env.DB) {
-      return json({ error: "not_configured", operational: false }, 503);
-    }
-
-    let body: { commit_sha?: unknown; confirm_production?: unknown };
-    try {
-      body = await request.json() as typeof body;
-    } catch {
-      return json({ error: "invalid_json" }, 400);
-    }
-
-    const sha = typeof body.commit_sha === "string" ? body.commit_sha : "";
-    if (!/^[0-9a-f]{40}$/.test(sha)) return json({ error: "invalid_commit_sha" }, 400);
-    if (body.confirm_production !== "DEPLOY") {
-      return json({ error: "production_confirmation_required" }, 400);
-    }
-    // Recorded actor is the verified Access identity, not a claim from the request body.
-    const requestedBy = actorOf(auth.identity).slice(0, 128);
-
-    const refResponse = await gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/git/ref/heads/main");
-    if (!refResponse.ok) {
-      return json({ error: "github_ref_lookup_failed", status: refResponse.status }, 502);
-    }
-    const refData = await refResponse.json() as { object?: { sha?: string } };
-    if (refData.object?.sha !== sha) {
-      await auditQuietly(env, { event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "commit_not_current_main", payload: { commit_sha: sha, main_sha: refData.object?.sha ?? null } });
-      await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
-        kind: "platform_digest", severity: "warning",
-        subject: `Deployment of ${serviceName(TARGET_SERVICE)} refused: ${explainCode("commit_not_current_main")}`,
-        body: { commit_sha: sha, main_sha: refData.object?.sha ?? null, requested_by: requestedBy },
-      });
-      return json({ error: "commit_not_current_main", expected_sha: refData.object?.sha ?? null }, 409);
-    }
-
-    // CI gate (owner decision, option B): the combined commit status plus the latest GitHub
-    // Actions run of every validation/deployment workflow on this commit. Both lookups are readable by a fine-grained PAT
-    // (Commit statuses: Read, Actions: Read); the Checks API is not.
-    const [statusResponse, workflowRunsResponse] = await Promise.all([
-      gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/commits/" + sha + "/status"),
-      gh(env.GH_ACTIONS_TOKEN, "/repos/" + REPOSITORY + "/actions/runs?head_sha=" + sha + "&per_page=100")
-    ]);
-    if (!statusResponse.ok || !workflowRunsResponse.ok) {
-      // Report which lookup failed and GitHub's status so a missing token permission is diagnosable.
-      // The gate still fails closed; no token or response body is echoed.
-      return json({
-        error: "github_ci_lookup_failed",
-        lookups: {
-          commit_status: { http_status: statusResponse.status, required_permission: "Commit statuses: Read" },
-          workflow_runs: { http_status: workflowRunsResponse.status, required_permission: "Actions: Read" }
-        }
-      }, 502);
-    }
-
-    const statusData = await statusResponse.json() as CommitStatus;
-    const runsData = await workflowRunsResponse.json() as { total_count?: number; workflow_runs?: WorkflowRun[] };
-    const allRuns = runsData.workflow_runs ?? [];
-    const runs = latestRunPerWorkflow(allRuns);
-
-    const statusBlocked = (statusData.total_count ?? 0) > 0 && statusData.state !== "success";
-    const runsBlocked =
-      runs.length === 0 ||
-      (runsData.total_count ?? 0) > allRuns.length ||
-      runs.some(run => run.status !== "completed" || run.conclusion !== "success");
-
-    if (statusBlocked || runsBlocked) {
-      const ciPayload = { commit_sha: sha, commit_status: statusData.state ?? "unknown", blocking_workflows: runs.filter((r) => r.status !== "completed" || r.conclusion !== "success").map((r) => r.name) };
-      await auditQuietly(env, {
-        event_type: "deployment.rejected", actor: requestedBy, subject: TARGET_SERVICE, outcome: "ci_not_green",
-        payload: ciPayload
-      });
-      await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
-        kind: "platform_digest", severity: "warning",
-        subject: `Deployment of ${serviceName(TARGET_SERVICE)} refused: ${explainCode("ci_not_green")}`,
-        body: { ...ciPayload, requested_by: requestedBy },
-      });
-      return json({
-        error: "ci_not_green",
-        commit_status: statusData.state ?? "unknown",
-        status_count: statusData.total_count ?? 0,
-        workflow_runs_reported: allRuns.length,
-        workflow_runs_total: runsData.total_count ?? 0,
-        workflows: runs.map(({ name, status, conclusion }) => ({ name, status, conclusion }))
-      }, 409);
-    }
-
-    // Durable ledger entry first: the (service_id, idempotency_key) UNIQUE constraint is a
-    // second duplicate guard alongside the Durable Object lock.
-    const requestId = "dep_" + crypto.randomUUID();
-    const createdAt = new Date().toISOString();
-    try {
-      await env.DB.prepare(
-        `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'approved', NULL, ?, ?, ?, ?)`
-      ).bind(requestId, TARGET_SERVICE, sha, requestedBy, sha,
-        JSON.stringify({ workflow: WORKFLOW, ref: "main", workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })) }),
-        createdAt, createdAt).run();
-    } catch (err) {
-      if (/UNIQUE constraint failed/i.test(String((err as Error)?.message ?? err))) {
-        return json({ error: "duplicate_production_deployment_request", commit_sha: sha }, 409);
-      }
-      return json({ error: "deployment_ledger_unavailable", operational: false }, 503);
-    }
-
-    const lockId = env.DEPLOYMENT_LOCK.idFromName("platform-api-production:" + sha);
-    const lockResponse = await env.DEPLOYMENT_LOCK.get(lockId).fetch("https://lock.internal/claim", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sha })
-    });
-    const lock = await lockResponse.json() as { claimed?: boolean };
-    if (!lockResponse.ok || !lock.claimed) {
-      return json({ error: "duplicate_production_deployment_request", commit_sha: sha }, 409);
-    }
-
-    // Production workflow has GitHub environment protection; reviewer approval must remain authoritative.
-    const dispatch = await gh(
-      env.GH_ACTIONS_TOKEN,
-      "/repos/" + REPOSITORY + "/actions/workflows/" + WORKFLOW + "/dispatches",
-      { method: "POST", body: JSON.stringify({ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: sha } }) }
-    );
-    const finalStatus = dispatch.status === 204 ? "running" : "failed";
-    await env.DB.prepare("UPDATE deployment_requests SET status = ?, updated_at = ? WHERE request_id = ?")
-      .bind(finalStatus, new Date().toISOString(), requestId).run().catch(() => undefined);
-    const auditEventId = await auditQuietly(env, {
-      event_type: dispatch.status === 204 ? "deployment.dispatched" : "deployment.dispatch_failed",
-      actor: requestedBy, subject: TARGET_SERVICE, outcome: finalStatus,
-      payload: { request_id: requestId, commit_sha: sha, workflow: WORKFLOW, github_status: dispatch.status }
-    });
-
-    if (dispatch.status !== 204) {
-      return json({
-        request_id: requestId,
-        error: "production_dispatch_failed",
-        status: dispatch.status,
-        commit_sha: sha,
-        manual_reconciliation_required: true
-      }, 502);
-    }
-
-    const advisory = url.searchParams.get("advisory") === "true"
-      ? await engineFor(env, SERVICE, [riskTask.name]).run(riskTask, {
-          commit_sha: sha,
-          target: TARGET_SERVICE,
-          workflows: runs.map(({ name, conclusion }) => ({ name, conclusion })),
-          commit_status: statusData.state ?? "unknown"
-        }, requestId)
-      : undefined;
-
-    return json({
-      request_id: requestId,
-      audit_event_id: auditEventId,
-      status: "production_dispatch_accepted",
-      repository: REPOSITORY,
-      workflow: WORKFLOW,
-      ref: "main",
-      requested_commit_sha: sha,
-      production_deployment_triggered: true,
-      ...(advisory ? { advisory } : {})
-    }, 202);
+    // Owner 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"):
+    // the manual emergency POST /v1/deployments (a GitHub ref lookup and CI gate, then a dispatch of
+    // deploy-platform-api.yml) is removed. Production changes only through consensus (deployForConsensus: the native
+    // deploy, or the unit's GitHub workflow as its fallback), the owner's click on critical actions, and native rollback.
+    return json({ error: "method_not_allowed" }, 405);
   },
 
   async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {

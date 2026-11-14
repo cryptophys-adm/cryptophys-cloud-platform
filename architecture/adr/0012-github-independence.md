@@ -321,6 +321,7 @@ Owner, 2026-11-12: "tunda hingga berhasil lepas dari github" (ADR-0014 waits unt
 - **Until G2.** The unit's GitHub workflow still performs the deploy, and it deploys only GitHub's main head. So the dispatch also requires GitHub's main to equal the Forge's head (`github_main_not_mirrored`), which also catches a Forge that stopped mirroring.
 - **Plan age.** A plan's age is not used as a freshness signal. The Forge records a plan only when main or the registry changes, and a unit can wait hours for a deploy slot under an unchanged plan.
 - **Still on GitHub until G2.** The manual `POST /v1/deployments` path (Platform API) keeps its GitHub CI gate.
+  - *Amended 2026-11-14 (owner 2026-11-14: "hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration").* The manual path is removed: the Orchestrator's `POST /v1/deployments` (its GitHub ref lookup, CI gate and dispatch) and the Console's emergency form are gone, and the Orchestrator no longer reads `DEPLOY_ALLOWED_IDENTITIES` (the deploy workflow still sets it until the owner removes that line; §5l keeps it verbatim as any other var). The consensus-driven GitHub workflow fallback (`fallbackGate`, `deployment.no_path`) is not that path and stays.
 
 ### 5f. Step G2a: the Forge keeps what it built (2026-11-12)
 

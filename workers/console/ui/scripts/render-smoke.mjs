@@ -327,6 +327,17 @@ for (const width of [390, 1440]) {
         if (!body.includes(want)) problems.push(`${width}px #/organism: Observer panel does not show "${want}"`);
       }
     }
+    if (route === "pipelines") {
+      // Owner 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"):
+      // the page shows the read-only ledger of GET /v1/deployments and no manual deploy form.
+      const body = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      for (const want of ["Running now", "Deployed versions", "Deploy requests", "deploy_commit", "deploy-platform-api.yml", "stale: no workflow run finished within 3 hours"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/pipelines: does not show "${want}"`);
+      }
+      for (const gone of ["Manual deploy", "Open manual deploy", "Commit SHA (40 hex)", "Deploy…"]) {
+        if (body.includes(gone)) problems.push(`${width}px #/pipelines: still shows "${gone}"`);
+      }
+    }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });
   }
   await page.close();

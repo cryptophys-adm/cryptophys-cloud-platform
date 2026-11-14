@@ -21,7 +21,7 @@ Every `/v1` call is authorized by the caller's verified Cloudflare Access identi
 
 | List | Members | Grants |
 | --- | --- | --- |
-| `OPERATOR_IDENTITIES` (all six Control Plane Workers; `DEPLOY_ALLOWED_IDENTITIES` on the Orchestrator) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint; `POST /v1/deployments` |
+| `OPERATOR_IDENTITIES` (all six Control Plane Workers) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint (on the Orchestrator, the read-only `GET /v1/deployments`; its `POST /v1/deployments` and `DEPLOY_ALLOWED_IDENTITIES` were removed 2026-11-14 by the owner) |
 | `APPROVER_IDENTITIES` (Recovery Manager) | `ACCESS_ALLOWED_EMAILS` | `POST /v1/plans/{id}/approve` only, never for a plan the same identity authored |
 
 Emails are compared and recorded in lower case; Client IDs exactly. An unset list fails closed (`503 …_not_configured`); an identity outside a list gets `403 forbidden`. Automation can operate but can never approve a recovery plan.

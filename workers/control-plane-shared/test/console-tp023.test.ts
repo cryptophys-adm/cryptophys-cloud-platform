@@ -261,7 +261,9 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   // + the Alerts page (owner 2026-11-13): the list, add, change, test, delete.
   // + the Vision page's read-only vision (ADR-0016 T0).
   // + the account-wide Observer's read-only view (owner 2026-11-14).
-  assert.equal(keys.length, 69);
+  // - the manual deploy, orchestrator POST /v1/deployments (owner 2026-11-14: "hapus aja, karena roadmap berikutnya kita
+  //   kembangkan Human Ai Interaction & Collaboration").
+  assert.equal(keys.length, 68);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test"].map((p) => `kernel POST ${p}`),
@@ -277,7 +279,6 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
     "drift POST /v1/observe",
     ...["/v1/events", "/v1/events/{id}", "/v1/verify"].map((p) => `audit GET ${p}`),
     "orchestrator GET /v1/deployments",
-    "orchestrator POST /v1/deployments",
     "platform GET /v1/overview",
     "platform GET /v1/usage",
     "platform GET /v1/observer",
@@ -295,4 +296,6 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   assert.deepEqual([...keys].sort(), [...expected].sort());
   assert.ok(!keys.some((k) => k.includes("mcp")));
   assert.ok(!keys.includes("audit POST /v1/events"));
+  assert.ok(!keys.includes("orchestrator POST /v1/deployments"), "the manual deploy is not forwarded (owner 2026-11-14)");
+  assert.deepEqual(keys.filter((k) => k.startsWith("orchestrator ")), ["orchestrator GET /v1/deployments"], "the Orchestrator is read only from the Console");
 });

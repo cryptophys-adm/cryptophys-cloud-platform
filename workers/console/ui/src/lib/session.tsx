@@ -37,7 +37,7 @@ export function SessionProvider({ who, children }: { who: Who; children: ReactNo
   }, [notify]);
 
   const act = useCallback((o: ActOptions) => {
-    const phrase = phraseFor(o.route, o.params, o.body);
+    const phrase = phraseFor(o.route, o.params);
     if (phrase === null) run(o);
     else setPending({ ...o, phrase });
   }, [run]);

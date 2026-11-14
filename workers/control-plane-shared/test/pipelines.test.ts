@@ -1,6 +1,8 @@
 // Console "Pipelines" (2026-11-08): the manual Platform API form was the only content and no person
 // ever used it (24 requests: CI token, consensus, a test client). The page now lists what runs and
-// what was deployed, from the Orchestrator's read-only GET /v1/deployments.
+// what was deployed, from the Orchestrator's read-only GET /v1/deployments. Owner 2026-11-14 ("hapus aja, karena
+// roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"): the folded manual form and the
+// Orchestrator's POST /v1/deployments behind it are removed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -14,7 +16,7 @@ const SHA = "e0bd92815ac9cbae7481e14e1798238068e4b2a9";
 function env(db = migratedDb()) {
   return {
     SERVICE_NAME: "cryptophys-deployment-orchestrator", SERVICE_ENVIRONMENT: "production", API_CONTRACT_VERSION: "v1",
-    GH_ACTIONS_TOKEN: "gh-token", DEPLOY_ALLOWED_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`,
+    GH_ACTIONS_TOKEN: "gh-token",
     OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`, APPROVER_IDENTITIES: APPROVER_EMAIL,
     DEPLOYMENT_LOCK: {} as never, DB: db,
     ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com", ACCESS_AUD: "test-audience-tag",
@@ -66,7 +68,7 @@ test("P3. the list: active requests and proposals, recent requests, recorded ver
   assert.doesNotMatch(JSON.stringify(out), /SECRET-SIGNATURE/);
 });
 
-test("P4. GET /v1/deployments: operators and viewer accounts read; outsiders do not; POST rules unchanged", async () => {
+test("P4. GET /v1/deployments: operators and viewer accounts read; outsiders do not; nobody POSTs a deployment (2026-11-14)", async () => {
   const db = migratedDb();
   await seed(db);
   const e = env(db);
@@ -79,18 +81,25 @@ test("P4. GET /v1/deployments: operators and viewer accounts read; outsiders do 
   assert.equal((await call(orchestrator, e, list(viewerJwt))).status, 200, "a viewer account may read");
   const viewerPost = await call(orchestrator, e, new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/v1/deployments",
     { method: "POST", headers: { "cf-access-jwt-assertion": viewerJwt, "content-type": "application/json" }, body: JSON.stringify({ commit_sha: SHA, confirm_production: "DEPLOY" }) }));
-  assert.equal(viewerPost.status, 403, "but may not request a deployment");
+  assert.equal(viewerPost.status, 405, "but may not request a deployment: the manual POST is gone");
+  for (const jwt of [CI_JWT, OPERATOR_JWT]) {
+    const post = await call(orchestrator, e, new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/v1/deployments",
+      { method: "POST", headers: { "cf-access-jwt-assertion": jwt, "content-type": "application/json" }, body: JSON.stringify({ commit_sha: SHA, confirm_production: "DEPLOY" }) }));
+    assert.deepEqual([post.status, post.body.error], [405, "method_not_allowed"], "nor an operator or the CI service token");
+  }
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM deployment_requests").get() as any).n, 4, "no request was added to the ledger");
   assert.equal((await call(orchestrator, e, list(OUTSIDER_JWT))).status, 403);
   assert.equal((await call(orchestrator, { ...e, OPERATOR_IDENTITIES: undefined }, list(CI_JWT))).status, 503, "unset operator list fails closed");
   assert.equal((await call(orchestrator, e, new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/v1/deployments", { method: "DELETE", headers: { "cf-access-jwt-assertion": CI_JWT } }))).status, 405);
 });
 
-test("P5. wiring: the deploy passes the operator lists; the Pipelines page reads the list and keeps the manual form folded", () => {
+test("P5. wiring: the deploy passes the operator lists; the Pipelines page reads the list and has no manual deploy (2026-11-14)", () => {
   const wf = readFileSync(new URL(".github/workflows/deploy-deployment-orchestrator.yml", ROOT), "utf8");
   assert.match(wf, /--var "OPERATOR_IDENTITIES:\$\{OPERATOR_IDENTITIES\}"/);
   assert.match(wf, /--var "APPROVER_IDENTITIES:\$\{APPROVER_IDENTITIES\}"/);
   const page = readFileSync(new URL("workers/console/ui/src/pages/Pipelines.tsx", ROOT), "utf8");
   assert.match(page, /call\("orchestrator\.deployments"/);
-  assert.match(page, /Open manual deploy/);
-  assert.match(page, /route: "orchestrator\.deploy"/, "the emergency path stays");
+  assert.doesNotMatch(page, /Manual deploy|Open manual deploy/i, "the emergency panel is removed");
+  assert.doesNotMatch(page, /route: "orchestrator\.deploy"/, "the page calls no deploy route");
+  assert.doesNotMatch(page, /\bact\(/, "the page is read only: it starts no action");
 });

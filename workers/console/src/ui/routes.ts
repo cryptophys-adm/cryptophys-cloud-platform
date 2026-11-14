@@ -3,7 +3,8 @@
 // JavaScript with JSON.stringify(UI_ROUTES); the client builds every API call from it.
 //
 // `confirm` is the typed phrase template, or null. In a template, {id} is the route's first
-// path parameter, {id13} its first 13 characters and {sha12} the first 12 of commit_sha.
+// path parameter and {id13} its first 13 characters. ({sha12}, the first 12 of commit_sha, served only the manual
+// deploy route, removed 2026-11-14.)
 
 export interface UiRoute {
   id: string;
@@ -93,6 +94,7 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("audit.events", "audit", "GET", "/v1/events", false, null),
   r("audit.event", "audit", "GET", "/v1/events/{id}", false, null),
   r("audit.verify", "audit", "GET", "/v1/verify", false, null),
+  // Read only. The manual deploy route (orchestrator.deploy, POST /v1/deployments) was removed by the owner on
+  // 2026-11-14: production changes only through consensus, the owner's click on critical actions, and native rollback.
   r("orchestrator.deployments", "orchestrator", "GET", "/v1/deployments", false, null),
-  r("orchestrator.deploy", "orchestrator", "POST", "/v1/deployments", false, "DEPLOY {sha12}"),
 ];

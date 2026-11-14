@@ -85,8 +85,8 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("drift", "GET", ["/v1/drift", "/v1/drift/{id}"]),
   ...rows("drift", "POST", ["/v1/observe"]),
   ...rows("audit", "GET", ["/v1/events", "/v1/events/{id}", "/v1/verify"]),
+  // Owner 2026-11-14: the deployments list only; the manual POST /v1/deployments is no longer forwarded (or served).
   ...rows("orchestrator", "GET", ["/v1/deployments"]),
-  ...rows("orchestrator", "POST", ["/v1/deployments"]),
   ...rows("platform", "GET", ["/v1/overview", "/v1/usage", "/v1/observer"]),
   // ADR-0012 phase 1b: the Code page reads the Forge (no write route is forwarded); phase 3 adds checks, phase 4 change requests.
   ...rows("aether", "GET", ["/v1/overview"]),

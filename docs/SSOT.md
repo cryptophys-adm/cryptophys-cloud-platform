@@ -2,7 +2,7 @@
 
 `CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0016). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
-Last reviewed: 2026-11-14 (the account-wide Observer; `cryptophys-signal-engine` and `cryptophys-home` retired from the registry, migration 0064); 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
+Last reviewed: 2026-11-14 (the Console's emergency deploy and `POST /v1/deployments` removed; the account-wide Observer; `cryptophys-signal-engine` and `cryptophys-home` retired from the registry, migration 0064); 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
 ## Platform rules
 
@@ -35,14 +35,14 @@ These hold everywhere:
 
 | Worker | Role | Cron (UTC minutes) |
 |---|---|---|
-| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 69-route allow-list, CSP, CSRF | — |
+| `cryptophys-console` | Backend-for-frontend with no authority of its own: the caller's JWT, a 68-route allow-list, CSP, CSRF | — |
 | `cryptophys-platform-api` | Overview and Cloudflare usage for the Console; the account-wide Observer (senses at :27, inventory at :27 and :57) | :27/:57 |
 | `cryptophys-platform-registry` | Service registry, desired versions, accounts, Access group sync | — |
 | `cryptophys-policy-engine` | Policy decisions (deploy, recovery, consensus.execute, agent syscalls) | — |
 | `cryptophys-audit-ledger` | Hash-chained audit events | — |
 | `cryptophys-recovery-manager` | Recovery plans and execution; daily D1 backup to R2 | :13 |
 | `cryptophys-drift-detector` | Desired-versus-observed versions and health; reports once per episode | every 15 min |
-| `cryptophys-deployment-orchestrator` | Deploy requests, the deployments list (Console Pipelines), native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
+| `cryptophys-deployment-orchestrator` | Consensus and recovery deploys (native, or the unit's workflow as fallback), the read-only deployments list (Console Pipelines), native rollback (Deployments API), ledger reconcile | :02/:10/:17/:25/:32/:40/:47/:55 |
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
 | `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check reported by Workers Builds | :04/:19/:34/:49 |
 | `cryptophys-forge-typecheck` | Workers Builds stub for the type-check and the Console UI build (`workers/forge-typecheck`, TypeScript 7): no route, no bindings, not in the registry | — |
@@ -107,6 +107,10 @@ These hold everywhere:
 - **Limits.** One executed action per action and target per hour, and ten deploys or rollbacks per 24 hours by default (owner 2026-11-10, was six); the council then set `daily-deploy-limit` to its bound of 20, and on 2026-11-12 the owner raised the bound to 40 and the value to 40. Deploys run only at SAFE minutes.
 - **Council-adjustable policy (owner 2026-11-10).** The council may change two Policy Engine parameters by consensus alone (`set_policy_parameter`, routine): `daily-deploy-limit` (1–40) and `target-actions-per-hour` (1–3). The hard bounds live in `control-plane-shared/src/policy-params.ts`; a stored value outside them is clamped. Each change is written with a `policy.parameter_changed` audit event. Everything else in the Policy Engine stays code: no trading or funds, the owner click for critical actions, the kill switch, mode shadow and Access.
 - **Critical actions.** Auth and Access, the Policy Engine, the consensus rules and the kill switch, secrets, and destructive migrations need an owner click.
+- **Paths to production (owner 2026-11-14: "hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration").** Since 2026-11-14 (owner) the only paths to production are consensus (deploy_commit; the native deploy, or its unit's GitHub workflow as the consensus-driven fallback), the owner's click on critical actions, and native rollback.
+  - Removed that day: the Console's emergency deploy form on the Pipelines page and its route `orchestrator.deploy`, and the Orchestrator's `POST /v1/deployments` (a GitHub ref lookup and CI gate, then a dispatch of `deploy-platform-api.yml`), which now answers 405. `GET /v1/deployments`, the ledger the Pipelines page shows, stays read only.
+  - An approved recovery plan's redeploy takes the same native-or-fallback path as `deploy_commit`.
+  - Agents do not change `.github/workflows/*`: the deploy workflows' own `workflow_dispatch` triggers and `ops-dispatch.yml` stay on GitHub until the owner retires them (cut-over steps 6–7, `docs/GITHUB-CUTOVER.md`).
 - **Critical reports (owner 2026-11-13).** Every voter rejects routine actions while a critical agent report of the last 24 hours is open. An approver who is a person can acknowledge a handled critical report: `POST /v1/reports/{id}/acknowledge` on the AI Kernel, with the phrase `ACKNOWLEDGE {id13}` and a reason of 10–500 characters, from the Console Owner or Cognition page. An acknowledged report no longer counts as open (`counts.critical`; `counts.critical_acknowledged` counts the acknowledged ones), and the owner notice closes with it. Unacknowledged ones block as before, and warnings and info cannot be acknowledged. Each acknowledgement is written with a `report.acknowledged` audit event (migration 0053) and is idempotent. Before 0053 is applied, nothing counts as acknowledged (ADR-0009 amendment 2026-11-13).
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.
 - **Digital metabolism (power mode, #263, #264, #265).** The Supervisor reads deal results from XAUUSD (read only; nothing places orders or moves funds) and the infrastructure burn, then sets `metabolism_controls.power_mode`. Owner rules (2026-11-10):

@@ -1,7 +1,5 @@
-import { useState } from "react";
-import { Activity, ExternalLink, GitBranch, History, PackageCheck, Rocket } from "lucide-react";
-import { Badge, Empty, Field, JsonView, Panel, Skeleton } from "../components/ui";
-import { useSession } from "../lib/session";
+import { Activity, ExternalLink, History, PackageCheck } from "lucide-react";
+import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { ago, listOf } from "../lib/format";
@@ -28,17 +26,14 @@ const short = (v: unknown, n = 7) => String(v ?? "").slice(0, n) || "—";
 const svc = (id: unknown) => String(id ?? "").replace(/^cryptophys-/, "");
 
 /**
- * Pipelines: what is running now and what was deployed. Routine deploys come from consensus
- * (ADR-0009) and the deploy workflows; the manual Platform API form is kept as an emergency path.
+ * Pipelines: what is running now and what was deployed, read only. Deploys come from consensus (ADR-0009): the
+ * native deploy, or the unit's deploy workflow as its fallback. The emergency deploy form was removed by the owner on
+ * 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration").
  */
 export default function Pipelines() {
-  const { act, notify } = useSession();
   const deployments = usePoll(() => call("orchestrator.deployments", undefined, undefined, { limit: "25" }), 30_000);
   const checks = usePoll(() => call("forge.checks", undefined, undefined, { limit: "5" }), 60_000);
   const executing = usePoll(() => call("recovery.plans", undefined, undefined, { status: "executing" }), 60_000);
-  const [manual, setManual] = useState(false);
-  const [sha, setSha] = useState("");
-  const [out, setOut] = useState<unknown>(null);
 
   const d = deployments.data as any;
   const activeRequests: any[] = d?.active?.requests ?? [];
@@ -130,30 +125,7 @@ export default function Pipelines() {
             { key: "when", header: "when", sort: (r) => Date.parse(r.created_at) || 0, cell: (r) => <span className="text-slate-500" title={r.created_at}>{ago(r.created_at)}</span> },
           ]} />
         </>)}
-        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">The Deployment Orchestrator's ledger: consensus deploys, native rollbacks and Platform API requests. Each is closed against its workflow run.</p>
-      </Panel>
-
-      <Panel title="Manual deploy (emergency)" icon={<GitBranch className="h-3.5 w-3.5 text-amber-300" />}>
-        {!manual ? (
-          <>
-            <p className="text-[12px] leading-relaxed text-slate-400">Routine deploys need no click: agents propose, consensus votes, the Policy Engine checks. Use this only if that path is stopped. It deploys the Platform API at the current main commit.</p>
-            <button type="button" className="btn mt-2" onClick={() => setManual(true)}>Open manual deploy…</button>
-          </>
-        ) : (
-          <>
-            <p className="mb-3 text-[12px] leading-relaxed text-slate-400">The Deployment Orchestrator decides: it checks the deploy allow-list, CI status and the deployment lock before dispatching. A 403 or 503 response is expected for most identities.</p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-              <Field label="Commit SHA (40 hex)"><input className="field mono" maxLength={40} value={sha} onChange={(e) => setSha(e.target.value)} /></Field>
-              <div className="flex items-end"><button type="button" className="btn btn-danger" onClick={() => {
-                const v = sha.trim().toLowerCase();
-                if (!/^[0-9a-f]{40}$/.test(v)) { notify("err", "Commit SHA must be 40 hex characters."); return; }
-                act({ route: "orchestrator.deploy", body: { commit_sha: v, confirm_production: "DEPLOY" }, title: `Deploy ${v.slice(0, 12)}`, lines: [`Requests a production deployment of commit ${v}.`], done: "Deployment request sent.",
-                  after: (r) => { setOut(r); void deployments.refresh(); }, onError: (e: any) => setOut({ status: e.status, response: e.data }) });
-              }}><Rocket className="h-3.5 w-3.5" />Deploy…</button></div>
-            </div>
-            {out !== null && <div className="mt-3"><JsonView value={out} /></div>}
-          </>
-        )}
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">The Deployment Orchestrator's ledger: consensus and recovery deploys, native rollbacks and retirements (older rows include manual requests, removed 2026-11-14). A workflow request is closed against its run.</p>
       </Panel>
     </div>
   );

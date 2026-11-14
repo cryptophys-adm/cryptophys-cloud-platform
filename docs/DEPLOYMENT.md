@@ -23,7 +23,7 @@ Production has three protected `workflow_dispatch` workflows, all gated by the `
 
 | Workflow | Deploys | Started by |
 |---|---|---|
-| `deploy-platform-api.yml` | `cryptophys-platform-api` | The Deployment Orchestrator (`POST /v1/deployments`, or a consensus `deploy_commit`) dispatches it directly |
+| `deploy-platform-api.yml` | `cryptophys-platform-api` | The Deployment Orchestrator dispatches it for a consensus `deploy_commit` the native deploy refuses (the fallback) |
 | `deploy-deployment-orchestrator.yml` | `cryptophys-deployment-orchestrator` | Operator |
 | `deploy-control-plane.yml` | The five control-plane services | Operator — see [CONTROL-PLANE-DEPLOYMENT.md](CONTROL-PLANE-DEPLOYMENT.md) |
 
@@ -37,10 +37,9 @@ The repository owner authorized the platform's automation operator to start thes
 
 ### Platform API through the Orchestrator
 
-1. Merge reviewed changes to `main`; a merge alone does not deploy.
-2. Run **Request Platform API Deployment** on `main` with the current `main` SHA, `DEPLOY` and the Orchestrator workers.dev URL. The Orchestrator excludes this exact workflow path from its CI gate (it is necessarily in progress while asking), and still requires at least one other green validation workflow on the commit.
-3. The Orchestrator authenticates the request, requires the SHA to be current `main`, requires the combined commit status and the latest run of every GitHub Actions workflow on it to be successful (owner decision: the Checks API is not readable by the fine-grained `GH_ACTIONS_TOKEN`, so checks posted by non-Actions apps are not part of the gate), claims a one-time deployment lock, and dispatches `deploy-platform-api.yml`.
-4. The workflow re-checks confirmation and SHA, type-checks, deploys with `--tag <sha12>`, and verifies the active version and `/health` + `/ready` on workers.dev.
+The Orchestrator deploys the Platform API only for a consensus `deploy_commit` (ADR-0009): natively from the Forge's bundles, or, when the native path refuses the change, by dispatching `deploy-platform-api.yml` (the fallback). The workflow re-checks confirmation and SHA, type-checks, deploys with `--tag <sha12>`, and verifies the active version and `/health` + `/ready` on workers.dev.
+
+The manual request path (the Orchestrator's `POST /v1/deployments` and the Console form that called it) was removed (owner 2026-11-14: "hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"); see `docs/SSOT.md`, "Paths to production".
 
 All Workers are behind Cloudflare Access (`provision-access.yml`, run once before the first deploy). Every deploy workflow refuses to deploy unless the Access application protects the target Worker, passes the Access team domain and AUD to the Worker, and verifies it live with `.github/scripts/verify-worker-live.sh --require-access`. The verification checks that an unauthenticated request is rejected by Access, that the active version is annotated with the commit, and that health and readiness return HTTP 200 and their JSON contract through the CI service token. TLS verification is always on.
 

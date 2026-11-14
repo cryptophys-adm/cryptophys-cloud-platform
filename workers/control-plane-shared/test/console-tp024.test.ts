@@ -121,13 +121,15 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["audit.event", "audit", "GET", "/v1/events/{id}", false, null],
   ["audit.verify", "audit", "GET", "/v1/verify", false, null],
   ["orchestrator.deployments", "orchestrator", "GET", "/v1/deployments", false, null],
-  ["orchestrator.deploy", "orchestrator", "POST", "/v1/deployments", false, "DEPLOY {sha12}"],
+  // Owner 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"):
+  // orchestrator.deploy (POST /v1/deployments, "DEPLOY {sha12}") is removed.
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 70 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 69 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
-  assert.equal(UI_ROUTES.length, 70);
+  // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
+  assert.equal(UI_ROUTES.length, 69);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -136,7 +138,10 @@ test("1. route table: exactly the 70 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 70);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 69);
+  assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
+  assert.ok(!UI_ROUTES.some((r) => r.service === "orchestrator" && r.method !== "GET"), "no UI route writes to the Orchestrator");
+  assert.ok(!UI_ROUTES.some((r) => r.confirm?.includes("{sha12}")), "no phrase template needs a commit SHA any more");
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -226,8 +231,10 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the Alerts page's five rows (owner 2026-11-13).
   // + the Vision page's read-only row (ADR-0016 T0).
   // + the Observer's read-only view (owner 2026-11-14).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 69);
+  // - the manual deploy row, orchestrator POST /v1/deployments (owner 2026-11-14).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 68);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
+  assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));
   assert.equal(html.headers.get("content-security-policy"), CSP);
@@ -238,6 +245,17 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   const mcp = await run(env, creq("GET", "/api/kernel/mcp", { jwt: OPERATOR_JWT }));
   assert.equal(mcp.status, 404);
   assert.equal(mcp.body.error, "not_allowed");
+  // Owner 2026-11-14: a deploy request through the Console is not forwarded, even with the Console's CSRF headers.
+  const orchestrator = recorder();
+  (env as Record<string, unknown>).ORCHESTRATOR = orchestrator.binding;
+  const deploy = creq("POST", "/api/orchestrator/v1/deployments", { jwt: APPROVER_JWT });
+  deploy.headers.set("origin", ORIGIN);
+  deploy.headers.set("x-cryptophys-console", "1");
+  const refused = await run(env, deploy);
+  assert.deepEqual([refused.status, refused.body.error], [404, "not_allowed"]);
+  assert.equal(orchestrator.calls.length, 0, "the Orchestrator is never reached");
+  assert.equal((await run(env, creq("GET", "/api/orchestrator/v1/deployments", { jwt: OPERATOR_JWT }))).status, 200, "the read-only list is still forwarded");
+  assert.equal(orchestrator.calls.length, 1);
 });
 
 test("9. SAFE principal identifiers containing @, + and : reach the Worker unencoded", async () => {
