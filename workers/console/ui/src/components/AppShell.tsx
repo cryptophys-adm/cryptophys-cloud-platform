@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing } from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -18,6 +18,8 @@ export const NAV = [
   { label: "Owner", href: "#/owner", key: "owner", icon: Inbox },
   { label: "Command", href: "#/", key: "", icon: Terminal },
   { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
+  // ADR-0016 T0: the vision the organism grows toward (read-only).
+  { label: "Vision", href: "#/vision", key: "vision", icon: Compass },
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },

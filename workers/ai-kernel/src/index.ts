@@ -34,6 +34,7 @@ import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, TOPICS, channelOf, collectNotice
 import { ownerInbox } from "./owner-inbox.ts";
 import { metabolismView } from "./metabolism-view.ts";
 import { meshView } from "./mesh-view.ts";
+import { visionView } from "./vision-view.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -64,7 +65,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -127,6 +128,8 @@ export default {
       if (path === "/v1/owner/inbox" && request.method === "GET") return json(await ownerInbox(env.DB));
       if (path === "/v1/metabolism" && request.method === "GET") return json(await metabolismView(env));
       if (path === "/v1/mesh" && request.method === "GET") return json(await meshView(env));
+      // ADR-0016 T0: the organism's vision (organism/vision.json of this deploy), read-only, for the Console's Vision page.
+      if (path === "/v1/vision" && request.method === "GET") return json(visionView());
       if (path === "/v1/consensus" && request.method === "GET") return json(await listProposals(env, limitParam(url)));
       if (path === "/v1/consensus/mode" && request.method === "POST") {
         const body = await readJsonObject(request);
