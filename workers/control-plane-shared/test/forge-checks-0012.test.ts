@@ -245,6 +245,20 @@ test("FC7b. a commit of main checked only as a change request head is checked ag
   assert.equal(await claim(db, h("2"), later + 60_000, "main"), false);
 });
 
+test("FC7c. main's head is checked as main before older commits that still need a run (2026-11-14)", async () => {
+  const db = migratedDb();
+  const t0 = Date.parse("2026-11-14T04:49:00Z");
+  // A merge brought two commits: h("2") (older, never checked) and the head h("3") (checked as a change request).
+  assert.equal(await claim(db, h("3"), t0, "change"), true);
+  db.raw.prepare("UPDATE forge_check_runs SET status = 'passed', finished_at = ? WHERE commit_sha = ?").run(new Date(t0).toISOString(), h("3"));
+  const { repo } = fakeRepo({ commits: [h("3"), h("2")] });
+  const env = { DB: db, ARTIFACTS: { get: async () => repo } };
+  const ran: string[] = [];
+  assert.equal((await checksTick(env, REPO, passingDeps(ran), () => t0 + 60_000) as { commit: string }).commit, h("3"), "the head first");
+  assert.equal((await checksTick(env, REPO, passingDeps(ran), () => t0 + 16 * 60_000) as { commit: string }).commit, h("2"), "then the older commit");
+  assert.deepEqual(await checksTick(env, REPO, passingDeps(ran), () => t0 + 31 * 60_000), { outcome: "up_to_date" });
+});
+
 test("FC8. an infrastructure error is recorded as an error, not as a test failure", async () => {
   const db = migratedDb();
   const { repo, trees } = fakeRepo({ commits: [h("1")] });

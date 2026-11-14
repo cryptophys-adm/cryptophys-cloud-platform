@@ -164,12 +164,18 @@ export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: n
   const rows = await db.prepare(`SELECT commit_sha, status, started_at, source FROM forge_check_runs WHERE commit_sha IN (${placeholders})`).bind(...shas)
     .all<Pick<CheckRow, "commit_sha" | "status" | "started_at"> & { source: CheckSource | null }>();
   const done = new Map((rows.results ?? []).map((r) => [r.commit_sha, r]));
-  for (const sha of [...shas].reverse()) {
+  const due = (sha: string) => {
     const row = done.get(sha);
-    if (!row) return sha;
-    if (row.status === "running" && Date.parse(row.started_at) < nowMs - STALE_RUN_MS) return sha;
-    if (row.source === "change" && row.status !== "running") return sha;
-  }
+    if (!row) return true;
+    if (row.status === "running" && Date.parse(row.started_at) < nowMs - STALE_RUN_MS) return true;
+    return row.source === "change" && row.status !== "running";
+  };
+  // A head the Forge merged (checked only as a change request) goes first: its bundles are what the next deploy
+  // needs, and a merge of several commits otherwise waited one tick per older commit (2026-11-14, be20645). Every
+  // other commit keeps the order oldest first.
+  const head = done.get(shas[0]);
+  if (head?.source === "change" && due(shas[0])) return shas[0];
+  for (const sha of [...shas].reverse()) if (due(sha)) return sha;
   return null;
 }
 

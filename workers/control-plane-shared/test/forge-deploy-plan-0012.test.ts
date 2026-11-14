@@ -108,6 +108,11 @@ test("DP2. G1 (owner 2026-11-12): the Orchestrator's pending deploys are the For
     checked(db, MAIN, "failed");
     pending = await pendingDeploys(orchestratorEnv(db) as never);
     assert.deepEqual([pending.ci_green, pending.units.length, pending.skipped], [false, 0, [{ unit: "*", reason: "forge_checks_not_ready" }]]);
+    // A head the Forge merged has only its change check (no bundles yet): nothing is pending until it is checked as main.
+    checked(db, MAIN, "passed");
+    db.raw.prepare("UPDATE forge_check_runs SET source = 'change' WHERE commit_sha = ?").run(MAIN);
+    pending = await pendingDeploys(orchestratorEnv(db) as never);
+    assert.deepEqual([pending.ci_green, pending.units.length, pending.skipped], [true, 0, [{ unit: "*", reason: "forge_main_check_pending" }]]);
   }
 });
 
