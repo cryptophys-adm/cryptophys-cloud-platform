@@ -91,7 +91,10 @@ export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor"]
  * owner's click).
  */
 export const RETIRE_EXEMPT_HOSTS = new Set(["xauusd-ai-trading-assistant"]);
-/** An agent registered this long ago with no action, report or vote in this window is proposed for retirement. */
+/**
+ * An agent registered this long ago with no action, report or vote in this window is proposed for retirement. An agent
+ * whose DNA declares a schedule gets a window of 3 of its runs if that is longer (agent-idle.ts, owner 2026-11-14).
+ */
 export const RETIRE_IDLE_DAYS = 14;
 export const HEX_VERSION = /^[0-9a-f]{7,40}$/;
 export const COMMIT = /^[0-9a-f]{40}$/;
@@ -126,10 +129,13 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
     const privileged = privilegedCapabilities(caps);
     if (p.action === "register_agent" && privileged.length) return { vote: "reject", reason: `privileged capabilities need register_privileged_agent: ${privileged.join(", ")}` };
-    // An external organ's agent (its DNA came over RPC) stays within the external ceiling (owner 2026-11-12).
-    if (EXTERNAL_ORIGINS.some((o) => o.services.includes(host))) {
-      const over = externalCeilingViolations({ tier_max: Number(p.params.tier_max), capabilities: caps });
-      if (over.length || p.action !== "register_agent") return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ") || "privileged registration"}` };
+    // An external organ's agent (its DNA came over RPC) stays within its origin's ceiling (owner 2026-11-12). Only a
+    // capability that ceiling names for this agent can make it privileged (Aether's knowledge-council, owner
+    // 2026-11-14: consensus.propose); such a registration is critical, so it still waits for the owner's click.
+    const origin = EXTERNAL_ORIGINS.find((o) => o.services.includes(host));
+    if (origin) {
+      const over = externalCeilingViolations({ id: p.target, tier_max: Number(p.params.tier_max), capabilities: caps }, origin);
+      if (over.length || (p.action !== "register_agent" && privileged.length === 0)) return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ") || "privileged registration"}` };
     }
     return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
   }
