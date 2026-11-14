@@ -453,3 +453,23 @@ test("G4-9. migration 0052: source admits forge with repo platform-work only; ex
 });
 
 function read(p: string) { return readFileSync(new URL(p, ROOT), "utf8"); }
+
+test("G4-MF. main's head is checked before change requests; a main check past the budget defers them, never the reverse (2026-11-14)", async () => {
+  const ns = standard();
+  ns.push("platform-work", "claude/feature", A, [A]);
+  const server = gitServer(ns.repos);
+  const db = migratedDb();
+  // A clock that jumps past the tick's check budget whenever a check runs, as a slow main check would.
+  let now = Date.parse("2026-11-14T16:04:00.000Z");
+  const slowDeps = async (commit: string): Promise<CheckDeps> => { const d = await deps(); now += 3 * 60_000; void commit; return d; };
+  const tick = () => withFetch(server.fetchImpl, () => forgeTick({ DB: db as never, ARTIFACTS: ns.binding as never }, "platform", slowDeps, () => now));
+  const t1 = await tick();
+  assert.equal((t1.main_checks as any).outcome, "checked", "main's head first");
+  assert.equal((t1.main_checks as any).commit, M1);
+  assert.deepEqual(t1.change_checks, { outcome: "deferred" }, "a main check past the budget defers the change requests to the next tick");
+  assert.deepEqual(Object.keys(t1).filter((k) => k.endsWith("_checks")), ["main_checks", "change_checks"]);
+  const t2 = await tick();
+  assert.equal((t2.main_checks as any).outcome, "up_to_date", "main's head is checked once");
+  assert.equal((t2.change_checks as any).outcome, "checked", "then the change requests");
+  assert.equal((t2.change_checks as any).commit, A);
+});
