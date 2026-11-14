@@ -72,6 +72,24 @@ Each step is reversible until step 7.
 - Steps 6–7 (retire the remaining GitHub paths, revoke `GH_ACTIONS_TOKEN`, archive the repository) follow after a day
   without incident, by the owner.
 
+### After the flip (2026-11-13 17:55 to 2026-11-14 01:10)
+
+- First Forge merges: `merge_owner_change` of `claude/adr-agentic-e0-e5` after the owner's click (18:22), then four
+  `merge_change` by consensus without a person (18:53, 22:53, 23:23, 00:23; 8 of 8 each). The agents deployed the control
+  plane (`44b13bf`) and the Forge (`6eedf61`, `595f052`).
+- Three gaps found and fixed through `platform-work`:
+  - two Supervisor tests compared a cycle's findings on the wall clock; from Friday 22:00 UTC (market closed, power mode
+    survival) every check failed on GitHub and on the Forge (`44b13bf`);
+  - a merged branch that was not deleted reopened its change request and erased its merge record (`6eedf61`);
+  - a commit the Forge merged kept its change-request check, so its Worker bundles were never stored and the native deploy
+    refused it (`no_bundle`); every deploy fell back to the GitHub workflow, which needs GitHub's main to equal the Forge's
+    (`595f052`). Until a native deploy of a Forge-merged commit has succeeded, the owner allowed the orchestrator session to
+    fast-forward GitHub's main to the Forge's main (2026-11-13), so the fallback keeps working.
+- A deploy refused by both paths is audited as `deployment.no_path` with the native reason.
+- Open before step 6: a migration the Forge marks destructive (an `UPDATE`, like 0058) has no native path
+  (`destructive_migration`); with the workflows off it cannot be deployed. The two change requests reopened before the fix
+  stay `closed` in D1; their merges are in the audit chain (`forge.merged`).
+
 ## Rollback of the cut-over
 
 Before step 7, rolling back means re-enabling the workflows and pushing the Forge's `main` back to GitHub.
