@@ -501,3 +501,57 @@ assert drop_code.count("DROP TABLE IF EXISTS") == 5 and not re.search(r"\b(DELET
 drop_db.close()
 print("PASS: 0062 retired signal tables dropped (exactly five, after their archive)")
 
+
+# Migration 0063 (owner 2026-11-14): the account-wide Observer's vitals, findings and runs. Additive: three tables and
+# their indexes only; one vitals row per subject and hour, one finding per worker, metric and bucket; retention in code.
+obs_db = sqlite3.connect(":memory:")
+obs_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0063_":
+        obs_db.executescript(migration.read_text(encoding="utf-8"))
+before_tables = {r[0] for r in obs_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+obs_sql = (ROOT / "0063_observer.sql").read_text(encoding="utf-8")
+obs_db.executescript(obs_sql)
+after_tables = {r[0] for r in obs_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+assert after_tables - before_tables == {"observer_vitals", "observer_findings", "observer_runs"}, f"0063 adds exactly the three tables: {sorted(after_tables - before_tables)}"
+assert before_tables <= after_tables, "0063 removes nothing"
+obs_idx = {r[0] for r in obs_db.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_observer_%'")}
+assert obs_idx == {"idx_observer_vitals_hour", "idx_observer_findings_created", "idx_observer_findings_kind_created", "idx_observer_runs_kind_ran"}, sorted(obs_idx)
+obs_db.execute("""INSERT INTO observer_vitals (subject, kind, hour, requests, errors, cpu_p99_ms, recorded_at)
+                  VALUES ('cryptophys-console', 'worker', '2026-11-14T10:00:00.000Z', 1200, 3, 4.5, '2026-11-14T11:27:00.000Z')""")
+obs_db.execute("""INSERT INTO observer_vitals (subject, kind, hour, rows_read, rows_written, requests, recorded_at)
+                  VALUES ('d1:abc', 'd1', '2026-11-14T10:00:00.000Z', 90000, 400, 3000, '2026-11-14T11:27:00.000Z')""")
+row = obs_db.execute("SELECT requests, errors, rows_read, neurons, sample_json FROM observer_vitals WHERE subject = 'cryptophys-console'").fetchone()
+assert row == (1200, 3, None, None, "{}"), f"unmeasured is NULL, never zero; sample defaults to {{}}: {row}"
+expect_integrity_error("0063 one vitals row per subject and hour", lambda: obs_db.execute(
+    "INSERT INTO observer_vitals (subject, kind, hour, requests, recorded_at) VALUES ('cryptophys-console', 'worker', '2026-11-14T10:00:00.000Z', 1, 't')"))
+expect_integrity_error("0063 vitals kind", lambda: obs_db.execute(
+    "INSERT INTO observer_vitals (subject, kind, hour, requests, recorded_at) VALUES ('x', 'r2', '2026-11-14T10:00:00.000Z', 1, 't')"))
+expect_integrity_error("0063 negative requests", lambda: obs_db.execute(
+    "INSERT INTO observer_vitals (subject, kind, hour, requests, recorded_at) VALUES ('y', 'worker', '2026-11-14T10:00:00.000Z', -1, 't')"))
+obs_db.execute("""INSERT INTO observer_findings (finding_id, worker, metric, kind, severity, bucket, value, baseline_7d, z, since_deploy_json, detail, created_at)
+                  VALUES ('obs_1', 'cryptophys-console', 'error_rate', 'anomaly', 'warning', '2026-11-14T10:00:00.000Z', 0.2, 0.01, 9.5,
+                          '{"version":"aaaaaaaaaaaa","deployed_at":"2026-11-14T09:50:00.000Z"}', 'spike', '2026-11-14T11:27:00.000Z')""")
+assert obs_db.execute("SELECT report_only, sample_json FROM observer_findings WHERE finding_id = 'obs_1'").fetchone() == (0, "{}")
+expect_integrity_error("0063 one finding per worker, metric and bucket", lambda: obs_db.execute(
+    """INSERT INTO observer_findings (finding_id, worker, metric, kind, severity, bucket, detail, created_at)
+       VALUES ('obs_2', 'cryptophys-console', 'error_rate', 'anomaly', 'warning', '2026-11-14T10:00:00.000Z', 'again', 't')"""))
+for bad_kind, bad_sev in (("guess", "warning"), ("anomaly", "critical")):
+    expect_integrity_error(f"0063 finding {bad_kind}/{bad_sev}", lambda k=bad_kind, s=bad_sev: obs_db.execute(
+        "INSERT INTO observer_findings (finding_id, worker, metric, kind, severity, bucket, detail, created_at) VALUES ('obs_x', 'w', 'm', ?, ?, 'b', 'd', 't')", (k, s)))
+obs_db.execute("INSERT INTO observer_runs (run_id, kind, bucket, ran_at, status) VALUES ('obr_1', 'senses', '2026-11-14T10:00:00.000Z', '2026-11-14T11:27:00.000Z', 'ok')")
+expect_integrity_error("0063 one run per kind and bucket", lambda: obs_db.execute(
+    "INSERT INTO observer_runs (run_id, kind, bucket, ran_at, status) VALUES ('obr_2', 'senses', '2026-11-14T10:00:00.000Z', 't', 'ok')"))
+expect_integrity_error("0063 run status", lambda: obs_db.execute(
+    "INSERT INTO observer_runs (run_id, kind, bucket, ran_at, status) VALUES ('obr_3', 'inventory', 'b', 't', 'not_configured')"))
+def obs_plan(sql):
+    return " ".join(r[3] for r in obs_db.execute("EXPLAIN QUERY PLAN " + sql).fetchall())
+assert "idx_observer_vitals_hour" in obs_plan("SELECT subject FROM observer_vitals WHERE hour >= '2026-11-12' ORDER BY hour"), obs_plan("SELECT subject FROM observer_vitals WHERE hour >= '2026-11-12' ORDER BY hour")
+assert "idx_observer_findings_created" in obs_plan("SELECT * FROM observer_findings WHERE created_at >= '2026-11-14' ORDER BY created_at DESC LIMIT 50")
+assert "idx_observer_runs_kind_ran" in obs_plan("SELECT * FROM observer_runs WHERE kind = 'senses' ORDER BY ran_at DESC LIMIT 1")
+obs_code = "\n".join(line.split("--", 1)[0] for line in obs_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|RENAME)\b", obs_code), "0063 is additive: CREATE TABLE and CREATE INDEX only"
+assert obs_code.count("CREATE TABLE IF NOT EXISTS") == 3 and obs_code.count("CREATE INDEX IF NOT EXISTS") == 4
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", obs_sql, re.I), "0063 is not destructive"
+obs_db.close()
+print("PASS: 0063 observer vitals, findings and runs (additive, unique per bucket, retention in code)")
