@@ -12,6 +12,7 @@ import {
 import { Badge, Dot, Empty, Panel } from "../components/ui";
 import { useOverview } from "../lib/overview";
 import CloudflareUsage from "../components/CloudflareUsage";
+import ObserverVitals from "../components/ObserverVitals";
 import { usePoll } from "../lib/usePoll";
 import { call } from "../lib/api";
 import { ago, listOf } from "../lib/format";
@@ -174,6 +175,9 @@ export default function Organism() {
 
       {/* Real Cloudflare Usage & Throttling Intents */}
       <CloudflareUsage />
+
+      {/* The account-wide Observer (owner 2026-11-14): measured vitals per organ, anomalies and deploys */}
+      <ObserverVitals />
 
       {/* Metabolism Historical Telemetry (Integrated from Metabolism) */}
       <div className="grid gap-4 lg:grid-cols-2">

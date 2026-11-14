@@ -1,0 +1,44 @@
+{
+  "_comment": "Observer fixtures (owner 2026-11-14): one hour of GraphQL Analytics answers in the shape observer.ts queries, plus a Workers Observability telemetry answer. Numbers are test data, never shown in the Console.",
+  "workers": { "data": { "viewer": { "accounts": [ {
+    "w": [
+      { "sum": { "requests": 1000, "errors": 300, "subrequests": 1200 }, "quantiles": { "cpuTimeP50": 1200, "cpuTimeP99": 8500, "wallTimeP50": 30000, "wallTimeP99": 250000 }, "dimensions": { "scriptName": "cryptophys-console" } },
+      { "sum": { "requests": 300, "errors": 2, "subrequests": 40 }, "quantiles": { "cpuTimeP50": 2000000, "cpuTimeP99": 250000000, "wallTimeP50": 2500000, "wallTimeP99": 260000000 }, "dimensions": { "scriptName": "cryptophys-forge" } },
+      { "sum": { "requests": 800, "errors": 400, "subrequests": 0 }, "quantiles": { "cpuTimeP50": 900, "cpuTimeP99": 4000, "wallTimeP50": 2000, "wallTimeP99": 9000 }, "dimensions": { "scriptName": "xauusd-omega" } },
+      { "sum": { "requests": 150, "errors": 100, "subrequests": 0 }, "quantiles": { "cpuTimeP50": 500, "cpuTimeP99": 900, "wallTimeP50": 600, "wallTimeP99": 1000 }, "dimensions": { "scriptName": "cryptophys-policy-engine" } },
+      { "sum": { "requests": 0, "errors": 0 }, "quantiles": {}, "dimensions": { "scriptName": "cryptophys-quiet" } }
+    ],
+    "s": [
+      { "sum": { "requests": 700 }, "dimensions": { "scriptName": "cryptophys-console", "status": "success" } },
+      { "sum": { "requests": 270 }, "dimensions": { "scriptName": "cryptophys-console", "status": "scriptThrewException" } },
+      { "sum": { "requests": 20 }, "dimensions": { "scriptName": "cryptophys-console", "status": "exceededCpu" } },
+      { "sum": { "requests": 10 }, "dimensions": { "scriptName": "cryptophys-console", "status": "exceededMemory" } },
+      { "sum": { "requests": 298 }, "dimensions": { "scriptName": "cryptophys-forge", "status": "success" } },
+      { "sum": { "requests": 2 }, "dimensions": { "scriptName": "cryptophys-forge", "status": "exceededResources" } },
+      { "sum": { "requests": 400 }, "dimensions": { "scriptName": "xauusd-omega", "status": "scriptThrewException" } },
+      { "sum": { "requests": 400 }, "dimensions": { "scriptName": "xauusd-omega", "status": "success" } },
+      { "sum": { "requests": 150 }, "dimensions": { "scriptName": "cryptophys-policy-engine", "status": "success" } }
+    ]
+  } ] } } },
+  "d1": { "data": { "viewer": { "accounts": [ { "g": [
+    { "sum": { "readQueries": 5000, "writeQueries": 500, "rowsRead": 900000, "rowsWritten": 2000 }, "dimensions": { "databaseId": "d1-uuid-1" } }
+  ] } ] } } },
+  "d1_queries": { "data": { "viewer": { "accounts": [ { "g": [
+    { "count": 4000, "sum": { "rowsRead": 800000, "rowsWritten": 0 }, "dimensions": { "databaseId": "d1-uuid-1", "query": "SELECT agent_id, capability FROM agent_actions WHERE created_at >= ?" } }
+  ] } ] } } },
+  "kv": { "data": { "viewer": { "accounts": [ { "g": [
+    { "sum": { "requests": 100 }, "dimensions": { "namespaceId": "kv-1", "actionType": "read" } },
+    { "sum": { "requests": 5 }, "dimensions": { "namespaceId": "kv-1", "actionType": "write" } }
+  ] } ] } } },
+  "do": { "data": { "viewer": { "accounts": [ { "g": [
+    { "sum": { "requests": 300, "errors": 0, "wallTime": 5000000 }, "dimensions": { "namespaceId": "do-ns-1", "scriptName": "cryptophys-ai-kernel" } }
+  ] } ] } } },
+  "ai": { "data": { "viewer": { "accounts": [ { "g": [
+    { "sum": { "totalNeurons": 1500.5 }, "dimensions": { "modelId": "@cf/google/gemma-4-26b-a4b-it" } }
+  ] } ] } } },
+  "observability": { "success": true, "result": { "calculations": [ { "aggregates": [
+    { "groups": [ { "key": "$workers.scriptName", "value": "cryptophys-console" }, { "key": "$metadata.message", "value": "TypeError: Cannot read properties of undefined (reading 'services')" } ], "count": 250 },
+    { "groups": [ { "key": "$workers.scriptName", "value": "cryptophys-console" }, { "key": "$metadata.message", "value": "Error: upstream timeout" } ], "count": 20 },
+    { "groups": [ { "key": "$workers.scriptName", "value": "xauusd-omega" }, { "key": "$metadata.message", "value": "Error: feed closed" } ], "count": 400 }
+  ] } ] } }
+}

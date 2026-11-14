@@ -21,6 +21,8 @@ import { latestCensusRow, proposalFor } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "../../control-plane-shared/src/consensus-rules.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
+import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
+import { observerCycle } from "./observer-watch.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -334,6 +336,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   }
   await memory.put("proposals", proposals);
 
+  // Owner 2026-11-14: the account-wide Observer's findings. An error or exception spike right after a platform Worker's
+  // deploy may become one rollback_worker_version proposal (observer-watch.ts lists every safeguard); the rest is
+  // reported. It goes before deploys: a rollback of a bad deploy matters more than the next one.
+  await observerCycle(env, memory, report, trigger, proposeConsensus, now);
+
   // ADR-0009 phase 3: a CI-green main commit that production does not run yet is proposed for
   // deployment, once per deploy unit and commit. Executed only in the 'deploy' consensus mode.
   // Only scheduled cycles propose deploys: a proposal takes 15-25 s (evidence, audit chain, one
@@ -469,6 +476,17 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         ).bind(u.target, hourAgo).first();
         if (recentTarget) {
           report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: "this service was changed in the last hour; it waits" });
+          continue;
+        }
+        // Owner 2026-11-14: a commit the Observer's rollback just took off a Worker of this unit is not deployed again
+        // by the same loop (no flapping); a newer commit deploys as usual.
+        const unitServices = [...(DEPLOY_UNITS.find((d) => d.unit === u.unit)?.services ?? [u.target])];
+        const rolledBack = pending.main_sha ? await env.DB.prepare(
+          `SELECT target FROM consensus_proposals WHERE action = 'rollback_worker_version' AND status IN ('executing','executed') AND decided_at >= ?
+             AND target IN (${unitServices.map(() => "?").join(", ")}) AND json_extract(params_json, '$.evidence.deployed.version') = ? LIMIT 1`,
+        ).bind(dayAgo, ...unitServices, pending.main_sha.slice(0, 12)).first<{ target: string }>() : null;
+        if (rolledBack) {
+          report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: `main ${pending.main_sha!.slice(0, 12)} was rolled back on ${rolledBack.target} by the Observer in the last 24 h; it waits for a newer commit` });
           continue;
         }
         if (proposed >= MAX_DEPLOY_PROPOSALS_PER_CYCLE) {

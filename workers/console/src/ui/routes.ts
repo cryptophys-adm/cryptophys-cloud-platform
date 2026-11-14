@@ -20,6 +20,8 @@ const r = (id: string, service: string, method: string, path: string, approverOn
 export const UI_ROUTES: readonly UiRoute[] = [
   r("platform.overview", "platform", "GET", "/v1/overview", false, null),
   r("platform.usage", "platform", "GET", "/v1/usage", false, null),
+  // Owner 2026-11-14: the account-wide Observer's vitals, anomalies and deploys (Organism page; read only).
+  r("platform.observer", "platform", "GET", "/v1/observer", false, null),
   r("forge.status", "forge", "GET", "/v1/forge/status", false, null),
   r("forge.commits", "forge", "GET", "/v1/forge/commits", false, null),
   r("forge.checks", "forge", "GET", "/v1/forge/checks", false, null),
