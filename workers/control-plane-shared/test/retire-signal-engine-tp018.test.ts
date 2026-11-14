@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { baseEnv, migratedDb } from "./harness.ts";
 import { schemaReady, REQUIRED_MIGRATION } from "../src/readiness.ts";
 import { CAPABILITIES } from "../src/capabilities.ts";
+import { isRetiredService } from "../src/retired.ts";
 import { observe } from "../../ai-kernel/src/syscall.ts";
 import { observe as observeDrift } from "../../drift-detector/src/index.ts";
 
@@ -57,7 +58,7 @@ test("TP-018 readiness", async () => {
   assert.equal(await schemaReady({ DB: db } as any), true);
 });
 
-test("TP-018 disabled service is recorded without probing or drift", async () => {
+test("TP-018 retired service (0064) is neither probed nor recorded nor drift", async () => {
   const db = migratedDb();
   let signalEngineProbes = 0;
   const env: any = baseEnv("cryptophys-drift-detector", db, {
@@ -69,11 +70,15 @@ test("TP-018 disabled service is recorded without probing or drift", async () =>
     },
   });
   const report = await observeDrift(env, "manual", "test");
+  // Disabled by 0020, retired by 0064 (owner 2026-11-14): the run leaves it out entirely; its row stays as history.
   const signal = report.services.find((s) => s.service_id === "cryptophys-signal-engine");
-  assert.ok(signal);
-  assert.deepEqual([signal.drifted, signal.reasons, signal.status], [false, ["disabled"], "disabled"]);
-  assert.equal(signal.probe.error, null);
+  assert.equal(signal, undefined);
+  const row = db.raw.prepare("SELECT status, metadata_json FROM service_registry WHERE service_id='cryptophys-signal-engine'").get() as any;
+  assert.deepEqual([row.status, isRetiredService(row), JSON.parse(row.metadata_json).source], ["disabled", true, "workers/signal-engine"]);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM drift_observations WHERE service_id='cryptophys-signal-engine'").get() as any).n, 0);
   assert.equal(signalEngineProbes, 0);
+  // The kernel's platform view (the Supervisor, the overview) does not list it either.
+  assert.equal(((await observe(baseEnv("cryptophys-ai-kernel", db) as any, Date.now())).services as any[]).some((s) => s.service_id === "cryptophys-signal-engine"), false);
 });
 
 test("TP-018 bindings", async () => {

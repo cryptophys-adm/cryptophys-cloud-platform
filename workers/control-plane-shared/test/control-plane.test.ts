@@ -344,12 +344,14 @@ test("drift detector compares registry desired versions with live versions over 
   assert.deepEqual(by["cryptophys-audit-ledger"].reasons, ["observed_version_unavailable"]);
   assert.deepEqual([by["cryptophys-recovery-manager"].drifted, by["cryptophys-recovery-manager"].managed], [false, false]);
   assert.equal(by["cryptophys-drift-detector"].drifted, false);
-  assert.deepEqual([by["cryptophys-signal-engine"].drifted, by["cryptophys-signal-engine"].status], [false, "disabled"]);
-  assert.equal(signalEngineProbes, 0, "disabled Signal Engine is never probed");
+  // cryptophys-signal-engine and cryptophys-home are retired (0064): their rows are kept as history, but they are
+  // neither probed nor observed nor listed.
+  assert.equal(by["cryptophys-signal-engine"], undefined, "the retired Signal Engine is not observed");
+  assert.equal(signalEngineProbes, 0, "the retired Signal Engine is never probed");
   assert.deepEqual([by["cryptophys-ai-kernel"].drifted, by["cryptophys-ai-kernel"].status], [false, "healthy"]);
   assert.deepEqual([by["cryptophys-console"].drifted, by["cryptophys-console"].status], [false, "healthy"]);
-  // cryptophys-home is retired (0055): its row is kept, disabled, never drift, and it has no binding.
-  assert.deepEqual([by["cryptophys-home"].drifted, by["cryptophys-home"].status, by["cryptophys-home"].reasons], [false, "disabled", ["disabled"]]);
+  assert.equal(by["cryptophys-home"], undefined, "the retired Home is not observed");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM drift_observations WHERE service_id IN ('cryptophys-home', 'cryptophys-signal-engine')").get() as any).n, 0, "no drift row for a retired service");
   // External services: health-managed only (their version is not observable from outside).
   assert.deepEqual([by["xauusd-ai-trading-assistant"].drifted, by["xauusd-ai-trading-assistant"].managed, by["xauusd-ai-trading-assistant"].status], [false, false, "healthy"]);
   assert.deepEqual([by["xauusd-fundamental-news-ingestion"].status, by["xauusd-fundamental-news-ingestion"].probe.error], ["unavailable", "http_500"]);
@@ -363,7 +365,9 @@ test("drift detector compares registry desired versions with live versions over 
   const row = db.raw.prepare("SELECT observed_version, status FROM service_registry WHERE service_id = 'cryptophys-deployment-orchestrator'").get() as any;
   assert.deepEqual([row.observed_version, row.status], ["bbbbbbbbbbbb", "degraded"]);
   const latest = await call(drift, env, req("GET", "/v1/drift"));
-  assert.equal(latest.body.services.length, 18); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042)
+  // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042), less the two retired by 0064.
+  assert.equal(latest.body.services.length, 16);
+  assert.equal(latest.body.services.some((s: any) => s.service_id === "cryptophys-home" || s.service_id === "cryptophys-signal-engine"), false);
   const history = await call(drift, env, req("GET", "/v1/drift/cryptophys-platform-api"));
   assert.equal(history.body.observations.length, 1);
 

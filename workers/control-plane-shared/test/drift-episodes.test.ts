@@ -9,6 +9,7 @@ import drift, { DRIFT_REMINDER_MS, observe } from "../../drift-detector/src/inde
 import { observe as kernelObserve } from "../../ai-kernel/src/syscall.ts";
 import { castDomainVote } from "../src/consensus-vote.ts";
 import { driftSignature, isPersistentDrift, persistentDriftSince } from "../src/drift-state.ts";
+import { notRetiredSql } from "../src/retired.ts";
 
 const TAG = "aaaaaaaaaaaa";
 
@@ -102,16 +103,22 @@ const auditCount = (db: ReturnType<typeof migratedDb>) => (db.raw.prepare("SELEC
 
 test("DE4. eight identical scheduled runs: one row per service (streak 2 after the second run), one audit, a heartbeat on every run", async () => {
   const { db, env } = setup();
-  const services = (db.raw.prepare("SELECT service_id FROM service_registry").all() as any[]).map((r) => r.service_id);
+  // Every service but the two retired ones (0064), which the Drift Detector no longer observes at all.
+  const services = (db.raw.prepare(`SELECT service_id FROM service_registry WHERE ${notRetiredSql()}`).all() as any[]).map((r) => r.service_id);
+  const retired = ["cryptophys-home", "cryptophys-signal-engine"];
+  assert.equal(services.some((s) => retired.includes(s)), false);
   let last = "";
   for (let i = 0; i < 8; i++) {
     last = (await observe(env, "scheduled", "cryptophys-drift-detector")).observed_at;
     const streaks = services.map((s) => rowsOf(db, s).map((r) => r.streak));
     assert.ok(streaks.every((x) => x.length === 1), `run ${i + 1}: one row per service`);
     assert.ok(streaks.every((x) => x[0] === (i === 0 ? 1 : 2)), `run ${i + 1}: streak ${i === 0 ? 1 : 2}`);
-    // The heartbeat is the freshness signal: every run sets it for every service.
-    const seen = db.raw.prepare("SELECT DISTINCT updated_at FROM service_registry").all() as any[];
+    // The heartbeat is the freshness signal: every run sets it for every observed service.
+    const seen = db.raw.prepare(`SELECT DISTINCT updated_at FROM service_registry WHERE ${notRetiredSql()}`).all() as any[];
     assert.deepEqual(seen.map((r) => r.updated_at), [last], `run ${i + 1}: every heartbeat is this run`);
+    // A retired service gets no row and no heartbeat: its row keeps the time 0064 retired it.
+    assert.deepEqual(retired.map((s) => rowsOf(db, s).length), [0, 0], `run ${i + 1}: no row for a retired service`);
+    assert.deepEqual((db.raw.prepare(`SELECT DISTINCT updated_at FROM service_registry WHERE NOT ${notRetiredSql()}`).all() as any[]).map((r) => r.updated_at), ["2026-11-14T12:00:00.000Z"]);
   }
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM drift_observations").get() as any).n, services.length);
   assert.equal(auditCount(db), 1, "only the first run changed anything");
