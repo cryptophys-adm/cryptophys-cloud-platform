@@ -636,3 +636,32 @@ guard64.executescript(retire64_sql)
 assert guard64.execute("SELECT * FROM service_registry ORDER BY service_id").fetchall() == guard_before, "0064 touches only disabled rows with JSON metadata"
 guard64.close()
 print("PASS: 0064 retire signal-engine and home (rows kept and disabled, marker only, history kept, idempotent, guarded)")
+
+# Migration 0066 (owner-approved hardening (a), incident 2026-11-14): the Forge's linear-history guard. Additive: one
+# nullable column on forge_change_requests that admits only 'main_not_first_parent'; every existing row is kept and reads NULL.
+lh_db = sqlite3.connect(":memory:")
+lh_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0066_":
+        lh_db.executescript(migration.read_text(encoding="utf-8"))
+lh_db.execute(
+    """INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, status, created_at, updated_at, repo, blocked_reason)
+       VALUES ('fg-old', 'forge', 0, 'claude/old', 'claude/old', 't', 'a', ?, ?, 'open', 't0', 't0', 'platform-work', 'not_based_on_main')""",
+    ("a" * 40, "b" * 40),
+)
+lh_before = lh_db.execute("SELECT * FROM forge_change_requests").fetchall()
+lh_sql = (ROOT / "0066_forge_linear_history_guard.sql").read_text(encoding="utf-8")
+lh_db.executescript(lh_sql)
+cols = [r[1] for r in lh_db.execute("PRAGMA table_info(forge_change_requests)")]
+assert cols[-1] == "history_blocked_reason", cols
+assert [r[:-1] for r in lh_db.execute("SELECT * FROM forge_change_requests").fetchall()] == lh_before, "0066 keeps every row"
+assert lh_db.execute("SELECT history_blocked_reason FROM forge_change_requests WHERE cr_id = 'fg-old'").fetchone() == (None,)
+lh_db.execute("UPDATE forge_change_requests SET history_blocked_reason = 'main_not_first_parent' WHERE cr_id = 'fg-old'")
+for bad in ("not_based_on_main", "x", ""):
+    expect_integrity_error(f"0066 history_blocked_reason {bad!r}", lambda bad=bad: lh_db.execute("UPDATE forge_change_requests SET history_blocked_reason = ? WHERE cr_id = 'fg-old'", (bad,)))
+lh_db.execute("UPDATE forge_change_requests SET history_blocked_reason = NULL WHERE cr_id = 'fg-old'")
+lh_code = "\n".join(line.split("--", 1)[0] for line in lh_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", lh_code) and lh_code.count("ALTER TABLE FORGE_CHANGE_REQUESTS ADD COLUMN HISTORY_BLOCKED_REASON") == 1, "0066 only adds the column"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", lh_sql, re.I), "0066 is not destructive"
+lh_db.close()
+print("PASS: 0066 linear-history guard (additive column, CHECK main_not_first_parent, rows kept)")

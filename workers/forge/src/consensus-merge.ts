@@ -10,7 +10,8 @@
 //      last 10 minutes, the owner's approval for the critical one, the kill switch);
 //   2. that the cut-over flipped the merge path (forge_controls.merge_path = forge);
 //   3. the request again: open, pushed to platform-work, the proposed head, the verdict its action needs, and a
-//      head that contains canonical main;
+//      head that contains canonical main on its first-parent chain (the linear-history guard, incident 2026-11-14:
+//      changeState reads main's position live, so a head registered before main moved is judged against main now);
 // then copies the head into the canonical repository (cr/<cr_id>, transfer.ts; usually already there for its
 // type-check) and fast-forwards main from the main it read to the head (forgeMerge, read back through the binding).
 // The request is recorded merged and the merge audited (forge.merged); a refused or failed merge is audited too.
@@ -19,9 +20,9 @@ import { verifyConsensusExecution } from "../../control-plane-shared/src/consens
 import { MERGE_ACTIONS } from "../../control-plane-shared/src/consensus-rules.ts";
 import { mergePath, type ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
-import { changeVerdict, type ChangeRow } from "./changes.ts";
+import { changeVerdict, MAIN_NOT_FIRST_PARENT, type ChangeRow } from "./changes.ts";
 import { checkOf } from "./checks.ts";
-import { CANONICAL_REPO, forgeMerge, isAncestor, refHead, validSha, type Fetch, type MergeBinding } from "./merge.ts";
+import { CANONICAL_REPO, forgeMerge, mainPosition, refHead, validSha, type Fetch, type MergeBinding, type MainPosition } from "./merge.ts";
 import { copyCommit, typecheckBranch } from "./transfer.ts";
 
 const ACTOR = "system:forge-merge";
@@ -34,16 +35,22 @@ export async function changeState(env: MergeEnv, crId: string, nowMs = Date.now(
   if (!env.ARTIFACTS || !CR_ID.test(crId)) return null;
   const row = await env.DB.prepare("SELECT * FROM forge_change_requests WHERE cr_id = ?").bind(crId).first<ChangeRow>();
   if (!row) return null;
-  const { verdict, reasons } = changeVerdict(row, await checkOf(env.DB, row.head_sha), parseList(row.critical), nowMs);
+  let { verdict, reasons } = changeVerdict(row, await checkOf(env.DB, row.head_sha), parseList(row.critical), nowMs);
   const canonical = await env.ARTIFACTS.get(CANONICAL_REPO);
   let main: string | null;
   try { main = await refHead(canonical, "main"); } finally { canonical[Symbol.dispose]?.(); }
-  let contains = false;
+  let position: MainPosition = "absent";
   if (main) {
     const work = await env.ARTIFACTS.get(row.repo);
-    try { contains = main === row.head_sha || await isAncestor(work, main, row.head_sha); } finally { work[Symbol.dispose]?.(); }
+    try { position = await mainPosition(work, main, row.head_sha); } finally { work[Symbol.dispose]?.(); }
   }
-  return { cr_id: row.cr_id, status: row.status, source: row.source, head_sha: row.head_sha, verdict, reasons: reasons.slice(0, 10), main_sha: main, contains_main: contains };
+  // The linear-history guard, live: main merged in as a second parent blocks the merge whatever the stored row says,
+  // so the Supervisor proposes nothing (verdict blocked), every voter rejects and the executor refuses.
+  if (position === "merged_in" && !reasons.includes(MAIN_NOT_FIRST_PARENT)) {
+    reasons = verdict === "blocked" ? [MAIN_NOT_FIRST_PARENT, ...reasons] : [MAIN_NOT_FIRST_PARENT];
+    verdict = "blocked";
+  }
+  return { cr_id: row.cr_id, status: row.status, source: row.source, head_sha: row.head_sha, verdict, reasons: reasons.slice(0, 10), main_sha: main, contains_main: position !== "absent" };
 }
 
 export async function mergeForConsensus(env: MergeEnv, proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>, fetchImpl: Fetch = (i, init) => fetch(i, init), nowMs = Date.now()): Promise<Record<string, unknown>> {

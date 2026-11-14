@@ -33,4 +33,5 @@ The canonical repository is `cryptophys/platform` on Cloudflare Artifacts; GitHu
   a change that touches a guard path (`control-plane-shared/src/guard-paths.ts`) is `merge_owner_change` and
   waits for the owner's click. The Forge fast-forwards `main`; the agents then deploy it as before.
 - A branch that does not contain the current `main` is `blocked` until it is rebased or merged with `main`.
+- Rebase onto `main`, or merge with `main` as the FIRST parent; `git merge main` on the branch (main as the second parent) is refused as `main_not_first_parent` (incident 2026-11-14, `docs/SSOT.md`).
 
