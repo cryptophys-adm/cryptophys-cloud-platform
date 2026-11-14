@@ -1,5 +1,5 @@
-// ADR-0012 phase 3: Forge checks. The control-plane test suite runs on Cloudflare against each new
-// commit of main in the Artifacts repo, with no GitHub involved:
+// ADR-0012 phase 3: Forge checks. The control-plane test suite runs on Cloudflare against main's head
+// (each new head, and once per UTC day) in the Artifacts repo, with no GitHub involved:
 //   1. snapshot: the commit's tree read through the Artifacts binding (readCommit/readTree/readBlob);
 //   2. bundle: esbuild-wasm in the Forge isolate (runner/core.ts);
 //   3. run: Dynamic Workers (Worker Loader), with no network access;
@@ -10,7 +10,7 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { migrationSqlOf, migrationsOf, storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
 import { lockfileSource } from "./externals.ts";
-import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult } from "./runner/core.ts";
+import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult, type WorkerStats } from "./runner/core.ts";
 import { isReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
 
@@ -21,8 +21,6 @@ const HEX40 = /^[0-9a-f]{40}$/;
 export const RUNNER_ID = "forge-runner/1";
 /** A run that has not finished after this long is treated as lost and may be retried. */
 export const STALE_RUN_MS = 30 * 60_000;
-/** How many of main's newest commits a tick looks at. It checks the oldest unchecked one. */
-export const LOOKBACK_COMMITS = 5;
 export const MAX_SNAPSHOT_FILES = 5_000;
 export const MAX_SNAPSHOT_BYTES = 20_000_000;
 const MAX_FAILURES_STORED = 50;
@@ -102,6 +100,11 @@ export interface CheckSteps {
   secrets: { files: number; findings: SecretFinding[] };
   /** Absent in runs recorded before the type-check step; `pending` until the build of the commit reports. */
   typecheck?: TypecheckStep;
+  /**
+   * The run's Dynamic Workers (2026-11-14; absent before): groups run, distinct test Worker ids (content
+   * addresses) and Worker Loader `get` calls, isolated reruns included. Informational; never part of the verdict.
+   */
+  workers?: WorkerStats;
 }
 export interface CheckRun extends SuiteResult {
   commit: string; status: "passed" | "failed"; guard_status: "clean" | "findings"; steps: CheckSteps;
@@ -114,7 +117,7 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
   const snap = await snapshotFromArtifacts(repo, commit);
   lastSnapshot = { commit, snapshot: snap.snapshot };
   const suite = await deps(commit);
-  const result = await runSuite(suite, snap.snapshot, only);
+  const { workers, ...result } = await runSuite(suite, snap.snapshot, only, commit);
   if (result.files === 0) throw new Error("no_test_files");
   const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot, built ? (dir, m) => { built.push({ dir, ...m }); } : undefined);
   const secrets = scanSecrets(snap.snapshot);
@@ -135,6 +138,7 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
       bundles: { workers: bundles.workers, failed: bundles.failed, bundles: bundles.bundles },
       secrets,
       typecheck,
+      ...(workers ? { workers } : {}),
     },
     duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes,
   };
@@ -146,37 +150,38 @@ export interface CheckRow {
   steps: string | null; guard_status: string | null;
 }
 
+/** 00:00 UTC of the day `nowMs` falls in. */
+export function utcDayStart(nowMs: number): number {
+  const d = new Date(nowMs);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 /**
- * Pick the commit to check: among main's newest commits, the oldest that has no run, whose run
- * was lost (still "running" after 30 minutes), or that was checked only as a change request head.
- * Returns null when every one has been checked as a commit of main.
+ * Pick the commit of main to check: main's head, when it has no run, its run was lost (still "running" after
+ * 30 minutes), it was checked only as a change request head, or its last run finished before 00:00 UTC today.
+ * Returns null otherwise. Older commits are never checked: a newer head superseded them, and only the head is
+ * deployed (forge-gate.ts) or merged onto (owner, 2026-11-14: one run of the suite per head, not per commit).
  *
- * After the cut-over (ADR-0012 G6) the Forge fast-forwards main to a change request's head, which
- * already has a passed run with source 'change'. Only a run of main stores the commit's Worker
- * bundles (G2a), so without a second run every merged commit had no bundles and the native deploy
- * refused it (no_bundle; 2026-11-13, 6e7fdb7 to 6eedf61).
+ * After the cut-over (ADR-0012 G6) the Forge fast-forwards main to a change request's head, which already has a
+ * passed run with source 'change'. Only a run of main stores the commit's Worker bundles (G2a), so without a
+ * second run every merged commit had no bundles and the native deploy refused it (no_bundle; 2026-11-13).
+ *
+ * The daily run (owner, 2026-11-14): once per UTC day the head runs again, whatever its last result, so tests that
+ * depend on the clock (market hours, weekdays, expiries) are exercised on every day the head stays current. While
+ * it runs, the head's row is 'running', so forgeReady reports forge_checks_pending for those minutes (the first
+ * tick after 00:00 UTC), as for any head whose check is running: a deploy decided in that window is refused as
+ * ci_not_green, and nothing is pending on main until the run has finished.
  */
 export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
-  const log = await repo.log({ ref: "main", limit: LOOKBACK_COMMITS });
-  const shas = log.map((c) => (typeof c.hash === "string" ? c.hash : "")).filter((h) => HEX40.test(h));
-  if (shas.length === 0) return null;
-  const placeholders = shas.map(() => "?").join(",");
-  const rows = await db.prepare(`SELECT commit_sha, status, started_at, source FROM forge_check_runs WHERE commit_sha IN (${placeholders})`).bind(...shas)
-    .all<Pick<CheckRow, "commit_sha" | "status" | "started_at"> & { source: CheckSource | null }>();
-  const done = new Map((rows.results ?? []).map((r) => [r.commit_sha, r]));
-  const due = (sha: string) => {
-    const row = done.get(sha);
-    if (!row) return true;
-    if (row.status === "running" && Date.parse(row.started_at) < nowMs - STALE_RUN_MS) return true;
-    return row.source === "change" && row.status !== "running";
-  };
-  // A head the Forge merged (checked only as a change request) goes first: its bundles are what the next deploy
-  // needs, and a merge of several commits otherwise waited one tick per older commit (2026-11-14, be20645). Every
-  // other commit keeps the order oldest first.
-  const head = done.get(shas[0]);
-  if (head?.source === "change" && due(shas[0])) return shas[0];
-  for (const sha of [...shas].reverse()) if (due(sha)) return sha;
-  return null;
+  const log = await repo.log({ ref: "main", limit: 1 });
+  const head = typeof log[0]?.hash === "string" ? log[0].hash : "";
+  if (!HEX40.test(head)) return null;
+  const row = await db.prepare("SELECT status, started_at, finished_at, source FROM forge_check_runs WHERE commit_sha = ?").bind(head)
+    .first<Pick<CheckRow, "status" | "started_at" | "finished_at"> & { source: CheckSource | null }>();
+  if (!row) return head;
+  if (row.status === "running") return Date.parse(row.started_at) < nowMs - STALE_RUN_MS ? head : null;
+  if (row.source === "change") return head;
+  return Date.parse(row.finished_at ?? row.started_at) < utcDayStart(nowMs) ? head : null;
 }
 
 /** What a check was of (migration 0039): a commit of main, or a change request head. */
@@ -184,18 +189,21 @@ export type CheckSource = "main" | "change";
 
 /**
  * Claim a commit for this tick. False if another tick holds a live run of it. A run of main also takes over a
- * finished run of the same commit as a change request head (nextCommit), so that the commit's bundles are stored.
+ * finished run of the same commit as a change request head (nextCommit), so that the commit's bundles are stored,
+ * and a finished run of any source that finished before 00:00 UTC today (the daily run of main's head).
  */
 export async function claim(db: D1Database, commit: string, nowMs: number, source: CheckSource = "main"): Promise<boolean> {
   const startedAt = new Date(nowMs).toISOString();
   const staleBefore = new Date(nowMs - STALE_RUN_MS).toISOString();
+  const today = new Date(utcDayStart(nowMs)).toISOString();
   const r = await db.prepare(
     `INSERT INTO forge_check_runs (commit_sha, status, runner, started_at, source) VALUES (?, 'running', ?, ?, ?)
      ON CONFLICT(commit_sha) DO UPDATE SET status = 'running', runner = excluded.runner, started_at = excluded.started_at, source = excluded.source,
        files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL, steps = NULL, guard_status = NULL
      WHERE (forge_check_runs.status = 'running' AND forge_check_runs.started_at < ?)
-        OR (excluded.source = 'main' AND forge_check_runs.source = 'change' AND forge_check_runs.status <> 'running')`,
-  ).bind(commit, RUNNER_ID, startedAt, source, staleBefore).run();
+        OR (excluded.source = 'main' AND forge_check_runs.source = 'change' AND forge_check_runs.status <> 'running')
+        OR (excluded.source = 'main' AND forge_check_runs.status <> 'running' AND coalesce(forge_check_runs.finished_at, forge_check_runs.started_at) < ?)`,
+  ).bind(commit, RUNNER_ID, startedAt, source, staleBefore, today).run();
   return (r.meta?.changes ?? 0) > 0;
 }
 
@@ -224,7 +232,7 @@ export async function record(db: D1Database, run: CheckRun | { commit: string; s
 export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; BUNDLES?: BundleBucket }
 export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number };
 
-/** One cron tick: check at most one commit of main. */
+/** One cron tick: check main's head, when nextCommit says it is due. */
 export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
   return tickWith(env, repoName, deps, nowMs, (repo) => nextCommit(env.DB, repo, nowMs()));
 }

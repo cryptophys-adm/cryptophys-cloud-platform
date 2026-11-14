@@ -1,13 +1,18 @@
 // Wires the runner core to the Workers runtime: esbuild-wasm, sql.js and the Worker Loader.
 // Shared by the Forge Worker (worker.ts) and the local harness (tools/forge-runner).
 import * as assets from "./assets.js";
-import { bundleSqlJs, type EsbuildLike, type SuiteDeps, type TestWorkerCode } from "./core.ts";
+import { TEST_WORKER_ID_PREFIX, bundleSqlJs, type EsbuildLike, type SuiteDeps, type TestWorkerCode } from "./core.ts";
 
+/**
+ * The Worker Loader binding, as far as the Forge uses it. `get(id, getCode)` returns the Worker with that id,
+ * calling `getCode` only when no warm instance of it exists; a Worker is billed once per unique id and code per
+ * day. (`load(code)` makes a new Worker on every call; the Forge no longer uses it, 2026-11-14.)
+ */
 export interface WorkerLoader {
-  load(code: TestWorkerCode & { limits?: { cpuMs?: number } }): { getEntrypoint(): { fetch(input: string): Promise<Response> } };
+  get(id: string, getCode: () => Promise<TestWorkerCode>): { getEntrypoint(): { fetch(input: string, init?: RequestInit): Promise<Response> } };
 }
 
-/** CPU allowed to one test Worker (a group of up to 8 test files). */
+/** CPU allowed to one request to a test Worker (a group of up to FILES_PER_WORKER test files). */
 export const TEST_WORKER_CPU_MS = 60_000;
 
 let ready: Promise<{ esbuild: EsbuildLike; sqlJs: string }> | null = null;
@@ -34,9 +39,13 @@ export async function suiteDeps(loader: WorkerLoader, bundler: unknown): Promise
     sqlJs,
     sqlWasm: assets.sqlWasm,
     bundler,
-    async runWorker(code) {
-      const worker = loader.load({ ...code, limits: { cpuMs: TEST_WORKER_CPU_MS } });
-      const res = await worker.getEntrypoint().fetch("http://forge-runner/");
+    limits: { cpuMs: TEST_WORKER_CPU_MS },
+    async runWorker(code, request) {
+      // The id is the hash of exactly this code (core.ts testWorkerId), so a warm Worker of the same id runs the same code.
+      if (code.globalOutbound !== null || code.limits?.cpuMs !== TEST_WORKER_CPU_MS) throw new Error("test_worker_unconfined");
+      if (!request.id.startsWith(TEST_WORKER_ID_PREFIX)) throw new Error("test_worker_id_invalid");
+      const worker = loader.get(request.id, async () => code);
+      const res = await worker.getEntrypoint().fetch("http://forge-runner/", { method: "POST", headers: { "content-type": "application/json" }, body: request.body });
       if (!res.ok) throw new Error(`test Worker answered ${res.status}`);
       return await res.json();
     },

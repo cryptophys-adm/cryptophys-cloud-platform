@@ -18,12 +18,13 @@ Artifacts repo after every push, so both hold the same commit SHAs. Deployed by 
 
 ## Forge checks (phase 3)
 
-A cron at `:04/:19/:34/:49` runs the control-plane suite against the next unchecked commit of `main`.
+A cron at `:04/:19/:34/:49` runs the control-plane suite against `main`'s head when it has no run of main yet,
+and once per UTC day again (2026-11-14). Commits a newer head superseded are not checked.
 It needs no GitHub at any step.
 
 1. **Snapshot.** The commit's text files are read from Artifacts (`src/checks.ts`).
 2. **Bundle.** Each test file is bundled by esbuild-wasm in this isolate (`src/runner/core.ts`). `node:test`, `node:sqlite`, `node:fs`, `node:os` and `node:child_process` are replaced by `src/runner/shims/`.
-3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 8 files per Worker, with no network access.
+3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 4 files per Worker, with no network access and a 60 s CPU limit. A test Worker is loaded with `LOADER.get(id)`, where the id is the SHA-256 of its code; the commit and its snapshot come in the request, so an unchanged group reuses its Worker across commits (billing counts unique Worker IDs and code per day).
 4. **Bundles.** Every Worker in the commit is bundled, as CI's dry run does. The Worker's `[[rules]]` apply, and `.wasm` and `node_modules` imports stay external.
 5. **Secret scan.** Well-known credential formats are scanned for. A finding records the rule, path and line, never the text.
 6. **Type-check.** `tsc --noEmit -p workers/control-plane-tsconfig.json` runs on Workers Builds from the Artifacts repository (`../forge-typecheck`), because the compiler needs about 190 MB and an isolate has 128 MB (owner, 2026-11-08). The build reports to `POST /v1/forge/typecheck-report` (`src/typecheck.ts`, migration 0035).
