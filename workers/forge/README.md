@@ -68,6 +68,18 @@ Artifacts tree diffs against each unit's desired version, with the Orchestrator'
 (`control-plane-shared/src/deploy-units.ts`). The Orchestrator records its GitHub-based plan for the
 same commit and registry inputs; `GET /v1/forge/deploy-plans` lists both and the plan parity (target 10).
 
+Since 2026-11-14 (every automatic deploy was stuck: the Control Plane's version 3cd2f94 was an ancestor of
+main only through a merge's second parent, so it was not in `log(main)`):
+- a desired version is resolved by ancestry: main's first-parent window (`PLAN_HISTORY`, one `log` call),
+  then a breadth-first walk of every parent from main's head, at most `PLAN_ANCESTRY_READS` (500) commits;
+- a migration is pending when main's `workers/control-plane-migrations/*.sql` has a file that D1's
+  `d1_migrations` ledger does not list (an unreadable ledger counts as pending); the Control Plane then goes
+  first and alone, planned even when its own paths did not change since its version;
+- a desired version that is still not resolved (not found within the bound, or not an ancestor) is planned as a
+  full redeploy of its unit from main's head, reason `full_redeploy_unresolved_base`, under the same ordering
+  rules. `new_migration_control_plane_unavailable` remains only for a Control Plane that is unregistered,
+  disabled or has no valid desired version.
+
 ## The cron tick
 
 `src/tick.ts` runs three independent steps at :04/:19/:34/:49:
