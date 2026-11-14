@@ -101,9 +101,14 @@ test("Aether's curator proposes through AgentRpc; xauusd and the other Aether ag
   assert.equal((await rpcSyscall(e as never, AETHER, "aether-auditor", "knowledge.propose", { item: item({ item_id: "k-other" }) })).outcome, "denied", "not granted");
   const cross = await rpcSyscall(e as never, XAU, "aether-curator", "knowledge.propose", { item: item() }) as { outcome: string; reason: string };
   assert.deepEqual([cross.outcome, cross.reason], ["denied", "agent_not_hosted_by_caller"], "xauusd cannot act as an Aether agent");
+  // An exact duplicate is not refused (owner 2026-11-14, dedup not a cap): it returns the existing proposal.
   const dup = await rpcSyscall(e as never, AETHER, "aether-curator", "knowledge.propose", { item: item() });
-  assert.equal(dup.outcome, "failed");
-  assert.match((dup as { reason: string }).reason, /knowledge_item_version_exists/);
+  assert.equal(dup.outcome, "succeeded", JSON.stringify(dup));
+  assert.deepEqual([(dup as any).result.proposal.proposal_id, (dup as any).result.proposal.deduplicated], [proposal.proposal_id, true]);
+  // Different content under an existing item_id and version is still an identity error.
+  const clash = await rpcSyscall(e as never, AETHER, "aether-curator", "knowledge.propose", { item: item({ text: "On the hourly chart in the London session, the prophet agent was wrong in 79% of its decisive calls over 30 days." }) });
+  assert.equal(clash.outcome, "failed", JSON.stringify(clash));
+  assert.match((clash as { reason: string }).reason, /knowledge_item_version_exists/);
   const bad = await rpcSyscall(e as never, AETHER, "aether-calibrator", "knowledge.propose", { item: item({ item_id: "k-bad", text: "Held 4051 in 11 of 14 bars." }) });
   assert.equal(bad.outcome, "failed");
   assert.match((bad as { reason: string }).reason, /text_price_like_number/);

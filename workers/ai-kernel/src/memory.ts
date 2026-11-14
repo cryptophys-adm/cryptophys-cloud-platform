@@ -16,6 +16,7 @@ import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import { boundedString, engineFor } from "../../control-plane-shared/src/ai-engine.ts";
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import { LEARNING_AI_PURPOSE } from "../../control-plane-shared/src/power-mode.ts";
+import { memoryDedupHash, missingDedupColumn } from "./learning-dedup.ts";
 import { newId, nowIso, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { CycleReport, KernelEnv } from "./supervisor.ts";
 import { syscall } from "./syscall.ts";
@@ -118,6 +119,25 @@ export async function rememberMemory(
   const sourceRef = typeof input.source_ref === "string" && input.source_ref.trim() ? input.source_ref.trim().slice(0, 200) : null;
   if (!kind || !text) throw new Error("invalid_memory_input");
 
+  // Exact-duplicate dedup, not a cap (learning-dedup.ts): an identical memory of this agent returns its own id, and
+  // no embedding, vector or row is made for it. Different content is always written.
+  const dedup = await memoryDedupHash(agentId, kind, text);
+  let existing: StoredMemory | null = null;
+  try {
+    existing = await env.DB.prepare(
+      `SELECT memory_id, agent_id, kind, text, source_ref, created_at FROM agent_memories
+       WHERE agent_id = ? AND dedup_sha256 = ? ORDER BY created_at LIMIT 1`,
+    ).bind(agentId, dedup).first<StoredMemory>();
+  } catch (err) {
+    if (!missingDedupColumn(err)) throw err;
+  }
+  if (existing) {
+    return {
+      memory_id: existing.memory_id, agent_id: existing.agent_id, kind: existing.kind, text: existing.text,
+      source_ref: existing.source_ref, created_at: existing.created_at, deduplicated: true,
+    };
+  }
+
   // A learning AI call: never refused by a daily budget or survival's quarter, still recorded in ai_usage.
   const emb = await engineFor(env, SERVICE, ["embed"]).embed(text, `${agentId}:remember:${decisionId}`, { purpose: LEARNING_AI_PURPOSE });
   if (emb.status !== "ok") throw new Error(`embed_${emb.reason}`);
@@ -133,10 +153,18 @@ export async function rememberMemory(
     },
   ]);
 
-  await env.DB.prepare(
-    `INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).bind(memoryId, agentId, kind, text, sourceRef, createdAt).run();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at, dedup_sha256)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(memoryId, agentId, kind, text, sourceRef, createdAt, dedup).run();
+  } catch (err) {
+    if (!missingDedupColumn(err)) throw err;
+    await env.DB.prepare(
+      `INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(memoryId, agentId, kind, text, sourceRef, createdAt).run();
+  }
 
   return {
     memory_id: memoryId,
@@ -145,6 +173,7 @@ export async function rememberMemory(
     text,
     source_ref: sourceRef,
     created_at: createdAt,
+    deduplicated: false,
   };
 }
 

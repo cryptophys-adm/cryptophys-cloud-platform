@@ -181,10 +181,20 @@ export class AiEngine {
    */
   private async reserve(day: string, purpose?: AiPurpose): Promise<boolean> {
     if (isLearningAiPurpose(purpose)) {
-      await this.db.prepare(
-        `INSERT INTO ai_usage (service_id, day, requests, failures) VALUES (?, ?, 1, 0)
-         ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1`,
-      ).bind(this.service, day).run();
+      // Also counted in learning_requests (migration 0067), so the Console can show learning's own AI use.
+      try {
+        await this.db.prepare(
+          `INSERT INTO ai_usage (service_id, day, requests, failures, learning_requests) VALUES (?, ?, 1, 0, 1)
+           ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1, learning_requests = learning_requests + 1`,
+        ).bind(this.service, day).run();
+      } catch (err) {
+        if (!/learning_requests/i.test(String((err as Error)?.message ?? err))) throw err;
+        // Before migration 0067: metered in requests only.
+        await this.db.prepare(
+          `INSERT INTO ai_usage (service_id, day, requests, failures) VALUES (?, ?, 1, 0)
+           ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1`,
+        ).bind(this.service, day).run();
+      }
       return true;
     }
     let mode = "homeostasis";

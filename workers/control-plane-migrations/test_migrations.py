@@ -588,3 +588,40 @@ expect_integrity_error("0065 admits only the three names", lambda: bud_db.execut
 assert {r[0] for r in bud_db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'policy_parameters%'")} == {"policy_parameters"}, "no copy left behind"
 bud_db.close()
 print("PASS: 0065 infra-budget-usd-month (rows kept, bound 5-50, other parameters still 1-40, owner's 30 seeded)")
+
+
+# Migration 0067 (owner 2026-11-14, the learning mandate: dedup, not a cap; observe, don't block): additive only. Two
+# nullable dedup_sha256 columns with NON-unique lookup indexes (production may already hold exact duplicates and old
+# rows have no hash, so a UNIQUE index would need a destructive DELETE first), and ai_usage.learning_requests.
+dd_db = sqlite3.connect(":memory:")
+dd_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0067_":
+        dd_db.executescript(migration.read_text(encoding="utf-8"))
+dd_db.execute("INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, updated_by, created_at, updated_at) VALUES ('dd-agent', 'DD', 'cryptophys-ai-kernel', 'test', 1, '[]', 'enabled', 'x', 't', 't') ON CONFLICT(agent_id) DO NOTHING")
+# Two exact duplicate memories and two proposals already in production before 0067.
+for mid in ("mem_dup_1", "mem_dup_2"):
+    dd_db.execute("INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at) VALUES (?, 'dd-agent', 'note', 'same text', NULL, 't')", (mid,))
+dd_db.execute("INSERT OR IGNORE INTO service_registry (service_id, display_name, environment, status, created_at, updated_at) VALUES ('cryptophys-ai-kernel', 'AI Kernel', 'production', 'registered', 't', 't')")
+dd_db.execute("INSERT INTO ai_usage (service_id, day, requests, failures) VALUES ('cryptophys-ai-kernel', '2026-11-14', 7, 1)")
+before_mem = dd_db.execute("SELECT memory_id, agent_id, kind, text, source_ref, created_at FROM agent_memories ORDER BY memory_id").fetchall()
+dd_sql = (ROOT / "0067_learning_dedup_observe.sql").read_text(encoding="utf-8")
+assert not re.search(r"\b(DROP|DELETE\s+FROM|UPDATE\s+\w+\s+SET|UNIQUE)\b", re.sub(r"--[^\n]*", "", dd_sql), re.I), "0067 is additive and creates no unique index"
+dd_db.executescript(dd_sql)
+after_mem = dd_db.execute("SELECT memory_id, agent_id, kind, text, source_ref, created_at FROM agent_memories ORDER BY memory_id").fetchall()
+assert after_mem == before_mem, "0067 keeps every memory row, duplicates included"
+assert dd_db.execute("SELECT COUNT(*) FROM agent_memories WHERE dedup_sha256 IS NULL").fetchone()[0] == 2, "old rows have no hash"
+# Not unique: two rows with the same hash are accepted (a concurrent duplicate is never refused).
+for mid in ("mem_new_1", "mem_new_2"):
+    dd_db.execute("INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at, dedup_sha256) VALUES (?, 'dd-agent', 'note', 'x', NULL, 't', 'h')", (mid,))
+cols = {r[1] for r in dd_db.execute("PRAGMA table_info(knowledge_proposals)")}
+assert "dedup_sha256" in cols, cols
+indexes = {r[1]: r[2] for r in dd_db.execute("SELECT * FROM pragma_index_list('agent_memories')")}
+assert indexes.get("idx_agent_memories_dedup") == 0, f"the memory dedup index is not unique: {indexes}"
+kindexes = {r[1]: r[2] for r in dd_db.execute("SELECT * FROM pragma_index_list('knowledge_proposals')")}
+assert kindexes.get("idx_knowledge_proposals_dedup") == 0, f"the knowledge dedup index is not unique: {kindexes}"
+assert dd_db.execute("SELECT requests, failures, learning_requests FROM ai_usage WHERE service_id = 'cryptophys-ai-kernel'").fetchone() == (7, 1, 0), "existing usage kept, learning_requests 0"
+expect_integrity_error("0067 learning_requests is never negative", lambda: dd_db.execute(
+    "UPDATE ai_usage SET learning_requests = -1 WHERE service_id = 'cryptophys-ai-kernel'"))
+dd_db.close()
+print("PASS: 0067 learning dedup columns (non-unique lookups, duplicate rows kept) and ai_usage.learning_requests (additive)")

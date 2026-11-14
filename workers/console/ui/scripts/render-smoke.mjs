@@ -138,6 +138,9 @@ MOCK["/api/kernel/v1/metabolism"] = {
   burn_14d: SVC.slice(0, 6).map((s, i) => ({ service_id: s, cost_usd: 0.5 + i * 0.3, requests: 1000 * (i + 1), ai_neurons: 10 })),
   mode_changes: [{ actor: "agent:supervisor", mode: "survival", previous_mode: "homeostasis", reason: "market closed (weekend)", at: at(615) }],
   rules: ["Survival throttles only AI spending; it never blocks consensus.", "Growth applies only with the owner's override.", "Read only: no orders, no funds."],
+  // Owner 2026-11-14: learning observed, never blocked; its cost is not measured per call (null).
+  learning: { capabilities: ["memory.remember", "knowledge.propose"], last_hour: [{ agent_id: "auditor", capability: "memory.remember", count: 3 }, { agent_id: "aether-curator", capability: "knowledge.propose", count: 2 }],
+    ai_requests_today: 17, ai_requests_today_all: 64, cost_usd_month: null, cost_source: "not measured: Workers AI reports neurons per account and model, not per call", budget_usd_month: 30 },
 };
 MOCK["/api/aether/v1/overview"] = { service: "cryptophys-aether", generated_at: at(1),
   canon: { version: "canon-v1", content_sha256: "a".repeat(64), files: 4, kb_version: 4, kb_content_sha256: "b".repeat(64),
@@ -325,6 +328,10 @@ for (const width of [390, 1440]) {
       const body = await page.evaluate(() => document.body.innerText);
       for (const want of ["Measured once an hour", "30.0 %", "41.2 · estimated", "e0bd92815ac9", "rogue-worker is live"]) {
         if (!body.includes(want)) problems.push(`${width}px #/organism: Observer panel does not show "${want}"`);
+      }
+      // Owner 2026-11-14: the learning lines show the measured values and "not measured" for the cost.
+      for (const want of ["5 call(s) by 2 agent(s)", "17 of 64 AI requests", "not measured (budget $30/month)"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/organism: learning line does not show "${want}"`);
       }
     }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });

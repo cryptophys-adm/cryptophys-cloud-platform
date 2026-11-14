@@ -59,6 +59,12 @@ export default function Organism() {
   const learning: string[] | null = Array.isArray(pm.learning_capabilities) ? pm.learning_capabilities : null;
   const aiShare = typeof pm.ai_budget?.ratio === "number" ? `${Math.round(pm.ai_budget.ratio * 100)}% of each daily AI budget${typeof pm.ai_budget.max_per_service === "number" ? ` (at most ${pm.ai_budget.max_per_service} per service, ${pm.ai_budget.max_account} per account)` : ""}` : "not measured";
   const budget: any = pm.budget ?? {};
+  // Owner 2026-11-14: learning observed, never blocked (GET /v1/metabolism `learning`). A value the kernel did not
+  // measure is null and shown as "not measured"; learning's cost is not measured per call, so it is never estimated here.
+  const lrn: any = data?.learning ?? {};
+  const learningHour: any[] | null = Array.isArray(lrn.last_hour) ? lrn.last_hour : null;
+  const learningCalls = learningHour === null ? null : learningHour.reduce((n: number, r: any) => n + (typeof r.count === "number" ? r.count : 0), 0);
+  const learningAgents = learningHour === null ? 0 : new Set(learningHour.map((r: any) => r.agent_id)).size;
   const { buckets, bin } = bucketize(cycles, (c: any) => c.evaluated_at, (c: any) => modeKey(c.power_mode));
 
   const isWeekend = live.market_status === "closed" || live.market_status === "holiday";
@@ -166,6 +172,18 @@ export default function Organism() {
                 <span className="mono text-right text-emerald-300">{learning === null ? "not measured" : learning.join(", ")}</span>
               </div>
               <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Learning, last hour:</span>
+                <span className="mono text-right text-slate-200">{learningCalls === null ? "not measured" : `${learningCalls} call(s) by ${learningAgents} agent(s)`}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Learning AI requests today:</span>
+                <span className="mono text-right text-slate-200">{typeof lrn.ai_requests_today === "number" ? `${lrn.ai_requests_today}${typeof lrn.ai_requests_today_all === "number" ? ` of ${lrn.ai_requests_today_all} AI requests` : ""}` : "not measured"}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Learning AI cost:</span>
+                <span className="mono text-right text-slate-200">{typeof lrn.cost_usd_month === "number" ? `${usd(lrn.cost_usd_month)} of ${usd(lrn.budget_usd_month)}/month` : `not measured${typeof lrn.budget_usd_month === "number" ? ` (budget ${usd(lrn.budget_usd_month)}/month)` : ""}`}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
                 <span className="shrink-0">Monthly budget:</span>
                 <span className="mono text-right text-slate-200">{typeof budget.usd_month === "number" ? `${usd(budget.usd_month)}/month` : "not measured"}</span>
               </div>
@@ -177,7 +195,7 @@ export default function Organism() {
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Policy (rule, not a reading): survival throttles AI-heavy work only (AI request budgets) and never blocks consensus or learning (memory and knowledge proposals); it starts when the market is closed, the projected month exceeds the budget (policy parameter {budget.parameter ?? "infra-budget-usd-month"}), on a large loss of the deal results, or under 7 days of runway; growth applies only with the owner's override. The projection is the Billable Usage daily burn × the days of the UTC month; Cloudflare's billing cycle may differ.
+              Policy (rule, not a reading): survival throttles AI-heavy work only (AI request budgets) and never blocks consensus or learning (memory and knowledge proposals); learning is the highest mandate: no rate limit, no daily cap and no AI budget refusal, only observed (a spike or a repeated subject is an Observer finding, nothing is throttled); it starts when the market is closed, the projected month exceeds the budget (policy parameter {budget.parameter ?? "infra-budget-usd-month"}), on a large loss of the deal results, or under 7 days of runway; growth applies only with the owner's override. The projection is the Billable Usage daily burn × the days of the UTC month; Cloudflare's billing cycle may differ.
             </p>
           </div>
         </Panel>

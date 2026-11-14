@@ -8,10 +8,16 @@
  * Owner 2026-11-14: `mode` says what the current power mode does: its reason (the newest recorded cycle's, and only
  * when that cycle is in the same mode; otherwise null, shown as "not measured"), the capabilities the Policy Engine
  * blocks in it, the AI budget share, and the monthly budget against the projected month (power-mode.ts).
+ *
+ * Owner 2026-11-14 (learning observed, never blocked): `learning` holds the learning calls of the last 60 minutes per
+ * agent and capability, the learning AI requests of the UTC day (ai_usage.learning_requests) next to all AI requests,
+ * and learning's cost against the monthly budget. That cost is not measured (null): Workers AI reports neurons per
+ * account and model, not per call, so the Console shows "not measured" rather than an estimate.
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { powerModeEffects } from "../../control-plane-shared/src/power-mode.ts";
 import { POLICY_PARAMETERS } from "../../control-plane-shared/src/policy-params.ts";
+import { learningUsage } from "../../control-plane-shared/src/learning-watch.ts";
 import { observeMetabolism, type SyscallEnv } from "./syscall.ts";
 
 async function rows<T>(run: () => Promise<{ results: T[] }>): Promise<T[]> {
@@ -70,9 +76,20 @@ export async function metabolismView(env: SyscallEnv, now = Date.now()): Promise
       method: "daily burn from the Billable Usage API (cycle cost to date / days observed) x days in the UTC month",
     },
   };
+  const usage = await learningUsage(env.DB, now);
+  const learning = {
+    capabilities: effects ? effects.learning_capabilities : null,
+    last_hour: usage.last_hour,
+    ai_requests_today: usage.ai_requests_today,
+    ai_requests_today_all: usage.ai_requests_today_all,
+    cost_usd_month: null as number | null,
+    cost_source: "not measured: Workers AI reports neurons per account and model, not per call",
+    budget_usd_month: mode.budget.usd_month,
+  };
   return {
     live,
     mode: mode as unknown as JsonObject,
+    learning: learning as unknown as JsonObject,
     cycles: cyclesShown as unknown as JsonObject[],
     ledger: ledger as unknown as JsonObject[],
     burn_14d: burn as unknown as JsonObject[],
