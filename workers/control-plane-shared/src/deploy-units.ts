@@ -69,9 +69,11 @@ export function orderPending(pending: PlannedUnit[], newMigration: boolean, skip
       for (const u of pending) if (u.unit !== "control-plane") skipped.push({ unit: u.unit, reason: "control_plane_migration_first" });
       return { units: [controlPlane], skipped };
     }
-    // Never deploy another unit if the migration-bearing Control Plane cannot be verified.
+    // Never deploy another unit if the migration-bearing Control Plane cannot be deployed.
     // It may already be current (no skip recorded); otherwise fail closed on disabled,
-    // unregistered, unknown-version or compare-failed Control Plane state.
+    // unregistered or unknown-version Control Plane state. Since 2026-11-14 the Forge plans a
+    // Control Plane whose version it cannot resolve in main's history as a full redeploy
+    // (full_redeploy_unresolved_base), so an unresolved base no longer lands here.
     if (skipped.some((s) => s.unit === "control-plane")) {
       skipped.push({ unit: "*", reason: "new_migration_control_plane_unavailable" });
       return { units: [], skipped };
