@@ -46,6 +46,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   recovery_failed: "recovery failed",
   critical_advisory: "critical advisory",
   build_minutes_exhausted: "build minutes used up",
+  deploys_stalled: "deploys stalled",
 };
 
 /** One production problem no agent is handling: what, since when, and the page with the evidence. */
