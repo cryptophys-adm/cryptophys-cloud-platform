@@ -28,6 +28,9 @@ export default function Command() {
   // Live digital metabolism (GET /v1/metabolism); nothing here is computed in the browser.
   const metabolism = usePoll(() => call("kernel.metabolism"), 60_000);
   const mtb: any = (metabolism.data as any)?.live ?? {};
+  // Owner 2026-11-14: the mode's reason and what it blocks, as the kernel reports them; "not measured" otherwise.
+  const pm: any = (metabolism.data as any)?.mode ?? {};
+  const blocked: string[] | null = Array.isArray(pm.blocked_capabilities) ? pm.blocked_capabilities : null;
 
   return (
     <div className="flex flex-col gap-3">
@@ -86,6 +89,9 @@ export default function Command() {
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               Treasury: <strong className={`mono ${mtb.treasury_source === "placeholder" ? "text-slate-500" : "text-emerald-300"}`}>{typeof mtb.treasury_reserve_usd === "number" ? `$${mtb.treasury_reserve_usd.toFixed(2)}${mtb.treasury_source === "placeholder" ? " (placeholder)" : ""}` : "—"}</strong> · Burn: <strong className="mono text-amber-300">{typeof mtb.infra_burn_cost_24h === "number" ? `$${mtb.infra_burn_cost_24h.toFixed(2)}/day` : "—"}</strong> · Runway: <strong className="mono text-cyan-300">{typeof mtb.runway_days === "number" ? `${Math.floor(mtb.runway_days)} Days` : "—"}</strong> · Power: <strong className="mono text-emerald-400">{mtb.power_mode ? String(mtb.power_mode).toUpperCase() : "—"}</strong>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5 break-words">
+              Reason: <span className="text-slate-300">{typeof pm.reason === "string" ? pm.reason : "not measured"}</span> · Blocked in this mode: <strong className="mono text-slate-200">{blocked === null ? "not measured" : blocked.length === 0 ? "no capability" : blocked.join(", ")}</strong>{typeof pm.ai_budget?.ratio === "number" && pm.ai_budget.ratio < 1 ? <> · AI requests at <strong className="mono text-amber-300">{Math.round(pm.ai_budget.ratio * 100)}%</strong></> : null}
             </div>
           </div>
         </div>
