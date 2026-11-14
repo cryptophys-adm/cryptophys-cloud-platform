@@ -10,16 +10,17 @@
  *    agent plan for it, none proposed in the last 24 h) -> recovery.propose (tier 1).
  */
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
-import { appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEvent, appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { CAPABILITIES, RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
-import { latestCensusRow, proposalFor } from "./organism.ts";
+import { latestCensusRow, proposalFor, type CensusRow } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "../../control-plane-shared/src/consensus-rules.ts";
+import { SCHEDULED_IDLE_REASON, idleWindowMs, isIdle } from "../../control-plane-shared/src/agent-idle.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
 import { observerCycle } from "./observer-watch.ts";
@@ -375,10 +376,18 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     // cycle that has done nothing for RETIRE_IDLE_DAYS (no action, report or vote, registered before the
     // window) is proposed for retirement; at most once a week per agent. Kernel agents, council seats and
     // the exempt hosts are never proposed (consensus-rules.ts RETIRE_EXEMPT_HOSTS).
+    // Owner 2026-11-14 ("jangan pensiun aether calibrator karena cara kerjanya memang idle sampai jadwalnya kerja"):
+    // an agent whose DNA declares a schedule is idle only after SCHEDULE_IDLE_RUNS of its runs without activity, and
+    // never sooner than the fixed window (agent-idle.ts); an open retire_agent of a scheduled agent that its schedule
+    // does not find idle is closed. The schedules come from the latest census (main's DNA and the external organs').
+    const schedules = scheduledAgents(await latestCensusRow(env));
+    const closed = await closeScheduledRetirements(env, schedules, now);
+    if (closed.length) report.findings.push({ kind: "agent", action: "close", why: `${closed.join(", ")}: ${SCHEDULED_IDLE_REASON}`.slice(0, 300) });
     const idleSince = new Date(now - RETIRE_IDLE_DAYS * 86_400_000).toISOString();
     const exempt = [...KERNEL_AGENTS, ...RETIRE_EXEMPT_HOSTS];
-    const idle = await env.DB.prepare(
-      `SELECT g.agent_id FROM agents g
+    // The fixed window is the shortest, so these are every agent that may be idle; a scheduled one is checked again.
+    const candidates = (await env.DB.prepare(
+      `SELECT g.agent_id, g.created_at FROM agents g
        WHERE g.status = 'enabled' AND g.created_at < ?1
          AND g.agent_id NOT IN (${[...KERNEL_AGENTS].map((_, i) => `?${i + 3}`).join(", ")})
          AND g.host_worker NOT IN (${[...RETIRE_EXEMPT_HOSTS].map((_, i) => `?${i + 3 + KERNEL_AGENTS.size}`).join(", ")})
@@ -386,16 +395,23 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
          AND NOT EXISTS (SELECT 1 FROM agent_actions a WHERE a.agent_id = g.agent_id AND a.created_at >= ?1)
          AND NOT EXISTS (SELECT 1 FROM agent_reports r WHERE r.agent_id = g.agent_id AND r.created_at >= ?1)
          AND NOT EXISTS (SELECT 1 FROM consensus_proposals p WHERE p.action = 'retire_agent' AND p.target = g.agent_id AND p.created_at >= ?2)
-       ORDER BY g.created_at, g.agent_id LIMIT 1`,
-    ).bind(idleSince, new Date(now - 7 * 86_400_000).toISOString(), ...exempt).first<{ agent_id: string }>();
+       ORDER BY g.created_at, g.agent_id LIMIT 20`,
+    ).bind(idleSince, new Date(now - 7 * 86_400_000).toISOString(), ...exempt).all<{ agent_id: string; created_at: string }>()).results ?? [];
+    let idle: { agent_id: string; days: number } | null = null;
+    for (const c of candidates) {
+      const schedule = schedules.get(c.agent_id);
+      if (schedule && !isIdle({ createdAtMs: Date.parse(c.created_at), lastActivityMs: await lastActivityMs(env, c.agent_id), schedule }, now)) continue;
+      idle = { agent_id: c.agent_id, days: Math.round(idleWindowMs(schedule) / 86_400_000) };
+      break;
+    }
     if (idle) {
       const r = await proposeConsensus({
         action: "retire_agent", target: idle.agent_id,
-        params: { reason: `no action, report or vote for ${RETIRE_IDLE_DAYS} days` },
+        params: { reason: `no action, report or vote for ${idle.days} days` },
       });
       if (r) {
         report.actions.push(r);
-        report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${RETIRE_IDLE_DAYS} days: retire_agent` });
+        report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${idle.days} days: retire_agent` });
       }
     }
     // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
@@ -616,4 +632,46 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
 
   await memory.put("last_cycle", report);
   return report;
+}
+
+/** The agents whose DNA (in the latest census) declares a schedule, with it. */
+export function scheduledAgents(census: CensusRow | null): Map<string, { cron: string }> {
+  const out = new Map<string, { cron: string }>();
+  for (const organ of census?.genome ?? []) {
+    for (const a of organ.agents ?? []) if (a?.schedule && typeof a.schedule.cron === "string") out.set(a.id, { cron: a.schedule.cron });
+  }
+  return out;
+}
+
+/** An agent's latest recorded activity (an action or a report), or null. */
+async function lastActivityMs(env: SyscallEnv, agentId: string): Promise<number | null> {
+  const row = await env.DB.prepare(
+    `SELECT MAX(at) AS at FROM (SELECT MAX(created_at) AS at FROM agent_actions WHERE agent_id = ?1
+       UNION ALL SELECT MAX(created_at) AS at FROM agent_reports WHERE agent_id = ?1)`,
+  ).bind(agentId).first<{ at: string | null }>();
+  return row?.at ? Date.parse(row.at) : null;
+}
+
+/**
+ * Owner 2026-11-14: a retire_agent waiting for the owner's click whose target declares a schedule and is not idle by
+ * it is closed (status expired) with SCHEDULED_IDLE_REASON, and audited. Returns the closed targets.
+ */
+export async function closeScheduledRetirements(env: SyscallEnv, schedules: Map<string, { cron: string }>, now = Date.now()): Promise<string[]> {
+  if (schedules.size === 0) return [];
+  const open = (await env.DB.prepare("SELECT proposal_id, target FROM consensus_proposals WHERE action = 'retire_agent' AND status = 'pending_owner'")
+    .all<{ proposal_id: string; target: string }>()).results ?? [];
+  const closed: string[] = [];
+  for (const p of open) {
+    const schedule = schedules.get(p.target);
+    if (!schedule) continue;
+    const agent = await env.DB.prepare("SELECT created_at FROM agents WHERE agent_id = ?").bind(p.target).first<{ created_at: string }>();
+    if (!agent || isIdle({ createdAtMs: Date.parse(agent.created_at), lastActivityMs: await lastActivityMs(env, p.target), schedule }, now)) continue;
+    const at = new Date(now).toISOString();
+    const res = await env.DB.prepare("UPDATE consensus_proposals SET status = 'expired', decided_at = ?, outcome_json = ? WHERE proposal_id = ? AND status = 'pending_owner'")
+      .bind(at, JSON.stringify({ executed: false, reason: SCHEDULED_IDLE_REASON, schedule }), p.proposal_id).run();
+    if ((res.meta.changes ?? 0) !== 1) continue;
+    await appendAuditEvent(env.DB, { event_type: "consensus.proposal_closed", actor: `agent:${AGENT_ID}`, subject: p.proposal_id, outcome: "expired", payload: { action: "retire_agent", target: p.target, reason: SCHEDULED_IDLE_REASON, schedule } });
+    closed.push(p.target);
+  }
+  return closed;
 }

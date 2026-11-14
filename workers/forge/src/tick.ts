@@ -32,6 +32,8 @@ export interface TickEnv {
   BUNDLES?: import("./bundles.ts").BundleBucket;
   /** Owner 2026-11-12: the XAUUSD organs' DNA (xauusd-ai-trading-assistant OrganismDna, dna() only). */
   EXT_ORGANISM_XAUUSD?: { dna(): Promise<unknown> };
+  /** Owner 2026-11-14: Aether's DNA (cryptophys-aether OrganismDna, dna() only), held to Aether's ceiling. */
+  EXT_ORGANISM_AETHER?: { dna(): Promise<unknown> };
 }
 
 /**

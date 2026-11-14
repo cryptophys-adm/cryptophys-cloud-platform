@@ -27,7 +27,15 @@ export interface AgentGene {
   voter: boolean;
   /** The ai-kernel service binding to this Worker's VoteRpc; absent for kernel-hosted voters. */
   vote_binding?: string;
+  /**
+   * When the agent works (owner 2026-11-14: "jangan pensiun aether calibrator karena cara kerjanya memang idle
+   * sampai jadwalnya kerja"). A scheduled agent is quiet between its runs by design; the Supervisor judges its
+   * idleness against this schedule (agent-idle.ts), not against the fixed window. See SCHEDULE_CRON.
+   */
+  schedule?: AgentSchedule;
 }
+/** `{ "cron": "52 2 * * *" }`: the agent's run, in the subset of cron that SCHEDULE_CRON accepts. */
+export interface AgentSchedule { cron: string }
 export interface EngineGene { task: string }
 export interface Dna {
   $schema_version: number;
@@ -51,6 +59,28 @@ const SERVICE = /^(cryptophys|xauusd)-[a-z0-9-]{2,60}$/;
 const BINDING = /^[A-Z][A-Z0-9_]{1,62}$/;
 const CAPABILITY = /^[a-z]+\.[a-z_]+$/;
 const TASK = /^[a-z][a-z0-9_]{2,62}$/;
+
+/**
+ * The cron subset an agent's schedule may use (five fields, UTC): a fixed minute, then
+ *   "M * * * *"  hourly          "M H * * *"  daily
+ *   "M H * * D"  weekly (D 0-6)  "M H d * *"  monthly (d 1-28)
+ * Nothing else (no lists, ranges, steps, months or names), so the period between two runs is never ambiguous.
+ */
+const SCHEDULE_CRON = /^([0-5]?[0-9]) (\*|[01]?[0-9]|2[0-3]) (\*|[1-9]|1[0-9]|2[0-8]) \* (\*|[0-6])$/;
+const HOUR_MS = 3_600_000;
+/** The longest period a schedule may declare (a monthly run). */
+export const SCHEDULE_MAX_PERIOD_MS = 31 * 24 * HOUR_MS;
+
+/** The period between two runs of a schedule's cron, or null when the cron is outside SCHEDULE_CRON. */
+export function schedulePeriodMs(cron: unknown): number | null {
+  if (typeof cron !== "string") return null;
+  const m = SCHEDULE_CRON.exec(cron);
+  if (!m) return null;
+  const [, , hour, dom, dow] = m;
+  if (hour === "*") return dom === "*" && dow === "*" ? HOUR_MS : null;
+  if (dom !== "*" && dow !== "*") return null;
+  return dow !== "*" ? 7 * 24 * HOUR_MS : dom !== "*" ? SCHEDULE_MAX_PERIOD_MS : 24 * HOUR_MS;
+}
 
 /** Parse and validate one organism.json. Throws with the first problem found. */
 export function parseDna(text: string, where = DNA_FILE): Dna {
@@ -77,6 +107,10 @@ export function parseDna(text: string, where = DNA_FILE): Dna {
     if (!Number.isInteger(a.tier_max) || a.tier_max < 0 || a.tier_max > 2) fail(`agent ${a.id}: tier_max`);
     if (typeof a.voter !== "boolean") fail(`agent ${a.id}: voter`);
     if (a.vote_binding !== undefined && (!a.voter || !BINDING.test(a.vote_binding))) fail(`agent ${a.id}: vote_binding`);
+    if (a.schedule !== undefined) {
+      const sch = a.schedule as unknown as Record<string, unknown>;
+      if (!sch || typeof sch !== "object" || Array.isArray(sch) || Object.keys(sch).some((k) => k !== "cron") || schedulePeriodMs(sch.cron) === null) fail(`agent ${a.id}: schedule`);
+    }
   }
   if (agents.filter((a) => a.voter && a.vote_binding).length > 1) fail("one vote per Worker");
   const tasks = new Set<string>();
@@ -112,26 +146,92 @@ export const servicesWhere = (g: Genome, pred: (d: Dna) => boolean) => [...g.val
  * Such a DNA was not reviewed here, so it is held to a ceiling: only the listed services of its origin, no deploy
  * unit, Access or rollback entry of this platform, no council seat, tier 1 at most and only the capabilities below.
  * A gene above the ceiling is refused (a census finding, never a proposal); the kernel's executor checks it again.
+ *
+ * An origin without its own ceiling has EXTERNAL_CEILING. An origin with one (Aether, owner 2026-11-14) names the
+ * exact capabilities of each of its agents; an agent of that origin it does not name has the origin's `capabilities`.
+ * `proposals` lists, per agent, the only consensus actions an agent holding consensus.propose may propose.
  */
-export interface ExternalOrigin { origin: string; schema: string; binding: string; services: readonly string[] }
-export const EXTERNAL_ORIGINS: readonly ExternalOrigin[] = Object.freeze([
-  Object.freeze({
-    origin: "xauusd", schema: "xauusd-organism.v1", binding: "EXT_ORGANISM_XAUUSD",
-    services: Object.freeze(["xauusd-ai-trading-assistant", "xauusd-fundamental-news-ingestion", "xauusd-tradingview-pull-adapter", "xauusd-nexus-dashboard", "xauusd-omega"]),
-  }),
-]);
+export interface ExternalCeilingSpec {
+  tier_max: number;
+  /** An agent of the origin not named in `agents`. */
+  capabilities: readonly string[];
+  agents: Readonly<Record<string, readonly string[]>>;
+  proposals: Readonly<Record<string, readonly string[]>>;
+}
+export interface ExternalOrigin { origin: string; schema: string; binding: string; services: readonly string[]; ceiling?: ExternalCeilingSpec }
 export const EXTERNAL_CEILING = Object.freeze({
   tier_max: 1,
   capabilities: Object.freeze(["signals.observe", "reports.publish", "memory.recall", "memory.remember"]),
 });
 
-/** What in one gene the external ceiling refuses; empty when the gene is within it. */
-export function externalCeilingViolations(gene: { tier_max?: number; voter?: boolean; vote_binding?: string; capabilities?: string[] }): string[] {
+/**
+ * Aether's ceiling (owner 2026-11-14: "naikan batas kapabilitas aether"): exactly what its five agents hold today,
+ * no more. The grants are those of migrations 0027 (guardian, auditor; reports.publish for curator and calibrator),
+ * 0029 (knowledge.propose, knowledge.status for curator and calibrator) and 0045 (knowledge-council), which
+ * Aether's own DNA (cryptophys-aether organism.json, aether-organism.v1) declares. knowledge-council may propose
+ * the two doctrine actions and nothing else, as the kernel already enforces (ai-kernel/src/consensus.ts propose,
+ * doctrine.ts DOCTRINE_ACTIONS); amend_constitution stays critical (the owner's click). An Aether agent not named
+ * here has only what both ceilings allow (signals.observe, reports.publish): no memory, trading, deploy, merge or
+ * fund capability, no seat, tier 1.
+ */
+export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
+  tier_max: 1,
+  capabilities: Object.freeze(["signals.observe", "reports.publish"]),
+  agents: Object.freeze({
+    "aether-guardian": Object.freeze(["signals.observe", "reports.publish"]),
+    "aether-auditor": Object.freeze(["signals.observe", "reports.publish"]),
+    "aether-curator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status"]),
+    "aether-calibrator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status"]),
+    "knowledge-council": Object.freeze(["consensus.propose", "doctrine.status", "reports.publish"]),
+  }),
+  proposals: Object.freeze({
+    "knowledge-council": Object.freeze(["amend_doctrine", "amend_constitution"]),
+  }),
+});
+
+export const EXTERNAL_ORIGINS: readonly ExternalOrigin[] = Object.freeze([
+  Object.freeze({
+    origin: "xauusd", schema: "xauusd-organism.v1", binding: "EXT_ORGANISM_XAUUSD",
+    services: Object.freeze(["xauusd-ai-trading-assistant", "xauusd-fundamental-news-ingestion", "xauusd-tradingview-pull-adapter", "xauusd-nexus-dashboard", "xauusd-omega"]),
+  }),
+  // Owner 2026-11-14: Aether's DNA, read like xauusd's: cryptophys-aether's OrganismDna.dna() over EXT_ORGANISM_AETHER.
+  Object.freeze({
+    origin: "aether", schema: "aether-organism.v1", binding: "EXT_ORGANISM_AETHER",
+    services: Object.freeze(["cryptophys-aether"]),
+    ceiling: AETHER_CEILING,
+  }),
+]);
+
+/** The external origin whose services include this one, if any. */
+export const externalOriginOf = (service: string): ExternalOrigin | undefined => EXTERNAL_ORIGINS.find((o) => o.services.includes(service));
+
+/** The ceiling of one agent of an origin (EXTERNAL_CEILING when the origin has none of its own, or is not given). */
+export function externalCeilingFor(origin: ExternalOrigin | undefined, agentId?: string): { tier_max: number; capabilities: readonly string[]; proposals: readonly string[] } {
+  const c = origin?.ceiling;
+  if (!c) return { tier_max: EXTERNAL_CEILING.tier_max, capabilities: EXTERNAL_CEILING.capabilities, proposals: [] };
+  const named = agentId !== undefined && Object.hasOwn(c.agents, agentId);
+  return {
+    tier_max: c.tier_max,
+    capabilities: named ? c.agents[agentId!] : c.capabilities,
+    proposals: named && Object.hasOwn(c.proposals, agentId!) ? c.proposals[agentId!] : [],
+  };
+}
+
+/** What in one gene its origin's ceiling refuses; empty when the gene is within it. Without an origin: EXTERNAL_CEILING. */
+export function externalCeilingViolations(gene: { id?: string; tier_max?: number; voter?: boolean; vote_binding?: string; capabilities?: string[] }, origin?: ExternalOrigin): string[] {
+  const ceiling = externalCeilingFor(origin, gene.id);
   const out: string[] = [];
-  if (!Number.isInteger(gene.tier_max) || (gene.tier_max as number) > EXTERNAL_CEILING.tier_max) out.push(`tier_max ${gene.tier_max}`);
+  if (!Number.isInteger(gene.tier_max) || (gene.tier_max as number) > ceiling.tier_max) out.push(`tier_max ${gene.tier_max}`);
   if (gene.voter || gene.vote_binding) out.push("council seat");
-  for (const c of gene.capabilities ?? []) if (!EXTERNAL_CEILING.capabilities.includes(c)) out.push(`capability ${c}`);
+  for (const c of gene.capabilities ?? []) if (!ceiling.capabilities.includes(c)) out.push(`capability ${c}`);
   return out;
+}
+
+/** Why an external origin's agent may not propose this consensus action (null when its ceiling allows it). */
+export function externalProposalRefusal(origin: ExternalOrigin, agentId: string, action: string): string | null {
+  const ceiling = externalCeilingFor(origin, agentId);
+  if (!ceiling.capabilities.includes("consensus.propose")) return `consensus.propose is above the ${origin.origin} ceiling for ${agentId}`;
+  return ceiling.proposals.includes(action) ? null : `${action} is above the ${origin.origin} ceiling for ${agentId}`;
 }
 
 export interface ExternalRefusal { kind: "external_organ_refused" | "external_agent_refused"; subject: string; detail: string }
@@ -158,7 +258,7 @@ export function externalOrgans(origin: ExternalOrigin, raw: unknown): { organs: 
     if (why) { refused.push({ kind: "external_organ_refused", subject: dna.service, detail: why }); continue; }
     seen.add(dna.service);
     const agents = dna.agents.filter((a) => {
-      const v = externalCeilingViolations(a);
+      const v = externalCeilingViolations(a, origin);
       if (v.length) refused.push({ kind: "external_agent_refused", subject: a.id, detail: `agent ${a.id} on ${dna.service} is above the external ceiling: ${v.join(", ")}`.slice(0, 300) });
       return v.length === 0;
     });

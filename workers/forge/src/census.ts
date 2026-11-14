@@ -159,7 +159,7 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
   const dnas = [...genome.values()];
   const summary = dnas.map((d) => ({
     service: d.service, kind: d.kind,
-    agents: d.agents.map((a) => ({ id: a.id, display_name: a.display_name, capabilities: [...a.capabilities].sort(), tier_max: a.tier_max, voter: a.voter, ...(a.vote_binding ? { vote_binding: a.vote_binding } : {}) })),
+    agents: d.agents.map((a) => ({ id: a.id, display_name: a.display_name, capabilities: [...a.capabilities].sort(), tier_max: a.tier_max, voter: a.voter, ...(a.vote_binding ? { vote_binding: a.vote_binding } : {}), ...(a.schedule ? { schedule: { cron: a.schedule.cron } } : {}) })),
     engines: d.engines.map((e) => e.task),
     ...(origins.has(d.service) ? { origin: origins.get(d.service) } : {}),
   }));

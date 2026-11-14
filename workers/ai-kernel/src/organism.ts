@@ -22,7 +22,7 @@ import type { SyscallEnv } from "./syscall.ts";
 export interface CensusOrgan {
   service: string;
   kind: string;
-  agents: Array<{ id: string; display_name?: string; capabilities?: string[]; tier_max?: number; voter: boolean; vote_binding?: string }>;
+  agents: Array<{ id: string; display_name?: string; capabilities?: string[]; tier_max?: number; voter: boolean; vote_binding?: string; schedule?: { cron: string } }>;
   engines: string[];
   /** Set for an external organ (EXTERNAL_ORIGINS): its DNA came over RPC, held to the external ceiling. */
   origin?: string;
@@ -98,7 +98,7 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
   if (declared.origin !== undefined) {
     const origin = EXTERNAL_ORIGINS.find((o) => o.origin === declared.origin);
     if (!origin || !origin.services.includes(service)) throw new Error("external_origin_unknown");
-    if (externalCeilingViolations(gene).length) throw new Error("external_ceiling");
+    if (externalCeilingViolations(gene, origin).length) throw new Error("external_ceiling");
   }
   const privileged = privilegedCapabilities(caps).length > 0;
   if (privileged !== (p.action === "register_privileged_agent")) throw new Error(privileged ? "privileged_needs_owner" : "not_privileged");

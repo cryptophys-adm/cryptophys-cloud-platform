@@ -40,7 +40,7 @@ It needs no GitHub at any step.
 
 ## Organism census (ADR-0013)
 
-`src/census.ts` reads main's DNA (`workers/<dir>/organism.json`). It also reads the external organs' DNA over RPC: the XAUUSD Workers through `EXT_ORGANISM_XAUUSD`, the xauusd AI Worker's `OrganismDna.dna()`. Each census compares that DNA with the live registries.
+`src/census.ts` reads main's DNA (`workers/<dir>/organism.json`). It also reads the external organs' DNA over RPC: the XAUUSD Workers through `EXT_ORGANISM_XAUUSD`, the xauusd AI Worker's `OrganismDna.dna()`, and Aether through `EXT_ORGANISM_AETHER`, `cryptophys-aether`'s `OrganismDna.dna()` (owner 2026-11-14; held to Aether's own ceiling, `organism.ts` `AETHER_CEILING`). Each census compares that DNA with the live registries.
 
 - External organs are held to the external ceiling (ADR-0013 §6).
 - An origin that does not answer is an `external_dna_unavailable` finding. Main's census still runs.
