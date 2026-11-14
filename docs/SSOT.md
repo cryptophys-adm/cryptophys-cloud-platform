@@ -1,6 +1,6 @@
 # Single source of truth: current topology
 
-`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0013). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
+`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0015). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
 Last reviewed: 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
@@ -75,6 +75,11 @@ These hold everywhere:
   - `register_privileged_agent` (a capability above tier 1, or `consensus.propose`) and `admit_voter` (a council seat, one per Worker) are critical: consensus plus the owner's click, in mode `deploy` or `critical` (owner 2026-11-13).
   - The kernel takes the gene from the census, never from the proposal, so only merged DNA can register. Tier 3, unknown and fund-movement capabilities are never registered; a trading capability registers only as privileged (the owner's click).
   - A new seat must vote through a reviewed vote binding; without one it is refused. A seat the DNA no longer asks for is reported, never removed by an agent.
+
+## Organs as cells (ADR-0015)
+
+- Accepted 2026-11-14. The AI Neuron is the only core; every other organ becomes an event-driven cell (a Durable Object actor) that pushes snapshots to the Console and writes D1 only on change. D1 is the ledger of facts; telemetry goes to Analytics Engine; long memory goes to R2.
+- Not built yet. Platform phases, each in shadow first: (1) push hub for the Console plus the Cache API, (2) the Supervisor's snapshot in its DO, (3) telemetry to Analytics Engine, (4) retention with an R2 archive. The resource audit's P0 fixes come first.
 
 ## Autonomy (ADR-0007, ADR-0009)
 
