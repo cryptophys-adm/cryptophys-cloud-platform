@@ -24,6 +24,13 @@ const FIX = JSON.parse(readFileSync(new URL("./fixtures/observer-graphql.json", 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const OBS_ENV = { CF_ANALYTICS_TOKEN: "analytics-token", CF_ACCOUNT_ID: ACCOUNT };
 const HOUR = 3_600_000;
+/**
+ * The test clock about an hour after a deploy, pinned 5 minutes into a UTC hour: a retry a minute later and a cycle
+ * 10 minutes later stay in the same hour. A plain "deploy + 70 min" crossed the hour whenever the suite ran at about
+ * minute 49, so OB5's retry landed in a new hour and doubled the findings (Deploy Control Plane run 43644788075).
+ * The deploy still precedes the end of the last complete hour (by at least 10 minutes).
+ */
+const clockAfterDeploy = (deployedAt: number) => Math.floor((deployedAt + 70 * 60_000) / HOUR) * HOUR + 5 * 60_000;
 const OLD = "aaaaaaaaaaaa";
 const NEW = "bbbbbbbbbbbb";
 const EXTERNAL = Object.fromEntries(EXTERNAL_ORIGINS.map((o) => [o.origin, o.services]));
@@ -170,7 +177,7 @@ test("OB5. one hourly run: vitals stored, findings with the deploy they follow, 
   const db = migratedDb();
   await deployConsole(db);
   const deployedAt = Date.now();
-  const now = deployedAt + 70 * 60_000;
+  const now = clockAfterDeploy(deployedAt);
   const hour = lastCompleteHour(now);
   seedVitals(db, [...history("cryptophys-console", hour, 96), ...history("xauusd-omega", hour, 96, { requests: 800, errors: 4, exceptions: 2 })]);
   seedVitals(db, Array.from({ length: 72 }, (_, i) => ({ ...vital("d1:d1-uuid-1", new Date(Date.parse(hour) - (i + 1) * HOUR).toISOString(), { requests: 500, errors: null, exceptions: null, cpu_p50_ms: null, cpu_p99_ms: null }), kind: "d1" as const, rows_read: 10_000 + (i % 3) * 1000, rows_written: 10 })));
@@ -317,7 +324,7 @@ function kernelEnv(db: Db, policy?: (input: Record<string, unknown>) => Promise<
 async function spikeAfterDeploy(db: Db, baselineHours = 96): Promise<number> {
   await deployConsole(db);
   const deployedAt = Date.now();
-  const now = deployedAt + 70 * 60_000;
+  const now = clockAfterDeploy(deployedAt);
   seedVitals(db, history("cryptophys-console", lastCompleteHour(now), baselineHours));
   const r = await runSenses({ ...OBS_ENV, DB: db }, now, fakeCf().fetcher);
   assert.ok(r.findings!.some((f) => f.worker === "cryptophys-console" && f.metric === "error_rate"));
@@ -618,4 +625,14 @@ test("OB21. readSenses: one hour, one call per dataset, the hour's bounds in the
   assert.equal(seen.length, 6);
   assert.deepEqual(seen[0], { a: ACCOUNT, s: "2026-11-14T10:00:00Z", e: "2026-11-14T10:59:59Z" });
   assert.deepEqual(s.vitals, []);
+});
+
+test("OB-clock. the test clock after a deploy keeps a retry and a cycle in one hour at every minute of the hour", () => {
+  for (let minute = 0; minute < 60; minute++) {
+    const deployedAt = Date.parse("2026-11-14T21:00:00.000Z") + minute * 60_000 + 30_000;
+    const now = clockAfterDeploy(deployedAt);
+    assert.equal(lastCompleteHour(now + 60_000), lastCompleteHour(now), `retry at minute ${minute}`);
+    assert.equal(lastCompleteHour(now + 10 * 60_000), lastCompleteHour(now), `cycle at minute ${minute}`);
+    assert.ok(Date.parse(lastCompleteHour(now)) + HOUR - deployedAt >= 10 * 60_000, `the deploy precedes the hour's end at minute ${minute}`);
+  }
 });
