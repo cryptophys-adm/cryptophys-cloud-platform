@@ -1,6 +1,7 @@
 import { explainCode, serviceName } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1PreparedStatement, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { driftSignature } from "../../control-plane-shared/src/drift-state.ts";
+import { isRetiredService, notRetiredSql } from "../../control-plane-shared/src/retired.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
@@ -176,7 +177,10 @@ export async function observeForConsensus(env: Env, proposalId: string, decision
   return { run_id: r.run_id, drifted: r.drifted, services: r.services.length };
 }
 
-/** Compare desired (registry) with observed (live health/version) for every registered service. */
+/**
+ * Compare desired (registry) with observed (live health/version) for every registered service. A retired service
+ * (retired.ts, migration 0064) is skipped entirely: no probe, no observation, no heartbeat, not in the result.
+ */
 export async function observe(env: Env, trigger: string, actor: string): Promise<{ run_id: string; observed_at: string; services: ServiceDrift[]; drifted: number }> {
   const runId = newId("drift");
   const observedAt = nowIso();
@@ -188,6 +192,7 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
   const services: ServiceDrift[] = [];
   const previousRunAt = new Map<string, string>();
   for (const row of rows.results) {
+    if (isRetiredService(row)) continue;
     previousRunAt.set(row.service_id, row.updated_at);
     if (row.status === "disabled") {
       const p = { reachable: true, healthy: true, version_tag: null, error: null };
@@ -267,7 +272,8 @@ async function latestRows(env: Env): Promise<Map<string, LatestRow>> {
             json_extract(o.evidence_json, '$.reasons') AS reasons, json_extract(o.evidence_json, '$.trigger') AS run_trigger
      FROM service_registry r
      JOIN drift_observations o ON o.observation_id = (
-       SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)`,
+       SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
+     WHERE ${notRetiredSql("r.")}`,
   ).all<LatestRow>();
   return new Map((res.results ?? []).map((r) => [r.service_id, r]));
 }
@@ -366,11 +372,13 @@ export default {
         // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
         // Rows are recorded on change (0061): observed_at is when the state was first seen, streak how many runs saw
         // it (1 or 2), and last_seen_at (service_registry.updated_at, set by every run) when it was last observed.
+        // A retired service (0064) is no longer observed, so it is not listed; its history stays at /v1/drift/{id}.
         const rows = await env.DB.prepare(
           `SELECT o.service_id, o.observation_id, o.drifted, o.streak, o.evidence_json, o.observed_at, r.updated_at AS last_seen_at
            FROM service_registry r
            JOIN drift_observations o ON o.observation_id = (
              SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
+           WHERE ${notRetiredSql("r.")}
            ORDER BY r.service_id`,
         ).all<{ service_id: string; observation_id: string; drifted: number; streak: number; evidence_json: string; observed_at: string; last_seen_at: string }>();
         return json({ services: rows.results.map((r) => ({ ...r, drifted: r.drifted === 1, evidence_json: undefined, evidence: JSON.parse(r.evidence_json) })) });

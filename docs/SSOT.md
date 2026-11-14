@@ -2,7 +2,7 @@
 
 `CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0015). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
-Last reviewed: 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
+Last reviewed: 2026-11-14 (`cryptophys-signal-engine` and `cryptophys-home` retired from the registry, migration 0064); 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
 ## Platform rules
 
@@ -46,10 +46,10 @@ These hold everywhere:
 | `cryptophys-ai-kernel` | Agent registry, syscall gate, Supervisor, Auditor, consensus (ADR-0009), owner notices, knowledge | :07/:22/:37/:52 |
 | `cryptophys-forge` | ADR-0012: source on Artifacts, Forge checks in Dynamic Workers, type-check reported by Workers Builds | :04/:19/:34/:49 |
 | `cryptophys-forge-typecheck` | Workers Builds stub for the type-check and the Console UI build (`workers/forge-typecheck`, TypeScript 7): no route, no bindings, not in the registry | — |
-| `cryptophys-home` | Retired 2026-11-13 (ADR-0010 amendment): source removed, registry row `disabled` (0055, never probed, never drift); the Worker is deleted by `retire-worker.yml` | — |
-| `cryptophys-signal-engine` | Disabled (TP-018) | — |
 
 **Observed only (health, not version):** four `xauusd-*` Workers and `cryptophys-aether`.
+
+**Retired (owner 2026-11-14, migration 0064):** `cryptophys-signal-engine` (disabled 2026-11-05, TP-018) and `cryptophys-home` (disabled 2026-11-13, ADR-0010 amendment). Neither Worker exists on the account any more. Their registry rows are kept as the parent of their history (drift, deploy, recovery and audit rows), `disabled` with `metadata.retired_at` (`control-plane-shared/src/retired.ts`); the Drift Detector no longer probes, records or heartbeats them, and `GET /v1/drift` and the kernel's platform view leave them out. Their history stays readable at `GET /v1/drift/{service_id}` and in the registry. Neither has DNA, a deploy unit or a drift target, so the census counts neither.
 
 **Internal calls** use RPC service bindings (`HealthRpc`, `DriftRpc`, `RegistryRpc`, `DeployRpc`, `AgentRpc`). There are no shared secrets between Workers.
 
@@ -58,7 +58,7 @@ These hold everywhere:
 - **D1 `cryptophys-control-plane`.** One database for every service. Migrations live in `workers/control-plane-migrations/`, numbered from 0001; each Worker's readiness lists the ones it needs.
   - Migrations are applied **only by the Control Plane deploy**, so a commit with a new migration deploys the Control Plane first.
   - Every service requires `REQUIRED_MIGRATIONS` (`control-plane-shared/src/readiness.ts`). The Forge also requires 0031–0033 and 0035.
-- **Drift observations on change (owner, resource audit decision 1, 2026-11-14, migration 0061).** The Drift Detector records a `drift_observations` row only when a service's state changes (drifted, desired and observed hash, sorted reasons); the same state on a later run raises the row's `streak` to 2 once. Persistent drift is "the newest row drifted and its streak is 2 or the row before it drifted" (`control-plane-shared/src/drift-state.ts`). `service_registry.updated_at`, set by every run, is the heartbeat: staleness, verification freshness and the Console's "last observed" use it. `drift.observation` is audited only for a run that changed a state or published a report.
+- **Drift observations on change (owner, resource audit decision 1, 2026-11-14, migration 0061).** The Drift Detector records a `drift_observations` row only when a service's state changes (drifted, desired and observed hash, sorted reasons); the same state on a later run raises the row's `streak` to 2 once. Persistent drift is "the newest row drifted and its streak is 2 or the row before it drifted" (`control-plane-shared/src/drift-state.ts`). `service_registry.updated_at`, set by every run for every service but a retired one (0064), is the heartbeat: staleness, verification freshness and the Console's "last observed" use it. `drift.observation` is audited only for a run that changed a state or published a report.
 - **Retention.** `drift_observations` keeps 90 days and `agent_syscall_consumptions` 7 days (owner, 2026-11-05). `forge_builds` keeps 100 days and `forge_build_collections` 30 days (the Workers Builds API itself keeps 90). `forge_dependency_audits` and `forge_dependency_findings` (G5, migration 0051) keep 90 days. `forge_git_backups` (gate 8, migration 0054) keeps 90 days, except rows whose bundle is still in R2. Other tables are kept.
 - **Forge bundles (G2a, 2026-11-12).** The R2 bucket `cryptophys-forge-bundles` holds the Worker modules and a manifest of every passed main commit, for 14 days (`workers/forge/src/bundles.ts`).
 - **Backups.** The R2 bucket `cryptophys-d1-backups` gets a daily backup written by the Recovery Manager, with a 90-day lifecycle. D1 Time Travel is also available. A restore is critical (owner).

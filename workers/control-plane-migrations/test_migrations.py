@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated SQLite tests for the control-plane D1 migrations; never connects to Cloudflare."""
 from pathlib import Path
+import json
 import re
 import sqlite3
 
@@ -501,3 +502,84 @@ assert drop_code.count("DROP TABLE IF EXISTS") == 5 and not re.search(r"\b(DELET
 drop_db.close()
 print("PASS: 0062 retired signal tables dropped (exactly five, after their archive)")
 
+
+# Migration 0064 (owner 2026-11-14): cryptophys-signal-engine and cryptophys-home are retired for good. Their rows
+# stay (the parent of their history) and stay disabled; metadata_json only gains retired_at, retired_by and
+# retired_reason, and updated_at records when. No other row or table changes; a second run changes nothing; a
+# row that is no longer disabled, or whose metadata is not JSON, is left alone.
+RETIRE_64 = ("cryptophys-home", "cryptophys-signal-engine")
+retire64_sql = (ROOT / "0064_retire_signal_engine_and_home.sql").read_text(encoding="utf-8")
+retire64_code = "\n".join(line.split("--", 1)[0] for line in retire64_sql.splitlines()).upper()
+assert not re.search(r"\b(DELETE|DROP|INSERT|ALTER|CREATE)\b", retire64_code), "0064 deletes, drops and creates nothing"
+assert retire64_code.count("UPDATE SERVICE_REGISTRY") == 1 and retire64_code.count(";") == 1, "0064 is one registry update"
+# It rewrites rows, so the Forge's destructive-SQL rule (workers/forge/src/changes.ts) routes its merge to the owner.
+assert re.search(r"\bUPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET\b", retire64_code), "0064 is an owner-reviewed rewrite"
+
+def pre_0064_db():
+    d = sqlite3.connect(":memory:")
+    d.execute("PRAGMA foreign_keys = ON")
+    for migration in sorted(ROOT.glob("*.sql")):
+        if migration.name < "0064":
+            d.executescript(migration.read_text(encoding="utf-8"))
+    return d
+
+r64 = pre_0064_db()
+assert [r[0] for r in r64.execute(
+    "SELECT status FROM service_registry WHERE service_id IN (?, ?) ORDER BY service_id", RETIRE_64
+)] == ["disabled", "disabled"], "0020 and 0055 left both disabled"
+# Their history, as production has it: drift rows, a deploy request, a recovery plan and an audit event naming them.
+r64.execute("UPDATE service_registry SET desired_version = 'abcdefabcdef' WHERE service_id = 'cryptophys-home'")
+for i, svc in enumerate(RETIRE_64):
+    r64.execute(
+        """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+           VALUES (?, ?, 'd', 'o', 0, '{"reasons":["disabled"]}', 't0')""", (f"obs-r64-{i}", svc))
+r64.execute(
+    """INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at)
+       VALUES ('dep-r64', 'cryptophys-home', 'abcdefabcdef', 'workflow', 'succeeded', 'k-r64', '{}', 't0', 't0')""")
+r64.execute(
+    """INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, created_at, updated_at)
+       VALUES ('plan-r64', 'cryptophys-signal-engine', 'v1', 'disabled', '[]', 't0', 't0')""")
+r64.execute(
+    """INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at)
+       VALUES ('ev-r64', 'registry.service_status_set', 'test', 'cryptophys-home', 'disabled', '{}', NULL, 'hash-r64', 't0')""")
+r64.commit()
+HISTORY_64 = ("drift_observations", "deployment_requests", "recovery_plans", "idempotency_records", "ai_usage", "infra_burn_metrics", "audit_events", "agents")
+def r64_snapshot():
+    return {t: r64.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in HISTORY_64}
+others_64 = r64.execute("SELECT * FROM service_registry WHERE service_id NOT IN (?, ?) ORDER BY service_id", RETIRE_64).fetchall()
+before_64 = {r[0]: r for r in r64.execute(
+    "SELECT service_id, display_name, endpoint, desired_version, observed_version, environment, status, metadata_json, created_at FROM service_registry WHERE service_id IN (?, ?)", RETIRE_64)}
+history_64 = r64_snapshot()
+count_64 = r64.execute("SELECT COUNT(*) FROM service_registry").fetchone()[0]
+for run in range(2):
+    r64.executescript(retire64_sql)
+    for svc in RETIRE_64:
+        row = r64.execute(
+            "SELECT service_id, display_name, endpoint, desired_version, observed_version, environment, status, metadata_json, created_at, updated_at FROM service_registry WHERE service_id = ?", (svc,)
+        ).fetchone()
+        old = before_64[svc]
+        assert row[:7] == old[:7] and row[8] == old[8], f"0064 changes only metadata_json and updated_at of {svc}: {row}"
+        assert row[6] == "disabled" and row[9] == "2026-11-14T12:00:00.000Z", f"{svc} stays disabled, retired at 0064's time"
+        meta, old_meta = json.loads(row[7]), json.loads(old[7])
+        assert {k: v for k, v in meta.items() if not k.startswith("retired_")} == old_meta, f"{svc}: every earlier key is kept"
+        assert meta["retired_at"] == "2026-11-14T12:00:00.000Z" and meta["retired_by"] == "migration:0064" and meta["retired_reason"].endswith("Worker deleted"), meta
+    assert r64.execute("SELECT * FROM service_registry WHERE service_id NOT IN (?, ?) ORDER BY service_id", RETIRE_64).fetchall() == others_64, "0064 changes no other service"
+    assert r64.execute("SELECT COUNT(*) FROM service_registry").fetchone()[0] == count_64, "no registry row is added or deleted"
+    assert r64_snapshot() == history_64, f"run {run + 1}: every history row is kept unchanged"
+    assert r64.execute("SELECT COUNT(*) FROM service_registry WHERE json_extract(metadata_json, '$.retired_at') IS NOT NULL").fetchone()[0] == 2, "only the two are retired"
+assert r64.execute("PRAGMA foreign_key_check").fetchall() == []
+# A second run does not move the retirement time.
+r64.execute("UPDATE service_registry SET updated_at = 'later' WHERE service_id = 'cryptophys-home'")
+r64.executescript(retire64_sql)
+assert r64.execute("SELECT updated_at FROM service_registry WHERE service_id = 'cryptophys-home'").fetchone() == ("later",), "0064 is idempotent"
+r64.close()
+
+# Guards: a row someone re-enabled is not retired; a row whose metadata is not JSON is left alone (no error).
+guard64 = pre_0064_db()
+guard64.execute("UPDATE service_registry SET status = 'registered' WHERE service_id = 'cryptophys-home'")
+guard64.execute("UPDATE service_registry SET metadata_json = 'not json' WHERE service_id = 'cryptophys-signal-engine'")
+guard_before = guard64.execute("SELECT * FROM service_registry ORDER BY service_id").fetchall()
+guard64.executescript(retire64_sql)
+assert guard64.execute("SELECT * FROM service_registry ORDER BY service_id").fetchall() == guard_before, "0064 touches only disabled rows with JSON metadata"
+guard64.close()
+print("PASS: 0064 retire signal-engine and home (rows kept and disabled, marker only, history kept, idempotent, guarded)")
