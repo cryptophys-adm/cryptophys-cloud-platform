@@ -425,3 +425,26 @@ idx_code = "\n".join(line.split("--", 1)[0] for line in idx_sql.splitlines()).up
 assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT|UPDATE)\b", idx_code) and idx_code.count("CREATE INDEX") == 1, "0059 only adds an index"
 idx_db.close()
 print("PASS: 0059 drift observed_at index (additive)")
+
+# Migration 0060 (resource audit 2026-11-14): indexes for the hot Supervisor, Auditor and Policy queries; additive.
+hot_db = sqlite3.connect(":memory:")
+hot_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    hot_db.executescript(migration.read_text(encoding="utf-8"))
+def plan_of(sql):
+    return " ".join(r[3] for r in hot_db.execute("EXPLAIN QUERY PLAN " + sql).fetchall())
+for sql, index in [
+    ("SELECT proposal_id FROM consensus_proposals WHERE status = 'pending_owner' AND created_at < '2026-01-01'", "idx_consensus_proposals_status_created"),
+    ("SELECT COUNT(*) FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version') AND status IN ('executing','executed') AND decided_at >= '2026-01-01'", "idx_consensus_proposals_action_decided"),
+    ("SELECT main_sha FROM forge_deploy_plans WHERE forge_at IS NOT NULL ORDER BY forge_at DESC LIMIT 1", "idx_forge_deploy_plans_forge_at"),
+    ("SELECT COUNT(*) FROM recovery_plans WHERE created_by LIKE 'agent:%' AND created_at >= '2026-01-01'", "idx_recovery_plans_created"),
+    ("SELECT * FROM policy_decisions ORDER BY created_at DESC LIMIT 50", "idx_policy_decisions_created"),
+    ("SELECT action, COUNT(*) FROM policy_decisions WHERE decision = 'deny' AND created_at >= '2026-01-01' GROUP BY action", "idx_policy_decisions_decision_created"),
+]:
+    assert index in plan_of(sql), f"{index} serves its query: {plan_of(sql)}"
+hot_sql = (ROOT / "0060_hot_query_indexes.sql").read_text(encoding="utf-8")
+hot_code = "\n".join(line.split("--", 1)[0] for line in hot_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT|UPDATE)\b", hot_code) and hot_code.count("CREATE INDEX") == 6, "0060 only adds indexes"
+hot_db.close()
+print("PASS: 0060 hot query indexes (additive, each used by its query)")
+
