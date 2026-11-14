@@ -333,8 +333,11 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   const approved = await call(recovery, recoveryEnv, req("POST", `/v1/plans/${plan.plan_id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
   const trail = db.raw.prepare("SELECT event_type, actor FROM audit_events WHERE event_type = 'agent.action' ORDER BY rowid").all().map((r: any) => r.actor);
-  // recovery.propose, then the same remediation proposed to the shadow consensus (ADR-0009).
-  assert.deepEqual(trail, [SUB, SUB]);
+  // recovery.propose, then the same remediation proposed to the shadow consensus (ADR-0009), then the memory of the
+  // proposal: since the learning mandate (owner 2026-11-14) a failed recall no longer skips the remember.
+  assert.deepEqual(trail, [SUB, SUB, SUB]);
+  const caps = db.raw.prepare("SELECT capability FROM agent_actions ORDER BY rowid").all().map((r: any) => r.capability);
+  assert.deepEqual(caps.slice(-3), ["recovery.propose", "consensus.propose", "memory.remember"]);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 

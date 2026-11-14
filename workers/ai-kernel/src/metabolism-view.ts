@@ -83,6 +83,7 @@ export async function metabolismView(env: SyscallEnv, now = Date.now()): Promise
     }) as unknown as JsonObject[],
     rules: [
       "Survival throttles AI-heavy work only (AI request budgets at 25%); it never blocks consensus or learning (memory.remember, knowledge.propose).",
+      "Learning is the highest mandate: no rate limit, no daily cap, and its AI calls are never refused by an AI budget in any mode (still metered).",
       "Survival starts when the market is closed, the projected month of Cloudflare spend exceeds the monthly budget (infra-budget-usd-month), a deal result under -100 USD in 24 h, or under 7 days of runway.",
       "Growth (doubled AI budgets) applies only with the owner's power_mode_override.",
       "The treasury reads deal results only; nothing places orders or moves funds.",

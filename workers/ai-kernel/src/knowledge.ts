@@ -11,6 +11,11 @@
  * measured outcomes or a role reminder, natural language within 300 characters, every number in the
  * text found in the evidence, at least 10 cited decision cards, and no price, level, size or order
  * wording anywhere. Advisory only: nothing here changes an agent, a prompt or a parameter.
+ *
+ * Learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"): an
+ * agent may propose as many candidates as it learns. There is no daily cap (KNOWLEDGE_MAX_PER_DAY = 20 and the
+ * knowledge_daily_limit error were removed) and no hourly rate limit (capabilities.ts). The validator and the size
+ * bound below are content safety, not limits on learning, and stay.
  */
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -23,7 +28,6 @@ export const CLAIM_TYPES = ["measured_outcome", "role_reminder"] as const;
 export const KNOWLEDGE_STATUSES = ["pending", "approved", "rejected", "expired"] as const;
 /** A proposal not decided within 14 days expires; the agent may propose it again with fresh evidence. */
 export const KNOWLEDGE_REVIEW_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-export const KNOWLEDGE_MAX_PER_DAY = 20;
 export const MIN_CITED_CARDS = 10;
 const MAX_ITEM_BYTES = 8 * 1024;
 
@@ -323,9 +327,6 @@ export async function proposeKnowledge(db: D1Database, agentId: string, decision
   const errors = validateKnowledgeItem(item);
   if (errors.length) throw new Error(`invalid_knowledge_item: ${errors.slice(0, 8).join("; ")}`);
   const it = item as Record<string, unknown>;
-  const today = new Date(now).toISOString().slice(0, 10);
-  const used = await db.prepare("SELECT COUNT(*) AS n FROM knowledge_proposals WHERE proposer_agent_id = ? AND created_at >= ?").bind(agentId, `${today}T00:00:00.000Z`).first<{ n: number }>();
-  if ((used?.n ?? 0) >= KNOWLEDGE_MAX_PER_DAY) throw new Error("knowledge_daily_limit");
   const itemJson = JSON.stringify(item);
   const sha = await sha256Hex(itemJson);
   const proposalId = newId("knw");

@@ -3,9 +3,11 @@
  *
  *  - memory.recall (tier 0): embeds the query and queries Vectorize with a strict metadata filter
  *    { agent_id } and D1 WHERE agent_id = ?, returning at most 5 memories owned by the calling agent.
- *  - memory.remember (tier 1, policy-gated, max_per_hour = 12): verifies the Policy Engine decision id,
+ *  - memory.remember (tier 1, policy-gated, learning: no rate limit): verifies the Policy Engine decision id,
  *    embeds the bounded text (<= 1000 chars), and writes the D1 row and Vectorize vector under the
- *    exact same memory_id with metadata { agent_id, kind }.
+ *    exact same memory_id with metadata { agent_id, kind }. Its embedding is a learning AI call
+ *    (LEARNING_AI_PURPOSE): metered in ai_usage, never refused by an AI request budget, in any power mode
+ *    (owner 2026-11-14, the learning mandate: "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi").
  *  - Advisory only: memory is passed as `context` to AI draft tasks, never to triggers or validators.
  *    Missing or failing Vectorize/embeddings never fail an agent cycle; the cycle records
  *    `memory: "unavailable"` and continues deterministically.
@@ -13,6 +15,7 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import { boundedString, engineFor } from "../../control-plane-shared/src/ai-engine.ts";
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
+import { LEARNING_AI_PURPOSE } from "../../control-plane-shared/src/power-mode.ts";
 import { newId, nowIso, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { CycleReport, KernelEnv } from "./supervisor.ts";
 import { syscall } from "./syscall.ts";
@@ -115,7 +118,8 @@ export async function rememberMemory(
   const sourceRef = typeof input.source_ref === "string" && input.source_ref.trim() ? input.source_ref.trim().slice(0, 200) : null;
   if (!kind || !text) throw new Error("invalid_memory_input");
 
-  const emb = await engineFor(env, SERVICE, ["embed"]).embed(text, `${agentId}:remember:${decisionId}`);
+  // A learning AI call: never refused by a daily budget or survival's quarter, still recorded in ai_usage.
+  const emb = await engineFor(env, SERVICE, ["embed"]).embed(text, `${agentId}:remember:${decisionId}`, { purpose: LEARNING_AI_PURPOSE });
   if (emb.status !== "ok") throw new Error(`embed_${emb.reason}`);
 
   const memoryId = newId("mem");
@@ -176,6 +180,8 @@ export async function recallContextForAgent(
 /**
  * Best-effort advisory remember after an agent successfully proposes a plan or publishes a report.
  * Never throws; records `report.memory = "unavailable"` if MEMORY or embeddings fail.
+ * Learning mandate (owner 2026-11-14): a failed recall earlier in the cycle (for example its embedding refused by
+ * the AI budget) no longer skips the remember; only a missing MEMORY binding does.
  */
 export async function rememberOutcomeForAgent(
   env: KernelEnv,
@@ -185,7 +191,7 @@ export async function rememberOutcomeForAgent(
   sourceRef: string | null,
   report: CycleReport,
 ): Promise<void> {
-  if (!env.MEMORY || report.memory === "unavailable") {
+  if (!env.MEMORY) {
     report.memory = "unavailable";
     return;
   }

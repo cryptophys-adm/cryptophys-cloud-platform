@@ -27,6 +27,11 @@
  * denial is counted on its own (learning_blocked_24h, by capability, subject and reason) and warns whenever it is > 0
  * in the last 24 hours. A learning denial that also failed an unexpected check is counted as unexpected as well; one
  * that failed only expected checks is no longer counted as expected. The rest of the classification is unchanged.
+ *
+ * Learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"): learning
+ * has no rate limit, no daily cap and no power-mode denial any more, so neither rate_limit nor power_mode_survival can
+ * refuse it. rate_limit and power_mode_survival stay expected guards for every other capability; any denial of a
+ * learning capability that still occurs (a revoked grant, the kill switch, a regression) is a real problem and warns.
  */
 import { LEARNING_CAPABILITIES, isLearningCapability } from "../../control-plane-shared/src/power-mode.ts";
 

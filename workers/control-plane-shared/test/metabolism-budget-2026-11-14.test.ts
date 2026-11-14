@@ -131,7 +131,8 @@ test("MB4. in survival the Policy Engine allows knowledge.propose and memory.rem
   assert.equal(survivalDenies("knowledge.propose", ["knowledge.propose"]), false);
   assert.equal(survivalDenies("consensus.propose", ["consensus.propose"]), false);
   assert.ok(!SURVIVAL_DENIED_CAPABILITIES.some((c) => LEARNING_CAPABILITIES.includes(c)));
-  // The AI work itself (drafts, the embeddings memory.remember needs) reserves from survival's quarter budget.
+  // Other AI work (drafts, recall embeddings) reserves from survival's quarter budget. The embeddings memory.remember
+  // needs do not since the learning mandate (owner 2026-11-14): test/learning-mandate-2026-11-14.test.ts.
   const { AiEngine } = await import("../src/ai-engine.ts");
   const reserved = async (day: string, n: number) => {
     const engine: any = new (AiEngine as any)({ service: "cryptophys-ai-kernel", ai: { run: async () => ({}) }, db, dailyLimit: 8, accountDailyLimit: 1000 });

@@ -75,8 +75,9 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     const powerMode = await getActivePowerMode(db);
     // Survival throttles AI-heavy work only (control-plane-shared/src/power-mode.ts). consensus.propose is never
     // throttled: deploys, rollbacks and agent suspensions must stay possible on weekends and in drawdowns (owner
-    // 2026-11-10). Learning is core: memory.remember and knowledge.propose are allowed in every mode, weekend survival
-    // included (owner 2026-11-14); the model calls they make still reserve from survival's quarter AI budget.
+    // 2026-11-10). Learning is the highest mandate (owner 2026-11-14): memory.remember and knowledge.propose are
+    // allowed in every mode, weekend survival included, have no rate_limit check (capabilities.ts hourlyLimit) and
+    // their model calls are never refused by an AI budget (ai-engine.ts, purpose "learning").
     if (powerMode === "survival" && survivalDenies(resource)) {
       checks.push(check("power_mode_survival", false, `capability ${resource} is AI-heavy work, throttled in survival mode`));
     }
