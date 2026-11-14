@@ -36,6 +36,9 @@ export function previewOf(script: string, declared: ReadonlySet<string>): string
   return m && declared.has(m[1]) ? m[1] : null;
 }
 
+/** Names the analytics use for traffic without a script name; never a Worker. */
+export const ANALYTICS_PLACEHOLDERS: ReadonlySet<string> = new Set(["__unknown__"]);
+
 export type ListKey = "scripts" | "d1" | "kv" | "r2" | "queues" | "durable_objects";
 export const LISTS: Readonly<Record<ListKey, { path: string; permission: string }>> = Object.freeze({
   scripts: { path: "workers/scripts", permission: "Account > Workers Scripts > Read" },
@@ -127,12 +130,23 @@ const finding = (day: string, worker: string, metric: string, detail: string, sa
 export function compareInventory(i: InventoryInput): Finding[] {
   const out: Finding[] = [];
   const k = i.known;
-  const scripts = i.lists.scripts?.status === "ok" ? i.lists.scripts.items.map((s) => s.name) : null;
-  const live = new Set([...(scripts ?? []), ...i.traffic7d.keys()]);
+  // Analytics placeholders are not Workers (2026-11-14: "__unknown__" was reported as an undeclared Worker).
+  const traffic7d = new Map([...i.traffic7d].filter(([w]) => !ANALYTICS_PLACEHOLDERS.has(w)));
+  // A Workers list that comes back "ok" but leaves out every declared Worker the analytics saw with traffic is not
+  // evidence that they are gone: on 2026-11-14 the token returned an empty list, and all 17 declared Workers were
+  // reported as orphaned. Such a list is treated as unread (nothing is orphaned) and named as a permission gap.
+  const listed = i.lists.scripts?.status === "ok" ? i.lists.scripts.items.map((s) => s.name) : null;
+  const liveDeclared = [...traffic7d].filter(([w, n]) => n > 0 && k.declared.has(w)).map(([w]) => w);
+  const listUnreliable = listed !== null && liveDeclared.length > 0 && liveDeclared.every((w) => !listed.includes(w));
+  const scripts = listUnreliable ? null : listed;
+  if (listUnreliable) {
+    out.push({ ...finding(i.day, "account", "inventory_permission_missing:scripts", `The Workers list came back with ${listed!.length} Worker(s) and none of the ${liveDeclared.length} declared Workers that had traffic in 7 days; the token likely lacks ${LISTS.scripts.permission} (owner)`, { listed: listed!.length, live_declared: liveDeclared.length, permission: LISTS.scripts.permission }), kind: "capability" });
+  }
+  const live = new Set([...(scripts ?? []), ...traffic7d.keys()]);
   const known = (w: string) => k.declared.has(w) || k.unknown_origins.has(w) || k.disabled.has(w) || previewOf(w, k.declared) !== null;
   for (const w of [...live].sort()) {
     if (known(w)) continue;
-    const requests = i.traffic7d.get(w) ?? 0;
+    const requests = traffic7d.get(w) ?? 0;
     if (requests > 0) {
       out.push(finding(i.day, w, "undeclared_worker", `${w} is live with ${requests.toLocaleString("en-US")} requests in 7 days but no DNA declares it${REPORT_ONLY_WORKERS.has(w) ? " (observed only; report only)" : ""}`,
         { requests_7d: requests, in_scripts_list: scripts?.includes(w) ?? null }, REPORT_ONLY_WORKERS.has(w) ? "info" : "warning"));
@@ -146,7 +160,7 @@ export function compareInventory(i: InventoryInput): Finding[] {
       out.push(finding(i.day, w, "orphaned_declaration", `${w} is declared in the DNA but is not on the account's Workers list`, { kind: k.stubs.has(w) ? "build-stub" : "worker" }, "warning"));
       continue;
     }
-    if (i.senses_cover_7d && !k.stubs.has(w) && (i.traffic7d.get(w) ?? 0) === 0 && (scripts === null || scripts.includes(w))) {
+    if (i.senses_cover_7d && !k.stubs.has(w) && (traffic7d.get(w) ?? 0) === 0 && (scripts === null || scripts.includes(w))) {
       out.push(finding(i.day, w, "idle_worker", `${w} is declared but had no traffic for ${THRESHOLDS.IDLE_DAYS} days`, { requests_7d: 0, declared: true }));
     }
   }

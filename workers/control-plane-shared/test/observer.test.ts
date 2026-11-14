@@ -636,3 +636,16 @@ test("OB-clock. the test clock after a deploy keeps a retry and a cycle in one h
     assert.ok(Date.parse(lastCompleteHour(now)) + HOUR - deployedAt >= 10 * 60_000, `the deploy precedes the hour's end at minute ${minute}`);
   }
 });
+
+test("OB-inv1. an empty Workers list while declared Workers have traffic orphans nothing and names the permission; __unknown__ is no Worker (2026-11-14)", () => {
+  const traffic7d = new Map([["cryptophys-console", 9000], ["cryptophys-forge", 100], ["xauusd-omega", 10], ["__unknown__", 172]]);
+  const empty = compareInventory({ known: known(), lists: { scripts: scripts() }, traffic7d, senses_cover_7d: false, day: "2026-11-14" });
+  assert.deepEqual(kinds(empty), ["inventory_permission_missing:scripts account"], "the 23:27 run reported every declared Worker as orphaned");
+  assert.equal(empty[0].kind, "capability");
+  assert.equal(empty[0].sample.permission, "Account > Workers Scripts > Read");
+  assert.equal(empty[0].sample.live_declared, 3);
+  // A real list that only misses one Worker still reports that one as orphaned.
+  const one = compareInventory({ known: known(), lists: { scripts: scripts("cryptophys-console", "cryptophys-forge-typecheck", "xauusd-omega", "xauusd-ai-trading-assistant") }, traffic7d, senses_cover_7d: false, day: "2026-11-14" });
+  assert.deepEqual(kinds(one), ["orphaned_declaration cryptophys-forge"]);
+  assert.ok(!one.some((f) => f.worker === "__unknown__"), "__unknown__ is an analytics placeholder, never an undeclared Worker");
+});
