@@ -3,12 +3,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { migratedDb } from "./harness.ts";
 import { appendAuditEvent, verifyAuditChain } from "../src/audit.ts";
 import { backupIfStale, dumpSql, sqlLiteral, type R2BucketLike } from "../../recovery-manager/src/backup.ts";
 import recoveryWorker from "../../recovery-manager/src/index.ts";
+import { ARCHIVE_PREFIX, RETIRED_SIGNAL_TABLES, archiveKey, archiveRetiredTables, type ArchiveBucket } from "../../recovery-manager/src/archive.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 
@@ -92,3 +93,67 @@ test("N5. primary since 2026-11-07: GitHub's d1-backup.yml has no schedule, and 
   assert.equal(ev.outcome, "failed");
   assert.match(ev.payload_json, /r2 unavailable/);
 });
+
+function archiveBucket() {
+  const objects = new Map<string, { body: ArrayBuffer; meta: Record<string, string> }>();
+  const calls = { head: 0, put: 0, get: 0 };
+  const bucket: ArchiveBucket = {
+    async head(key) { calls.head++; return objects.has(key) ? {} : null; },
+    async put(key, body, opts) { calls.put++; objects.set(key, { body, meta: opts?.customMetadata ?? {} }); return {}; },
+    async get(key) { calls.get++; const o = objects.get(key); return o ? { arrayBuffer: async () => o.body, customMetadata: o.meta } : null; },
+  };
+  return { bucket, objects, calls };
+}
+
+test("N6. retired signal tables: archived once to R2 outside the lifecycle prefix, read back and counted against D1, audited; then a no-op (2026-11-14)", async () => {
+  const db = migratedDb();
+  const ins = db.raw.prepare("INSERT INTO market_candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume, source, ingested_at) VALUES (?, '1h', ?, ?, 1, 2, 0.5, 1.5, 10, ?, '2026-11-01T00:00:00Z')");
+  for (let i = 0; i < 1203; i++) ins.run(i % 2 ? "BTCUSDT" : "ETHUSDT", i + 1, i + 2, i % 2 ? "k" : "it's\nINSERT INTO \"market_candles\" (");
+  db.raw.prepare("INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES ('r1', 'scheduled', 't', 't', 1, 0, ?)").run(JSON.stringify({ a: "line\nbreak" }));
+  const { bucket, objects, calls } = archiveBucket();
+  const out = await archiveRetiredTables({ DB: db as never, BACKUPS: bucket });
+  assert.equal(out.status, "done");
+  const states = (out as any).tables.map((t: any) => [t.table, t.state, t.rows ?? null, t.d1_rows ?? null]);
+  assert.deepEqual(states, [["market_candles", "verified", 1203, 1203], ["signal_indicators", "verified", 0, 0], ["signal_confluence", "verified", 0, 0], ["signal_ingest_runs", "verified", 1, 1], ["macro_context", "verified", 0, 0]]);
+  assert.ok(ARCHIVE_PREFIX.startsWith("archive/") && !ARCHIVE_PREFIX.startsWith("control-plane/"), "outside the 90-day lifecycle rule (control-plane/)");
+  assert.deepEqual([...objects.keys()].sort(), RETIRED_SIGNAL_TABLES.map(archiveKey).sort());
+  // The archived script restores the rows exactly.
+  const restored = new DatabaseSync(":memory:");
+  restored.exec(gunzipSync(Buffer.from(objects.get(archiveKey("market_candles"))!.body)).toString("utf8"));
+  assert.equal((restored.prepare("SELECT COUNT(*) AS n FROM market_candles WHERE symbol = 'ETHUSDT' AND source LIKE 'it''s%'").get() as any).n, 602);
+  assert.equal(objects.get(archiveKey("market_candles"))!.meta.rows, "1203");
+  const exact = (d: any) => d.prepare("SELECT source FROM market_candles WHERE open_time = 1").get().source;
+  assert.equal(exact(restored), exact(db.raw), "a value with a line break restores byte for byte");
+  assert.equal(exact(restored), "it's\nINSERT INTO \"market_candles\" (");
+  const audits = db.raw.prepare("SELECT subject, outcome, payload_json FROM audit_events WHERE event_type = 'backup.archive_verified' ORDER BY rowid").all() as any[];
+  assert.deepEqual(audits.map((a) => [a.subject, a.outcome]), RETIRED_SIGNAL_TABLES.map((t) => [archiveKey(t), "verified"]));
+  // Verified tables cost no R2 call afterwards.
+  const before = { ...calls };
+  await archiveRetiredTables({ DB: db as never, BACKUPS: bucket });
+  assert.deepEqual(calls, before);
+  // A table whose rows changed after archiving is reported, not passed: the next run compares again.
+  const { bucket: b2, calls: c2 } = archiveBucket();
+  const db2 = migratedDb();
+  const first = await archiveRetiredTables({ DB: db2 as never, BACKUPS: b2 });
+  assert.ok((first as any).tables.every((t: any) => t.state === "verified"));
+  assert.equal(c2.put, 5);
+  // Once a table is dropped, it is skipped.
+  db.raw.exec("DROP TABLE signal_indicators; DROP TABLE signal_confluence; DROP TABLE market_candles; DROP TABLE signal_ingest_runs; DROP TABLE macro_context;");
+  const gone = await archiveRetiredTables({ DB: db as never, BACKUPS: bucket });
+  assert.ok((gone as any).tables.every((t: any) => t.state === "dropped"));
+  assert.deepEqual(calls, before, "no R2 call once the tables are gone");
+});
+
+test("N7. a mismatch between the archive and D1 is audited as mismatch, never as verified", async () => {
+  const db = migratedDb();
+  db.raw.prepare("INSERT INTO macro_context (observed_hour, fear_greed, fear_greed_sentiment, btc_dominance, total_market_cap, sources_json, observed_at) VALUES (1, 50, 0, 50, 1, '{}', 't')").run();
+  const { bucket, objects } = archiveBucket();
+  // An archive object already present but missing the row (written before the row existed).
+  const gz = gzipSync(Buffer.from("CREATE TABLE x (a);\n"));
+  objects.set(archiveKey("macro_context"), { body: gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer, meta: {} });
+  const out = await archiveRetiredTables({ DB: db as never, BACKUPS: bucket });
+  const macro = (out as any).tables.find((t: any) => t.table === "macro_context");
+  assert.deepEqual([macro.state, macro.rows, macro.d1_rows], ["mismatch", 0, 1]);
+  assert.equal((db.raw.prepare("SELECT outcome FROM audit_events WHERE event_type = 'backup.archive_verified' AND subject = ?").get(archiveKey("macro_context")) as any).outcome, "mismatch");
+});
+

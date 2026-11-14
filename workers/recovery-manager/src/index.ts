@@ -12,6 +12,7 @@ import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabiliti
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 import type { RecoveryDeployBinding } from "./autonomous.ts";
 import { backupIfStale, type R2BucketLike } from "./backup.ts";
+import { archiveRetiredTables, type ArchiveBucket } from "./archive.ts";
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
@@ -31,7 +32,7 @@ export interface Env extends BaseEnv, LifecycleEnv {
   /** Deployment Orchestrator DeployRpc: redeploy steps of approved plans (autonomous recovery). */
   DEPLOY?: RecoveryDeployBinding;
   /** Private R2 bucket for the Cloudflare-native D1 backup fallback (backup.ts). */
-  BACKUPS?: R2BucketLike;
+  BACKUPS?: R2BucketLike & ArchiveBucket;
 }
 
 const SERVICE = "cryptophys-recovery-manager";
@@ -263,6 +264,16 @@ export default {
           .catch(() => undefined);
         // Preserve the failure after recording it so the scheduled invocation remains visibly failed.
         throw e;
+      },
+    ));
+    // Owner 2026-11-14: archive the retired signal tables to R2 and verify them, before the migration that drops them.
+    ctx.waitUntil(archiveRetiredTables(env).then(
+      (r) => { if (r.status === "done" && r.tables.some((t) => t.state !== "dropped")) console.log(JSON.stringify({ event: "retired_tables_archive", ...r })); },
+      async (e: unknown) => {
+        const message = String((e as Error)?.message ?? e).slice(0, 300);
+        console.error(JSON.stringify({ event: "retired_tables_archive", status: "failed", message }));
+        await appendAuditEvent(env.DB, { event_type: "backup.archive_failed", actor: "cryptophys-recovery-manager", subject: "archive/retired-signal-tables/", outcome: "failed", payload: { message } })
+          .catch(() => undefined);
       },
     ));
     // Retire draft redeploy plans that a later deploy made unnecessary (superseded.ts).
