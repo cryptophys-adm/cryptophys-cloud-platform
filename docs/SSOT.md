@@ -1,6 +1,6 @@
 # Single source of truth: current topology
 
-`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0016). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
+`CLAUDE.md` and `AGENTS.md` point here. This page says what runs where **today**. The decisions behind it are in `architecture/adr/` (0001–0017). When this page and an ADR disagree, the newer ADR wins and this page is corrected.
 
 Last reviewed: 2026-11-14 (the Console's emergency deploy and `POST /v1/deployments` removed; the account-wide Observer; `cryptophys-signal-engine` and `cryptophys-home` retired from the registry, migration 0064); 2026-11-13 (owner channel and Owner page; critical report acknowledgement; `cryptophys-home` and the old custom domains retired); 2026-11-10 (power mode rules); before that 2026-11-08 (`docs/RETROSPECTIVE-2026-11-08.md`).
 
@@ -100,6 +100,12 @@ These hold everywhere:
   - The Console's Vision page (`#/vision`) shows it. A KPI without a measured baseline or a set target reads "not measured yet".
 - **Not built yet:** T1 (the daily self-model), T2 (the Strategist in shadow), T3 (intents to the evolver and the experience ledger), T4 (vision growth) and T5 (morphogenesis).
 
+
+## Human–AI collaboration (ADR-0017)
+
+- Accepted 2026-11-14 ("setuju"). Phases H0–H5: the "Needs you" inbox, the "Ask the organism" chat in Cerebrum (Indonesian, read-only tools, metric-first, cited), directives as typed proposals that the owner always confirms first, corrections in Nexus as high-weight learning, a per-class autonomy dial, and collaborators under ADR-0011 roles.
+- **Not built yet.** H0 and H1 start only after the deploy-pipeline hardening (a)–(f) of 2026-11-14 is done (owner decision 4). The Nexus part of H3 belongs to the xauusd repository's session.
+- Chat and Telegram never approve anything; approvals stay a click in Cerebrum under the owner's Access identity.
 ## Autonomy (ADR-0007, ADR-0009)
 
 - **Current state.** Consensus mode is `deploy` (owner, 2026-11-07). The kill switch is on.
@@ -111,6 +117,10 @@ These hold everywhere:
   - Removed that day: the Console's emergency deploy form on the Pipelines page and its route `orchestrator.deploy`, and the Orchestrator's `POST /v1/deployments` (a GitHub ref lookup and CI gate, then a dispatch of `deploy-platform-api.yml`), which now answers 405. `GET /v1/deployments`, the ledger the Pipelines page shows, stays read only.
   - An approved recovery plan's redeploy takes the same native-or-fallback path as `deploy_commit`.
   - Agents do not change `.github/workflows/*`: the deploy workflows' own `workflow_dispatch` triggers and `ops-dispatch.yml` stay on GitHub until the owner retires them (cut-over steps 6–7, `docs/GITHUB-CUTOVER.md`).
+  - **Gate for cut-over steps 6–7 (owner, 2026-11-14, after the deploy-planner stall).** Steps 6–7 wait until all of these hold:
+    - the linear-history guard (a), the deploy planner's ancestry and D1-migration rules (b) and the deploy stall alarm (c) are live;
+    - the break-glass recovery step `force_redeploy_unit` (d) has been exercised once in production, with the owner's click (drill (f));
+    - native deploys have run cleanly for 24 hours.
 - **Critical reports (owner 2026-11-13).** Every voter rejects routine actions while a critical agent report of the last 24 hours is open. An approver who is a person can acknowledge a handled critical report: `POST /v1/reports/{id}/acknowledge` on the AI Kernel, with the phrase `ACKNOWLEDGE {id13}` and a reason of 10–500 characters, from the Console Owner or Cognition page. An acknowledged report no longer counts as open (`counts.critical`; `counts.critical_acknowledged` counts the acknowledged ones), and the owner notice closes with it. Unacknowledged ones block as before, and warnings and info cannot be acknowledged. Each acknowledgement is written with a `report.acknowledged` audit event (migration 0053) and is idempotent. Before 0053 is applied, nothing counts as acknowledged (ADR-0009 amendment 2026-11-13).
 - **Workers AI.** It uses the free tier, capped at 250 requests a day. AI only drafts; every decision is deterministic.
 - **Digital metabolism (power mode, #263, #264, #265).** The Supervisor reads deal results from XAUUSD (read only; nothing places orders or moves funds) and the infrastructure burn, then sets `metabolism_controls.power_mode`. Owner rules (2026-11-10):
