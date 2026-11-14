@@ -17,13 +17,17 @@ import { storeBundles, type BuiltModule, type BundleBucket } from "../../forge/s
 import { DeploymentLock, deployForRecovery, forceDeployForRecovery, requestStatus, runNativeExecutors } from "../../deployment-orchestrator/src/index.ts";
 import { SAFE_MINUTES } from "../../deployment-orchestrator/src/native-rollback.ts";
 import { nativeDeployEligible, readManifest, readMigration } from "../../deployment-orchestrator/src/native-deploy.ts";
-import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, pendingMigrations, recoveryMainHead } from "../../deployment-orchestrator/src/recovery-deploy.ts";
+import { BREAK_GLASS_EXECUTOR, BREAK_GLASS_NOTICE_MS, resolveBreakGlassNotices, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, pendingMigrations, recoveryMainHead } from "../../deployment-orchestrator/src/recovery-deploy.ts";
 import { recordNativeDeploy, recordRollback } from "../../platform-registry/src/index.ts";
 import recovery, { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import { runLifecycle } from "../../recovery-manager/src/lifecycle.ts";
 import { decide, evaluatePolicy, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { AI_DRAFT_STEP_ACTIONS, draftTask } from "../../ai-kernel/src/supervisor.ts";
 import { reconcileNotices } from "../../ai-kernel/src/owner-notices.ts";
+import { openCriticalReportRows, unhandledProblems } from "../../ai-kernel/src/owner-inbox.ts";
+import { observe } from "../../ai-kernel/src/syscall.ts";
+import { openCriticalReports } from "../../ai-kernel/src/consensus.ts";
+import { baseline } from "../src/consensus-rules.ts";
 
 type Db = ReturnType<typeof migratedDb>;
 const ROOT = new URL("../../../", import.meta.url);
@@ -178,6 +182,20 @@ const tableExists = (db: Db, name: string) => Boolean(db.raw.prepare("SELECT 1 F
 const events = (db: Db, prefix: string) => (db.raw.prepare("SELECT event_type, payload_json FROM audit_events WHERE event_type LIKE ? ORDER BY rowid").all(`${prefix}%`) as any[])
   .map((r) => ({ type: r.event_type as string, payload: JSON.parse(r.payload_json) }));
 const requests = (db: Db) => db.raw.prepare("SELECT request_id, service_id, requested_by, idempotency_key, status, details_json FROM deployment_requests").all() as any[];
+/** The consensus brake as the kernel computes it for a routine proposal: baseline() over its own overview. */
+async function brake(db: Db): Promise<string | null> {
+  const ov = await observe(baseEnv("cryptophys-ai-kernel", db) as never) as any;
+  return baseline({ agents_enabled: true, audit_valid: true, services: {}, registry: {}, agents: {}, critical_reports_24h: openCriticalReports(ov.agent_reports_24h), executing_plan_targets: [], recent_same: 0 });
+}
+/** Every registered service observed in sync just now, so the notices list only what the test is about. */
+function observeAll(db: Db) {
+  const at = new Date().toISOString();
+  for (const r of db.raw.prepare("SELECT service_id, desired_version FROM service_registry WHERE status != 'disabled'").all() as any[]) {
+    db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES (?, ?, 'd', 'd', 0, ?, ?)`)
+      .run(`obs_${crypto.randomUUID()}`, r.service_id, JSON.stringify({ reasons: [], probe: { version_tag: r.desired_version } }), at);
+    db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at, r.service_id);
+  }
+}
 const desired = (db: Db, svc: string) => (db.raw.prepare("SELECT desired_version FROM service_registry WHERE service_id = ?").get(svc) as any).desired_version;
 
 // ---------------------------------------------------------------- tests
@@ -258,7 +276,7 @@ test("BG-2. the Policy Engine allows the break-glass plan only after a person ot
     { ok: false, reason: "break_glass_person_approver" }, "the author never approves their own break-glass plan");
 });
 
-test("BG-3. end to end with the planner down: the owner's click deploys exactly the control-plane unit from main head's bundles, applies D1's pending migration, verified, audited, on Telegram", async () => {
+test("BG-3. end to end with the planner down: the owner's click deploys exactly the control-plane unit from main head's bundles, applies D1's pending migration, verified, audited; a success is a warning on Telegram that leaves the brake off", async () => {
   const { db, b } = await setup();
   // The incident: the planner recorded nothing for main's head, so the normal paths have no head at all.
   assert.deepEqual(await forgeMainHead(db as never), { sha: null, reason: "forge_plan_missing" });
@@ -334,15 +352,38 @@ test("BG-3. end to end with the planner down: the owner's click deploys exactly 
     assert.equal(events(db, "deployment.break_glass_succeeded")[0].payload.plan_id, id);
     assert.equal((await verifyAuditChain(db as never)).valid, true);
 
-    // The owner hears of it: a critical report, which the owner notices send to Telegram.
+    // The owner hears of a success through a WARNING: no critical report, so the consensus brake stays off.
     const report = reports.find((r) => r.body?.break_glass);
     assert.ok(report, "a break-glass report");
-    assert.deepEqual([report.agent, report.severity, report.subject], ["deployment-orchestrator", "critical", "Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded"]);
+    assert.deepEqual([report.agent, report.severity, report.subject, report.body.alert_key, report.body.state],
+      ["deployment-orchestrator", "warning", "Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded", `break_glass:${rows[0].request_id}`, "open"]);
+    assert.equal(reports.filter((r) => r.severity === "critical").length, 0);
+    assert.deepEqual(await openCriticalReportRows(db as never), []);
+    assert.equal(await brake(db), null, "a routine proposal still passes baseline()");
+    // The Owner page lists it as a production problem (break_glass_deployed), once per request.
+    const items = (await unhandledProblems(db as never)).filter((p) => p.code === "break_glass_deployed");
+    assert.deepEqual(items.map((p) => [p.subject, p.link]), [[`break_glass:${rows[0].request_id}`, `#/recovery/${id}`]]);
+    assert.match(items[0].detail, /^Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded at /);
+    // Telegram: one production_unhandled message carrying it, no critical_reports message; a second run sends nothing.
+    observeAll(db);
     const telegram: any[] = [];
-    await reconcileNotices({ DB: db, OWNER_TELEGRAM: { notify: async (n: any) => { telegram.push(n); return { sent: true }; } } } as never);
-    const msg = telegram.find((n) => /critical agent report/.test(n.title));
-    assert.ok(msg, JSON.stringify(telegram.map((t) => t.title)));
-    assert.ok(msg.lines.some((l: string) => l.includes("deployment-orchestrator: Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded")));
+    const notices = { DB: db, OWNER_TELEGRAM: { notify: async (n: any) => { telegram.push(n); return { sent: true }; } } };
+    await reconcileNotices(notices as never);
+    assert.equal(telegram.length, 1, JSON.stringify(telegram.map((t) => t.title)));
+    assert.match(telegram[0].title, /^A production problem no agent is handling: 1 item\(s\)$/);
+    assert.ok(telegram[0].lines.some((l: string) => l.startsWith("Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded")));
+    await reconcileNotices(notices as never);
+    assert.equal(telegram.length, 1, "deduplicated");
+    // After 24 hours the Orchestrator reports it resolved ("Resolved:", same alert_key), and the notice closes.
+    assert.equal(await resolveBreakGlassNotices(db as never, (orch as any).AGENTS, Date.now() - 1), 0, "not before 24 hours");
+    assert.equal(await resolveBreakGlassNotices(db as never, (orch as any).AGENTS, Date.now() + BREAK_GLASS_NOTICE_MS + 60_000), 1);
+    assert.equal(await resolveBreakGlassNotices(db as never, (orch as any).AGENTS, Date.now() + BREAK_GLASS_NOTICE_MS + 60_000), 0, "once");
+    const resolved = reports.at(-1);
+    assert.deepEqual([resolved.severity, resolved.subject, resolved.body.alert_key, resolved.body.state], ["info", "Resolved: Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded", report.body.alert_key, "resolved"]);
+    assert.deepEqual((await unhandledProblems(db as never)).filter((p) => p.code === "break_glass_deployed"), []);
+    observeAll(db);
+    await reconcileNotices(notices as never);
+    assert.deepEqual([telegram.length, telegram[1]?.change], [2, "closed"]);
   } finally { globalThis.fetch = realFetch; }
 });
 
@@ -439,7 +480,7 @@ test("BG-6. it fails cleanly while the deploy lock is held or another deploy of 
   } finally { globalThis.fetch = realFetch; }
 });
 
-test("BG-7. a failed live verification restores every changed Worker, fails the plan's step and still reaches the owner", async () => {
+test("BG-7. a failed live verification restores every changed Worker, fails the plan's step, engages the brake and reaches the owner", async () => {
   const { db, b } = await setup();
   // The AI Kernel never reports the new tag: the deploy of the last Worker of the unit is not live.
   const { env, reports, lock } = orchestrator(db, b, (svc) => svc === "cryptophys-ai-kernel" ? OLD.slice(0, 12) : NEW.slice(0, 12));
@@ -461,6 +502,15 @@ test("BG-7. a failed live verification restores every changed Worker, fails the 
     const report = reports.find((r) => r.body?.break_glass);
     assert.deepEqual([report.severity, report.subject, report.body.restored], ["critical", "Break-glass deploy of control-plane at 1b1b1b1b1b1b failed (not_live_at_tag)", true]);
     assert.equal(reports.filter((r) => r.severity === "critical").length, 1, "one report, not the generic one as well");
+    // A failure engages the brake until an approver acknowledges it, and reaches Telegram as a critical report.
+    assert.equal(await brake(db), "a critical report is open in the last 24 h");
+    assert.deepEqual((await unhandledProblems(db as never)).filter((p) => p.code === "break_glass_deployed"), [], "not listed as a success");
+    observeAll(db);
+    const telegram: any[] = [];
+    await reconcileNotices({ DB: db, OWNER_TELEGRAM: { notify: async (n: any) => { telegram.push(n); return { sent: true }; } } } as never);
+    const msg = telegram.find((n) => /critical agent report/.test(n.title));
+    assert.ok(msg, JSON.stringify(telegram.map((t) => t.title)));
+    assert.ok(msg.lines.some((l: string) => l.includes("deployment-orchestrator: Break-glass deploy of control-plane at 1b1b1b1b1b1b failed (not_live_at_tag)")));
     // The lock was freed: the owner can approve another plan for the same commit.
     const again = await lock.get(lock.idFromName(breakGlassLockName(CONTROL_PLANE, NEW))).fetch("https://lock.internal/status", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: NEW }) });
     assert.equal((await again.json() as any).claimed, false);

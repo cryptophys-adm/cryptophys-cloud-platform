@@ -130,27 +130,65 @@ export async function unitDeployInProgress(db: D1Database, unit: DeployUnit, pla
   return row?.request_id ?? null;
 }
 
+/** The key of a break-glass deploy's owner alert: one per request (owner-inbox.ts break_glass_deployed). */
+export const breakGlassAlertKey = (requestId: string) => `break_glass:${requestId}`;
+/** A succeeded break-glass deploy stays on the Owner page this long, then is reported resolved. */
+export const BREAK_GLASS_NOTICE_MS = 24 * 3_600_000;
+
 /**
- * The owner hears of every break-glass deploy, whatever its outcome: a critical report of the Deployment
- * Orchestrator, which the owner notices send to Telegram (critical_reports). Like every critical report it holds
- * routine consensus until an approver acknowledges it on the Owner page.
+ * The owner hears of every break-glass deploy (owner 2026-11-14, "Ya, begitu"):
+ *  - succeeded: a WARNING report with alert_key break_glass:<request_id>. It is not the consensus brake (only an open
+ *    critical report is); the owner notices send it to Telegram as the production_unhandled item break_glass_deployed,
+ *    once per request, until it is resolved (resolveBreakGlassNotices, after 24 h);
+ *  - failed (restored or not) or refused at run time: a CRITICAL report. It holds routine consensus until an approver
+ *    acknowledges it on the Owner page, and reaches Telegram as critical_reports.
  */
 export async function reportBreakGlass(agents: AgentRpcBinding | undefined, r: {
   request_id: string; plan_id: string; unit: string; commit_sha: string; outcome: "succeeded" | "failed" | "refused";
   reason?: string | null; restored?: boolean; migrations_applied?: string[]; migration_failed?: string | null; restore_point_at?: string | null; steps?: string[];
 }) {
   const tag = r.commit_sha.slice(0, 12);
-  const what = r.outcome === "succeeded" ? "succeeded" : r.outcome === "refused" ? `was refused (${r.reason ?? "unknown"})` : `failed (${r.reason ?? "unknown"})`;
+  const ok = r.outcome === "succeeded";
+  const what = ok ? "succeeded" : r.outcome === "refused" ? `was refused (${r.reason ?? "unknown"})` : `failed (${r.reason ?? "unknown"})`;
+  const after = ok ? "Every Worker of the unit was verified live."
+    : r.outcome === "refused" ? "Nothing in production changed. Acknowledge this report on the Owner page to let routine consensus continue."
+    : `${r.restored === false ? "The restore of the changed Workers did not complete: check production now." : "Every changed Worker was restored."} Applied migrations stay (forward-only). Acknowledge this report on the Owner page to let routine consensus continue.`;
   return publishAgentReport(agents, "deployment-orchestrator", {
-    kind: "platform_digest", severity: "critical",
+    kind: "platform_digest", severity: ok ? "warning" : "critical",
     subject: `Break-glass deploy of ${r.unit} at ${tag} ${what}`.slice(0, 200),
     body: {
-      explanation: `An owner-approved recovery plan (${r.plan_id}) deployed the ${r.unit} unit at main ${tag} without the deploy planner. ` +
-        (r.outcome === "succeeded" ? "Every Worker of the unit was verified live." : r.outcome === "refused" ? "Nothing in production changed." : "Every changed Worker was restored; applied migrations stay (forward-only).") +
-        " Acknowledge this report on the Owner page to let routine consensus continue.",
-      break_glass: true, request_id: r.request_id, plan_id: r.plan_id, unit: r.unit, commit_sha: r.commit_sha, outcome: r.outcome,
+      explanation: `An owner-approved recovery plan (${r.plan_id}) deployed the ${r.unit} unit at main ${tag} without the deploy planner. ${after}`,
+      break_glass: true, alert_key: breakGlassAlertKey(r.request_id), state: ok ? "open" : r.outcome,
+      request_id: r.request_id, plan_id: r.plan_id, unit: r.unit, commit_sha: r.commit_sha, outcome: r.outcome,
       reason: r.reason ?? null, restored: r.restored ?? null, migrations_applied: r.migrations_applied ?? [], migration_failed: r.migration_failed ?? null,
       d1_restore_point_at: r.restore_point_at ?? null, steps: (r.steps ?? []).slice(0, 40),
     },
   });
+}
+
+/**
+ * Close succeeded break-glass notices after BREAK_GLASS_NOTICE_MS: a "Resolved:" info report with the same alert_key
+ * and state "resolved" (the kernel's convention, syscall.ts resolvedLaterSql), once per alert. Runs on the
+ * Orchestrator's cron; reads at most two days back.
+ */
+export async function resolveBreakGlassNotices(db: D1Database, agents: AgentRpcBinding | undefined, now = Date.now()): Promise<number> {
+  const rows = (await db.prepare(
+    `SELECT r.subject, json_extract(r.body_json, '$.alert_key') AS alert_key, json_extract(r.body_json, '$.request_id') AS request_id FROM agent_reports r
+     WHERE r.agent_id = 'deployment-orchestrator' AND r.severity = 'warning' AND json_extract(r.body_json, '$.break_glass') = 1
+       AND json_extract(r.body_json, '$.alert_key') IS NOT NULL AND r.created_at < ? AND r.created_at >= ?
+       AND NOT EXISTS (SELECT 1 FROM agent_reports z WHERE z.agent_id = r.agent_id AND z.created_at >= r.created_at
+         AND json_extract(z.body_json, '$.alert_key') = json_extract(r.body_json, '$.alert_key')
+         AND (json_extract(z.body_json, '$.state') = 'resolved' OR z.subject LIKE 'Resolved:%'))
+     ORDER BY r.created_at LIMIT 20`,
+  ).bind(new Date(now - BREAK_GLASS_NOTICE_MS).toISOString(), new Date(now - 2 * BREAK_GLASS_NOTICE_MS).toISOString())
+    .all<{ subject: string; alert_key: string; request_id: string | null }>()).results ?? [];
+  let n = 0;
+  for (const r of rows) {
+    const done = await publishAgentReport(agents, "deployment-orchestrator", {
+      kind: "platform_digest", severity: "info", subject: `Resolved: ${r.subject}`.slice(0, 200),
+      body: { break_glass: true, alert_key: r.alert_key, state: "resolved", request_id: r.request_id ?? null, explanation: "The break-glass deploy has been on the Owner page for 24 hours; it is closed." },
+    });
+    if (done.ok) n++;
+  }
+  return n;
 }

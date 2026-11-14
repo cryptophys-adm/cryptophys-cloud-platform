@@ -13,7 +13,7 @@ import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConf
 import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
-import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
+import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, resolveBreakGlassNotices, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -1032,7 +1032,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
           : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
     });
     if (isBreakGlass) {
-      // Every outcome reaches the owner (Telegram, critical_reports); the lock is freed for a later plan.
+      // Every outcome reaches the owner on Telegram: a warning (production_unhandled) on success, a critical report on
+      // failure; the lock is freed for a later plan.
       await releaseLock(env, breakGlassLockName(unitForService(r.service_id)!, r.requested_version), r.requested_version);
       await reportBreakGlass(env.AGENTS, {
         request_id: r.request_id, plan_id: String(details.plan_id), unit: String(details.unit), commit_sha: r.requested_version, outcome: run.ok ? "succeeded" : "failed",
@@ -1413,6 +1414,8 @@ export default {
     // The GitHub ledger reconcile keeps its twice-an-hour cadence; native rollbacks and deploys run at every SAFE minute.
     if (minute === 10 || minute === 40) ctx.waitUntil(reconcileDeployments(env).then(() => undefined, log("reconcile_failed")));
     ctx.waitUntil(runNativeExecutors(env, at).then(() => undefined, log("native_executor_failed")));
+    // Hardening (d): a succeeded break-glass deploy's owner notice closes after 24 hours (a "Resolved:" report).
+    if (minute === 10 || minute === 40) ctx.waitUntil(resolveBreakGlassNotices(env.DB, env.AGENTS, at).then(() => undefined, log("break_glass_resolve_failed")));
   },
 };
 
