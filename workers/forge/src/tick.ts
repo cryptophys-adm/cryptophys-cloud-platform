@@ -112,7 +112,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
       try { return await gitBackupTick({ DB: env.DB, BUNDLES: env.BUNDLES as unknown as GitBackupBucket }, repo as never, nowMs()); } finally { repo[Symbol.dispose]?.(); }
     });
   }
+  // Main's head first (2026-11-14): every deploy waits for the main check of the head it deploys
+  // (forge-gate forge_main_check_pending), so a steady stream of change requests must not starve it. Change
+  // requests are checked after it in the same tick, unless the main check used the tick's budget; then next tick.
   const started = nowMs();
+  await step("main_checks", () => checksTick(env, repoName, deps, nowMs));
+  const main = steps.main_checks as { outcome?: string } | undefined;
+  if (main?.outcome === "checked" && nowMs() - started > CHECK_BUDGET_MS) { steps.change_checks = { outcome: "deferred" }; return steps; }
   await step("change_checks", async () => {
     // GitHub-sourced heads are read from platform (cr/<n>); only when none waits, a forge-sourced head from
     // platform-work (G4). Its type-check has no source yet: recorded as not_configured (ADR-0012 §5j).
@@ -123,8 +129,5 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     const work = await tickWith(env, WORK_REPO, workDeps(deps), nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs(), WORK_REPO), "change");
     return work.outcome === "up_to_date" ? github : { ...work, repo: WORK_REPO };
   });
-  const change = steps.change_checks as { outcome?: string } | undefined;
-  if (change?.outcome === "checked" && nowMs() - started > CHECK_BUDGET_MS) steps.main_checks = { outcome: "deferred" };
-  else await step("main_checks", () => checksTick(env, repoName, deps, nowMs));
   return steps;
 }
