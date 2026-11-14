@@ -26,7 +26,11 @@ export type DoctrineBound =
   | { kind: "text"; in: readonly string[] }
   | { kind: "weights"; keys: readonly string[]; max_each: number };
 
-const WITNESSES = ["D1", "H4", "H1", "M15", "NEWS", "MACRO", "STRATEGY", "KEY_LEVELS", "REGIME", "TREND_TF", "MACRO_DRIVERS", "SESSION"] as const;
+// The Decision Engine's witnesses (xauusd src/decision-engine.mjs EXTENDED_WITNESS_WEIGHTS): CALENDAR since
+// 2026-11-12 (the economic calendar inside a release's horizon), STRATEGY_AGENTS since 2026-11-13 (the
+// strategy agents' consensus, weighted like a timeframe room). A weight set naming a witness not listed
+// here is refused, so a council amendment of decision.witness_weights must find every one of them.
+const WITNESSES = ["D1", "H4", "H1", "M15", "NEWS", "MACRO", "STRATEGY", "KEY_LEVELS", "REGIME", "TREND_TF", "MACRO_DRIVERS", "SESSION", "CALENDAR", "STRATEGY_AGENTS"] as const;
 
 /** The operational facts the council may amend by consensus alone, with their hard bounds. */
 export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.freeze({
