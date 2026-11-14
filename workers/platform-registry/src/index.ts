@@ -177,7 +177,7 @@ export async function recordRollback(env: Env, requestId: string): Promise<{ des
 
 /**
  * ADR-0012 G2b: the Orchestrator's native deploy records the commit it verified live, for every Worker of the
- * request's deploy unit. Accepted only for a running native deploy request of the last hour whose requested
+ * request's deploy unit (or a break-glass deploy's, hardening (d)). Accepted only for a running native deploy request of the last hour whose requested
  * version is a full commit sha; the desired version is its 12-character tag, as the deploy workflows record it.
  */
 export async function recordNativeDeploy(env: Env, requestId: string): Promise<{ desired_version: string; services: string[] }> {
@@ -187,7 +187,8 @@ export async function recordNativeDeploy(env: Env, requestId: string): Promise<{
   if (!row) throw new Error("deploy_request_not_found");
   let details: { executor?: unknown } = {};
   try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
-  if (details.executor !== "native:deploy") throw new Error("not_a_native_deploy");
+  // Hardening (d): an owner-approved break-glass deploy (native:break-glass) records its commit the same way.
+  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass") throw new Error("not_a_native_deploy");
   if (row.status !== "running") throw new Error("deploy_not_running");
   const age = Date.now() - Date.parse(row.created_at);
   if (!(age >= 0 && age <= 3_600_000)) throw new Error("deploy_request_expired");

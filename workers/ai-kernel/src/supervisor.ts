@@ -12,7 +12,7 @@
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent, appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
-import { CAPABILITIES, RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
+import { CAPABILITIES, OWNER_ONLY_STEP_ACTIONS, RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
@@ -72,9 +72,9 @@ export interface Proposal { title: string; rationale: string; steps: { action: s
  * Steps an AI-drafted plan may contain: only those the Recovery Manager can execute, plus manual
  * notes. Restoring D1 and rotating secrets are critical, owner-run actions (ADR-0009); an AI draft
  * never proposes them (2026-11-07: a healthy service with an untagged version got a plan that
- * included restore_d1_bookmark).
+ * included restore_d1_bookmark). The break-glass deploy (force_redeploy_unit) is owner-run too (2026-11-14).
  */
-export const AI_DRAFT_STEP_ACTIONS = RECOVERY_STEP_ACTIONS.filter((a) => a !== "restore_d1_bookmark" && a !== "rotate_secret");
+export const AI_DRAFT_STEP_ACTIONS = RECOVERY_STEP_ACTIONS.filter((a) => !OWNER_ONLY_STEP_ACTIONS.includes(a));
 
 /**
  * A healthy, reachable service whose only finding is a missing version tag is not a recovery case:

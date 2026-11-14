@@ -1,5 +1,6 @@
 import { MERGE_ACTIONS } from "../../control-plane-shared/src/consensus-rules.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
+import { approvedBreakGlassPlan, hasBreakGlassStep, storedSteps } from "../../control-plane-shared/src/break-glass.ts";
 import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { describeResource, explainReason } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
@@ -54,13 +55,19 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     checks.push(check("explicit_confirmation", context.confirm_production === "DEPLOY", "confirm_production must equal DEPLOY"));
     checks.push(check("ci_green", context.ci_green === true, "commit statuses and the latest run of every GitHub Actions workflow must be successful"));
   } else if (action === "recovery.execute") {
-    const plan = await db.prepare("SELECT status, created_by, approved_by FROM recovery_plans WHERE plan_id = ?")
-      .bind(resource).first<{ status: string; created_by: string | null; approved_by: string | null }>();
+    const plan = await db.prepare("SELECT status, plan_version, created_by, approved_by, steps_json FROM recovery_plans WHERE plan_id = ?")
+      .bind(resource).first<{ status: string; plan_version: string; created_by: string | null; approved_by: string | null; steps_json: string | null }>();
     checks.push(check("plan_exists", Boolean(plan), "recovery plan must exist"));
     checks.push(check("plan_approved", plan?.status === "approved", "plan status must be approved"));
     checks.push(check("separation_of_duties", Boolean(plan?.approved_by) && Boolean(plan?.created_by) && plan!.approved_by !== plan!.created_by,
       "approver must differ from the plan author"));
     checks.push(check("operator_acknowledged", context.operator_acknowledged === true, "the executing operator must acknowledge the blast radius"));
+    // Hardening (d), 2026-11-14: the break-glass deploy (force_redeploy_unit) bypasses the deploy planner. It runs only
+    // from a plan a person wrote and another person (the owner's click) approved, for one full commit (break-glass.ts).
+    if (plan && hasBreakGlassStep(storedSteps(plan.steps_json) ?? [])) {
+      const bg = approvedBreakGlassPlan(plan);
+      checks.push(check("break_glass_owner_approved", bg.ok, `a force_redeploy_unit plan must be written and approved by people, for one full commit${bg.ok ? "" : ` (${bg.reason})`}`));
+    }
   } else if (action === "registry.update") {
     const m = (context.metadata ?? {}) as JsonObject;
     checks.push(check("service_id_valid", SERVICE_ID.test(resource), "service_id must be a lowercase identifier"));

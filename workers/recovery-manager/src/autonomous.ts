@@ -13,7 +13,10 @@
  * Progress is written to last_execution_json.pipeline after every stage, for the Console.
  *
  * Steps that need credentials no Worker holds (restoring D1, rotating secrets) stop the pipeline
- * as "blocked"; the owner carries them out by runbook. A rollback returns the Worker to the
+ * as "blocked"; the owner carries them out by runbook. The break-glass step force_redeploy_unit (hardening (d),
+ * control-plane-shared/src/break-glass.ts) deploys the plan's unit at main's head natively, with no drift
+ * precondition and without the deploy planner; the Orchestrator re-checks the plan and follows the native deploy's
+ * lock, live verification and restore (deployment-orchestrator/src/recovery-deploy.ts). A rollback returns the Worker to the
  * version the registry recorded before the current one (Wave B, Rollback Worker workflow).
  */
 import type { WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
@@ -28,6 +31,8 @@ export const AI_EXECUTOR = "ai:recovery-manager";
 export interface RecoveryDeployBinding {
   deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>>;
   rollbackForRecovery?(planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>>;
+  /** Hardening (d): the break-glass deploy of the plan's unit at main's head (native only). */
+  forceDeployForRecovery?(planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>>;
   runStatus(workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }>;
   /** ADR-0012 G2c-1: a request the Orchestrator runs itself (native deploy or rollback), by request id. */
   requestStatus?(requestId: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; reason?: string | null }>;
@@ -61,6 +66,7 @@ const DEPLOY_POLLS = 40; // x 30 s = 20 min, longer than any deploy workflow
 const NATIVE_POLLS = 120;
 const VERIFY_POLLS = 6; // x 5 min = 30 min, two drift cron cycles
 const HEX = /^[0-9a-f]{7,40}$/;
+const COMMIT = /^[0-9a-f]{40}$/;
 
 async function readPlan(env: AutonomousEnv, planId: string): Promise<Plan | null> {
   return env.DB.prepare("SELECT plan_id, service_id, plan_version, status, approved_by, steps_json, last_execution_json FROM recovery_plans WHERE plan_id = ?")
@@ -144,6 +150,24 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
         }
       }
       return { status: "failed", detail: `${workflow} did not finish within ${DEPLOY_POLLS * 30 / 60} minutes` };
+    }
+    case "force_redeploy_unit": {
+      // Break-glass: no drift re-check (the service may well be "in sync" while the platform cannot deploy).
+      if (!COMMIT.test(plan.plan_version)) return { status: "failed", detail: `plan_version ${plan.plan_version} is not a full commit` };
+      if (!env.DEPLOY?.forceDeployForRecovery) return { status: "blocked", detail: "the Deployment Orchestrator binding has no break-glass deploy" };
+      const queued = await step.do(`${id} queue break-glass deploy`, { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } }, async () => {
+        try {
+          const r = await env.DEPLOY!.forceDeployForRecovery!(plan.plan_id, decisionId, plan.service_id, plan.plan_version);
+          return { ok: true as const, workflow: "", commit_sha: String(r.commit_sha ?? ""), executor: String(r.executor ?? ""), request_id: String(r.request_id ?? ""), unit: String(r.unit ?? ""), error: "" };
+        } catch (err) {
+          return { ok: false as const, workflow: "", commit_sha: "", executor: "", request_id: "", unit: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
+        }
+      });
+      if (!queued.ok) return { status: "failed", detail: `break-glass deploy not queued: ${queued.error}` };
+      if (!isNative(queued as Followed)) return { status: "failed", detail: "the Orchestrator returned no native request to follow" };
+      return followNative(env, step, `${id} break-glass`, queued as Followed, (ok, reason) => ok
+        ? `break-glass deploy of ${queued.unit} at ${queued.commit_sha.slice(0, 12)} succeeded (request ${queued.request_id})`
+        : `break-glass deploy of ${queued.unit} at ${queued.commit_sha.slice(0, 12)} failed: ${reason ?? "unknown"} (request ${queued.request_id}; changed Workers were restored)`);
     }
     case "rollback_worker_version": {
       const pre = await step.do(`${id} re-check drift`, async () => {
