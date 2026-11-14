@@ -27,6 +27,9 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // amendment, including one the Strategist proposes, takes effect only through merge_owner_change.
   [/^organism\/vision\.json$/, "vision_core"],
   [/^workers\/control-plane-shared\/src\/vision\.ts$/, "vision_core"],
+  // Owner 2026-11-14 ("naikan batas kapabilitas aether"): the external capability ceilings (the general one and
+  // Aether's per-agent one) live in organism.ts; raising any of them is the owner's, never a routine merge.
+  [/^workers\/control-plane-shared\/src\/organism\.ts$/, "capability_ceiling"],
 ];
 
 /** The guard-path reason of one repository path, or null for a routine path. */

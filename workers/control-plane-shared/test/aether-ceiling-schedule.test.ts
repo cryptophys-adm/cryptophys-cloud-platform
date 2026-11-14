@@ -326,3 +326,10 @@ test("AS4. an open retire_agent of a scheduled agent that is not idle by its sch
   const audit = db.raw.prepare("SELECT subject, outcome FROM audit_events WHERE event_type = 'consensus.proposal_closed'").all() as any[];
   assert.deepEqual(audit.map((a) => `${a.subject} ${a.outcome}`), ["cns_cal expired"]);
 });
+
+test("AC-G. the external capability ceilings (organism.ts) are a guard path: raising one is merge_owner_change", async () => {
+  const { criticalPathReason, CRITICAL_PATHS } = await import("../src/guard-paths.ts");
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
+  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "capability_ceiling").length, 1);
+  assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), null);
+});
