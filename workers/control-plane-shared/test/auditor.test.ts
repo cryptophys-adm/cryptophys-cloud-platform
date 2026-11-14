@@ -182,6 +182,31 @@ test("tampered audit chain produces a critical report with deterministic valid:f
   assert.ok(validTask.validate(tmpl));
 });
 
+test("hourly cycles verify the chain from the checkpoint; the 00:37 UTC cycle and an operator wake run the full pass (2026-11-14)", async () => {
+  const { env, db, audMem } = auditorEnv();
+  const e1 = await appendAuditEvent(db, { event_type: "test.one", actor: "op@example.com", subject: "svc", outcome: "ok", payload: { step: 1 } });
+  await appendAuditEvent(db, { event_type: "test.two", actor: "op@example.com", subject: "svc", outcome: "ok", payload: { step: 2 } });
+  // A full pass anchors the checkpoint at the head.
+  const first = await runAuditCycle(env as never, audMem, "scheduled", Date.parse("2026-11-04T00:37:00.000Z"));
+  assert.equal(((first.actions[0] as any).result).chain_mode, "full");
+  await appendAuditEvent(db, { event_type: "test.three", actor: "op@example.com", subject: "svc", outcome: "ok", payload: { step: 3 } });
+  const hourly = await runAuditCycle(env as never, audMem, "scheduled", Date.parse("2026-11-04T05:37:00.000Z"));
+  const h = (hourly.actions[0] as any).result;
+  assert.deepEqual([h.chain_mode, h.valid], ["incremental", true]);
+  assert.equal(h.events_checked, (db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE rowid <= (SELECT last_rowid FROM audit_checkpoints WHERE id = 1)").get() as any).n);
+  // The trade-off, stated: an edit to an event older than the checkpoint is not seen by an hourly cycle;
+  // the next full pass (00:37 UTC, or an operator's wake) finds it.
+  db.raw.exec("DROP TRIGGER audit_events_no_update");
+  db.raw.prepare("UPDATE audit_events SET payload_json = '{\"step\":999}' WHERE event_id = ?").run(e1.event_id);
+  const missed = await runAuditCycle(env as never, audMem, "scheduled", Date.parse("2026-11-04T06:37:00.000Z"));
+  assert.deepEqual([((missed.actions[0] as any).result).chain_mode, ((missed.actions[0] as any).result).valid], ["incremental", true]);
+  const operator = await runAuditCycle(env as never, audMem, "operator", Date.parse("2026-11-04T06:40:00.000Z"));
+  assert.deepEqual([((operator.actions[0] as any).result).chain_mode, ((operator.actions[0] as any).result).valid], ["full", false]);
+  const daily = await runAuditCycle(env as never, audMem, "scheduled", Date.parse("2026-11-05T00:37:00.000Z"));
+  const d = (daily.actions[0] as any).result;
+  assert.deepEqual([d.chain_mode, d.valid, d.chain.first_invalid_event_id], ["full", false, e1.event_id]);
+});
+
 // ---------------------------------------------------------------- AC 2: >= 4 denied syscalls -> warning; quiet hour -> no report except at 00:37 UTC
 
 test("four or more denied syscalls in 24h produce a warning; a quiet hour produces no report except at 00:37 UTC", async () => {

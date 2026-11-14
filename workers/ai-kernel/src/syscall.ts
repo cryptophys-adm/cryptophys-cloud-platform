@@ -9,7 +9,7 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
-import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEvent, verifyAuditChain, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { acknowledgementsReadable, publishReport } from "./reports.ts";
@@ -470,9 +470,14 @@ export function withoutLevels(text: string): string {
   return text.replace(/\$?(?:\d{1,3}(?:[.,\s_'’]\d{3})+(?:[.,]\d+)?|\d{3,}(?:[.,]\d+)?)/g, "[level]");
 }
 
-/** Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only). */
-export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
-  const chain = await verifyAuditChain(env.DB);
+/**
+ * Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only).
+ * `mode` "incremental" verifies from the last checkpoint (re-hashing the checkpointed event) instead of the whole
+ * table: the Auditor's hourly cycles use it, and its 00:37 UTC cycle, operator wakes, the Audit Ledger and every
+ * deploy verification keep the full pass (resource audit, owner 2026-11-14). Anything else is a full pass.
+ */
+export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" | "incremental" = "full"): Promise<JsonObject> {
+  const chain = mode === "incremental" ? await verifyAuditChainIncremental(env.DB) : await verifyAuditChain(env.DB);
   const since = new Date(now - 24 * 3_600_000).toISOString();
   const actionRows = await env.DB.prepare(
     `SELECT agent_id, outcome, COUNT(*) AS count FROM agent_actions
@@ -519,6 +524,7 @@ export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonO
     observed_at: new Date(now).toISOString(),
     since,
     chain: chain as unknown as JsonObject,
+    chain_mode: mode,
     valid: chain.valid,
     events_checked: chain.events_checked,
     counts_24h: {
@@ -657,7 +663,7 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
     dealsLimit: typeof input.deals_limit === "number" ? input.deals_limit : undefined,
   }),
   "metabolism.observe": (env, input) => observeMetabolism(env, typeof input.now === "number" ? input.now : Date.now()),
-  "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
+  "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now(), input.mode === "incremental" ? "incremental" : "full"),
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
   "knowledge.status": (env, input, agentId) => knowledgeStatus(env.DB, agentId, input),
   "doctrine.status": (env, input) => doctrineStatus(env.DB, input),

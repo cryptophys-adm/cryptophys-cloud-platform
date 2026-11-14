@@ -260,7 +260,10 @@ export async function runAuditCycle(
     return report;
   }
 
-  const obsCall = await syscall(env, AUDITOR_ID, "audit.verify", { now });
+  // The full chain pass once a day (the 00:37 UTC digest cycle) and on an operator's wake; the other hourly cycles
+  // verify from the checkpoint (resource audit, owner 2026-11-14).
+  const full = trigger === "operator" || new Date(now).getUTCHours() === 0;
+  const obsCall = await syscall(env, AUDITOR_ID, "audit.verify", { now, mode: full ? "full" : "incremental" });
   report.actions.push(obsCall);
   if (obsCall.outcome !== "succeeded") {
     await memory.put("last_cycle", report);
