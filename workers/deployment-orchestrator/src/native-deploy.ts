@@ -382,8 +382,12 @@ async function readMainModule(bucket: BundleReader, commit: string, worker: Bund
   return text;
 }
 
-/** One stored migration, read and checked as the deploy will apply it: its statements, or the reason it cannot be. */
-export async function readMigration(bucket: BundleReader, commit: string, m: PlannedMigration): Promise<{ statements: string[] } | { reason: string }> {
+/**
+ * One stored migration, read and checked as the deploy will apply it: its statements, or the reason it cannot be.
+ * A destructive migration is refused unless `allowDestructive` (only the break-glass deploy, for a file its
+ * owner-approved plan names: recovery-deploy.ts).
+ */
+export async function readMigration(bucket: BundleReader, commit: string, m: PlannedMigration, allowDestructive = false): Promise<{ statements: string[]; destructive: boolean } | { reason: string }> {
   if (!MIGRATION_FILE.test(m.file)) return { reason: "migration_missing" };
   const obj = await bucket.get(`${BUNDLE_PREFIX}${commit}/migrations/${m.file}`);
   if (!obj) return { reason: "migration_missing" };
@@ -392,9 +396,10 @@ export async function readMigration(bucket: BundleReader, commit: string, m: Pla
   let statements: string[];
   try { statements = splitSqlStatements(sql); } catch { return { reason: "migration_unreadable" }; }
   if (statements.length === 0) return { reason: "migration_unreadable" };
-  if (destructiveMigration(sql)) return { reason: "destructive_migration" };
+  const destructive = destructiveMigration(sql);
+  if (destructive && !allowDestructive) return { reason: "destructive_migration" };
   if (unsupportedStatement(statements)) return { reason: "migration_unsupported_statement" };
-  return { statements };
+  return { statements, destructive };
 }
 
 /**
@@ -455,7 +460,8 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
  * stored and matches (`readAssetsPlan`), and, last, its zone routes are reported for the script (`zoneRouteRefusal`).
  * Without a reader that can list the routes, it keeps the G2b answer, `assets`.
  */
-export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader): Promise<Eligibility> {
+export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader,
+  opts: { migrations?: "plan" | "skip" } = {}): Promise<Eligibility> {
   if (!env.BUNDLES) return { eligible: false, reason: "not_configured" };
   if (!HEX40.test(targetSha)) return { eligible: false, reason: "invalid_commit_sha" };
   try {
@@ -487,15 +493,18 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       const now = running.get(tag);
       const was = now?.workers.find((w) => w.name === service);
       if (!now || !was) return { eligible: false, reason: "running_bundle_missing", service };
-      if (!now.migrations) return { eligible: false, reason: "migrations_unknown", service };
-      if (migrationsFrom === null) {
-        const plan = await migrationPlan(env, unit, target, now, service);
-        if ("reason" in plan) return { eligible: false, ...plan };
-        migrations = plan.migrations;
-        migrationsFrom = now.migrations;
-      } else if (!sameList(now.migrations, migrationsFrom)) {
-        // The Workers of the unit run versions with different migration lists: one plan cannot fit them all.
-        return { eligible: false, reason: "new_migration", service };
+      // The break-glass deploy (recovery-deploy.ts) plans its migrations from D1's applied state instead (skip).
+      if (opts.migrations !== "skip") {
+        if (!now.migrations) return { eligible: false, reason: "migrations_unknown", service };
+        if (migrationsFrom === null) {
+          const plan = await migrationPlan(env, unit, target, now, service);
+          if ("reason" in plan) return { eligible: false, ...plan };
+          migrations = plan.migrations;
+          migrationsFrom = now.migrations;
+        } else if (!sameList(now.migrations, migrationsFrom)) {
+          // The Workers of the unit run versions with different migration lists: one plan cannot fit them all.
+          return { eligible: false, reason: "new_migration", service };
+        }
       }
       if (!worker.single_module) {
         const text = await readMainModule(env.BUNDLES, targetSha, worker);
@@ -607,8 +616,8 @@ async function applyScriptSetting(cf: CloudflareWorkers, service: string, step: 
  * statements and the `d1_migrations` row in one D1 batch, which D1 runs as one transaction. The ledger row goes
  * first, so a file that is already recorded (UNIQUE name) fails the batch before any of its statements run.
  */
-export async function applyMigration(db: D1Database, bucket: BundleReader, commit: string, m: PlannedMigration): Promise<number> {
-  const r = await readMigration(bucket, commit, m);
+export async function applyMigration(db: D1Database, bucket: BundleReader, commit: string, m: PlannedMigration, allowDestructive = false): Promise<number> {
+  const r = await readMigration(bucket, commit, m, allowDestructive);
   if ("reason" in r) throw new Error(r.reason);
   await db.batch([db.prepare(D1_MIGRATION_INSERT).bind(m.file), ...r.statements.map((s) => db.prepare(s))]);
   return r.statements.length;
@@ -631,7 +640,7 @@ async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof
 export async function executeNativeDeploy(
   cf: CloudflareWorkers,
   env: { DRIFT: DriftProbeBinding; REGISTRY: RegistryRollbackBinding; BUNDLES: BundleReader; DB?: D1Database },
-  requestId: string, commit: string, plan: PlannedService[], opts: { delayMs?: number; migrations?: PlannedMigration[] } = {},
+  requestId: string, commit: string, plan: PlannedService[], opts: { delayMs?: number; migrations?: PlannedMigration[]; destructive?: readonly string[] } = {},
 ): Promise<DeployRun> {
   const tag = commit.slice(0, 12);
   const steps: string[] = [];
@@ -654,7 +663,7 @@ export async function executeNativeDeploy(
         migrating = m.file;
         let statements: number;
         try {
-          statements = await applyMigration(env.DB, env.BUNDLES, commit, m);
+          statements = await applyMigration(env.DB, env.BUNDLES, commit, m, opts.destructive?.includes(m.file) ?? false);
         } catch (err) {
           const message = String((err as Error)?.message ?? err).slice(0, 160);
           await auditQuietly(env.DB, {

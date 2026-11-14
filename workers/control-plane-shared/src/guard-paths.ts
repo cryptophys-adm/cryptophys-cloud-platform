@@ -27,6 +27,9 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // amendment, including one the Strategist proposes, takes effect only through merge_owner_change.
   [/^organism\/vision\.json$/, "vision_core"],
   [/^workers\/control-plane-shared\/src\/vision\.ts$/, "vision_core"],
+  // Hardening (d), 2026-11-14: the break-glass deploy bypasses the deploy planner, so its rules are the owner's.
+  [/^workers\/control-plane-shared\/src\/break-glass\.ts$/, "break_glass"],
+  [/^workers\/deployment-orchestrator\/src\/recovery-deploy\.ts$/, "break_glass"],
 ];
 
 /** The guard-path reason of one repository path, or null for a routine path. */
