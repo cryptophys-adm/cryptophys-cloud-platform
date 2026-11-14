@@ -23,9 +23,12 @@ test("TP-018 migration", async () => {
   const caps = JSON.parse(sup.capabilities_json);
   assert.deepEqual(caps, caps.filter((c: string) => c !== "signals.reingest"));
   assert.ok(!caps.includes("signals.reingest"));
-  // Crypto history tables remain present; migration 0020 must not drop or rewrite them.
-  for (const name of ["market_candles", "signal_ingest_runs"]) {
-    assert.ok(db.raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name), name);
+  // Migration 0020 never dropped or rewrote the crypto history tables; they were kept until the owner decided
+  // (2026-11-14) to archive them to R2 and drop them, which 0062 does after the archive was verified.
+  const m0020 = readFileSync(resolve(repoRoot, "workers/control-plane-migrations/0020_retire_signal_engine.sql"), "utf8");
+  assert.doesNotMatch(m0020.replace(/--.*$/gm, ""), /\bDROP\b|market_candles|signal_ingest_runs/);
+  for (const name of ["market_candles", "signal_indicators", "signal_confluence", "signal_ingest_runs", "macro_context"]) {
+    assert.equal(db.raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name), undefined, name);
   }
 });
 

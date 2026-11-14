@@ -162,7 +162,8 @@ test("migration 0010 seeds the supervisor at tier 1, the kill switch on, and the
   assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
   assert.ok(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_syscall_consumptions'").get());
   assert.throws(() => db.raw.prepare("UPDATE agents SET tier_max = 3 WHERE agent_id = 'supervisor'").run(), /CHECK/, "no agent can ever hold tier 3");
-  db.raw.prepare("INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES ('r', 'agent', 't', 't', 0, 0, '[]')").run();
+  // The retired Signal Engine's tables (signal_ingest_runs among them) are gone since 0062 (archived to R2 first).
+  assert.equal(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'signal_ingest_runs'").get(), undefined);
 });
 
 test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and rate limit", async () => {

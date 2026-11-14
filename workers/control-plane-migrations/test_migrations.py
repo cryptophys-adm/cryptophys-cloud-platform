@@ -481,3 +481,23 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", streak_code) and
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", streak_sql, re.I), "0061 is not destructive"
 streak_db.close()
 print("PASS: 0061 drift streak (additive, default 1, CHECK streak >= 1)")
+
+# Migration 0062 (owner 2026-11-14): the five retired signal tables are dropped after their verified R2 archive.
+RETIRED = ["market_candles", "signal_indicators", "signal_confluence", "signal_ingest_runs", "macro_context"]
+drop_db = sqlite3.connect(":memory:")
+drop_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0062":
+        drop_db.executescript(migration.read_text(encoding="utf-8"))
+before = {r[0] for r in drop_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+assert set(RETIRED) <= before, "the five tables exist until 0062"
+drop_db.execute("INSERT INTO market_candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume, source, ingested_at) VALUES ('BTCUSDT', '1h', 1, 2, 1, 2, 0.5, 1.5, 1, 'k', 't')")
+drop_db.executescript((ROOT / "0062_drop_retired_signal_tables.sql").read_text(encoding="utf-8"))
+after = {r[0] for r in drop_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+assert before - after == set(RETIRED), f"0062 drops exactly the five retired tables: {sorted(before - after)}"
+assert not [r for r in drop_db.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('market_candles','signal_indicators','signal_confluence','signal_ingest_runs','macro_context')")]
+drop_code = "\n".join(line.split("--", 1)[0] for line in (ROOT / "0062_drop_retired_signal_tables.sql").read_text(encoding="utf-8").splitlines()).upper()
+assert drop_code.count("DROP TABLE IF EXISTS") == 5 and not re.search(r"\b(DELETE|UPDATE|ALTER|INSERT|CREATE)\b", drop_code), "0062 only drops the five tables"
+drop_db.close()
+print("PASS: 0062 retired signal tables dropped (exactly five, after their archive)")
+

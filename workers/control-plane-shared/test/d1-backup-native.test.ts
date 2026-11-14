@@ -94,6 +94,19 @@ test("N5. primary since 2026-11-07: GitHub's d1-backup.yml has no schedule, and 
   assert.match(ev.payload_json, /r2 unavailable/);
 });
 
+/** The retired signal tables as their original migrations created them (0062 dropped them from the schema). */
+function withRetiredTables(db: ReturnType<typeof migratedDb>) {
+  const dir = new URL("workers/control-plane-migrations/", ROOT);
+  const sql = ["0004_signal_engine_and_external_services.sql", "0005_signal_ingest_runs.sql", "0006_signal_engines_and_confluence.sql", "0007_macro_context.sql", "0008_signal_confluence_mizan.sql"]
+    .map((f) => readFileSync(new URL(f, dir), "utf8")).join("\n");
+  for (const t of RETIRED_SIGNAL_TABLES) {
+    const m = new RegExp(`CREATE TABLE ${t} \\([\\s\\S]*?\\n\\);`).exec(sql);
+    if (!m) throw new Error(`no CREATE TABLE for ${t}`);
+    db.raw.exec(m[0]);
+  }
+  return db;
+}
+
 function archiveBucket() {
   const objects = new Map<string, { body: ArrayBuffer; meta: Record<string, string> }>();
   const calls = { head: 0, put: 0, get: 0 };
@@ -106,7 +119,7 @@ function archiveBucket() {
 }
 
 test("N6. retired signal tables: archived once to R2 outside the lifecycle prefix, read back and counted against D1, audited; then a no-op (2026-11-14)", async () => {
-  const db = migratedDb();
+  const db = withRetiredTables(migratedDb());
   const ins = db.raw.prepare("INSERT INTO market_candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume, source, ingested_at) VALUES (?, '1h', ?, ?, 1, 2, 0.5, 1.5, 10, ?, '2026-11-01T00:00:00Z')");
   for (let i = 0; i < 1203; i++) ins.run(i % 2 ? "BTCUSDT" : "ETHUSDT", i + 1, i + 2, i % 2 ? "k" : "it's\nINSERT INTO \"market_candles\" (");
   db.raw.prepare("INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES ('r1', 'scheduled', 't', 't', 1, 0, ?)").run(JSON.stringify({ a: "line\nbreak" }));
@@ -133,7 +146,7 @@ test("N6. retired signal tables: archived once to R2 outside the lifecycle prefi
   assert.deepEqual(calls, before);
   // A table whose rows changed after archiving is reported, not passed: the next run compares again.
   const { bucket: b2, calls: c2 } = archiveBucket();
-  const db2 = migratedDb();
+  const db2 = withRetiredTables(migratedDb());
   const first = await archiveRetiredTables({ DB: db2 as never, BACKUPS: b2 });
   assert.ok((first as any).tables.every((t: any) => t.state === "verified"));
   assert.equal(c2.put, 5);
@@ -145,7 +158,7 @@ test("N6. retired signal tables: archived once to R2 outside the lifecycle prefi
 });
 
 test("N7. a mismatch between the archive and D1 is audited as mismatch, never as verified", async () => {
-  const db = migratedDb();
+  const db = withRetiredTables(migratedDb());
   db.raw.prepare("INSERT INTO macro_context (observed_hour, fear_greed, fear_greed_sentiment, btc_dominance, total_market_cap, sources_json, observed_at) VALUES (1, 50, 0, 50, 1, '{}', 't')").run();
   const { bucket, objects } = archiveBucket();
   // An archive object already present but missing the row (written before the row existed).
@@ -155,5 +168,13 @@ test("N7. a mismatch between the archive and D1 is audited as mismatch, never as
   const macro = (out as any).tables.find((t: any) => t.table === "macro_context");
   assert.deepEqual([macro.state, macro.rows, macro.d1_rows], ["mismatch", 0, 1]);
   assert.equal((db.raw.prepare("SELECT outcome FROM audit_events WHERE event_type = 'backup.archive_verified' AND subject = ?").get(archiveKey("macro_context")) as any).outcome, "mismatch");
+});
+
+test("N8. after migration 0062 the archive step is a no-op: every retired table reads as dropped, no R2 call", async () => {
+  const db = migratedDb();
+  const { bucket, calls } = archiveBucket();
+  const out = await archiveRetiredTables({ DB: db as never, BACKUPS: bucket });
+  assert.ok((out as any).tables.every((t: any) => t.state === "dropped"));
+  assert.deepEqual(calls, { head: 0, put: 0, get: 0 });
 });
 
