@@ -25,7 +25,7 @@
       "Guard paths and this core change only by the owner's click.",
       "The bones (everything but the AI Neuron) are event-driven, cheap, and write only on change.",
       "Agents speak in metrics and evidence, not prose.",
-      "cryptophys-aether is not modified by the platform until the owner lifts this rule."
+      "cryptophys-aether changes only through its own CI and guard paths; its guard paths need the owner's click."
     ]
   },
   "growth": {

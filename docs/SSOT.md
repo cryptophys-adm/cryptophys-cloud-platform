@@ -14,7 +14,7 @@ These hold everywhere:
 - **The owner creates every secret and credential.** None is created by an agent or stored in the repository.
 - **Data deletion and irreversible actions are critical.** The owner decides them.
 - **The brake always works.** Consensus mode `shadow` and the kill switch (`kernel_controls.agents_enabled`) can be used at any time.
-- **Repositories out of scope.** `cryptophys-adm/xauusd-ai-trading-assistant` (Nexus) and `cryptophys-adm/cryptophys-aether` are not changed from this repository.
+- **Repositories out of scope.** `cryptophys-adm/xauusd-ai-trading-assistant` (Nexus) and `cryptophys-adm/cryptophys-aether` are not changed from this repository. Since 2026-11-14 (owner; ADR-0016), agents may change Aether in its own repository only after its bootstrap PR (DNA, CI DNA tests, guard paths) is merged, and then only through its CI, with its guard paths needing the owner's click. Until then Aether is read-only for agents.
 
 ## Entry point and sign-in (ADR-0008, ADR-0010, ADR-0011)
 

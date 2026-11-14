@@ -100,7 +100,7 @@ The snapshot is compact and stored in R2. Its index row is in D1.
 1. An intent becomes a task. For the platform repository, the evolver (ADR-0014 E2) writes the change within the E2 limits (1 change in flight and at most one started per 4 hours, 400 lines, 20 files, tests that only gain assertions). It goes through Forge checks and consensus, and the owner's click on guard paths.
 2. For repositories with their own process, the Strategist files the intent with that repository's session:
    - **xauusd:** through its session.
-   - **Aether:** report-only until the owner lifts the standing rule, as described under "Rules that do not change".
+   - **Aether:** report-only until its bootstrap PR (DNA, CI DNA tests, guard paths) is merged; after that, through its own CI and guard paths, as described under "Rules that do not change".
 3. After the deploy, the Observer and the outcome scores measure the effect against the expected effect.
 
 ### 5. Experience ledger and getting smarter
@@ -133,7 +133,9 @@ All of it is metric-form and console-truthful.
 - Consensus, the brake, rollback, backups, the append-only audit chain and the kill switches.
 - No fund movement. Trading actions need the owner's click. No widening of trading autonomy by any intent.
 - Guard paths and the constitution change only through `merge_owner_change` and the owner's click.
-- **cryptophys-aether is not modified by the platform** (a standing owner rule). The Strategist reads Aether's published state and proposes; it does not write to Aether until the owner explicitly lifts this rule.
+- **cryptophys-aether changes only through its own CI and guard paths; its guard paths need the owner's click.** Amended by the owner on 2026-11-14: "ya, Aether perlu DNA, tes CI, dan file yang dilindungi sendiri lebih dulu sebelum boleh diubah oleh agen" ("Yes. Aether needs DNA, CI tests and its own protected files before agents may change it."). This replaces the earlier rule that the platform never modifies Aether.
+  - Until Aether's bootstrap PR is merged, Aether stays read-only for agents. The PR adds its `organism.json` DNA, CI DNA tests, a guard-path list (doctrine, canon schema, DNA, CI, auth) and an AGENTS.md section, and the owner reviews and merges it.
+  - After the merge, the census reads Aether's DNA, and the Strategist and the evolver treat Aether like any other repository: changes go through Aether's CI, and its guard paths only through the owner's click.
 
 ## Phases (each in shadow first)
 
