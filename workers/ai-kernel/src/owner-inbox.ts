@@ -28,6 +28,7 @@ import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
 import { resolvedLaterSql } from "./syscall.ts";
+import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -55,7 +56,7 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled";
 export interface ProductionProblem {
   code: ProblemCode;
   /** What the problem is about: a service id, a plan id, an advisory id or a month. */
@@ -202,6 +203,11 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     brake; the owner still hears of it here. One item per request (subject: the report's alert_key
  *     break_glass:<request_id>); it closes after 24 hours or when the Orchestrator reports it resolved. A failed one
  *     is a critical report instead (critical_reports).
+ *  8. deploys_stalled (owner 2026-11-14): main's head passed the Forge checks, a deploy unit does not run it, the plan
+ *     lists a unit or a skip, and no deploy_commit has executed for more than 2 hours, or that episode's alarm is still
+ *     open (control-plane-shared/src/deploy-stall.ts). The subject is the episode (deploy_stall:<last executed
+ *     deploy_commit>), so the owner gets one message when it opens and one when a deploy ends it, not one per run or
+ *     per new main commit. The Observer's report of it is a warning: a critical one would hold the brake.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -297,5 +303,12 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
       }));
   } catch { breakGlass = []; }
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass];
+  let stalls: ProductionProblem[] = [];
+  try {
+    const st = await stallState(db, now);
+    const subject = st.verdict.alert_key ?? st.open[0]?.alert_key;
+    if (st.active && subject) stalls = [{ code: "deploys_stalled", subject, detail: stallDetail(st.verdict), since: st.verdict.stall_since ?? st.open[0]?.created_at ?? null, link: "#/pipelines" }];
+  } catch { stalls = []; }
+
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls];
 }
