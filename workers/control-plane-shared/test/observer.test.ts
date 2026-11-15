@@ -54,6 +54,8 @@ function fakeCf(over: Record<string, Answer> = {}) {
     }
     if (url.endsWith("/workers/observability/telemetry/query")) { calls.push("observability"); return answer("observability", FIX.observability); }
     const path = url.replace(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/`, "");
+    const settings = /^workers\/scripts\/([^/]+)\/settings$/.exec(path);
+    if (settings) { const w = decodeURIComponent(settings[1]); calls.push(`settings:${w}`); return answer(`settings:${w}`, { success: true, result: { bindings: [] } }); }
     const key = (Object.keys(LISTS) as ListKey[]).find((k) => LISTS[k].path === path);
     assert.ok(key, `unexpected ${url}`);
     calls.push(`list:${key}`);
@@ -507,7 +509,7 @@ test("OB16. inventory: storage resources against what this repository's wrangler
   for (const f of fs.filter((x) => x.metric === "undeclared_resource")) assert.equal(f.severity, "info");
 });
 
-test("OB17. runInventory: reads the DNA union from the census, writes on change only, and skips a refused list for 24 h", async () => {
+test("OB17. runInventory: reads the DNA union from the census, writes on change only, and skips a refused list for an hour with the same token", async () => {
   const db = migratedDb();
   const now = Date.parse("2026-11-14T11:57:00.000Z");
   const cf0 = fakeCf();
@@ -524,7 +526,8 @@ test("OB17. runInventory: reads the DNA union from the census, writes on change 
   });
   const r = await runInventory({ ...OBS_ENV, DB: db }, now, cf.fetcher, EXTERNAL);
   assert.equal(r.outcome, "recorded");
-  assert.deepEqual(cf.calls.sort(), ["list:d1", "list:durable_objects", "list:kv", "list:queues", "list:r2", "list:scripts"]);
+  assert.deepEqual(cf.calls.sort(), ["list:d1", "list:durable_objects", "list:kv", "list:queues", "list:r2", "list:scripts",
+    "settings:cryptophys-console", "settings:cryptophys-forge-typecheck", "settings:rogue-worker", "settings:xauusd-omega"], "the lists, then one settings read per listed Worker");
   const f = (db.raw.prepare("SELECT worker, metric FROM observer_findings ORDER BY worker, metric").all() as any[]).map((x) => `${x.metric} ${x.worker}`);
   assert.deepEqual(f, ["inventory_permission_missing:d1 account", "undeclared_worker rogue-worker"], "xauusd-omega: its origin's DNA was not read, so it is not undeclared");
   // Unchanged 30 minutes later: no new run row; the refused D1 list is not asked again.
@@ -533,6 +536,20 @@ test("OB17. runInventory: reads the DNA union from the census, writes on change 
   assert.equal((await runInventory({ ...OBS_ENV, DB: db }, now + 30 * 60_000, cf2.fetcher, EXTERNAL)).outcome, "unchanged");
   assert.ok(!cf2.calls.includes("list:d1"));
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM observer_runs WHERE kind = 'inventory'").get() as any).n, 1);
+  // 2026-11-15: after an hour the refused list is asked again (not after 24 h), and a new token is asked at once.
+  const cf3 = fakeCf({ "list:scripts": { success: true, result: [{ id: "cryptophys-console" }, { id: "cryptophys-forge-typecheck" }, { id: "rogue-worker" }, { id: "xauusd-omega" }] } });
+  await runInventory({ ...OBS_ENV, DB: db }, now + 70 * 60_000, cf3.fetcher, EXTERNAL);
+  assert.ok(cf3.calls.includes("list:d1"), "a refused list is asked again after an hour");
+  const fp = JSON.parse((db.raw.prepare("SELECT datasets_json FROM observer_runs WHERE kind = 'inventory' ORDER BY ran_at DESC LIMIT 1").get() as any).datasets_json).token_fp;
+  assert.match(fp, /^[0-9a-f]{12}$/, "only a fingerprint of the token is stored");
+  assert.ok(!JSON.stringify(db.raw.prepare("SELECT datasets_json FROM observer_runs").all()).includes(OBS_ENV.CF_ANALYTICS_TOKEN as string), "never the token itself");
+  const refusedAgain = fakeCf({ "list:scripts": { success: true, result: [{ id: "cryptophys-console" }] }, "list:d1": () => new Response("{}", { status: 401 }) });
+  await runInventory({ ...OBS_ENV, DB: db }, now + 80 * 60_000, refusedAgain.fetcher, EXTERNAL);
+  // A token rolled since the last row (its stored fingerprint differs; the fake API only accepts the test token).
+  db.raw.prepare("UPDATE observer_runs SET datasets_json = json_set(datasets_json, '$.token_fp', '000000000000') WHERE kind = 'inventory' AND ran_at = (SELECT MAX(ran_at) FROM observer_runs WHERE kind = 'inventory')").run();
+  const newToken = fakeCf({ "list:scripts": { success: true, result: [{ id: "cryptophys-console" }] } });
+  await runInventory({ ...OBS_ENV, DB: db }, now + 85 * 60_000, newToken.fetcher, EXTERNAL);
+  assert.ok(newToken.calls.includes("list:d1"), "a new token is asked at once, within the hour");
 });
 
 // ---------------------------------------------------------------------------------- retention and config

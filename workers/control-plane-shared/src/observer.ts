@@ -28,6 +28,7 @@
  */
 import type { D1Database } from "./types.ts";
 import { unitForService } from "./deploy-units.ts";
+import { bindingsView } from "./observer-bindings.ts";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -710,7 +711,7 @@ export async function observerView(env: ObserverEnv, now = Date.now()): Promise<
   const configured = Boolean(observerCredentials(env));
   const base = { schema: "observer.v1", observed_at: new Date(now).toISOString(), configured, cron: OBSERVER_CRON, thresholds: THRESHOLDS,
     source: "Cloudflare GraphQL Analytics API (measured); Workers Observability (top errors, when the token may read it)" };
-  if (!env.DB) return { ...base, available: false, organs: [], resources: [], anomalies: [], deploys: [], last_senses: null, last_inventory: null, estimates: null };
+  if (!env.DB) return { ...base, available: false, organs: [], resources: [], anomalies: [], deploys: [], last_senses: null, last_inventory: null, estimates: null, inventory: { bindings: null } };
   const db = env.DB;
   try {
     const since48 = new Date(Math.floor(now / HOUR_MS) * HOUR_MS - 48 * HOUR_MS).toISOString();
@@ -756,8 +757,11 @@ export async function observerView(env: ObserverEnv, now = Date.now()): Promise<
       const parse = (v: string, d: unknown) => { try { return JSON.parse(v); } catch { return d; } };
       return { bucket: r.bucket, ran_at: r.ran_at, status: r.status, datasets: parse(r.datasets_json, {}), findings: parse(r.findings_json, []) };
     };
-    return { ...base, available: true, organs, resources, estimates, anomalies, deploys, last_senses: await lastRun("senses"), last_inventory: await lastRun("inventory") };
+    // The live Workers' bindings (observer-bindings.ts), as the last recorded inventory stored them; null before 0068.
+    // A failure here leaves the rest of the view available.
+    const bindings = await bindingsView(db).catch((err) => ({ available: false, error: String((err as Error)?.message ?? err).slice(0, 120) }));
+    return { ...base, available: true, organs, resources, estimates, anomalies, deploys, last_senses: await lastRun("senses"), last_inventory: await lastRun("inventory"), inventory: { bindings } };
   } catch (err) {
-    return { ...base, available: false, error: String((err as Error)?.message ?? err).slice(0, 160), organs: [], resources: [], anomalies: [], deploys: [], last_senses: null, last_inventory: null, estimates: null };
+    return { ...base, available: false, error: String((err as Error)?.message ?? err).slice(0, 160), organs: [], resources: [], anomalies: [], deploys: [], last_senses: null, last_inventory: null, estimates: null, inventory: { bindings: null } };
   }
 }
