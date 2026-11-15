@@ -10,8 +10,9 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { cloudflareUsage } from "../../control-plane-shared/src/cf-usage.ts";
-import { observerView, runSenses, sweepObserver, SENSES_MINUTE, type Finding } from "../../control-plane-shared/src/observer.ts";
+import { observerView, runSenses, storeFindings, sweepObserver, SENSES_MINUTE, type Finding } from "../../control-plane-shared/src/observer.ts";
 import { runInventory } from "../../control-plane-shared/src/observer-inventory.ts";
+import { lastCompleteHourMs, learningFindings, learningHour } from "../../control-plane-shared/src/learning-watch.ts";
 import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
@@ -163,7 +164,16 @@ export async function runObserver(env: Env, now = Date.now(), fetcher: (input: s
     if (minute >= SENSES_MINUTE && minute < SENSES_MINUTE + 30) {
       const senses = await runSenses(env, now, fetcher);
       out.senses = { outcome: senses.outcome, hour: senses.hour, vitals: senses.vitals, findings: senses.findings?.length ?? 0 };
-      if (senses.findings?.length) out.report = await publishAdvisory(env, senses.hour ?? "", senses.findings);
+      // Learning observed, never blocked (owner 2026-11-14): its findings read D1 only, so they need no analytics token.
+      let learning: Finding[] = [];
+      try {
+        learning = await senseLearning(env, now);
+        out.learning = { outcome: env.DB ? "recorded" : "not_configured", findings: learning.length };
+      } catch (err) {
+        out.learning = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+      }
+      const notable = [...(senses.findings ?? []), ...learning];
+      if (notable.length) out.report = await publishAdvisory(env, senses.hour ?? new Date(lastCompleteHourMs(now)).toISOString(), notable);
       if (env.DB && new Date(now).getUTCHours() === 3) await sweepObserver(env.DB, now);
     }
   } catch (err) {
@@ -176,6 +186,13 @@ export async function runObserver(env: Env, now = Date.now(), fetcher: (input: s
   }
   console.log(JSON.stringify({ service: SERVICE, event: "observer_run", ...out }));
   return out;
+}
+
+/** The last complete hour's learning findings (control-plane-shared/src/learning-watch.ts), stored once; the new ones. */
+async function senseLearning(env: Env, now: number): Promise<Finding[]> {
+  if (!env.DB) return [];
+  const findings = learningFindings(await learningHour(env.DB, lastCompleteHourMs(now)));
+  return findings.length ? storeFindings(env.DB, findings, new Date(now).toISOString()) : [];
 }
 
 /**
