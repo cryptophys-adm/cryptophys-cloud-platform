@@ -109,6 +109,7 @@ const ACTION_TEXT: Record<string, string> = {
   register_agent: "register the new agent",
   register_privileged_agent: "register the new privileged agent",
   register_engine: "register a new AI engine on",
+  retire_engine: "retire an AI engine its DNA no longer declares on",
   admit_voter: "give a council seat to",
   set_policy_parameter: "change the policy parameter",
   retire_worker: "retire",

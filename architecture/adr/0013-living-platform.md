@@ -60,7 +60,7 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 |---|---|---|
 | **1 (this change)** | DNA for every Worker. CI requires every static list to equal the DNA: deploy units and the Control Plane order, drift probes and bindings, Access, rollback, voters, kernel agents, vote bindings and their wrangler blocks, AI engines, plain-English names, agent seeds. Dynamic Console footer (live organs from the overview). Report kind `knowledge_audit` in the Console and the shared type. The Supervisor finds kernel agents by `host_worker`, not by a fixed list. | no |
 | **2. Census (done 2026-11-09)** | The Forge reads the DNA of each new `main` commit from Artifacts and compares it with `service_registry`, `agents` and a new `engines` table. It records new, missing and changed organs, publishes an "organism" report to the kernel, and raises an owner notice when something is missing. | no |
-| **3. Self-registration (done 2026-11-09)** | New consensus actions: `register_agent` and `register_engine` (routine), `register_privileged_agent` and `admit_voter` (critical). The Supervisor proposes them from the census. When one passes, the AI Kernel writes the row. Removed organs are reported; retiring them stays the existing critical `retire_worker`. | voter seats and privileged capabilities |
+| **3. Self-registration (done 2026-11-09)** | New consensus actions: `register_agent` and `register_engine` (routine), `register_privileged_agent` and `admit_voter` (critical); later `retire_engine` (routine, the mirror of `register_engine`, owner 2026-11-15). The Supervisor proposes them from the census. When one passes, the AI Kernel writes the row. Removed organs are reported; retiring them stays the existing critical `retire_worker`. | voter seats and privileged capabilities |
 | **4. Dynamic council (done with phase 3)** | The council is read from `agents.voter` (admitted seats only). A seat admitted after the founders votes only through its own Worker; without a vote binding it abstains and is reported, never replaced by the kernel's rule. | done by phase 3 admissions |
 
 ### 3. Guardrails (unchanged by autonomy)
@@ -87,6 +87,7 @@ The DNA is validated by `control-plane-shared/src/organism.ts`. It records:
 - **Proposals.** In each scheduled cycle the Supervisor proposes at most one registration, and each action and target at most once a day:
   - an unregistered agent becomes `register_agent`, or `register_privileged_agent` when it asks for a capability above tier 1 or for `consensus.propose`;
   - an unregistered engine becomes `register_engine`;
+  - an engine the DNA no longer declares becomes `retire_engine` (owner 2026-11-15): only once the `undeclared_engine` finding stood in 2 consecutive census rows or for 1 h, never for an organ whose origin's DNA was not read; it sets `engines.status = 'retired'` and deletes nothing, and `register_engine` re-enables the row when a DNA declares the task again;
   - a requested seat becomes `admit_voter`.
 - **Votes.** Every seat checks the same facts:
   - the agent is not registered yet;

@@ -10,7 +10,7 @@ import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { KernelHttpEnv } from "./kernel.ts";
 import { executionHosts } from "./execution-hosts.ts";
 
-const REGISTRATION_ACTIONS = ["register_agent", "register_engine", "register_privileged_agent", "admit_voter"];
+const REGISTRATION_ACTIONS = ["register_agent", "register_engine", "retire_engine", "register_privileged_agent", "admit_voter"];
 
 async function rows<T>(run: () => Promise<{ results: T[] }>): Promise<T[]> {
   try { return (await run()).results ?? []; } catch { return []; }
