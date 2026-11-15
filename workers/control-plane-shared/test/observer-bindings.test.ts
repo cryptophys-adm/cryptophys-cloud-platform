@@ -11,7 +11,7 @@ import {
   BINDING_READ_CAP, boundBy, consumersUrl, indexDatasetLine, parseBindings, parseQueueConsumers, queueConsumersDatasetLine, queueReferences, readBindingIndex, readQueueConsumerIndex, settingsUrl,
   type BindingIndex, type QueueConsumerIndex,
 } from "../src/observer-bindings.ts";
-import { parseList } from "../src/observer-inventory.ts";
+import { CI_PREVIEW_RESOURCES, ciPreviewOf, parseList } from "../src/observer-inventory.ts";
 
 const SETTINGS = JSON.parse(readFileSync(new URL("./fixtures/observer-worker-settings.json", import.meta.url), "utf8"));
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -344,4 +344,50 @@ test("BQ4. runInventory: queue consumers are read, part of the datasets and the 
   const later = fakeCf(bare);
   await runInventory({ ...ENV, DB: db }, now + 125 * 60_000, later.fetcher, {});
   assert.deepEqual(later.calls.filter((c) => c.startsWith("consumers:")), [`consumers:${Q_EVENTS}`]);
+});
+
+// ------------------------------------------------------------------------------------- CI preview resources (2026-11-15)
+// The xauusd repository's deploy-preview-worker.yml deploys a preview Worker per pull request from wrangler.preview.jsonc
+// and deletes it after its E2E tests: between pull requests nothing binds its KV, D1 and queues.
+test("BP1. a resource named in a CI preview config is ci_preview (informational), never unbound; an orphaned one still is", async () => {
+  const queues = { success: true, result: [
+    queueRow("q-prev", "xauusd-webhook-events-preview", []), // its consumer, the preview Worker, is deleted after each run
+    queueRow("q-prev-dlq", "xauusd-webhook-events-preview-dlq", []),
+    queueRow(Q_ORPHAN, "orphaned-queue", []),
+  ] };
+  const qi = await readQueueConsumerIndex("analytics-token", ACCOUNT, parseList("queues", queues), fakeCf().fetcher);
+  const idx = index({ "xauusd-ai-trading-assistant": { status: "ok", bindings: [{ type: "kv_namespace", name: "SIGNAL_CACHE", id: "4ada6196de5a4000a28a047bf6b30ff3" }] }, "cryptophys-console": { status: "ok", bindings: [] } });
+  const fs = compareInventory({
+    known: known(), traffic7d: new Map(), senses_cover_7d: false, day: "2026-11-15", bindings: idx, queue_consumers: qi,
+    lists: {
+      kv: kvList(["0cbd6ecc0fbc4dc99342960456ca71e5", "xauusd-preview-signal-cache"], ["2000943b5db042f582b03043c75d5b1c", "renamed-on-the-account"], ["773182e4a26c444e8f56c3e58a1987ef", "xauusd-preview-knowledge-base"],
+        ["4ada6196de5a4000a28a047bf6b30ff3", "xauusd-signal-cache"], ["ffff0000000000000000000000000001", "stray-kv"]),
+      d1: kvList(["90f53f14-ff7b-46c1-b146-a1efd4e13018", "xauusd-signals-preview"], ["cp-uuid", "cryptophys-control-plane"], ["old-uuid", "old-db"]),
+      queues: { status: "ok", items: parseList("queues", queues) },
+    },
+  });
+  assert.deepEqual(kinds(fs).filter((k) => /^(unbound_resource|ci_preview) /.test(k)), [
+    "ci_preview d1:xauusd-signals-preview",
+    "ci_preview kv:renamed-on-the-account", // matched by the config's id
+    "ci_preview kv:xauusd-preview-knowledge-base",
+    "ci_preview kv:xauusd-preview-signal-cache",
+    "ci_preview queues:xauusd-webhook-events-preview",
+    "ci_preview queues:xauusd-webhook-events-preview-dlq",
+    "unbound_resource d1:old-db",
+    "unbound_resource kv:stray-kv",
+    "unbound_resource queues:orphaned-queue",
+  ], "the production KV is bound; the preview resources are ci_preview; the orphans stay unbound");
+  for (const f of fs.filter((x) => x.metric === "ci_preview")) {
+    assert.equal(f.severity, "info");
+    assert.match(String(f.sample.source), /^cryptophys-adm\/xauusd-ai-trading-assistant wrangler\.preview\.jsonc/);
+    assert.match(f.detail, /used intermittently by CI previews/);
+  }
+  // Each entry names its source; a queue matches by name only, never by an id it does not have.
+  assert.equal(CI_PREVIEW_RESOURCES.length, 6);
+  for (const r of CI_PREVIEW_RESOURCES) assert.ok(r.source && r.name, `${r.name} names its source`);
+  assert.equal(ciPreviewOf("queues", { id: "xauusd-webhook-events-preview", name: "other" }), null);
+  assert.equal(ciPreviewOf("kv", { id: "90f53f14-ff7b-46c1-b146-a1efd4e13018", name: "x" }), null, "a D1 id is not a KV entry");
+  // While queue consumers are unread, no queue is ci_preview or unbound (neither is proven).
+  const partial = compareInventory({ known: known(), traffic7d: new Map(), senses_cover_7d: false, day: "2026-11-15", bindings: idx, lists: { queues: { status: "ok", items: parseList("queues", queues) } } });
+  assert.ok(!partial.some((f) => /^(unbound_resource|ci_preview)$/.test(f.metric)));
 });

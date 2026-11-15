@@ -17,6 +17,7 @@
  * Queues (2026-11-15): a queue is referenced by a binding, by a consumer (a Worker or HTTP pull) or as the
  * dead_letter_queue of another queue's consumer (consumer settings, read from the queues list or the consumers
  * endpoint); unbound_resource for queues only when every queue's consumers were read, else queue_consumers_unread.
+ * ci_preview (informational): a resource that would be unbound but is named in a CI preview config (CI_PREVIEW_RESOURCES).
  * Never reported: preview or environment copies of a declared Worker (<name>-preview, -staging, -dev, -pr-<n>,
  * -cr-<n>), Workers the registry marks disabled (being retired), and the organs of an external origin whose DNA the
  * census could not read. Aether is report only. A list the token may not read (401/403) is a capability finding
@@ -47,6 +48,32 @@ export const DECLARED_RESOURCES = Object.freeze({
   kv: Object.freeze([] as string[]),
   queues: Object.freeze([] as string[]),
 });
+
+/**
+ * Resources used intermittently by CI preview Workers (2026-11-15). The xauusd repository's deploy-preview-worker.yml
+ * deploys a temporary preview Worker on every pull request from wrangler.preview.jsonc, runs its E2E tests and deletes
+ * it, so between pull requests nothing binds or consumes these, and they were reported as unbound_resource. Such a
+ * resource is `ci_preview` (informational), never unbound_resource. The census reads an external organ's DNA over
+ * RPC (EXT_ORGANISM_*, OrganismDna.dna()), never its repository's files, so it cannot see a preview config; this
+ * reviewed list names each resource with its source, a CI preview config: a wrangler.preview.jsonc, or the
+ * `previews` / `env.preview` block of a wrangler.jsonc or wrangler.toml. A KV namespace or D1 database matches by its
+ * id (the config's) or its name on the account; a queue (the config names queues) by its name.
+ */
+export interface CiPreviewResource { resource: "d1" | "kv" | "r2" | "queues"; name: string; id?: string; source: string }
+const XAUUSD_PREVIEW = "cryptophys-adm/xauusd-ai-trading-assistant wrangler.preview.jsonc";
+const XAUUSD_PREVIEWS_BLOCK = `${XAUUSD_PREVIEW} and the previews block of its wrangler.jsonc`;
+export const CI_PREVIEW_RESOURCES: readonly CiPreviewResource[] = Object.freeze([
+  { resource: "kv", name: "xauusd-preview-signal-cache", id: "0cbd6ecc0fbc4dc99342960456ca71e5", source: `${XAUUSD_PREVIEWS_BLOCK} (SIGNAL_CACHE)` },
+  { resource: "kv", name: "xauusd-preview-webhook-buffer", id: "2000943b5db042f582b03043c75d5b1c", source: `${XAUUSD_PREVIEWS_BLOCK} (WEBHOOK_BUFFER)` },
+  { resource: "kv", name: "xauusd-preview-knowledge-base", id: "773182e4a26c444e8f56c3e58a1987ef", source: `${XAUUSD_PREVIEWS_BLOCK} (KNOWLEDGE_BASE)` },
+  { resource: "d1", name: "xauusd-signals-preview", id: "90f53f14-ff7b-46c1-b146-a1efd4e13018", source: `${XAUUSD_PREVIEWS_BLOCK} (DB)` },
+  { resource: "queues", name: "xauusd-webhook-events-preview", source: `${XAUUSD_PREVIEW} (queues.producers XAUUSD_EVENTS, queues.consumers)` },
+  { resource: "queues", name: "xauusd-webhook-events-preview-dlq", source: `${XAUUSD_PREVIEW} (dead_letter_queue of xauusd-webhook-events-preview)` },
+].map((r) => Object.freeze(r as CiPreviewResource)));
+/** The CI preview entry a listed resource matches, if any. */
+export function ciPreviewOf(key: "d1" | "kv" | "r2" | "queues", item: { id: string; name: string }, list: readonly CiPreviewResource[] = CI_PREVIEW_RESOURCES): CiPreviewResource | null {
+  return list.find((r) => r.resource === key && ((r.id !== undefined && r.id === item.id) || r.name === item.name)) ?? null;
+}
 
 /** A preview or environment copy of `base` (Workers Builds previews, wrangler environments). */
 export const PREVIEW_SUFFIX = /^(.+?)-(preview|staging|dev|pr-\d+|cr-\d+)$/;
@@ -285,6 +312,12 @@ export function compareBindings(day: string, index: BindingIndex, lists: Partial
         if (bound.has(ref) || declared.includes(x.name)) continue;
         if (key === "queues" && queueRefs!.refs.has(x.name)) continue; // consumed, or another queue's dead-letter queue
         const queueSample = key === "queues" ? { referenced_by: [], queues_read: Object.keys(queueConsumers!.queues).length } : {};
+        // Bound only while a CI preview Worker exists (one per pull request): informational, never unbound.
+        const preview = ciPreviewOf(key, x);
+        if (preview) {
+          out.push(finding(day, `${key}:${x.name}`, "ci_preview", `${key.toUpperCase()} ${x.name} (${ref}) is used intermittently by CI previews (${preview.source}); no live Worker binds it between pull requests (informational)`, { resource: key, id: x.id, name: x.name, source: preview.source, workers_read: rows.length, ...queueSample }));
+          continue;
+        }
         out.push(finding(day, `${key}:${x.name}`, "unbound_resource", `${key.toUpperCase()} ${x.name} (${ref}) is on the account; no live Worker binds it${key === "queues" ? ", it has no consumer, no queue names it as its dead-letter queue," : ""} and no wrangler.toml of this repository declares it (informational)`, { resource: key, id: x.id, name: x.name, workers_read: rows.length, ...queueSample }));
       }
     }
