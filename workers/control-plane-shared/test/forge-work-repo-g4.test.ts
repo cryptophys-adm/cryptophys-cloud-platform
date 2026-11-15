@@ -559,8 +559,8 @@ test("G4-LH3. GitHub-sourced requests: a head that reaches its base only through
   } finally { delete COMMITS[GH_SECOND]; delete COMMITS[GH_FIRST]; }
 });
 
-test("G4-LH4. migration 0066: an additive column that admits only main_not_first_parent; the Forge requires it", () => {
-  assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0066_forge_linear_history_guard.sql"));
+test("G4-LH4. migration 0071: an additive column that admits only main_not_first_parent; the Forge requires it", () => {
+  assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0071_forge_linear_history_guard.sql"));
   const db = migratedDb();
   const ins = (id: string, reason: string | null) => () => db.raw.prepare(
     `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, status, created_at, updated_at, repo, history_blocked_reason)
@@ -569,7 +569,7 @@ test("G4-LH4. migration 0066: an additive column that admits only main_not_first
   ins("fg-b", null)();
   assert.throws(ins("fg-c", "not_based_on_main"), /CHECK/);
   assert.throws(ins("fg-d", "anything"), /CHECK/);
-  const sql = read("workers/control-plane-migrations/0066_forge_linear_history_guard.sql").replace(/--[^\n]*/g, "");
+  const sql = read("workers/control-plane-migrations/0071_forge_linear_history_guard.sql").replace(/--[^\n]*/g, "");
   assert.match(sql.trim(), /^ALTER TABLE forge_change_requests ADD COLUMN history_blocked_reason TEXT CHECK \(.*\);$/);
   assert.doesNotMatch(sql, /\b(DROP|DELETE|UPDATE|RENAME|INSERT)\b/i, "additive only: the native migration path applies it");
   assert.match(read("workers/ai-kernel/src/supervisor.ts"), /blocked_reason IS NULL AND history_blocked_reason IS NULL/, "the Supervisor never proposes a refused head");

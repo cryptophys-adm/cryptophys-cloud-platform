@@ -219,7 +219,7 @@ test("M7. the linear-history guard (incident 2026-11-14): main merged in as the 
   const db = migratedDb();
   db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
   db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
-  // A row registered without the stored reason (before 0066, or before main moved): the live state still blocks it.
+  // A row registered without the stored reason (before 0071, or before main moved): the live state still blocks it.
   await seedChange(db, S);
   const g = gitWorld({ platform: { "refs/heads/main": M }, "platform-work": { "refs/heads/main": M, "refs/heads/claude/x": S } });
   const forgeEnv = { DB: db, ARTIFACTS: g.binding };
@@ -245,7 +245,7 @@ test("M7. the linear-history guard (incident 2026-11-14): main merged in as the 
   assert.equal((await forgeMerge(g.binding as never, "platform", { base: M, head: S }, g.fetchImpl, { canonical: true })).reason, "main_not_first_parent");
   assert.equal((await forgeMerge(g.binding as never, "platform", { base: M, head: X }, g.fetchImpl, { canonical: true })).reason, "not_fast_forward");
 
-  // A row the Forge stored as refused (history_blocked_reason, migration 0066) is not even read by the Supervisor.
+  // A row the Forge stored as refused (history_blocked_reason, migration 0071) is not even read by the Supervisor.
   const db2 = migratedDb();
   db2.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
   db2.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();

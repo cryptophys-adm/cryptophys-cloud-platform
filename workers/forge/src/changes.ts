@@ -17,7 +17,7 @@
 // for fg-<slug>. A forge-sourced head that does not contain canonical main has blocked_reason
 // not_based_on_main and is not checked until the contributor updates the branch.
 //
-// The linear-history guard (incident 2026-11-14, migration 0066): a merge fast-forwards main to the head, so main's
+// The linear-history guard (incident 2026-11-14, migration 0071): a merge fast-forwards main to the head, so main's
 // current head must be on the head's first-parent chain (merge.ts mainPosition, at most FIRST_PARENT_WALK = 500
 // commits). A head that contains main only through a second parent (main merged INTO the branch as the second
 // parent) has history_blocked_reason main_not_first_parent: it is blocked and not checked, because merging it would
@@ -134,7 +134,7 @@ export const NOT_BASED_ON_MAIN = "not_based_on_main: the head does not contain c
 export const MAIN_NOT_FIRST_PARENT = `main_not_first_parent: canonical main's head is not on this head's first-parent chain (within ${FIRST_PARENT_WALK} commits); `
   + "main was merged in as the second parent, so merging it would take main's own history off main's first-parent line. "
   + "Rebase the branch onto main, or merge with main as the first parent (git checkout -B <branch> origin/main && git merge <old head>), and push again";
-/** Migration 0066: the reasons a head that contains main is still refused (forge_change_requests.history_blocked_reason). */
+/** Migration 0071: the reasons a head that contains main is still refused (forge_change_requests.history_blocked_reason). */
 export type HistoryBlockedReason = "main_not_first_parent";
 
 export function verdictOf(check: CheckSummary | null, critical: string[] | null, nowMs = Date.now()): { verdict: Verdict; reasons: string[] } {
@@ -157,7 +157,7 @@ export function verdictOf(check: CheckSummary | null, critical: string[] | null,
   return critical.length ? { verdict: "needs_owner", reasons: critical } : { verdict: "would_merge", reasons: [] };
 }
 
-/** The reason the Forge refused a head, if any: not_based_on_main (G4), else main_not_first_parent (migration 0066). */
+/** The reason the Forge refused a head, if any: not_based_on_main (G4), else main_not_first_parent (migration 0071). */
 export function refusedReason(row: { blocked_reason?: string | null; history_blocked_reason?: string | null }): string | null {
   return row.blocked_reason || row.history_blocked_reason || null;
 }
@@ -179,7 +179,7 @@ export interface ChangeRow {
   created_at: string; updated_at: string; outcome_at: string | null;
   /** Migration 0052 (G4): the Artifacts repository the head is read from, and why the Forge will not check it. */
   repo: ChangeRepo; blocked_reason: "not_based_on_main" | null;
-  /** Migration 0066 (the linear-history guard): set when the head contains main only through a second parent. */
+  /** Migration 0071 (the linear-history guard): set when the head contains main only through a second parent. */
   history_blocked_reason: HistoryBlockedReason | null;
 }
 export interface ChangeInput { number?: unknown; source_branch?: unknown; title?: unknown; author?: unknown; head_sha?: unknown; base_sha?: unknown; github_ci?: unknown }

@@ -1,4 +1,4 @@
--- 0066 (owner-approved hardening (a), incident 2026-11-14): the Forge's linear-history guard.
+-- 0071 (owner-approved hardening (a), incident 2026-11-14): the Forge's linear-history guard.
 -- Change-request branches were updated by merging main into them with main as the SECOND parent. The Forge merges by
 -- fast-forwarding main to the request's head, so main's first-parent chain left main's own previous heads: the deployed
 -- versions fell off main's first-parent history, the deploy planner stopped planning and every deploy stuck.

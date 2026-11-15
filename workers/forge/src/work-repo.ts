@@ -12,7 +12,7 @@
 //       - base = canonical platform main's head, when it is an ancestor of the branch head (read through
 //         platform-work, which holds the fork's objects and every push). Otherwise blocked_reason =
 //         not_based_on_main: the branch must contain main so that a later merge (G3b) is a fast-forward;
-//       - the linear-history guard (incident 2026-11-14, migration 0066): main's head must also be on the branch
+//       - the linear-history guard (incident 2026-11-14, migration 0071): main's head must also be on the branch
 //         head's first-parent chain (merge.ts mainPosition, at most FIRST_PARENT_WALK = 500 commits). A head that
 //         contains main only through a second parent gets history_blocked_reason = main_not_first_parent and is not
 //         checked: the fast-forward would take main's previous heads off main's first-parent history;
