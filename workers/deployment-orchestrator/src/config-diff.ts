@@ -539,7 +539,8 @@ interface ConfigReading {
  * Gate 4 part B (topology.ts, owner 2026-11-15): with `topology`, the routes (`routes`, `route`), the Durable Object
  * `[[migrations]]` and the `[[workflows]]` registrations are not refused here; topology.ts plans them (and refuses
  * what it cannot apply natively). The Workflow bindings stay in the binding plan either way. Without it (the
- * default), every one of them is refused as before. `workers_dev` and `preview_urls` stay `routing_changed`.
+ * default), every one of them is refused as before. `workers_dev` and `preview_urls` go to topology.ts only when both
+ * configs set them as booleans; otherwise they stay `routing_changed`.
  */
 export interface ConfigReadOptions { topology?: boolean }
 
@@ -552,6 +553,8 @@ function readConfigs(runningToml: string, targetToml: string, opts: ConfigReadOp
   for (const k of IDENTITY_KEYS) if (!same(run[k], tgt[k])) return no("identity_changed");
   for (const k of ROUTING_KEYS) {
     if (opts.topology && (k === "routes" || k === "route")) continue;
+    // topology.ts applies workers_dev / preview_urls when both configs set them explicitly (wrangler's default otherwise depends on the routes).
+    if (opts.topology && typeof run[k] === "boolean" && typeof tgt[k] === "boolean") continue;
     if (!same(run[k], tgt[k])) return no("routing_changed");
   }
   // Durable Object migrations are applied only by a script upload that deploys; a version upload cannot.

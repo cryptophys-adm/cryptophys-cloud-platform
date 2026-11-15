@@ -30,14 +30,15 @@ export default function Recovery() {
   const plans = usePoll(() => call("recovery.plans", undefined, undefined, { status, include_synthetic: synthetic ? "1" : undefined }), 60_000, [status, synthetic]);
   const services = usePoll(() => call("registry.services"), 0);
   const [form, setForm] = useState({ service_id: "", plan_version: "1", title: "", rationale: "" });
-  const [steps, setSteps] = useState([{ action: "manual", description: "", destructive: "" }]);
+  const [steps, setSteps] = useState([{ action: "manual", description: "", destructive: "", topology: "" }]);
   const svcIds = listOf(services.data, "services").map((s: any) => s.service_id as string);
 
   function create() {
     const body = { ...form, service_id: form.service_id || svcIds[0] || "", title: form.title.trim(), rationale: form.rationale.trim(), plan_version: form.plan_version.trim(),
       steps: steps.map((s) => {
         const named = s.action === BREAK_GLASS_STEP ? s.destructive.split(",").map((f) => f.trim()).filter(Boolean) : [];
-        return { action: s.action, description: s.description.trim(), ...(named.length ? { destructive_migrations: named } : {}) };
+        const topology = s.action === BREAK_GLASS_STEP ? s.topology.split(",").map((f) => f.trim()).filter(Boolean) : [];
+        return { action: s.action, description: s.description.trim(), ...(named.length ? { destructive_migrations: named } : {}), ...(topology.length ? { destructive_topology: topology } : {}) };
       }) };
     const breakGlass = body.steps.some((s) => s.action === BREAK_GLASS_STEP);
     if (!body.service_id || !body.plan_version || body.plan_version.length > 40) return notify("err", "Choose a service and a plan version (up to 40 characters).");
@@ -46,7 +47,7 @@ export default function Recovery() {
     if (body.steps.some((s) => !s.description || s.description.length > 500)) return notify("err", "Every step needs a description of 1 to 500 characters.");
     if (breakGlass && !/^[0-9a-f]{40}$/.test(body.plan_version)) return notify("err", "A force_redeploy_unit plan names the full 40-character commit of main as its plan version.");
     act({ route: "recovery.create", body, title: "Create recovery plan", lines: [`Creates a draft plan for ${body.service_id}: ${body.title}`, "It runs nothing until it is approved and started.",
-      ...(breakGlass ? ["Break-glass: after another approver's click it deploys the whole deploy unit of this service at that commit of main, without the deploy planner, and applies the migrations D1 has not applied (a destructive one only if listed)."] : [])], done: "Plan created.", after: (d) => d?.plan?.plan_id ? navigate(`#/recovery/${d.plan.plan_id}`) : void plans.refresh() });
+      ...(breakGlass ? ["Break-glass: after another approver's click it deploys the whole deploy unit of this service at that commit of main, without the deploy planner, and applies the migrations D1 has not applied (a destructive one only if listed), and only the destructive topology changes listed (a deleted Durable Object class or Workflow cannot be undone)."] : [])], done: "Plan created.", after: (d) => d?.plan?.plan_id ? navigate(`#/recovery/${d.plan.plan_id}`) : void plans.refresh() });
   }
 
   const rows = listOf(plans.data, "plans");
@@ -93,11 +94,13 @@ export default function Recovery() {
               <div className="flex items-end"><button type="button" className="btn" aria-label={`Remove step ${i + 1}`} disabled={steps.length <= 1} onClick={() => setSteps(steps.filter((_, j) => j !== i))}><Trash2 className="h-3.5 w-3.5" /></button></div>
               {s.action === BREAK_GLASS_STEP && <Field label="Destructive migrations it may apply (file names, comma-separated; optional)" className="md:col-span-3">
                 <input className="field mono" maxLength={900} value={s.destructive} onChange={(e) => setSteps(steps.map((x, j) => j === i ? { ...x, destructive: e.target.value } : x))} /></Field>}
+              {s.action === BREAK_GLASS_STEP && <Field label="Destructive topology changes it may apply (custom_domain_removal:<host>, do_migration:deleted_classes:<worker>:<tag>, workflow_removal:<name>…, comma-separated; optional)" className="md:col-span-3">
+                <input className="field mono" maxLength={2000} value={s.topology} onChange={(e) => setSteps(steps.map((x, j) => j === i ? { ...x, topology: e.target.value } : x))} /></Field>}
             </div>
           ))}
         </div>
         <div className="mt-3 flex gap-2">
-          <button type="button" className="btn" disabled={steps.length >= 20} onClick={() => setSteps([...steps, { action: "manual", description: "", destructive: "" }])}><Plus className="h-3.5 w-3.5" />Add step</button>
+          <button type="button" className="btn" disabled={steps.length >= 20} onClick={() => setSteps([...steps, { action: "manual", description: "", destructive: "", topology: "" }])}><Plus className="h-3.5 w-3.5" />Add step</button>
           <button type="button" className="btn btn-approve" onClick={create}>Create plan…</button>
         </div>
       </Panel>}

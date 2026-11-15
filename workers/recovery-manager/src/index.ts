@@ -9,7 +9,7 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, listConfigured, requireApprover, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
-import { BREAK_GLASS_STEP, breakGlassPlanProblem, namedDestructive, type PlanStep } from "../../control-plane-shared/src/break-glass.ts";
+import { BREAK_GLASS_STEP, breakGlassPlanProblem, namedDestructive, namedTopology, type PlanStep } from "../../control-plane-shared/src/break-glass.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 import type { RecoveryDeployBinding } from "./autonomous.ts";
 import { backupIfStale, type R2BucketLike } from "./backup.ts";
@@ -103,10 +103,14 @@ function validateSteps(value: unknown): PlanStep[] | Error {
       // The break-glass deploy may name destructive migrations it is allowed to apply (break-glass.ts).
       const named = namedDestructive(s.destructive_migrations);
       if (named instanceof Error) return named;
-      steps.push({ action: s.action, description: s.description.trim(), ...(named.length ? { destructive_migrations: named } : {}) });
+      // Gate 4 part B: and the destructive topology changes (custom domain removal, DO class deletion, Workflow removal...).
+      const topology = namedTopology(s.destructive_topology);
+      if (topology instanceof Error) return topology;
+      steps.push({ action: s.action, description: s.description.trim(), ...(named.length ? { destructive_migrations: named } : {}), ...(topology.length ? { destructive_topology: topology } : {}) });
       continue;
     }
     if (s.destructive_migrations !== undefined) return new Error("only a force_redeploy_unit step may name destructive_migrations");
+    if (s.destructive_topology !== undefined) return new Error("only a force_redeploy_unit step may name destructive_topology");
     steps.push({ action: s.action as string, description: s.description.trim() });
   }
   return steps;
@@ -119,6 +123,7 @@ const BREAK_GLASS_MESSAGES: Record<string, string> = {
   break_glass_full_commit: "a force_redeploy_unit plan names the full 40-hex commit of main as plan_version",
   break_glass_person_author: "force_redeploy_unit is owner-run: only a person (an approver) may write it, never an agent or a service token",
   break_glass_named_migrations_invalid: "destructive_migrations is invalid",
+  break_glass_named_topology_invalid: "destructive_topology is invalid",
 };
 function breakGlassRefusal(input: { plan_version: string; steps: PlanStep[] }, createdBy: string): Error | null {
   const problem = breakGlassPlanProblem({ plan_version: input.plan_version, created_by: createdBy, steps: input.steps });
@@ -200,7 +205,10 @@ async function insertPlan(env: Env, input: PlanInput, createdBy: string): Promis
   await appendAuditEvent(env.DB, {
     event_type: "recovery.plan_created", actor: createdBy, subject: planId, outcome: "draft",
     payload: { service_id: serviceId, plan_version: planVersion, step_actions: steps.map((s) => s.action), approve_by: approveBy, workflow_instance_id: instanceId,
-      ...(steps.some((s) => s.action === BREAK_GLASS_STEP) ? { break_glass: true, destructive_migrations: steps.find((s) => s.action === BREAK_GLASS_STEP)!.destructive_migrations ?? [] } : {}) },
+      ...(steps.some((s) => s.action === BREAK_GLASS_STEP) ? {
+        break_glass: true, destructive_migrations: steps.find((s) => s.action === BREAK_GLASS_STEP)!.destructive_migrations ?? [],
+        destructive_topology: steps.find((s) => s.action === BREAK_GLASS_STEP)!.destructive_topology ?? [],
+      } : {}) },
   });
   return (await getPlan(env, planId))!;
 }

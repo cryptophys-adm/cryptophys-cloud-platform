@@ -8,19 +8,18 @@
 //     read back (GET ?hostname=: exactly one record, on this Worker). On any later failure it is detached again (DELETE
 //     /workers/domains/{id}), before the deployments are restored. One already attached to this Worker needs nothing;
 //     one on another Worker is refused (`custom_domain_on_other_worker:<host>`): attaching would move it.
-//   - Zone routes (a `route`/`routes` pattern without `custom_domain`). Creating one needs the zone permission
-//     Workers Routes Edit, which the deploy token cannot hold (owner decision 2026-11-06, ADR-0010). A new zone route is
-//     accepted only when the script list already reports it for this Worker (attached by the owner); otherwise
-//     `zone_route_needs_zone_token:<pattern>`.
-//   - Removing or changing a route or a custom domain is the owner's (`custom_domain_removal_owner_run:<host>`,
-//     `zone_route_removal_owner_run:<pattern>`, `route_changed_owner_run:<pattern>`): a removal takes a hostname off the
-//     internet, and `wrangler deploy` itself never detaches an undeclared custom domain. Decided from the two configs,
-//     before any Cloudflare call.
+//   - Zone routes (a `route`/`routes` pattern without `custom_domain`). Creating or removing one needs the zone permission
+//     Workers Routes Edit, which the deploy token does not hold: an owner settings decision (2026-11-06, ADR-0010), not a
+//     code gap. A new zone route is accepted only when the script list already reports it for this Worker (attached by
+//     the owner); otherwise `zone_route_needs_zone_token:<pattern>`. Removing one stays `zone_route_removal_owner_run`, and
+//     turning a custom domain into a zone route or back is `route_change_needs_zone_token:<pattern>`.
+//   - `workers_dev` / `preview_urls`, when both configs set them as booleans (absent on either side stays
+//     `routing_changed`: wrangler's default depends on the routes). Turning one on is applied natively (POST
+//     …/scripts/{name}/subdomain) after the live check, read back, and put back on a later failure.
 //   - Durable Object migrations (`[[migrations]]`). The running config's entries must be the first entries of the target's
 //     (`do_migration_history_changed`), and the script's live `migration_tag` must be the running config's last tag
-//     (`do_migration_tag_differs`), or already the target's (applied: nothing to send). The pending entries may only add
-//     classes (`new_sqlite_classes`, `new_classes`); `deleted_classes`, `renamed_classes` and `transferred_classes` are the
-//     owner's (`do_migration_destructive:<kind>:<tag>`). Cloudflare applies a migration only through the Script Upload
+//     (`do_migration_tag_differs`), or already the target's (applied: nothing to send). Additive steps
+//     (`new_sqlite_classes`, `new_classes`) go natively. Cloudflare applies a migration only through the Script Upload
 //     API, which uploads and deploys at once (a version upload with a pending migration is refused), so the Worker is
 //     deployed by `CloudflareWorkers.deployScript` with `{ old_tag, new_tag, steps }`, and then checked: the new active
 //     deployment, the script's migration tag, the planned bindings and settings, and the live tag (Drift Detector).
@@ -34,16 +33,22 @@
 //     (`workflow_live_differs:<name>`). Each is read back (class_name, script_name). On a later failure an updated one is
 //     put back to the running definition; a created one is kept (deleting a Workflow destroys its instances), and the
 //     restored code simply does not bind it. A Workflow already live that the running config did not declare is refused
-//     (`workflow_set_outside_config:<name>`), one of another script (`workflow_other_script:<name>`) as well, and removing
-//     one is the owner's (`workflow_removal_owner_run:<name>`). The Workflow binding itself is in the binding plan
-//     (config-diff.ts) and verified on the uploaded version like every binding.
-// `workers_dev` and `preview_urls` stay `routing_changed` (config-diff.ts). A Worker whose configs change none of these
-// reads nothing here and is deployed exactly as before.
+//     (`workflow_set_outside_config:<name>`), one of another script too (`workflow_other_script:<name>`). The Workflow
+//     binding itself is in the binding plan (config-diff.ts) and verified on the uploaded version like every binding.
 //
-// Owner-run: every refusal above keeps the unit's deploy workflow as its path (deployForConsensus dispatches it while
-// GitHub is there); after the cut-over, the owner applies the change by hand (docs/OPERATIONS.md, "Last resort") and
-// records the desired version, after which the running and target configs agree. The break-glass deploy
-// (`force_redeploy_unit`) plans through the same eligibility, so it refuses them too.
+// DESTRUCTIVE changes are owner-click (owner 2026-11-15: after cut-over step 6 there is no GitHub fallback). The routine
+// deploy refuses each with a reason naming it, decided from the two configs before any Cloudflare call:
+//   `custom_domain_removal_owner_run:<host>`, `route_changed_owner_run:<host>` (a custom domain's zone fields),
+//   `do_migration_destructive:<deleted_classes|renamed_classes|transferred_classes>:<tag>`, `workflow_removal_owner_run:<name>`,
+//   `workers_dev_disable_owner_run:<worker>`, `preview_urls_disable_owner_run:<worker>`.
+// The break-glass deploy (`force_redeploy_unit`, an owner-approved recovery plan written and approved by two people) may
+// name exactly these in `destructive_topology` (control-plane-shared/src/break-glass.ts TOPOLOGY_ITEM). A named item is
+// planned and applied like the others, after the live check; an unnamed one keeps its refusal; a named one the deploy
+// does not contain refuses the deploy (recovery-deploy.ts). Each is audited before it is applied, and the two that
+// cannot be undone say so first: a deleted, renamed or transferred Durable Object class (no rollback across it; a
+// deleted class's objects are gone) and a Workflow removal (its instances are lost; a restore re-creates only the
+// definition). A detached custom domain is re-attached on a later failure; a disabled workers.dev is enabled again.
+// A Worker whose configs change none of these reads nothing here and is deployed exactly as before.
 
 import { parseToml, type TomlTable, type TomlValue } from "./config-diff.ts";
 import type { CloudflareWorkers, DeploymentVersions, ExtraModule, VersionMetadata } from "./native-rollback.ts";
@@ -55,6 +60,7 @@ const ZONE_ID = /^[0-9a-f]{32}$/;
 const TAG = /^[A-Za-z0-9._-]{1,64}$/;
 const CLASS = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
 const WORKFLOW = /^[A-Za-z0-9_-]{1,64}$/;
+const SCRIPT = /^[a-z0-9-]{1,63}$/;
 /** Reads of a custom domain after it was attached or detached. */
 export const TOPOLOGY_VERIFY_ATTEMPTS = 4;
 export const TOPOLOGY_VERIFY_DELAY_MS = 2_000;
@@ -72,7 +78,7 @@ const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------------------------------------------------
-// The client: Workers Custom Domains and Workflows (account level, CF_DEPLOY_TOKEN)
+// The client: Workers Custom Domains, the workers.dev subdomain and Workflows (account level, CF_DEPLOY_TOKEN)
 // ---------------------------------------------------------------------------------------------------------
 
 export interface DomainRecord { id: string; hostname: string; service: string; enabled: boolean | null }
@@ -83,6 +89,7 @@ export interface WorkflowBody {
   limits?: { steps?: number };
 }
 export interface WorkflowRecord { class_name: string; script_name: string }
+export interface Subdomain { enabled: boolean; previews_enabled: boolean }
 
 export class CloudflareTopology {
   private readonly token: string;
@@ -95,7 +102,7 @@ export class CloudflareTopology {
     this.fetcher = (input, init) => fetcher(input, init);
   }
 
-  private async call(method: "GET" | "PUT" | "DELETE", path: string, body?: unknown): Promise<{ status: number; result: unknown }> {
+  private async call(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<{ status: number; result: unknown }> {
     const res = await this.fetcher(`${API}/accounts/${this.account}/${path}`, {
       method,
       headers: { authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
@@ -125,7 +132,7 @@ export class CloudflareTopology {
   }
 
   async attachDomain(input: { hostname: string; service: string; zone_id?: string; zone_name?: string }): Promise<void> {
-    if (!HOST.test(input.hostname) || !/^[a-z0-9-]{1,63}$/.test(input.service)) throw new Error("invalid_custom_domain");
+    if (!HOST.test(input.hostname) || !SCRIPT.test(input.service)) throw new Error("invalid_custom_domain");
     await this.call("PUT", "workers/domains", { hostname: input.hostname, service: input.service, ...(input.zone_id ? { zone_id: input.zone_id } : {}), ...(input.zone_name ? { zone_name: input.zone_name } : {}) });
   }
 
@@ -149,8 +156,28 @@ export class CloudflareTopology {
 
   /** Create or update one Workflow (PUT is both). */
   async putWorkflow(name: string, body: WorkflowBody): Promise<void> {
-    if (!WORKFLOW.test(name) || !CLASS.test(body.class_name) || !/^[a-z0-9-]{1,63}$/.test(body.script_name)) throw new Error("invalid_workflow");
+    if (!WORKFLOW.test(name) || !CLASS.test(body.class_name) || !SCRIPT.test(body.script_name)) throw new Error("invalid_workflow");
     await this.call("PUT", `workflows/${name}`, body);
+  }
+
+  /** Delete one Workflow and its instances (only for a break-glass plan that names `workflow_removal:<name>`). */
+  async deleteWorkflow(name: string): Promise<void> {
+    if (!WORKFLOW.test(name)) throw new Error("invalid_workflow_name");
+    await this.call("DELETE", `workflows/${name}`);
+  }
+
+  /** The script's workers.dev settings (GET …/scripts/{name}/subdomain). */
+  async subdomain(script: string): Promise<Subdomain> {
+    if (!SCRIPT.test(script)) throw new Error("invalid_script_name");
+    const r = await this.call("GET", `workers/scripts/${script}/subdomain`);
+    const s = r.result as { enabled?: unknown; previews_enabled?: unknown } | null;
+    if (typeof s?.enabled !== "boolean" || typeof s.previews_enabled !== "boolean") throw new Error("subdomain_unreadable");
+    return { enabled: s.enabled, previews_enabled: s.previews_enabled };
+  }
+
+  async setSubdomain(script: string, body: Subdomain): Promise<void> {
+    if (!SCRIPT.test(script)) throw new Error("invalid_script_name");
+    await this.call("POST", `workers/scripts/${script}/subdomain`, { enabled: body.enabled, previews_enabled: body.previews_enabled });
   }
 }
 
@@ -159,7 +186,10 @@ export class CloudflareTopology {
 // ---------------------------------------------------------------------------------------------------------
 
 export interface RouteEntry { pattern: string; custom_domain: boolean; zone_id?: string; zone_name?: string }
-export interface MigrationStep { new_classes?: string[]; new_sqlite_classes?: string[] }
+export interface MigrationStep {
+  new_classes?: string[]; new_sqlite_classes?: string[]; deleted_classes?: string[];
+  renamed_classes?: Array<{ from: string; to: string }>; transferred_classes?: Array<{ from: string; from_script: string; to: string }>;
+}
 /** The `migrations` field of a script upload (Cloudflare: WorkersMultipleStepMigrations). */
 export interface DoMigrationUpload { old_tag?: string; new_tag: string; steps: MigrationStep[] }
 interface MigrationEntry { tag: string; [kind: string]: TomlValue }
@@ -192,10 +222,13 @@ function routeEntries(cfg: TomlTable): Map<string, RouteEntry> | null {
   }
   return out;
 }
+const zoneOf = (e: RouteEntry) => ({ ...(e.zone_id ? { zone_id: e.zone_id } : {}), ...(e.zone_name ? { zone_name: e.zone_name } : {}) });
 
 const MIGRATION_KINDS = ["new_classes", "new_sqlite_classes", "deleted_classes", "renamed_classes", "transferred_classes"] as const;
 const ADDITIVE = new Set(["new_classes", "new_sqlite_classes"]);
 const classList = (v: unknown) => Array.isArray(v) && v.every((c) => typeof c === "string" && CLASS.test(c));
+const renameList = (v: unknown, keys: string[]) => Array.isArray(v) && v.every((e) => isTable(e) && Object.keys(e).length === keys.length
+  && keys.every((k) => typeof e[k] === "string" && (k === "from_script" ? SCRIPT.test(e[k] as string) : CLASS.test(e[k] as string))));
 function migrationEntries(cfg: TomlTable): MigrationEntry[] | null {
   const v = cfg.migrations;
   if (v === undefined) return [];
@@ -208,7 +241,8 @@ function migrationEntries(cfg: TomlTable): MigrationEntry[] | null {
       if (k === "tag") continue;
       if (!(MIGRATION_KINDS as readonly string[]).includes(k)) return null;
       if (ADDITIVE.has(k) || k === "deleted_classes") { if (!classList(x)) return null; }
-      else if (!Array.isArray(x) || !x.every((e) => isTable(e))) return null;
+      else if (k === "renamed_classes") { if (!renameList(x, ["from", "to"])) return null; }
+      else if (!renameList(x, ["from", "from_script", "to"])) return null;
     }
     tags.add(m.tag);
     out.push(m as MigrationEntry);
@@ -245,29 +279,49 @@ function workflowDefs(cfg: TomlTable, script: string): Map<string, WorkflowDef> 
   return out;
 }
 
-/** What the two configs alone say about routes, Durable Object migrations and Workflows. */
+/** The destructive items a break-glass plan names (break-glass.ts TOPOLOGY_ITEM), as topology.ts spells them. */
+export const destructiveItem = {
+  customDomainRemoval: (host: string) => `custom_domain_removal:${host}`,
+  customDomainChange: (host: string) => `custom_domain_change:${host}`,
+  doMigration: (kind: string, script: string, tag: string) => `do_migration:${kind}:${script}:${tag}`,
+  workflowRemoval: (name: string) => `workflow_removal:${name}`,
+  disable: (key: "workers_dev" | "preview_urls", script: string) => `${key}_disable:${script}`,
+};
+
+/** What the two configs alone say about routes, the workers.dev subdomain, Durable Object migrations and Workflows. */
 export interface TopologyDiff {
   changed: boolean;
   customDomains: RouteEntry[];
   zoneRoutes: RouteEntry[];
-  migration: { from: string | null; to: string; steps: MigrationStep[] } | null;
-  workflows: { create: WorkflowDef[]; update: Array<{ name: string; from: WorkflowBody; to: WorkflowBody }> };
+  /** Named (break-glass): custom domains to detach, and custom domains whose zone fields change. */
+  customDomainRemovals: RouteEntry[];
+  customDomainChanges: Array<{ from: RouteEntry; to: RouteEntry }>;
+  /** The target's explicit workers_dev / preview_urls where they changed (both configs set them as booleans). */
+  subdomain: { workers_dev?: boolean; preview_urls?: boolean; items: string[] } | null;
+  migration: { from: string | null; to: string; steps: MigrationStep[]; items: string[] } | null;
+  workflows: { create: WorkflowDef[]; update: Array<{ name: string; from: WorkflowBody; to: WorkflowBody }>; remove: WorkflowDef[] };
   /** Script-level settings a script upload sends from the target config (observability, logpush, tail_consumers). */
   scriptSettings: Record<string, unknown>;
+  /** The destructive items this diff contains, every one of them named by the caller. */
+  destructive: string[];
 }
 
 /**
  * The topology change between the running and the target config of `script`, or the refusal the configs alone
- * decide (removals, destructive Durable Object migrations, a rewritten migration history, unreadable entries).
- * Pure: no Cloudflare call.
+ * decide: a destructive change not in `allowed` (the items an owner-approved break-glass plan names), a zone route
+ * removal or a change that involves one, a rewritten migration history, unreadable entries. Pure: no Cloudflare call.
  */
-export function topologyDiff(runningToml: string, targetToml: string, script: string): { diff: TopologyDiff } | { reason: string } {
+export function topologyDiff(runningToml: string, targetToml: string, script: string, allowed: readonly string[] = []): { diff: TopologyDiff } | { reason: string } {
   const run = parseToml(runningToml);
   const tgt = parseToml(targetToml);
   if (!run || !tgt) return { reason: "config_unparsed" };
   const scriptSettings: Record<string, unknown> = {};
   for (const k of ["observability", "logpush", "tail_consumers"] as const) if (tgt[k] !== undefined) scriptSettings[k] = tgt[k];
-  const diff: TopologyDiff = { changed: false, customDomains: [], zoneRoutes: [], migration: null, workflows: { create: [], update: [] }, scriptSettings };
+  const diff: TopologyDiff = {
+    changed: false, customDomains: [], zoneRoutes: [], customDomainRemovals: [], customDomainChanges: [], subdomain: null, migration: null,
+    workflows: { create: [], update: [], remove: [] }, scriptSettings, destructive: [],
+  };
+  const named = (item: string) => { if (!allowed.includes(item)) return false; diff.destructive.push(item); return true; };
 
   // Routes and custom domains.
   if (!same(run.routes, tgt.routes) || !same(run.route, tgt.route)) {
@@ -276,14 +330,36 @@ export function topologyDiff(runningToml: string, targetToml: string, script: st
     if (!r || !t) return { reason: "routes_unreadable" };
     for (const [pattern, e] of r) {
       const now = t.get(pattern);
-      if (!now) return { reason: `${e.custom_domain ? "custom_domain" : "zone_route"}_removal_owner_run:${pattern}` };
-      if (!same(e, now)) return { reason: `route_changed_owner_run:${pattern}` };
+      if (!now) {
+        if (!e.custom_domain) return { reason: `zone_route_removal_owner_run:${pattern}` };
+        if (!named(destructiveItem.customDomainRemoval(pattern))) return { reason: `custom_domain_removal_owner_run:${pattern}` };
+        diff.customDomainRemovals.push(e);
+        continue;
+      }
+      if (same(e, now)) continue;
+      if (!e.custom_domain || !now.custom_domain) return { reason: `route_change_needs_zone_token:${pattern}` };
+      if (!named(destructiveItem.customDomainChange(pattern))) return { reason: `route_changed_owner_run:${pattern}` };
+      diff.customDomainChanges.push({ from: e, to: now });
     }
     for (const [pattern, e] of t) {
       if (r.has(pattern)) continue;
       (e.custom_domain ? diff.customDomains : diff.zoneRoutes).push(e);
     }
-    diff.changed ||= diff.customDomains.length + diff.zoneRoutes.length > 0;
+    diff.changed ||= diff.customDomains.length + diff.zoneRoutes.length + diff.customDomainRemovals.length + diff.customDomainChanges.length > 0;
+  }
+
+  // workers_dev / preview_urls (config-diff.ts refuses them as routing_changed unless both configs set booleans).
+  for (const k of ["workers_dev", "preview_urls"] as const) {
+    if (same(run[k], tgt[k])) continue;
+    if (typeof run[k] !== "boolean" || typeof tgt[k] !== "boolean") return { reason: "routing_changed" };
+    diff.subdomain ??= { items: [] };
+    if (tgt[k] === false) {
+      const item = destructiveItem.disable(k, script);
+      if (!named(item)) return { reason: `${k}_disable_owner_run:${script}` };
+      diff.subdomain.items.push(item);
+    }
+    diff.subdomain[k] = tgt[k] as boolean;
+    diff.changed = true;
   }
 
   // Durable Object migrations.
@@ -293,22 +369,24 @@ export function topologyDiff(runningToml: string, targetToml: string, script: st
     if (!r || !t) return { reason: "do_migration_unreadable" };
     if (t.length < r.length || r.some((m, i) => !same(m, t[i]))) return { reason: "do_migration_history_changed" };
     const steps: MigrationStep[] = [];
+    const items: string[] = [];
     for (const m of t.slice(r.length)) {
-      for (const kind of MIGRATION_KINDS) {
-        if (ADDITIVE.has(kind)) continue;
-        const x = m[kind];
-        if (Array.isArray(x) && x.length) return { reason: `do_migration_destructive:${kind}:${m.tag}` };
-      }
       const step: MigrationStep = {};
-      for (const kind of ["new_classes", "new_sqlite_classes"] as const) {
-        const x = m[kind] as string[] | undefined;
-        if (x?.length) step[kind] = [...x];
+      for (const kind of MIGRATION_KINDS) {
+        const x = m[kind];
+        if (!Array.isArray(x) || !x.length) continue;
+        if (!ADDITIVE.has(kind)) {
+          const item = destructiveItem.doMigration(kind, script, m.tag);
+          if (!named(item)) return { reason: `do_migration_destructive:${kind}:${m.tag}` };
+          items.push(item);
+        }
+        (step as Record<string, unknown>)[kind] = structuredClone(x);
       }
-      if (!step.new_classes && !step.new_sqlite_classes) return { reason: `do_migration_unreadable:${m.tag}` };
+      if (!Object.keys(step).length) return { reason: `do_migration_unreadable:${m.tag}` };
       steps.push(step);
     }
     if (steps.length) {
-      diff.migration = { from: r.at(-1)?.tag ?? null, to: t.at(-1)!.tag, steps };
+      diff.migration = { from: r.at(-1)?.tag ?? null, to: t.at(-1)!.tag, steps, items };
       diff.changed = true;
     }
   }
@@ -319,14 +397,19 @@ export function topologyDiff(runningToml: string, targetToml: string, script: st
     if (typeof r === "string") return { reason: r };
     const t = workflowDefs(tgt, script);
     if (typeof t === "string") return { reason: t };
-    for (const name of r.keys()) if (!t.has(name)) return { reason: `workflow_removal_owner_run:${name}` };
+    for (const [name, w] of r) {
+      if (t.has(name)) continue;
+      if (!named(destructiveItem.workflowRemoval(name))) return { reason: `workflow_removal_owner_run:${name}` };
+      diff.workflows.remove.push(w);
+    }
     for (const [name, w] of t) {
       const was = r.get(name);
       if (!was) diff.workflows.create.push(w);
       else if (!same(was.body, w.body)) diff.workflows.update.push({ name, from: was.body, to: w.body });
     }
-    diff.changed ||= diff.workflows.create.length + diff.workflows.update.length > 0;
+    diff.changed ||= diff.workflows.create.length + diff.workflows.update.length + diff.workflows.remove.length > 0;
   }
+  diff.destructive.sort();
   return { diff };
 }
 
@@ -334,53 +417,84 @@ export function topologyDiff(runningToml: string, targetToml: string, script: st
 // The plan against what Cloudflare reports (read only)
 // ---------------------------------------------------------------------------------------------------------
 
-export type TopologyStep =
+/**
+ * One step applied after the Worker is verified live. `item` is the break-glass item that allowed a destructive step
+ * (audited before the step); `irreversible` says, for the audit and the owner notice, what a restore cannot give back.
+ */
+export type TopologyStep = (
   | { kind: "custom_domain"; hostname: string; zone_id?: string; zone_name?: string }
+  | { kind: "custom_domain_detach"; hostname: string; reattach: { zone_id?: string; zone_name?: string } }
   /** `restore` is the running definition; null for a Workflow this deploy creates (kept on a restore). */
-  | { kind: "workflow"; name: string; body: WorkflowBody; restore: WorkflowBody | null };
+  | { kind: "workflow"; name: string; body: WorkflowBody; restore: WorkflowBody | null }
+  | { kind: "workflow_delete"; name: string; restore: WorkflowBody }
+  | { kind: "subdomain"; body: Subdomain; restore: Subdomain }
+) & { item?: string; irreversible?: string };
 export interface TopologyPlan {
   /** Applied in order after the Worker is verified live; undone newest first on a later failure. */
   steps: TopologyStep[];
   /** A Durable Object migration: the Worker is deployed through the Script Upload API with it. */
   migration: DoMigrationUpload | null;
+  /** The break-glass items of the migration (deleted, renamed or transferred classes), audited before the upload. */
+  migrationItems: string[];
   scriptSettings: Record<string, unknown>;
-  /** For the audit trail: `custom_domain:+<host>`, `zone_route:=<pattern>`, `do_migration:<from>-><to>`, `workflow:<create|update>:<name>`. */
+  /** For the audit trail: `custom_domain:+<host>`, `zone_route:=<pattern>`, `do_migration:<from>-><to>`, `workflow:<create|update>:<name>`, … */
   changes: string[];
+  /** Every destructive item the config diff contains (all named): the break-glass deploy checks each named item is here. */
+  destructive: string[];
 }
-export const NO_TOPOLOGY: TopologyPlan = Object.freeze({ steps: [], migration: null, scriptSettings: {}, changes: [] }) as TopologyPlan;
-export const hasTopology = (p: TopologyPlan | null | undefined) => Boolean(p && (p.steps.length || p.migration));
+export const NO_TOPOLOGY: TopologyPlan = Object.freeze({ steps: [], migration: null, migrationItems: [], scriptSettings: {}, changes: [], destructive: [] }) as TopologyPlan;
+
+export const DO_IRREVERSIBLE = "Cloudflare refuses a rollback across a Durable Object class change: no restore can bring back the previous version, and a deleted class's objects and storage are gone.";
+export const WORKFLOW_IRREVERSIBLE = "Deleting a Workflow deletes its instances and their state: a restore re-creates only the definition.";
 
 /** The Cloudflare reads the plan needs (CloudflareWorkers provides them). */
 export interface TopologyReader {
-  topology?: () => Pick<CloudflareTopology, "domains" | "workflow">;
+  topology?: () => Pick<CloudflareTopology, "domains" | "workflow" | "subdomain">;
   migrationTag?: (script: string) => Promise<string | null>;
   scriptRoutes?: (script: string) => Promise<Array<{ pattern: string; script: string | null }> | null>;
 }
 
 /**
  * The topology plan of one Worker: `topologyDiff`, then, only when it changes something, the live state it needs.
- * Never throws: a read that fails is `topology_read_failed:<error>`.
+ * `allowed` are the destructive items an owner-approved break-glass plan names. Never throws: a read that fails is
+ * `topology_read_failed:<error>`.
  */
-export async function planTopology(cf: TopologyReader, script: string, runningToml: string, targetToml: string, opts: { assets?: boolean } = {}):
+export async function planTopology(cf: TopologyReader, script: string, runningToml: string, targetToml: string, opts: { assets?: boolean; allowed?: readonly string[] } = {}):
   Promise<{ plan: TopologyPlan } | { reason: string }> {
-  const d = topologyDiff(runningToml, targetToml, script);
+  const d = topologyDiff(runningToml, targetToml, script, opts.allowed ?? []);
   if ("reason" in d) return d;
   const diff = d.diff;
   if (!diff.changed) return { plan: NO_TOPOLOGY };
   const steps: TopologyStep[] = [];
   const changes: string[] = [];
   let migration: DoMigrationUpload | null = null;
+  let migrationItems: string[] = [];
   try {
-    if (diff.customDomains.length || diff.workflows.create.length || diff.workflows.update.length) {
-      if (!cf.topology) return { reason: "topology_unverifiable" };
-    }
+    const needsClient = diff.customDomains.length + diff.customDomainRemovals.length + diff.customDomainChanges.length
+      + diff.workflows.create.length + diff.workflows.update.length + diff.workflows.remove.length > 0 || diff.subdomain !== null;
+    if (needsClient && !cf.topology) return { reason: "topology_unverifiable" };
     const topo = cf.topology?.();
+    // Named removals and changes first: what this Worker no longer serves.
+    for (const e of diff.customDomainRemovals) {
+      const item = destructiveItem.customDomainRemoval(e.pattern);
+      if (!(await topo!.domains(e.pattern)).some((x) => x.service === script)) { changes.push(`custom_domain:-${e.pattern}(absent)`); continue; }
+      steps.push({ kind: "custom_domain_detach", hostname: e.pattern, reattach: zoneOf(e), item });
+      changes.push(`custom_domain:-${e.pattern}`);
+    }
+    for (const c of diff.customDomainChanges) {
+      const live = await topo!.domains(c.from.pattern);
+      if (live.length !== 1 || live[0].service !== script) return { reason: `custom_domain_live_differs:${c.from.pattern}` };
+      const item = destructiveItem.customDomainChange(c.from.pattern);
+      steps.push({ kind: "custom_domain_detach", hostname: c.from.pattern, reattach: zoneOf(c.from), item });
+      steps.push({ kind: "custom_domain", hostname: c.to.pattern, ...zoneOf(c.to), item });
+      changes.push(`custom_domain:~${c.from.pattern}`);
+    }
     for (const e of diff.customDomains) {
       const live = await topo!.domains(e.pattern);
       const other = live.find((x) => x.service !== script);
       if (other) return { reason: `custom_domain_on_other_worker:${e.pattern}` };
       if (live.some((x) => x.service === script)) { changes.push(`custom_domain:=${e.pattern}`); continue; }
-      steps.push({ kind: "custom_domain", hostname: e.pattern, ...(e.zone_id ? { zone_id: e.zone_id } : {}), ...(e.zone_name ? { zone_name: e.zone_name } : {}) });
+      steps.push({ kind: "custom_domain", hostname: e.pattern, ...zoneOf(e) });
       changes.push(`custom_domain:+${e.pattern}`);
     }
     if (diff.zoneRoutes.length) {
@@ -400,6 +514,7 @@ export async function planTopology(cf: TopologyReader, script: string, runningTo
       else if (tag !== diff.migration.from) return { reason: "do_migration_tag_differs" };
       else {
         migration = { ...(diff.migration.from ? { old_tag: diff.migration.from } : {}), new_tag: diff.migration.to, steps: diff.migration.steps };
+        migrationItems = diff.migration.items;
         changes.push(`do_migration:${diff.migration.from ?? "none"}->${diff.migration.to}`);
       }
     }
@@ -415,60 +530,136 @@ export async function planTopology(cf: TopologyReader, script: string, runningTo
       steps.push({ kind: "workflow", name: w.name, body: w.to, restore: w.from });
       changes.push(`workflow:update:${w.name}`);
     }
+    for (const w of diff.workflows.remove) {
+      const live = await topo!.workflow(w.name);
+      if (!live) { changes.push(`workflow:remove:${w.name}(absent)`); continue; }
+      if (live.script_name !== script) return { reason: `workflow_other_script:${w.name}` };
+      steps.push({ kind: "workflow_delete", name: w.name, restore: w.body, item: destructiveItem.workflowRemoval(w.name), irreversible: WORKFLOW_IRREVERSIBLE });
+      changes.push(`workflow:remove:${w.name}`);
+    }
+    if (diff.subdomain) {
+      const live = await topo!.subdomain(script);
+      const body: Subdomain = { enabled: diff.subdomain.workers_dev ?? live.enabled, previews_enabled: diff.subdomain.preview_urls ?? live.previews_enabled };
+      if (!same(body, live)) {
+        steps.push({ kind: "subdomain", body, restore: live, ...(diff.subdomain.items.length ? { item: diff.subdomain.items.join(",") } : {}) });
+        changes.push(`subdomain:workers_dev=${body.enabled},preview_urls=${body.previews_enabled}`);
+      }
+    }
   } catch (err) {
     return { reason: `topology_read_failed:${String((err as Error)?.message ?? err).slice(0, 80)}` };
   }
-  return { plan: { steps, migration, scriptSettings: diff.scriptSettings, changes } };
+  return { plan: { steps, migration, migrationItems, scriptSettings: diff.scriptSettings, changes, destructive: diff.destructive } };
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // Applying, verifying, restoring
 // ---------------------------------------------------------------------------------------------------------
 
-export const topologyStepLabel = (s: TopologyStep) => s.kind === "custom_domain" ? `custom_domain:${s.hostname}` : `workflow:${s.name}`;
+export function topologyStepLabel(s: TopologyStep): string {
+  switch (s.kind) {
+    case "custom_domain": return `custom_domain:${s.hostname}`;
+    case "custom_domain_detach": return `custom_domain_detach:${s.hostname}`;
+    case "workflow": return `workflow:${s.name}`;
+    case "workflow_delete": return `workflow_delete:${s.name}`;
+    case "subdomain": return "subdomain";
+  }
+}
+
+type TopologyClient = Pick<CloudflareTopology, "domains" | "attachDomain" | "detachDomain" | "workflow" | "putWorkflow" | "deleteWorkflow" | "subdomain" | "setSubdomain">;
+
+async function untilAttached(topo: TopologyClient, script: string, hostname: string, delayMs?: number): Promise<void> {
+  for (let i = 0; ; i++) {
+    const now = await topo.domains(hostname);
+    if (now.length === 1 && now[0].service === script && now[0].enabled !== false) return;
+    if (i >= TOPOLOGY_VERIFY_ATTEMPTS - 1) throw new Error(`custom_domain_not_attached:${hostname}`);
+    await sleep(delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+  }
+}
+async function detachAll(topo: TopologyClient, script: string, hostname: string, delayMs?: number): Promise<void> {
+  for (const d of (await topo.domains(hostname)).filter((x) => x.service === script)) await topo.detachDomain(d.id);
+  for (let i = 0; ; i++) {
+    if (!(await topo.domains(hostname)).some((x) => x.service === script)) return;
+    if (i >= TOPOLOGY_VERIFY_ATTEMPTS - 1) throw new Error(`custom_domain_still_attached:${hostname}`);
+    await sleep(delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+  }
+}
+async function workflowIs(topo: TopologyClient, name: string, body: WorkflowBody | null, error: string): Promise<void> {
+  const now = await topo.workflow(name);
+  if (body === null ? now !== null : !now || now.class_name !== body.class_name || now.script_name !== body.script_name) throw new Error(`${error}:${name}`);
+}
+async function subdomainIs(topo: TopologyClient, script: string, body: Subdomain, error: string): Promise<void> {
+  if (!same(await topo.subdomain(script), body)) throw new Error(error);
+}
 
 /**
  * Apply one step and read it back. `onWrite` is called right before the first write, so the caller restores an
  * ambiguous failure as well, and never undoes what this step did not change. Throws on any difference.
  */
-export async function applyTopologyStep(topo: Pick<CloudflareTopology, "domains" | "attachDomain" | "workflow" | "putWorkflow">, script: string, step: TopologyStep,
-  onWrite: () => void, opts: { delayMs?: number } = {}): Promise<void> {
-  if (step.kind === "custom_domain") {
-    const before = await topo.domains(step.hostname);
-    if (before.some((x) => x.service !== script)) throw new Error(`custom_domain_on_other_worker:${step.hostname}`);
-    if (before.some((x) => x.service === script)) return; // attached meanwhile: nothing to do, nothing to undo
-    onWrite();
-    await topo.attachDomain({ hostname: step.hostname, service: script, ...(step.zone_id ? { zone_id: step.zone_id } : {}), ...(step.zone_name ? { zone_name: step.zone_name } : {}) });
-    for (let i = 0; ; i++) {
-      const now = await topo.domains(step.hostname);
-      if (now.length === 1 && now[0].service === script && now[0].enabled !== false) return;
-      if (i >= TOPOLOGY_VERIFY_ATTEMPTS - 1) throw new Error(`custom_domain_not_attached:${step.hostname}`);
-      await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+export async function applyTopologyStep(topo: TopologyClient, script: string, step: TopologyStep, onWrite: () => void, opts: { delayMs?: number } = {}): Promise<void> {
+  switch (step.kind) {
+    case "custom_domain": {
+      const before = await topo.domains(step.hostname);
+      if (before.some((x) => x.service !== script)) throw new Error(`custom_domain_on_other_worker:${step.hostname}`);
+      if (before.some((x) => x.service === script)) return; // attached meanwhile: nothing to do, nothing to undo
+      onWrite();
+      await topo.attachDomain({ hostname: step.hostname, service: script, ...(step.zone_id ? { zone_id: step.zone_id } : {}), ...(step.zone_name ? { zone_name: step.zone_name } : {}) });
+      return untilAttached(topo, script, step.hostname, opts.delayMs);
     }
+    case "custom_domain_detach": {
+      if (!(await topo.domains(step.hostname)).some((x) => x.service === script)) return; // already gone
+      onWrite();
+      return detachAll(topo, script, step.hostname, opts.delayMs);
+    }
+    case "workflow":
+      onWrite();
+      await topo.putWorkflow(step.name, step.body);
+      return workflowIs(topo, step.name, step.body, "workflow_not_applied");
+    case "workflow_delete": {
+      const live = await topo.workflow(step.name);
+      if (!live) return; // already gone
+      if (live.script_name !== script) throw new Error(`workflow_other_script:${step.name}`);
+      onWrite();
+      await topo.deleteWorkflow(step.name);
+      return workflowIs(topo, step.name, null, "workflow_not_deleted");
+    }
+    case "subdomain":
+      onWrite();
+      await topo.setSubdomain(script, step.body);
+      return subdomainIs(topo, script, step.body, "subdomain_not_applied");
   }
-  onWrite();
-  await topo.putWorkflow(step.name, step.body);
-  const now = await topo.workflow(step.name);
-  if (!now || now.class_name !== step.body.class_name || now.script_name !== step.body.script_name) throw new Error(`workflow_not_applied:${step.name}`);
 }
 
 /** Undo one applied step; returns the step label for the audit trail. Throws when the undo cannot be verified. */
-export async function restoreTopologyStep(topo: Pick<CloudflareTopology, "domains" | "detachDomain" | "workflow" | "putWorkflow">, script: string, step: TopologyStep,
-  opts: { delayMs?: number } = {}): Promise<string> {
-  if (step.kind === "custom_domain") {
-    for (const d of (await topo.domains(step.hostname)).filter((x) => x.service === script)) await topo.detachDomain(d.id);
-    for (let i = 0; ; i++) {
-      if (!(await topo.domains(step.hostname)).some((x) => x.service === script)) return `custom_domain_detached:${step.hostname}`;
-      if (i >= TOPOLOGY_VERIFY_ATTEMPTS - 1) throw new Error(`custom_domain_still_attached:${step.hostname}`);
-      await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+export async function restoreTopologyStep(topo: TopologyClient, script: string, step: TopologyStep, opts: { delayMs?: number } = {}): Promise<string> {
+  switch (step.kind) {
+    case "custom_domain":
+      await detachAll(topo, script, step.hostname, opts.delayMs);
+      return `custom_domain_detached:${step.hostname}`;
+    case "custom_domain_detach": {
+      const live = await topo.domains(step.hostname);
+      if (!live.some((x) => x.service === script)) {
+        if (live.length) throw new Error(`custom_domain_on_other_worker:${step.hostname}`);
+        await topo.attachDomain({ hostname: step.hostname, service: script, ...step.reattach });
+      }
+      await untilAttached(topo, script, step.hostname, opts.delayMs);
+      return `custom_domain_reattached:${step.hostname}`;
     }
+    case "workflow":
+      // A Workflow this deploy created is kept: deleting one destroys its instances. The restored code does not bind it.
+      if (!step.restore) return `workflow_kept:${step.name}`;
+      await topo.putWorkflow(step.name, step.restore);
+      await workflowIs(topo, step.name, step.restore, "workflow_not_restored");
+      return `workflow_restored:${step.name}`;
+    case "workflow_delete":
+      // The definition comes back; its instances do not (WORKFLOW_IRREVERSIBLE).
+      if (!(await topo.workflow(step.name))) await topo.putWorkflow(step.name, step.restore);
+      await workflowIs(topo, step.name, step.restore, "workflow_not_recreated");
+      return `workflow_recreated:${step.name}`;
+    case "subdomain":
+      await topo.setSubdomain(script, step.restore);
+      await subdomainIs(topo, script, step.restore, "subdomain_not_restored");
+      return "subdomain_restored";
   }
-  // A Workflow this deploy created is kept: deleting one destroys its instances (owner-run). The restored code does not bind it.
-  if (!step.restore) return `workflow_kept:${step.name}`;
-  await topo.putWorkflow(step.name, step.restore);
-  const now = await topo.workflow(step.name);
-  if (!now || now.class_name !== step.restore.class_name || now.script_name !== step.restore.script_name) throw new Error(`workflow_not_restored:${step.name}`);
-  return `workflow_restored:${step.name}`;
 }
 
 /**
@@ -479,9 +670,10 @@ export async function restoreTopologyStep(topo: Pick<CloudflareTopology, "domain
  */
 export async function deployWithDoMigration(cf: Pick<CloudflareWorkers, "deployScript" | "active" | "migrationTag">, service: string,
   upload: { module: string; text: string; metadata: VersionMetadata; extra: ExtraModule[] }, plan: TopologyPlan, captured: DeploymentVersions,
-  opts: { delayMs?: number } = {}): Promise<string> {
+  opts: { delayMs?: number; onUploaded?: () => void } = {}): Promise<string> {
   if (!plan.migration) throw new Error("do_migration_missing");
   await cf.deployScript(service, upload.module, upload.text, upload.metadata, upload.extra, plan.migration, plan.scriptSettings);
+  opts.onUploaded?.();
   let versionId: string | null = null;
   for (let i = 0; i < TOPOLOGY_VERIFY_ATTEMPTS && !versionId; i++) {
     if (i > 0) await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
