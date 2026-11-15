@@ -39,6 +39,7 @@ Each step is reversible until step 7.
 
    Turn off the GitHub-sourced change requests (`forge-change-request.yml`) in the same change. That change is the last one GitHub merges, and `mirror-to-forge.yml` must copy it to the Forge (run it by hand if the change disabled its trigger).
 5. **Flip contributors.** Contributors push to `platform-work` only (G4). For Claude Code sessions, the push credential is the owner-provided `platform-work` token, injected by the session proxy and never shown.
+   - **Linear history (incident 2026-11-14, migration 0071).** Keep a branch current by rebasing it onto `main`, or by a merge with `main` as the first parent (`git checkout -B <branch> origin/main && git merge <old head>`). Do not run `git merge main` on the branch: `main` becomes the second parent, and the Forge refuses the request as `main_not_first_parent` (verdict `blocked`, not checked, never proposed), because its fast-forward would take `main`'s previous heads off `main`'s first-parent history (the deploy planner follows that history).
 6. **Retire GitHub paths.** Disable these workflows; they stay in the history:
    - `mirror-to-forge.yml`, `forge-ci-report.yml`, `forge-change-request.yml`;
    - the `deploy-*.yml` workflows, `rollback-worker.yml` and `retire-worker.yml`;
@@ -86,6 +87,10 @@ Each step is reversible until step 7.
     (`595f052`). Until a native deploy of a Forge-merged commit has succeeded, the owner allowed the orchestrator session to
     fast-forward GitHub's main to the Forge's main (2026-11-13), so the fallback keeps working.
 - A deploy refused by both paths is audited as `deployment.no_path` with the native reason.
+- 2026-11-14: change-request branches were updated with `git merge main` (main as the second parent). The fast-forward
+  merges took main's previous heads, the deployed versions, off main's first-parent history; the deploy planner stopped
+  planning and every deploy stuck. The Forge now refuses such a head (`main_not_first_parent`, the linear-history guard,
+  migration 0071): main's head must be on the head's first-parent chain, within 500 commits.
 - Open before step 6: a migration the Forge marks destructive (an `UPDATE`, like 0058) has no native path
   (`destructive_migration`); with the workflows off it cannot be deployed. The two change requests reopened before the fix
   stay `closed` in D1; their merges are in the audit chain (`forge.merged`).
