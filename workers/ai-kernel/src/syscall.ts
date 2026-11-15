@@ -240,6 +240,7 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
 }
 
 const finiteOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const HIT_RATE_STATUSES: ReadonlySet<unknown> = new Set(["ok", "no_scored_data", "unavailable_source_field"]);
 
 /** Only the known fields of a trading_organ_health.v1 body, each of the expected type: numbers and names, no text. */
 export function presentOrganHealth(bodyJson: string): JsonObject {
@@ -249,7 +250,13 @@ export function presentOrganHealth(bodyJson: string): JsonObject {
     .filter((m: any) => m && typeof m.metric === "string" && /^[a-z0-9_]{1,40}$/.test(m.metric))
     .map((m: any) => {
       const out: JsonObject = { metric: m.metric, value: finiteOrNull(m.value), baseline_7d: finiteOrNull(m.baseline_7d), z: finiteOrNull(m.z) };
-      if (m.status === "unavailable_source_field") out.status = m.status;
+      if (HIT_RATE_STATUSES.has(m.status)) out.status = m.status;
+      // The hit rates' scoring context (2026-11-15): counts, the WAIT accuracy, the scored subject and its time.
+      if (/^hit_rate_/.test(m.metric)) {
+        for (const k of ["n_directional", "hit", "miss", "wait_accuracy"]) if (k in m) out[k] = finiteOrNull(m[k]);
+        if ("subject" in m) out.subject = typeof m.subject === "string" && /^[a-z0-9:_-]{1,40}$/.test(m.subject) ? m.subject : null;
+        if ("as_of" in m) out.as_of = typeof m.as_of === "string" && /^[0-9TZ:.+-]{10,40}$/.test(m.as_of) ? m.as_of : null;
+      }
       return out;
     });
   return {
@@ -435,6 +442,57 @@ async function fetchXauusd(
   }
 }
 
+/**
+ * The outcome subject each decisions endpoint scores (xauusd 8a27029): /api/engine/decisions is the Decision Engine
+ * on M15, /api/decisions the H1 chain. A summary for any other subject is not this source's and is dropped.
+ */
+export const OUTCOME_SUBJECT_BY_ENDPOINT: Readonly<Record<string, { subject: string; timeframe: string }>> = Object.freeze({
+  engine: { subject: "engine:15", timeframe: "15" },
+  legacy: { subject: "chain:h1", timeframe: "60" },
+});
+export const OUTCOME_SCORING_VERSION = /^cryptophys\.outcome-scoring\.v\d{1,3}$/;
+const OUTCOME_WINDOWS = ["7d", "30d"] as const;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+const countOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1e9 ? v : null);
+const rateOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1 ? v : null);
+
+/**
+ * xauusd's `outcome_summary`, strictly: only the known fields, each of its type (counts are non-negative integers,
+ * rates are in [0, 1], anything else is null); every other field, a price or level included, is dropped. Null when
+ * the field is absent (an older deploy), null (the scorecard read failed), malformed, of an unknown scoring version,
+ * or for a subject other than the one the decisions came from.
+ */
+export function normalizeOutcomeSummary(raw: unknown, endpoint: string): JsonObject | null {
+  const expected = OUTCOME_SUBJECT_BY_ENDPOINT[endpoint];
+  if (!expected || !raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.scoring_version !== "string" || !OUTCOME_SCORING_VERSION.test(r.scoring_version)) return null;
+  if (r.subject !== expected.subject) return null;
+  const rawWindows = r.windows && typeof r.windows === "object" && !Array.isArray(r.windows) ? (r.windows as Record<string, unknown>) : {};
+  const windows: JsonObject = {};
+  for (const name of OUTCOME_WINDOWS) {
+    const w = rawWindows[name];
+    if (!w || typeof w !== "object" || Array.isArray(w)) { windows[name] = null; continue; }
+    const x = w as Record<string, unknown>;
+    windows[name] = {
+      n_directional: countOrNull(x.n_directional),
+      hit: countOrNull(x.hit),
+      miss: countOrNull(x.miss),
+      hit_rate: rateOrNull(x.hit_rate),
+      wait_n: countOrNull(x.wait_n),
+      wait_accuracy: rateOrNull(x.wait_accuracy),
+    };
+  }
+  return {
+    scoring_version: r.scoring_version,
+    subject: expected.subject,
+    timeframe: r.timeframe === expected.timeframe ? expected.timeframe : null,
+    windows,
+    as_of: typeof r.as_of === "string" && r.as_of.length <= 40 && ISO_TIME.test(r.as_of) ? r.as_of : null,
+  };
+}
+
 /** Tier 0: latest XAUUSD advisory decisions and execution deals from xauusd-ai-trading-assistant (read-only). */
 export async function observeSignals(
   env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } },
@@ -519,6 +577,8 @@ export async function observeSignals(
     endpoint_used: usedEndpoint,
     latest: latest as unknown as JsonObject,
     recent: items,
+    // xauusd 8a27029: the outcome scores of the subject these decisions come from; null when absent or invalid.
+    outcome_summary: normalizeOutcomeSummary(body?.outcome_summary, usedEndpoint),
   };
 
   if (opts.includeDeals) {

@@ -65,14 +65,36 @@ export interface XauusdDecision {
   reasoning: string;
 }
 
+/** One window of xauusd's outcome scores, as signals.observe validates it (counts and rates, or null). */
+export interface OutcomeWindow {
+  n_directional: number | null;
+  hit: number | null;
+  miss: number | null;
+  /** hit / (hit + miss), or null with no scored directional decision. */
+  hit_rate: number | null;
+  wait_n: number | null;
+  wait_accuracy: number | null;
+}
+
+/** xauusd's `outcome_summary` (8a27029), validated by signals.observe; null when absent, null or invalid. */
+export interface OutcomeSummary {
+  scoring_version: string;
+  subject: string;
+  timeframe: string | null;
+  windows: { "7d": OutcomeWindow | null; "30d": OutcomeWindow | null };
+  as_of: string | null;
+}
+
 export interface XauusdObservation {
   source: string;
   observed_at: string;
   available: boolean;
   stale?: boolean;
   error?: string;
+  endpoint_used?: string;
   latest: XauusdDecision | null;
   recent: XauusdDecision[];
+  outcome_summary?: OutcomeSummary | null;
 }
 
 /** One decision as the rolling window keeps it: no reasoning, no ratio, no level. */
@@ -105,25 +127,64 @@ export const ORGAN_HEALTH_METRICS = [
 export type OrganHealthMetricName = (typeof ORGAN_HEALTH_METRICS)[number];
 
 /**
- * signals.observe does not expose xauusd's outcome scores (it reads only /api/engine/decisions, or /api/decisions,
- * and /api/deals), so the hit rates are null with this status until it does. No value is ever invented.
+ * The hit rates come from xauusd's `outcome_summary` (served with the decisions since xauusd 8a27029):
+ *  - "ok": the window has a hit rate;
+ *  - "no_scored_data": the summary is there but nothing directional is scored yet (n_directional 0, hit_rate null),
+ *    for example while the market is closed or for a new subject;
+ *  - "unavailable_source_field": the summary (or the window) is absent or null (an older deploy, a failed scorecard
+ *    read, or a summary for another subject than the decisions'). No value is ever invented.
  */
 export const UNAVAILABLE_SOURCE_FIELD = "unavailable_source_field";
-const UNAVAILABLE_METRICS: ReadonlySet<string> = new Set(["hit_rate_7d", "hit_rate_30d"]);
+export const NO_SCORED_DATA = "no_scored_data";
+export const HIT_RATE_OK = "ok";
+export type HitRateStatus = typeof HIT_RATE_OK | typeof NO_SCORED_DATA | typeof UNAVAILABLE_SOURCE_FIELD;
+const HIT_RATE_WINDOWS: Readonly<Record<string, "7d" | "30d">> = { hit_rate_7d: "7d", hit_rate_30d: "30d" };
+/** The outcome subject of each decisions endpoint (signals.observe's endpoint_used). */
+export const OUTCOME_SUBJECT: Readonly<Record<string, string>> = { engine: "engine:15", legacy: "chain:h1" };
 
 export interface OrganHealthMetric {
   metric: OrganHealthMetricName;
   value: number | null;
   baseline_7d: number | null;
   z: number | null;
-  status?: typeof UNAVAILABLE_SOURCE_FIELD;
+  /** Hit rates only. */
+  status?: HitRateStatus;
+  /** Hit rates with a summary only: the window's scoring context. */
+  n_directional?: number | null;
+  hit?: number | null;
+  miss?: number | null;
+  wait_accuracy?: number | null;
+  subject?: string;
+  as_of?: string | null;
+}
+
+/** The summary when it belongs to the endpoint the decisions came from; otherwise null. */
+export function outcomeForSource(summary: OutcomeSummary | null | undefined, endpointUsed: string | undefined): OutcomeSummary | null {
+  if (!summary || typeof summary !== "object" || !summary.windows || typeof summary.windows !== "object") return null;
+  const expected = OUTCOME_SUBJECT[endpointUsed ?? "engine"];
+  return expected && summary.subject === expected ? summary : null;
+}
+
+const numOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+function outcomeWindow(summary: OutcomeSummary | null, metric: string): OutcomeWindow | null {
+  const name = HIT_RATE_WINDOWS[metric];
+  const w = name && summary ? summary.windows[name] : null;
+  return w && typeof w === "object" ? w : null;
+}
+
+/** A hit rate's status (see UNAVAILABLE_SOURCE_FIELD). */
+export function hitRateStatus(summary: OutcomeSummary | null, metric: "hit_rate_7d" | "hit_rate_30d"): HitRateStatus {
+  const w = outcomeWindow(summary, metric);
+  if (!w) return UNAVAILABLE_SOURCE_FIELD;
+  return numOrNull(w.hit_rate) !== null ? HIT_RATE_OK : NO_SCORED_DATA;
 }
 
 /** One hourly sample: the UTC hour index and the values in ORGAN_HEALTH_METRICS order. */
 export interface OrganHealthSample { h: number; v: (number | null)[] }
 interface SampleStore { schema: string; samples: OrganHealthSample[] }
 
-interface LastSnapshot { at: number; stale: boolean; values: Record<string, { value: number | null; z: number | null }> }
+interface LastSnapshot { at: number; stale: boolean; values: Record<string, { value: number | null; z: number | null; status?: string }> }
 
 interface MemoryState {
   last_empty_report_at?: number;
@@ -216,7 +277,9 @@ export function organHealthValues(
   latest: { open_ms: number; tf: number } | null,
   incidents: number[],
   now: number,
+  outcome: OutcomeSummary | null = null,
 ): Record<OrganHealthMetricName, number | null> {
+  const hitRate = (m: string) => { const v = numOrNull(outcomeWindow(outcome, m)?.hit_rate); return v === null ? null : r3(v); };
   const tf = latest?.tf ?? window[window.length - 1]?.tf ?? 60;
   const barMs = tf * 60_000;
   const day = window
@@ -240,8 +303,8 @@ export function organHealthValues(
     confidence_p50_24h: conf.length ? r3(median(conf)) : null,
     confidence_min_24h: conf.length ? r3(conf[0]) : null,
     confidence_max_24h: conf.length ? r3(conf[conf.length - 1]) : null,
-    hit_rate_7d: null,
-    hit_rate_30d: null,
+    hit_rate_7d: hitRate("hit_rate_7d"),
+    hit_rate_30d: hitRate("hit_rate_30d"),
     staleness_incidents_24h: incidents.filter((t) => t > now - DAY_MS && t <= now).length,
     staleness_incidents_7d: incidents.filter((t) => t > now - 7 * DAY_MS && t <= now).length,
   };
@@ -252,7 +315,12 @@ export function organHealthValues(
  * excluded) and z ((value - mean) / population standard deviation). Fewer than MIN_BASELINE_SAMPLES samples with a
  * value, or no value now, gives null; a flat baseline gives z 0 when the value equals it and null otherwise.
  */
-export function withBaselines(values: Record<OrganHealthMetricName, number | null>, samples: OrganHealthSample[], now: number): OrganHealthMetric[] {
+export function withBaselines(
+  values: Record<OrganHealthMetricName, number | null>,
+  samples: OrganHealthSample[],
+  now: number,
+  outcome: OutcomeSummary | null = null,
+): OrganHealthMetric[] {
   const hour = Math.floor(now / HOUR_MS);
   const prior = samples.filter((s) => s.h < hour && s.h >= hour - SAMPLE_HOURS);
   return ORGAN_HEALTH_METRICS.map((metric, i) => {
@@ -267,7 +335,18 @@ export function withBaselines(values: Record<OrganHealthMetricName, number | nul
       if (value !== null) z = sd > 1e-9 ? r2((value - mean) / sd) : Math.abs(value - mean) < 1e-9 ? 0 : null;
     }
     const m: OrganHealthMetric = { metric, value, baseline_7d: baseline, z };
-    if (UNAVAILABLE_METRICS.has(metric)) m.status = UNAVAILABLE_SOURCE_FIELD;
+    if (metric === "hit_rate_7d" || metric === "hit_rate_30d") {
+      m.status = hitRateStatus(outcome, metric);
+      const w = outcomeWindow(outcome, metric);
+      if (w && outcome) {
+        m.n_directional = numOrNull(w.n_directional);
+        m.hit = numOrNull(w.hit);
+        m.miss = numOrNull(w.miss);
+        m.wait_accuracy = numOrNull(w.wait_accuracy);
+        m.subject = outcome.subject;
+        m.as_of = typeof outcome.as_of === "string" ? outcome.as_of : null;
+      }
+    }
     return m;
   });
 }
@@ -293,6 +372,8 @@ export const MATERIAL_Z = 3;
  *  - decisions_24h moved by at least max(2, 10 % of the last value);
  *  - a share, confidence statistic or hit rate moved by at least 0.05;
  *  - a metric's |z| newly reached 3;
+ *  - a hit rate's status changed (unavailable_source_field, no_scored_data, ok; a snapshot from before the statuses
+ *    counts as unavailable_source_field, which is all it could be);
  *  - the staleness flag of the observation changed ("stale").
  * latest_decision_age_bars grows every cycle by design, so only its staleness (the flag) and its z count.
  */
@@ -311,6 +392,10 @@ export function snapshotChanges(last: LastSnapshot | undefined, metrics: OrganHe
       if (COUNT_METRICS.has(m.metric)) material = d > 0;
       else if (m.metric === "decisions_24h") material = d >= Math.max(2, 0.1 * prevValue);
       else if (m.metric !== "latest_decision_age_bars") material = d >= MATERIAL_RATIO_DELTA - 1e-9;
+    }
+    if (m.status !== undefined && prev) {
+      const prevStatus = prev.status ?? (m.metric in HIT_RATE_WINDOWS ? UNAVAILABLE_SOURCE_FIELD : undefined);
+      if (prevStatus !== m.status) material = true;
     }
     const anomalous = m.z !== null && Math.abs(m.z) >= MATERIAL_Z;
     const wasAnomalous = prevZ !== null && Math.abs(prevZ) >= MATERIAL_Z;
@@ -453,10 +538,11 @@ export async function runSignalCycle(
 
   // The metric snapshot: one sample per UTC hour, published on a material change or at the heartbeat.
   const latestW = latest ? toWindowDecision(latest) : null;
-  const values = organHealthValues(window, latestW, incidents, now);
+  const outcome = outcomeForSource(obs.outcome_summary, obs.endpoint_used);
+  const values = organHealthValues(window, latestW, incidents, now, outcome);
   const store = await memory.get<SampleStore>("organ_health_samples");
   const samples = store && store.schema === SNAPSHOT_SCHEMA && Array.isArray(store.samples) ? store.samples : [];
-  const metrics = withBaselines(values, samples, now);
+  const metrics = withBaselines(values, samples, now, outcome);
   await memory.put("organ_health_samples", { schema: SNAPSHOT_SCHEMA, samples: recordSample(samples, values, now) });
 
   const stale = Boolean(obs.stale);
@@ -487,7 +573,7 @@ export async function runSignalCycle(
     });
     report.actions.push(published);
     if (published.outcome === "succeeded") {
-      mem.last_snapshot = { at: now, stale, values: Object.fromEntries(metrics.map((m) => [m.metric, { value: m.value, z: m.z }])) };
+      mem.last_snapshot = { at: now, stale, values: Object.fromEntries(metrics.map((m) => [m.metric, m.status ? { value: m.value, z: m.z, status: m.status } : { value: m.value, z: m.z }])) };
       await save();
       const reportId = String(((published.result.report as JsonObject | undefined)?.report_id) ?? "");
       await rememberOutcomeForAgent(env, SIGNAL_ANALYST_ID, "xauusd_digest", subject, reportId || null, report);

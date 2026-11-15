@@ -19,7 +19,11 @@ export interface Overview {
   /** The Signal Analyst's newest trading organ health snapshot (owner 2026-11-15): metric, value, 7-day baseline, z. */
   trading_organ_health?: {
     report_id?: string; reported_at?: string; observed_at?: string | null; bar_minutes?: number | null; stale?: boolean | null; error?: string;
-    metrics?: { metric: string; value: number | null; baseline_7d: number | null; z: number | null; status?: string }[];
+    metrics?: {
+      metric: string; value: number | null; baseline_7d: number | null; z: number | null; status?: string;
+      // Hit rates only: the scoring context of xauusd's outcome_summary.
+      n_directional?: number | null; hit?: number | null; miss?: number | null; wait_accuracy?: number | null; subject?: string | null; as_of?: string | null;
+    }[];
   } | null;
 }
 
