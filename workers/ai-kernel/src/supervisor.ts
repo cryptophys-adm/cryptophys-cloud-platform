@@ -17,7 +17,7 @@ import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { expireOwnerProposals } from "./consensus.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
-import { latestCensusRow, proposalFor, type CensusRow } from "./organism.ts";
+import { latestCensusRow, latestCensusRows, proposalFor, undeclaredEngineProven, undeclaredEnginePersistent, RETIRE_ENGINE_PERSIST_ROWS, type CensusRow } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "../../control-plane-shared/src/consensus-rules.ts";
 import { SCHEDULED_IDLE_REASON, idleWindowMs, isIdle } from "../../control-plane-shared/src/agent-idle.ts";
@@ -432,24 +432,39 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
     // an engine, a council seat) is proposed for registration, one per cycle, each action and
     // target (an engine: each task) at most once a day. Seats and privileged agents are critical: they reach the owner.
-    const census = await latestCensusRow(env);
+    const censusRows = await latestCensusRows(env, RETIRE_ENGINE_PERSIST_ROWS);
+    const census = censusRows[0] ?? null;
+    // Owner 2026-11-15 ("Aksi retire_engine"): an enabled engine its organ's DNA no longer declares is proposed for
+    // retire_engine only once the finding persisted (2 consecutive census rows, or 1 h seen without a gap here) and
+    // only for an organ whose DNA the census read. The first sighting of each proven finding is kept in memory; a
+    // finding that is absent or unproven in a cycle starts again.
+    const undeclaredSeen = (await memory.get<Record<string, number>>("undeclared_engines_seen")) ?? {};
+    const seenNow: Record<string, number> = {};
+    for (const f of census?.findings ?? []) {
+      if (f.kind === "undeclared_engine" && census && undeclaredEngineProven(census, f.subject)) seenNow[f.subject] = undeclaredSeen[f.subject] ?? now;
+    }
+    await memory.put("undeclared_engines_seen", seenNow);
+    const persistent = (subject: string) => undeclaredEnginePersistent(censusRows, subject, seenNow[subject], now);
     // 2026-11-13: eleven XAUUSD engines stayed unregistered for a day. Their proposals were rejected 8-0 only because
     // the brake held (an open critical report), and each rejection then held its engine for the 24 h cooldown although
     // the brake was off hours later. So: nothing is proposed while the brake holds (every voter would reject it), and
     // a registration rejected only by the brake is proposed again once it is off. Unreadable counts as on (fail closed).
     let registrationBrakeOff = false;
     try { registrationBrakeOff = (await openCriticalReportRows(env.DB, now, 1)).length === 0; } catch { registrationBrakeOff = false; }
-    const waiting = (census?.findings ?? []).filter((f) => census && proposalFor(census, f)).length;
+    // Registrations go first: a retirement is housekeeping and waits behind growth (one proposal per cycle).
+    const ordered = [...(census?.findings ?? [])].sort((a, b) => Number(a.kind === "undeclared_engine") - Number(b.kind === "undeclared_engine"));
+    const waiting = ordered.filter((f) => census && proposalFor(census, f, persistent)).length;
     if (!registrationBrakeOff && waiting > 0) {
       report.findings.push({ kind: "organism", action: "none", why: `${waiting} registration(s) wait: a critical report is open, so the council would reject them` });
     }
-    for (const f of registrationBrakeOff ? census?.findings ?? [] : []) {
-      const prop = census ? proposalFor(census, f) : null;
+    for (const f of registrationBrakeOff ? ordered : []) {
+      const prop = census ? proposalFor(census, f, persistent) : null;
       if (!prop) continue;
       // An engine's target is its service, so its task is part of the key: a Worker's second new AI task is not
       // held for a day behind its first (owner 2026-11-12). A proposal the Policy Engine vetoed (shadow_blocked,
       // e.g. its hourly limit per action and target) is retried after an hour, as deploy proposals are.
-      const task = prop.action === "register_engine" ? String(prop.params.task ?? "") : null;
+      // retire_engine mirrors register_engine: the same per-task cooldown and the same hourly limit per Worker.
+      const task = prop.action === "register_engine" || prop.action === "retire_engine" ? String(prop.params.task ?? "") : null;
       const recent = await env.DB.prepare(
         `SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ?
            AND (status <> 'shadow_blocked' OR created_at >= ?)

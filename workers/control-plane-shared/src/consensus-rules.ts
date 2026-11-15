@@ -36,6 +36,8 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   // ADR-0013 phase 3: self-registration from the DNA census (owner decisions 2026-11-09).
   register_agent: { class: "routine", target: "agent", description: "Register an agent its Worker's DNA declares (no privileged capability)" },
   register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
+  // Owner 2026-11-15 ("Aksi retire_engine"): the mirror of register_engine, for an engine its Worker's DNA no longer declares.
+  retire_engine: { class: "routine", target: "service", description: "Retire an AI engine (task) its Worker's DNA no longer declares (status retired; no data deleted)" },
   register_privileged_agent: { class: "critical", target: "agent", description: "Register a DNA-declared agent that asks for a privileged capability" },
   admit_voter: { class: "critical", target: "agent", description: "Give a registered agent a council seat (one per Worker)" },
   // Owner 2026-11-10: the council may change Policy Engine parameters by consensus alone, inside hard bounds in code.
@@ -139,7 +141,8 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     }
     return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
   }
-  if (p.action === "register_engine") {
+  // retire_engine mirrors register_engine: the same checks every voter can make; the executor proves the DNA side.
+  if (p.action === "register_engine" || p.action === "retire_engine") {
     if (!ENGINE_TASK.test(String(p.params.task ?? ""))) return { vote: "reject", reason: "task must be a lowercase identifier" };
     const reg = e.registry[p.target];
     if (!reg || !ACTIVE_SERVICE_STATUSES.has(reg.status)) return { vote: "reject", reason: `host Worker ${p.target} is not an active registered service` };
