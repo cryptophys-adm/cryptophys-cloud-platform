@@ -25,6 +25,13 @@ import { BINDINGS_PERMISSION, RESOURCE_BINDING, indexComplete, indexDatasetLine,
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 const DAY_MS = 86_400_000;
+/**
+ * A list (or the binding reads) refused with the same token is asked again after this long. It was 24 h until
+ * 2026-11-15: the owner fixed the token's permissions, and the Observer kept reporting the old refusals, because the
+ * 24 h counted from the last recorded row, which an unchanged inventory never renews. A changed token (its
+ * fingerprint, never its value) is asked again at once.
+ */
+export const REFUSED_RETRY_MS = 3_600_000;
 
 /** What the repository's wrangler.toml files bind (a test keeps this equal to the files). */
 export const DECLARED_RESOURCES = Object.freeze({
@@ -266,9 +273,14 @@ export async function runInventory(env: ObserverEnv, now: number, fetcher: Fetch
   try { previous = JSON.parse(last?.datasets_json ?? "{}"); } catch { previous = {}; }
   const lists: Partial<Record<ListKey, ListResult>> = {};
   const datasets: Record<string, string> = {};
+  // A 12-hex fingerprint of the token (SHA-256 with a fixed prefix; never the value): a new token is asked at once.
+  const tokenFp = (await digestOf(`observer-token:${creds.token}`)).slice(0, 12);
+  const sameToken = previous.token_fp === tokenFp;
+  const recentlyRefused = (v: string | undefined) => /^permission_missing/.test(v ?? "") && Boolean(last) && sameToken && now - Date.parse(last!.ran_at) < REFUSED_RETRY_MS;
+  datasets.token_fp = tokenFp;
   for (const key of Object.keys(LISTS) as ListKey[]) {
-    // Capability check: a list refused in the last 24 h is not asked again until then.
-    const refused = /^permission_missing/.test(previous[key] ?? "") && last && now - Date.parse(last.ran_at) < DAY_MS;
+    // Capability check: a list refused with this token in the last hour is not asked again until then.
+    const refused = recentlyRefused(previous[key]);
     if (refused) {
       datasets[key] = previous[key];
       lists[key] = { status: "permission_missing", http: Number(/http (\d+)/.exec(previous[key])?.[1] ?? 403) };
@@ -284,11 +296,11 @@ export async function runInventory(env: ObserverEnv, now: number, fetcher: Fetch
   const cover = Boolean(oldest?.b && now - Date.parse(oldest.b) >= THRESHOLDS.IDLE_DAYS * DAY_MS);
   const day = at.slice(0, 10);
   // The bindings of every Worker on a reliable scripts list (at most BINDING_READ_CAP reads). A token refused for
-  // every Worker is asked again only after 24 h, like a refused list.
+  // every Worker is asked again after REFUSED_RETRY_MS, or at once with a new token, like a refused list.
   const { scripts } = reliableScripts(lists.scripts, traffic, known.declared);
   let bindings: BindingIndex | null = null;
   if (scripts) {
-    const refused = /^permission_missing/.test(previous.bindings ?? "") && last && now - Date.parse(last.ran_at) < DAY_MS;
+    const refused = recentlyRefused(previous.bindings);
     bindings = refused
       ? { workers: Object.fromEntries([...new Set(scripts)].sort().map((w) => [w, { status: "permission_missing", http: Number(/http (\d+)/.exec(previous.bindings)?.[1] ?? 403) } as WorkerBindings])), listed: new Set(scripts).size, cap: 0 }
       : await readBindingIndex(creds.token, creds.account, scripts, fetcher);
@@ -301,7 +313,8 @@ export async function runInventory(env: ObserverEnv, now: number, fetcher: Fetch
   if (last && last.digest === digest && now - Date.parse(last.ran_at) < INVENTORY_HEARTBEAT_MS) return { outcome: "unchanged", findings: findings.length };
   await storeFindings(db, findings, at);
   const bindingsStored = bindings ? await storeBindingIndex(db, bindings, at) : "not_read";
-  const status = Object.values(datasets).every((s) => s.startsWith("ok")) ? "ok" : Object.values(datasets).some((s) => s.startsWith("ok")) ? "partial" : "unavailable";
+  const results = Object.entries(datasets).filter(([k]) => k !== "token_fp").map(([, v]) => v);
+  const status = results.every((s) => s.startsWith("ok")) ? "ok" : results.some((s) => s.startsWith("ok")) ? "partial" : "unavailable";
   await recordRun(db, { kind: "inventory", bucket: at, ran_at: at, status, datasets: { ...datasets, bindings_stored: bindingsStored, census_at: known.census_at, senses_cover_7d: cover }, findings: findings.map((f) => ({ worker: f.worker, metric: f.metric, severity: f.severity, detail: f.detail })), digest });
   return { outcome: "recorded", findings: findings.length };
 }

@@ -211,7 +211,7 @@ test("BI6. runInventory: the index is stored per Worker and is part of the diges
   assert.deepEqual(rows().map((r) => r.worker), ["cryptophys-console", "mt5-mcp"]);
 });
 
-test("BI7. a token refused for every Worker's bindings is asked again only after 24 h; the view is null before any index", async () => {
+test("BI7. a token refused for every Worker's bindings is not asked again within the hour, and is asked again later; the view is null before any index", async () => {
   const db = migratedDb();
   assert.equal(((await observerView({ ...ENV, DB: db } as any)) as any).inventory.bindings, null, "nothing stored: null, never an empty claim");
   const now = Date.parse("2026-11-15T10:27:00.000Z");
@@ -221,7 +221,7 @@ test("BI7. a token refused for every Worker's bindings is asked again only after
   assert.equal((await runInventory({ ...ENV, DB: db }, now, fakeCf(refused).fetcher, {})).outcome, "recorded");
   const later = fakeCf(refused);
   await runInventory({ ...ENV, DB: db }, now + 30 * 60_000, later.fetcher, {});
-  assert.ok(!later.calls.some((c) => c.startsWith("settings:")), "not asked again within 24 h");
+  assert.ok(!later.calls.some((c) => c.startsWith("settings:")), "not asked again within the hour");
   const dayLater = fakeCf(refused);
   await runInventory({ ...ENV, DB: db }, now + 25 * 3_600_000, dayLater.fetcher, {});
   assert.deepEqual(dayLater.calls.filter((c) => c.startsWith("settings:")), ["settings:cryptophys-console"]);
