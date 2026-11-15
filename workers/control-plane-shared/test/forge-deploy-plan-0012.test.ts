@@ -140,7 +140,7 @@ test("DP2b. a Forge built with another deploy-unit list (a unit retired or added
   assert.equal(await fingerprintStillHolds(db as never, "x".repeat(2000)), false, "a truncated fingerprint is never trusted");
 });
 
-test("DP3. a different answer is a disagreement; new registry inputs are a new comparison; an unknown base fails closed", async () => {
+test("DP3. a different answer is a disagreement; new registry inputs are a new comparison; an unknown base is a full redeploy", async () => {
   const db = migratedDb();
   behind(db);
   const repo = repoWith(["workers/console/ui/src/App.tsx"]);
@@ -153,10 +153,12 @@ test("DP3. a different answer is a disagreement; new registry inputs are a new c
   assert.equal(row(db).length, 2);
   const listed = await listDeployPlans(db as never, 10);
   assert.deepEqual(listed.parity, { target: 10, consecutive: 0, compared: 1, disagreements: [MAIN.slice(0, 12)] });
-  // A desired version that is not in main's recent history cannot be diffed: skipped, as a failed compare is.
+  // A desired version that is not an ancestor of main cannot be diffed: since 2026-11-14 the unit is redeployed in
+  // full from main's head instead of skipped (forge-deploy-plan-ancestry.test.ts has that day's history).
   db.raw.prepare("UPDATE service_registry SET desired_version = ? WHERE service_id = 'cryptophys-platform-api'").run("abcdefabcdef");
   const plan = await forgePlan(db as never, repo, MAIN);
-  assert.ok(plan.skipped.some((s) => s.unit === "platform-api" && s.reason === "compare_failed_or_diverged"));
+  assert.deepEqual(plan.units.map((u) => [u.unit, u.reason]), [["platform-api", "full_redeploy_unresolved_base"]]);
+  assert.ok(!plan.skipped.some((s) => s.reason === "compare_failed_or_diverged"));
 });
 
 test("DP4. GET /v1/forge/deploy-plans for operators; wiring: migration 0038 required, Console route, Orchestrator records its side without ever failing on it", async () => {
