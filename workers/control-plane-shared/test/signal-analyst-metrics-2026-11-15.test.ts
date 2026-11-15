@@ -5,10 +5,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { baseEnv, migratedDb } from "./harness.ts";
 import { parsePolicyRequest, decide } from "../../policy-engine/src/index.ts";
-import { observe } from "../../ai-kernel/src/syscall.ts";
+import { normalizeOutcomeSummary, observe, observeSignals } from "../../ai-kernel/src/syscall.ts";
 import {
-  MIN_BASELINE_SAMPLES, ORGAN_HEALTH_METRICS, SNAPSHOT_HEARTBEAT_MS, SNAPSHOT_SCHEMA, organHealthValues, recordSample,
-  runSignalCycle, shouldPublishSnapshot, snapshotChanges, withBaselines, type OrganHealthSample, type WindowDecision,
+  MIN_BASELINE_SAMPLES, ORGAN_HEALTH_METRICS, SNAPSHOT_HEARTBEAT_MS, SNAPSHOT_SCHEMA, hitRateStatus, organHealthValues, outcomeForSource,
+  recordSample, runSignalCycle, shouldPublishSnapshot, snapshotChanges, withBaselines, type OrganHealthSample, type OutcomeSummary,
+  type WindowDecision,
 } from "../../ai-kernel/src/signal-analyst.ts";
 
 const H = 3_600_000;
@@ -108,7 +109,7 @@ test("M2. baseline_7d and z come from at least 24 earlier hourly samples of the 
   const flat = Array.from({ length: MIN_BASELINE_SAMPLES }, (_, i) => sample(hour - 1 - i, 6));
   assert.equal(withBaselines(values, flat, NOW).find((x) => x.metric === "decisions_24h")!.z, 0);
   assert.equal(withBaselines({ ...values, decisions_24h: 7 }, flat, NOW).find((x) => x.metric === "decisions_24h")!.z, null);
-  // A metric without samples has no baseline; the hit rates are not exposed by signals.observe.
+  // A metric without samples has no baseline; without an outcome_summary the hit rates are unavailable_source_field.
   const all = withBaselines(values, samples, NOW);
   assert.deepEqual(all.map((x) => x.metric), [...ORGAN_HEALTH_METRICS]);
   assert.deepEqual(all.find((x) => x.metric === "share_buy_24h"), { metric: "share_buy_24h", value: 0.333, baseline_7d: null, z: null });
@@ -257,6 +258,12 @@ test("M7. no price field anywhere: no snapshot, warning, overview view or memory
     await scenario([[NOW, []]]), // empty
     await scenario([[NOW, null]]), // unavailable
   ];
+  // Hit rates from an outcome_summary that carries levels of its own (2026-11-15).
+  const scored = kernelEnv();
+  scored.env.XAUUSD_AI = source({ engine: { items: [m15(TOP, "WAIT")], outcome_summary: { ...ENGINE_SUMMARY, entry_price: 4051.2, stop_loss: 4060, windows: { "7d": { ...win(8, 5, 3), take_profit: 4030, level: 4078.5 }, "30d": win(20, 12, 8) } } } });
+  await runSignalCycle(scored.env, scored.mem, "scheduled", NOW);
+  assert.equal(metric(snapshots(scored.db)[0].body, "hit_rate_7d").status, "ok");
+  runs.push(scored);
   const all = runs.flatMap((k) => reports(k.db));
   assert.ok(all.some((r: any) => r.body.schema === SNAPSHOT_SCHEMA));
   assert.ok(all.some((r: any) => /flip/.test(r.subject)));
@@ -291,4 +298,211 @@ test("M8. the overview: trading_organ_health is the newest snapshot (known field
   const ov2: any = await observe(env, NOW);
   assert.deepEqual(ov2.trading_organ_health, { report_id: "rpt_x", reported_at: "2099-01-01T00:00:00.000Z", observed_at: null, bar_minutes: null, stale: null,
     metrics: [{ metric: "x_1", value: null, baseline_7d: 1, z: null }] });
+});
+
+// ---------------------------------------------------------------- the hit rates, from xauusd's outcome_summary (8a27029)
+
+/** Words a price field could be called; none may pass through outcome_summary or reach a report. */
+const PRICE_LIKE = /price|stop|take_profit|entry|target|level|(?:^|_)atr(?:_|\d|$)|^sl$|^tp$|^trade$|pnl|profit/i;
+const priceKeys = (v: unknown, path = "$"): string[] => {
+  if (Array.isArray(v)) return v.flatMap((x, i) => priceKeys(x, `${path}[${i}]`));
+  if (!v || typeof v !== "object") return [];
+  return Object.entries(v as Record<string, unknown>).flatMap(([k, x]) => [...(PRICE_LIKE.test(k) ? [`${path}.${k}`] : []), ...priceKeys(x, `${path}.${k}`)]);
+};
+
+const AS_OF = "2026-11-15T12:15:00.000Z";
+const win = (n: number, hit: number, miss: number, waitN = 4, waitAcc: number | null = 0.75) =>
+  ({ n_directional: n, hit, miss, hit_rate: hit + miss ? hit / (hit + miss) : null, wait_n: waitN, wait_accuracy: waitAcc });
+const summary = (subject: string, timeframe: string, w7: any, w30: any) =>
+  ({ scoring_version: "cryptophys.outcome-scoring.v3", subject, timeframe, windows: { "7d": w7, "30d": w30 }, as_of: AS_OF });
+const ENGINE_SUMMARY = summary("engine:15", "15", win(8, 5, 3), win(20, 12, 8));
+const EMPTY_SUMMARY = summary("engine:15", "15", win(0, 0, 0, 0, null), win(0, 0, 0, 0, null));
+const CHAIN_SUMMARY = summary("chain:h1", "60", win(10, 6, 4), win(40, 22, 18));
+
+/**
+ * A source that serves `/api/engine/decisions` (or 404 for it, so the kernel falls back to `/api/decisions`), with
+ * the given outcome_summary; `undefined` leaves the field out (an older deploy).
+ */
+function source(opts: { engine?: { items: any[]; outcome_summary?: unknown } | 404; legacy?: { items: any[]; outcome_summary?: unknown } }) {
+  const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
+  const body = (x: { items: any[]; outcome_summary?: unknown }) => ({ status: "ok", count: x.items.length, items: x.items, ...("outcome_summary" in x ? { outcome_summary: x.outcome_summary } : {}) });
+  return {
+    fetch: async (url: string) => {
+      if (url.includes("/api/engine/decisions")) return opts.engine === 404 || !opts.engine ? new Response("not found", { status: 404 }) : json(body(opts.engine));
+      if (url.includes("/api/decisions") && opts.legacy) return json(body(opts.legacy));
+      return new Response("not found", { status: 404 });
+    },
+  };
+}
+const m15 = (openMs: number, decision: string, confidence = 0.6) => raw(openMs, decision, confidence, 15);
+
+test("O1. outcome_summary is validated strictly: known fields only, typed; price-like and unknown fields are dropped", () => {
+  const dirty = {
+    ...ENGINE_SUMMARY,
+    note: "free text", entry_price: 4051.2, atr: 12.5, levels: [4060, 4030],
+    windows: {
+      "7d": { ...win(8, 5, 3), stop_loss: 4060, take_profit: 4030, atr_14: 11.2, extra: { price: 4051 } },
+      "30d": { n_directional: "20", hit: -1, miss: 2.5, hit_rate: 1.4, wait_n: null, wait_accuracy: Number.NaN },
+      "90d": win(90, 50, 40),
+    },
+    as_of: AS_OF,
+  };
+  const n: any = normalizeOutcomeSummary(dirty, "engine");
+  assert.deepEqual(n, {
+    scoring_version: "cryptophys.outcome-scoring.v3", subject: "engine:15", timeframe: "15",
+    windows: {
+      "7d": { n_directional: 8, hit: 5, miss: 3, hit_rate: 0.625, wait_n: 4, wait_accuracy: 0.75 },
+      "30d": { n_directional: null, hit: null, miss: null, hit_rate: null, wait_n: null, wait_accuracy: null },
+    },
+    as_of: AS_OF,
+  });
+  assert.deepEqual(priceKeys(n), []);
+  // Absent, null, malformed, an unknown scoring version or another subject than the endpoint's: null.
+  for (const bad of [undefined, null, "summary", [ENGINE_SUMMARY], { ...ENGINE_SUMMARY, scoring_version: "v3" }, { ...ENGINE_SUMMARY, subject: "engine:60" }]) {
+    assert.equal(normalizeOutcomeSummary(bad, "engine"), null, JSON.stringify(bad));
+  }
+  assert.equal(normalizeOutcomeSummary(ENGINE_SUMMARY, "legacy"), null, "engine:15 is not the subject of /api/decisions");
+  assert.equal(normalizeOutcomeSummary(CHAIN_SUMMARY, "engine"), null, "chain:h1 is not the subject of /api/engine/decisions");
+  assert.equal((normalizeOutcomeSummary(CHAIN_SUMMARY, "legacy") as any).subject, "chain:h1");
+  // A wrong-typed timeframe or as_of, or a window that is not an object, is null; the rest stays.
+  const odd: any = normalizeOutcomeSummary({ ...ENGINE_SUMMARY, timeframe: 15, as_of: "yesterday", windows: { "7d": [1, 2], "30d": "x" } }, "engine");
+  assert.deepEqual([odd.timeframe, odd.as_of, odd.windows["7d"], odd.windows["30d"]], [null, null, null, null]);
+});
+
+test("O2. signals.observe passes the validated outcome_summary of the source it read; the other keys are unchanged", async () => {
+  const { env } = kernelEnv();
+  const items = [m15(TOP, "WAIT")];
+  env.XAUUSD_AI = source({ engine: { items, outcome_summary: { ...ENGINE_SUMMARY, entry_price: 4051.2 } } });
+  const r: any = await observeSignals(env, NOW);
+  assert.deepEqual(Object.keys(r), ["source", "observed_at", "available", "stale", "endpoint_used", "latest", "recent", "outcome_summary"]);
+  assert.equal(r.endpoint_used, "engine");
+  assert.equal(r.outcome_summary.subject, "engine:15");
+  assert.equal(r.outcome_summary.windows["7d"].hit_rate, 0.625);
+  assert.deepEqual(priceKeys(r.outcome_summary), []);
+  // The fallback: /api/decisions carries chain:h1.
+  env.XAUUSD_AI = source({ engine: 404, legacy: { items: [raw(TOP - H, "WAIT")], outcome_summary: CHAIN_SUMMARY } });
+  const legacy: any = await observeSignals(env, NOW);
+  assert.deepEqual([legacy.endpoint_used, legacy.outcome_summary.subject, legacy.outcome_summary.timeframe], ["legacy", "chain:h1", "60"]);
+  // Absent (an older deploy), null (the scorecard read failed) or for the other subject: null.
+  for (const x of [{ items }, { items, outcome_summary: null }, { items, outcome_summary: CHAIN_SUMMARY }]) {
+    env.XAUUSD_AI = source({ engine: x });
+    assert.equal(((await observeSignals(env, NOW)) as any).outcome_summary, null);
+  }
+});
+
+test("O3. the hit rates and their three statuses; the summary must be the subject of the source the decisions came from", () => {
+  const values = (o: OutcomeSummary | null) => organHealthValues(FIXTURE, { open_ms: TOP - H, tf: 60 }, [], NOW, o);
+  const hit = (o: OutcomeSummary | null) => withBaselines(values(o), [], NOW, o).filter((m) => m.metric.startsWith("hit_rate_"));
+  // ok: the value is the summary's hit rate, with its counts, WAIT accuracy, subject and time as extras.
+  const ok = outcomeForSource(normalizeOutcomeSummary(ENGINE_SUMMARY, "engine") as any, "engine");
+  assert.deepEqual(hit(ok), [
+    { metric: "hit_rate_7d", value: 0.625, baseline_7d: null, z: null, status: "ok", n_directional: 8, hit: 5, miss: 3, wait_accuracy: 0.75, subject: "engine:15", as_of: AS_OF },
+    { metric: "hit_rate_30d", value: 0.6, baseline_7d: null, z: null, status: "ok", n_directional: 20, hit: 12, miss: 8, wait_accuracy: 0.75, subject: "engine:15", as_of: AS_OF },
+  ]);
+  // no_scored_data: the summary is there, nothing directional is scored yet (markets closed, a new subject).
+  const empty = outcomeForSource(normalizeOutcomeSummary(EMPTY_SUMMARY, "engine") as any, "engine");
+  for (const m of hit(empty)) {
+    assert.deepEqual([m.value, m.status, m.n_directional, m.hit, m.miss, m.wait_accuracy, m.subject], [null, "no_scored_data", 0, 0, 0, null, "engine:15"], m.metric);
+  }
+  // unavailable_source_field: no summary; also a summary whose window is missing.
+  assert.deepEqual(hit(null).map((m) => m.status), ["unavailable_source_field", "unavailable_source_field"]);
+  for (const m of hit(null)) assert.deepEqual(Object.keys(m), ["metric", "value", "baseline_7d", "z", "status"]);
+  const half = { ...(ok as OutcomeSummary), windows: { "7d": (ok as OutcomeSummary).windows["7d"], "30d": null } };
+  assert.deepEqual([hitRateStatus(half, "hit_rate_7d"), hitRateStatus(half, "hit_rate_30d")], ["ok", "unavailable_source_field"]);
+  // The subject matches the source: engine:15 for the Decision Engine, chain:h1 for the /api/decisions fallback.
+  const chain = normalizeOutcomeSummary(CHAIN_SUMMARY, "legacy") as any;
+  assert.equal(outcomeForSource(chain, "legacy"), chain);
+  assert.equal(outcomeForSource(chain, "engine"), null);
+  assert.equal(outcomeForSource(ok, "legacy"), null);
+  assert.equal(outcomeForSource(null, "engine"), null);
+  // The other metrics are unchanged by the summary.
+  const { hit_rate_7d: _a, hit_rate_30d: _b, ...rest } = values(ok);
+  const { hit_rate_7d: _c, hit_rate_30d: _d, ...restNull } = values(null);
+  assert.deepEqual(rest, restNull);
+});
+
+test("O4. hit rate baselines use the same hourly samples as the other metrics", () => {
+  const ok = normalizeOutcomeSummary(ENGINE_SUMMARY, "engine") as unknown as OutcomeSummary;
+  const values = organHealthValues(FIXTURE, { open_ms: TOP - H, tf: 60 }, [], NOW, ok);
+  const hour = Math.floor(NOW / H);
+  const iHit = ORGAN_HEALTH_METRICS.indexOf("hit_rate_7d");
+  const samples: OrganHealthSample[] = Array.from({ length: MIN_BASELINE_SAMPLES }, (_, i) => ({ h: hour - 1 - i, v: ORGAN_HEALTH_METRICS.map((_, j) => (j === iHit ? (i % 2 ? 0.5 : 0.7) : null)) }));
+  const m = withBaselines(values, samples, NOW, ok).find((x) => x.metric === "hit_rate_7d")!;
+  assert.deepEqual([m.value, m.baseline_7d, m.z], [0.625, 0.6, 0.25]);
+  // Too few samples: null, as for every metric. The hourly sample records the hit rate.
+  const few = withBaselines(values, samples.slice(1), NOW, ok).find((x) => x.metric === "hit_rate_7d")!;
+  assert.deepEqual([few.baseline_7d, few.z], [null, null]);
+  assert.equal(recordSample([], values, NOW)[0].v[iHit], 0.625);
+});
+
+test("O5. material change: a hit rate status change counts (unavailable -> no_scored_data -> ok), as does a 0.05 move", () => {
+  const snap = (o: OutcomeSummary | null, v7?: number | null) => {
+    const vals = organHealthValues(FIXTURE, { open_ms: TOP - H, tf: 60 }, [], NOW, o);
+    if (v7 !== undefined) vals.hit_rate_7d = v7;
+    return withBaselines(vals, [], NOW, o);
+  };
+  const lastOf = (metrics: ReturnType<typeof snap>) => ({ at: NOW, stale: false, values: Object.fromEntries(metrics.map((m) => [m.metric, m.status ? { value: m.value, z: m.z, status: m.status } : { value: m.value, z: m.z }])) });
+  const ok = normalizeOutcomeSummary(ENGINE_SUMMARY, "engine") as unknown as OutcomeSummary;
+  const empty = normalizeOutcomeSummary(EMPTY_SUMMARY, "engine") as unknown as OutcomeSummary;
+  const unavailable = snap(null);
+  assert.deepEqual(snapshotChanges(lastOf(unavailable), snap(empty), false), ["hit_rate_7d", "hit_rate_30d"], "unavailable -> no_scored_data (both null)");
+  assert.deepEqual(snapshotChanges(lastOf(snap(empty)), snap(ok), false), ["hit_rate_7d", "hit_rate_30d"], "no_scored_data -> ok");
+  assert.deepEqual(snapshotChanges(lastOf(snap(ok)), snap(null), false), ["hit_rate_7d", "hit_rate_30d"], "ok -> unavailable");
+  assert.deepEqual(snapshotChanges(lastOf(snap(empty)), snap(empty), false), [], "no change, nothing material");
+  // A 0.05 move of a hit rate is material, a smaller one is not.
+  assert.deepEqual(snapshotChanges(lastOf(snap(ok)), snap(ok, 0.675), false), ["hit_rate_7d"]);
+  assert.deepEqual(snapshotChanges(lastOf(snap(ok)), snap(ok, 0.65), false), []);
+  // A snapshot stored before the statuses existed has no status: its hit rates were unavailable, so nothing changes.
+  const legacyLast = { at: NOW, stale: false, values: Object.fromEntries(unavailable.map((m) => [m.metric, { value: m.value, z: m.z }])) };
+  assert.deepEqual(snapshotChanges(legacyLast, unavailable, false), []);
+  assert.deepEqual(snapshotChanges(legacyLast, snap(empty), false), ["hit_rate_7d", "hit_rate_30d"]);
+});
+
+test("O6. the cycle: unavailable -> no_scored_data -> ok each publish a snapshot; the subject is the source's; no price field", async () => {
+  const { env, db, mem } = kernelEnv();
+  const items = [m15(TOP, "WAIT", 0.3), m15(TOP - 15 * 60_000, "WAIT", 0.4)];
+  const steps: [number, unknown][] = [[NOW, undefined], [NOW + 60_000, { ...EMPTY_SUMMARY, entry_price: 4051.2, atr: 11 }], [NOW + 120_000, ENGINE_SUMMARY]];
+  for (const [t, o] of steps) {
+    env.XAUUSD_AI = source({ engine: o === undefined ? { items } : { items, outcome_summary: o } });
+    await runSignalCycle(env, mem, "scheduled", t);
+  }
+  const s = snapshots(db).map((r: any) => r.body);
+  assert.equal(s.length, 3);
+  assert.deepEqual(s.map((b: any) => metric(b, "hit_rate_7d").status), ["unavailable_source_field", "no_scored_data", "ok"]);
+  assert.deepEqual(s.map((b: any) => b.publish_reason), ["first", "change", "change"]);
+  assert.deepEqual(s[1].changed, ["hit_rate_7d", "hit_rate_30d"]);
+  assert.deepEqual(metric(s[2], "hit_rate_7d"), { metric: "hit_rate_7d", value: 0.625, baseline_7d: null, z: null, status: "ok", n_directional: 8, hit: 5, miss: 3, wait_accuracy: 0.75, subject: "engine:15", as_of: AS_OF });
+  assert.equal(metric(s[2], "hit_rate_30d").value, 0.6);
+  for (const b of s) for (const m of b.metrics) assert.deepEqual(Object.keys(m).slice(0, 4), ["metric", "value", "baseline_7d", "z"]);
+  for (const r of reports(db)) assert.deepEqual(priceKeys(r.body), [], r.subject);
+  for (const [name, v] of mem.store) assert.deepEqual(priceKeys(v), [], `memory ${name}`);
+  // The overview carries the statuses and the scoring context, known fields only.
+  const ov: any = await observe(env, NOW + 180_000);
+  assert.deepEqual(ov.trading_organ_health.metrics.find((m: any) => m.metric === "hit_rate_30d"),
+    { metric: "hit_rate_30d", value: 0.6, baseline_7d: null, z: null, status: "ok", n_directional: 20, hit: 12, miss: 8, wait_accuracy: 0.75, subject: "engine:15", as_of: AS_OF });
+  assert.deepEqual(priceKeys(ov.trading_organ_health), []);
+  // The fallback source: the hit rates are chain:h1's; an engine:15 summary served there is not used.
+  const k = kernelEnv();
+  k.env.XAUUSD_AI = source({ engine: 404, legacy: { items: [raw(TOP - H, "WAIT")], outcome_summary: CHAIN_SUMMARY } });
+  await runSignalCycle(k.env, k.mem, "scheduled", NOW);
+  const chain = snapshots(k.db)[0].body;
+  assert.deepEqual([metric(chain, "hit_rate_7d").subject, metric(chain, "hit_rate_7d").value, metric(chain, "hit_rate_30d").value], ["chain:h1", 0.6, 0.55]);
+  const k2 = kernelEnv();
+  k2.env.XAUUSD_AI = source({ engine: 404, legacy: { items: [raw(TOP - H, "WAIT")], outcome_summary: ENGINE_SUMMARY } });
+  await runSignalCycle(k2.env, k2.mem, "scheduled", NOW);
+  assert.equal(metric(snapshots(k2.db)[0].body, "hit_rate_7d").status, "unavailable_source_field");
+});
+
+test("O7. the overview drops a malformed status or scoring context", async () => {
+  const { env, db } = kernelEnv();
+  db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, created_at) VALUES ('rpt_y', 'signal-analyst', 'xauusd_digest', 'info', 's', ?, 'deterministic', '2099-01-01T00:00:00.000Z')")
+    .run(JSON.stringify({ schema: SNAPSHOT_SCHEMA, metrics: [
+      { metric: "hit_rate_7d", value: 0.5, baseline_7d: null, z: null, status: "great", n_directional: "8", hit: 4, subject: "Engine 15 <b>", as_of: "now", entry_price: 4051 },
+      { metric: "decisions_24h", value: 3, baseline_7d: null, z: null, status: "ok", hit: 9 },
+    ] }));
+  const ov: any = await observe(env, NOW);
+  assert.deepEqual(ov.trading_organ_health.metrics, [
+    { metric: "hit_rate_7d", value: 0.5, baseline_7d: null, z: null, n_directional: null, hit: 4, subject: null, as_of: null },
+    { metric: "decisions_24h", value: 3, baseline_7d: null, z: null, status: "ok" },
+  ]);
 });

@@ -99,8 +99,8 @@ Object.assign(MOCK, {
       { metric: "flips_24h", value: 4, baseline_7d: 0.6, z: 3.4 }, { metric: "confidence_mean_24h", value: 0.512, baseline_7d: null, z: null },
       { metric: "confidence_p50_24h", value: 0.5, baseline_7d: null, z: null }, { metric: "confidence_min_24h", value: null, baseline_7d: null, z: null },
       { metric: "confidence_max_24h", value: 0.9, baseline_7d: null, z: null },
-      { metric: "hit_rate_7d", value: null, baseline_7d: null, z: null, status: "unavailable_source_field" },
-      { metric: "hit_rate_30d", value: null, baseline_7d: null, z: null, status: "unavailable_source_field" },
+      { metric: "hit_rate_7d", value: null, baseline_7d: null, z: null, status: "no_scored_data", n_directional: 0, hit: 0, miss: 0, wait_accuracy: null, subject: "engine:15", as_of: at(19) },
+      { metric: "hit_rate_30d", value: 0.583, baseline_7d: 0.57, z: 0.3, status: "ok", n_directional: 12, hit: 7, miss: 5, wait_accuracy: 0.8, subject: "engine:15", as_of: at(19) },
       { metric: "staleness_incidents_24h", value: 0, baseline_7d: 0.1, z: -0.3 }, { metric: "staleness_incidents_7d", value: 1, baseline_7d: 1, z: 0 }] } } },
   "/api/kernel/v1/consensus": { mode: "deploy", stats_24h: { executed: 6, shadow_passed: 3, shadow_blocked: 2, rejected: 1, failed: 1, pending_owner: 1, expired: 1 },
     proposals: Array.from({ length: 60 }, (_, i) => ({ proposal_id: `cns_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, proposer_agent_id: "supervisor",
@@ -326,6 +326,14 @@ for (const width of [390, 1440]) {
     if (overflow > 1) problems.push(`${width}px #/${route}: horizontal scroll of ${overflow}px`);
     const text = await page.evaluate(() => document.body.innerText.length);
     if (text < 40) problems.push(`${width}px #/${route}: blank page`);
+    if (route === "") {
+      // Owner 2026-11-15: the trading organ health chips show a scored hit rate, and "no data yet" (not 0 %) for a
+      // window with nothing scored.
+      const body = await page.evaluate(() => document.body.innerText);
+      for (const want of ["no data yet", "58%"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/: trading organ health chips do not show "${want}"`);
+      }
+    }
     if (route === "vision") {
       // ADR-0016 T0: every section of the vision, and an unmeasured KPI as "not measured yet" (never a default number).
       const body = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");

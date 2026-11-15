@@ -2,8 +2,9 @@ import type { Overview } from "../lib/overview";
 import { ago } from "../lib/format";
 
 // Owner 2026-11-15: the trading organ's health as the Signal Analyst measures it (GET /v1/overview →
-// trading_organ_health, its newest metric snapshot). Every value is the kernel's; a missing one is "—", and a
-// metric the source does not expose yet says so. Display only: no decision, no advice, no level.
+// trading_organ_health, its newest metric snapshot). Every value is the kernel's; a missing one is "—", a metric the
+// source does not expose says so, and a hit rate with nothing scored yet says "no data yet" (its status, not a 0).
+// Display only: no decision, no advice, no level.
 const LABELS: Record<string, string> = {
   decisions_24h: "decisions 24h",
   share_buy_24h: "BUY share",
@@ -42,11 +43,13 @@ export default function OrganHealthChips({ h }: { h: Overview["trading_organ_hea
           const z = typeof m.z === "number" ? m.z : null;
           const tone = z !== null && Math.abs(z) >= 3 ? "border-rose-400/30 text-rose-300" : z !== null && Math.abs(z) >= 2 ? "border-amber-400/30 text-amber-300" : "border-white/10 text-slate-200";
           const unexposed = m.status === "unavailable_source_field";
-          const title = unexposed ? "not exposed by the source yet" : `baseline 7d: ${typeof m.baseline_7d === "number" ? m.baseline_7d : "—"}`;
+          const unscored = m.status === "no_scored_data";
+          const scored = typeof m.n_directional === "number" ? `, scored ${m.n_directional}${m.subject ? ` (${m.subject})` : ""}` : "";
+          const title = unexposed ? "not exposed by the source" : unscored ? `no scored decisions yet${m.subject ? ` (${m.subject})` : ""}` : `baseline 7d: ${typeof m.baseline_7d === "number" ? m.baseline_7d : "—"}${scored}`;
           return (
             <span key={m.metric} title={title} className={`mono inline-flex items-center gap-1.5 rounded-full border bg-white/[0.03] px-2 py-0.5 text-[10px] ${tone}`}>
               <span className="text-slate-500">{LABELS[m.metric] ?? m.metric}</span>
-              <span>{unexposed ? "not exposed" : shown(m.metric, m.value)}</span>
+              <span>{unexposed ? "not exposed" : unscored ? "no data yet" : shown(m.metric, m.value)}</span>
               {z !== null && <span className="text-slate-500">z {z}</span>}
             </span>
           );
