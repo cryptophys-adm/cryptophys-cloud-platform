@@ -14,6 +14,7 @@ import { observerView, runSenses, storeFindings, sweepObserver, SENSES_MINUTE, t
 import { runInventory } from "../../control-plane-shared/src/observer-inventory.ts";
 import { lastCompleteHourMs, learningFindings, learningHour } from "../../control-plane-shared/src/learning-watch.ts";
 import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
+import { STALL_AGENT, stallReport, stallResolvedReport, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The kernel's read-only RPC surface (workers/ai-kernel/src/worker.ts KernelRpc). */
@@ -184,6 +185,11 @@ export async function runObserver(env: Env, now = Date.now(), fetcher: (input: s
   } catch (err) {
     out.inventory = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
   }
+  try {
+    out.deploy_stall = await deployStallAlarm(env, now);
+  } catch (err) {
+    out.deploy_stall = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+  }
   console.log(JSON.stringify({ service: SERVICE, event: "observer_run", ...out }));
   return out;
 }
@@ -193,6 +199,31 @@ async function senseLearning(env: Env, now: number): Promise<Finding[]> {
   if (!env.DB) return [];
   const findings = learningFindings(await learningHour(env.DB, lastCompleteHourMs(now)));
   return findings.length ? storeFindings(env.DB, findings, new Date(now).toISOString()) : [];
+}
+
+/**
+ * The deploy stall alarm (owner 2026-11-14; control-plane-shared/src/deploy-stall.ts), at :27 and :57. It needs only D1
+ * and AGENTS, not the analytics token. One warning report per stall episode as agent platform-api, never critical: an
+ * open critical report is the consensus brake and would block the deploy_commit that ends the stall. An alarm whose
+ * episode ended (a deploy_commit executed, or nothing is behind or due) is closed by a "Resolved:" info report with the
+ * same alert_key. The owner hears of it through the kernel's owner notice production_unhandled (Telegram).
+ */
+export async function deployStallAlarm(env: Env, now = Date.now()): Promise<Record<string, unknown>> {
+  if (!env.DB) return { outcome: "not_configured" };
+  const st = await stallState(env.DB, now);
+  const out: Record<string, unknown> = {
+    outcome: st.verdict.reason, alert_key: st.verdict.alert_key, active: st.active, main_sha: st.verdict.main_sha,
+    stalled_for_min: st.verdict.stalled_for_min, units_behind: st.verdict.units_behind.map((u) => u.unit),
+  };
+  if (!env.AGENTS) { if (st.raise || st.resolve.length) out.published = "no_agents_binding"; return out; }
+  const publish = async (input: Record<string, unknown>) => {
+    try { return String((await env.AGENTS!.syscall(STALL_AGENT, "reports.publish", input))?.outcome ?? "unknown"); } catch { return "unavailable"; }
+  };
+  const resolved: string[] = [];
+  for (const r of st.resolve) resolved.push(`${r.alarm.alert_key}:${await publish(stallResolvedReport(r.alarm, r.why, st.verdict))}`);
+  if (resolved.length) out.resolved = resolved;
+  if (st.raise) out.raised = await publish(stallReport(st.verdict));
+  return out;
 }
 
 /**

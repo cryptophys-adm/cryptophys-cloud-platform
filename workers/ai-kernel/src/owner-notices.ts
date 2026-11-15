@@ -15,7 +15,8 @@
 //   production_unhandled - a production problem no agent is handling (owner-inbox.ts unhandledProblems: the kernel
 //                      or the Drift Detector itself unhealthy, stale observations, a persistent drift with no plan or
 //                      deploy under way or with agents off, a failed or expired recovery, a critical runtime advisory,
-//                      the Workers Builds budget used up, a break-glass deploy that succeeded in the last 24 hours).
+//                      the Workers Builds budget used up, a break-glass deploy that succeeded in the last 24 hours,
+//                      deploys stalled for 2 hours on a green main).
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
 // needs no table of its own. The Console shows the live notices at GET /v1/notices.
