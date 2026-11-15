@@ -10,6 +10,10 @@
  *
  * Findings: undeclared_worker (live, with traffic, in no DNA), undeclared_resource (informational), orphaned_declaration
  * (declared, gone from the account), idle_worker (no traffic for 7 days, once the Observer has 7 days of senses).
+ * Bindings (owner 2026-11-15, "tambahkan"; observer-bindings.ts): every listed Worker's bindings are read and stored as
+ * an index, part of the digest. unbound_resource (informational): a listed KV/D1/R2/Queue that no live Worker binds
+ * and no wrangler.toml declares, only when every Worker was read. binding_to_missing_resource (warning): a Worker binds
+ * a KV/D1/R2/Queue that a readable list does not contain. bindings_unread / bindings_cap_exceeded name what was not read.
  * Never reported: preview or environment copies of a declared Worker (<name>-preview, -staging, -dev, -pr-<n>,
  * -cr-<n>), Workers the registry marks disabled (being retired), and the organs of an external origin whose DNA the
  * census could not read. Aether is report only. A list the token may not read (401/403) is a capability finding
@@ -17,6 +21,7 @@
  */
 import type { D1Database } from "./types.ts";
 import { THRESHOLDS, REPORT_ONLY_WORKERS, observerCredentials, recordRun, storeFindings, type Finding, type ObserverEnv } from "./observer.ts";
+import { BINDINGS_PERMISSION, RESOURCE_BINDING, indexComplete, indexDatasetLine, indexDigestInput, readBindingIndex, storeBindingIndex, type BindingIndex, type WorkerBindings } from "./observer-bindings.ts";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 const DAY_MS = 86_400_000;
@@ -115,6 +120,8 @@ export async function knownOrganism(db: D1Database, externalServices: Readonly<R
 export interface InventoryInput {
   known: KnownOrganism;
   lists: Partial<Record<ListKey, ListResult>>;
+  /** The live Workers' bindings (null or absent: not read this run). */
+  bindings?: BindingIndex | null;
   /** Requests per script over the last 7 days (observer_vitals). */
   traffic7d: Map<string, number>;
   /** The Observer has stored senses for at least 7 days (idle findings need that). */
@@ -126,19 +133,26 @@ const finding = (day: string, worker: string, metric: string, detail: string, sa
   worker, metric, kind: "inventory", severity, bucket: day, value: null, baseline_7d: null, z: null, since_deploy: null, sample, detail: detail.slice(0, 500), report_only,
 });
 
+/**
+ * The scripts list, when it can be trusted. A Workers list that comes back "ok" but leaves out every declared Worker
+ * the analytics saw with traffic is not evidence that they are gone: on 2026-11-14 the token returned an empty list,
+ * and all 17 declared Workers were reported as orphaned. Such a list is treated as unread.
+ */
+export function reliableScripts(scriptsList: ListResult | undefined, traffic7d: Map<string, number>, declared: ReadonlySet<string>): { listed: string[] | null; scripts: string[] | null; liveDeclared: string[] } {
+  const listed = scriptsList?.status === "ok" ? scriptsList.items.map((s) => s.name) : null;
+  const liveDeclared = [...traffic7d].filter(([w, n]) => n > 0 && !ANALYTICS_PLACEHOLDERS.has(w) && declared.has(w)).map(([w]) => w);
+  const listUnreliable = listed !== null && liveDeclared.length > 0 && liveDeclared.every((w) => !listed.includes(w));
+  return { listed, scripts: listUnreliable ? null : listed, liveDeclared };
+}
+
 /** Compare live with known (pure; exported for tests). */
 export function compareInventory(i: InventoryInput): Finding[] {
   const out: Finding[] = [];
   const k = i.known;
   // Analytics placeholders are not Workers (2026-11-14: "__unknown__" was reported as an undeclared Worker).
   const traffic7d = new Map([...i.traffic7d].filter(([w]) => !ANALYTICS_PLACEHOLDERS.has(w)));
-  // A Workers list that comes back "ok" but leaves out every declared Worker the analytics saw with traffic is not
-  // evidence that they are gone: on 2026-11-14 the token returned an empty list, and all 17 declared Workers were
-  // reported as orphaned. Such a list is treated as unread (nothing is orphaned) and named as a permission gap.
-  const listed = i.lists.scripts?.status === "ok" ? i.lists.scripts.items.map((s) => s.name) : null;
-  const liveDeclared = [...traffic7d].filter(([w, n]) => n > 0 && k.declared.has(w)).map(([w]) => w);
-  const listUnreliable = listed !== null && liveDeclared.length > 0 && liveDeclared.every((w) => !listed.includes(w));
-  const scripts = listUnreliable ? null : listed;
+  const { listed, scripts, liveDeclared } = reliableScripts(i.lists.scripts, traffic7d, k.declared);
+  const listUnreliable = listed !== null && scripts === null;
   if (listUnreliable) {
     out.push({ ...finding(i.day, "account", "inventory_permission_missing:scripts", `The Workers list came back with ${listed!.length} Worker(s) and none of the ${liveDeclared.length} declared Workers that had traffic in 7 days; the token likely lacks ${LISTS.scripts.permission} (owner)`, { listed: listed!.length, live_declared: liveDeclared.length, permission: LISTS.scripts.permission }), kind: "capability" });
   }
@@ -181,10 +195,57 @@ export function compareInventory(i: InventoryInput): Finding[] {
       out.push(finding(i.day, `do:${ns.name}`, "undeclared_resource", `Durable Object namespace ${ns.name}${ns.script ? ` of ${ns.script}` : ""} belongs to no Worker in the DNA (informational)`, { resource: "durable_objects", id: ns.id, script: ns.script ?? null }));
     }
   }
+  if (i.bindings) out.push(...compareBindings(i.day, i.bindings, i.lists));
   for (const [key, l] of Object.entries(i.lists) as Array<[ListKey, ListResult]>) {
     if (l.status === "permission_missing") {
       out.push({ ...finding(i.day, "account", `inventory_permission_missing:${key}`, `The Observer's token may not list ${key} (HTTP ${l.http}); the inventory needs ${LISTS[key].permission} on the same token (owner)`, { http: l.http, permission: LISTS[key].permission }), kind: "capability" });
     }
+  }
+  return out;
+}
+
+/** The binding index against the readable resource lists (pure; part of compareInventory, exported for tests). */
+export function compareBindings(day: string, index: BindingIndex, lists: Partial<Record<ListKey, ListResult>>): Finding[] {
+  const out: Finding[] = [];
+  const rows = Object.entries(index.workers).sort(([a], [b]) => a.localeCompare(b));
+  const refused = rows.filter(([, r]) => r.status === "permission_missing") as Array<[string, Extract<WorkerBindings, { status: "permission_missing" }>]>;
+  if (rows.length > 0 && refused.length === rows.length) {
+    out.push({ ...finding(day, "account", "inventory_permission_missing:bindings", `The Observer's token may not read any Worker's bindings (HTTP ${refused[0][1].http}); the binding index needs ${BINDINGS_PERMISSION} on the same token (owner)`, { http: refused[0][1].http, permission: BINDINGS_PERMISSION, workers: rows.length }), kind: "capability" });
+    return out;
+  }
+  const skipped = rows.filter(([, r]) => r.status === "skipped" && r.reason === "cap").map(([w]) => w);
+  if (skipped.length) out.push(finding(day, "account", "bindings_cap_exceeded", `The account lists ${index.listed} Workers; the Observer reads the bindings of ${index.cap} per run, so ${skipped.length} were not read and "no Worker binds it" is not proven`, { listed: index.listed, cap: index.cap, skipped: skipped.slice(0, 20) }));
+  for (const [w, r] of rows) {
+    if (r.status === "permission_missing" || r.status === "unavailable") {
+      out.push(finding(day, w, "bindings_unread", `The bindings of ${w} could not be read (${r.status === "permission_missing" ? `HTTP ${r.http}, ${BINDINGS_PERMISSION}` : r.reason}); "no Worker binds it" is not proven while it is unread`, r.status === "permission_missing" ? { status: r.status, http: r.http } : { status: r.status, reason: r.reason }));
+    }
+  }
+  const complete = indexComplete(index);
+  const missing = new Map<string, Array<{ resource: string; name: string; id: string }>>();
+  for (const key of ["d1", "kv", "r2", "queues"] as const) {
+    const l = lists[key];
+    if (l?.status !== "ok") continue;
+    const { type, match } = RESOURCE_BINDING[key];
+    const onAccount = new Set(l.items.map((x) => (match === "id" ? x.id : x.name)));
+    const bound = new Map<string, string[]>();
+    for (const [w, r] of rows) if (r.status === "ok") for (const b of r.bindings) if (b.type === type && b.id) (bound.get(b.id) ?? bound.set(b.id, []).get(b.id)!).push(w);
+    // Unbound: only when every Worker was read, never from a partial index.
+    if (complete) {
+      const declared = DECLARED_RESOURCES[key] as readonly string[];
+      for (const x of l.items) {
+        const ref = match === "id" ? x.id : x.name;
+        if (bound.has(ref) || declared.includes(x.name)) continue;
+        out.push(finding(day, `${key}:${x.name}`, "unbound_resource", `${key.toUpperCase()} ${x.name} (${ref}) is on the account; no live Worker binds it and no wrangler.toml of this repository declares it (informational)`, { resource: key, id: x.id, name: x.name, workers_read: rows.length }));
+      }
+    }
+    for (const [w, r] of rows) {
+      if (r.status !== "ok") continue;
+      for (const b of r.bindings) if (b.type === type && b.id && !onAccount.has(b.id)) (missing.get(w) ?? missing.set(w, []).get(w)!).push({ resource: key, name: b.name, id: b.id });
+    }
+  }
+  // One warning per Worker (findings are unique per worker, metric and day), naming every missing resource.
+  for (const [w, m] of [...missing].sort(([a], [b]) => a.localeCompare(b))) {
+    out.push(finding(day, w, "binding_to_missing_resource", `${w} binds ${m.map((b) => `${b.resource.toUpperCase()} ${b.name} → ${b.id}`).join(", ")}, which the account's lists do not contain`, { bindings: m.slice(0, 20) }, "warning"));
   }
   return out;
 }
@@ -222,11 +283,25 @@ export async function runInventory(env: ObserverEnv, now: number, fetcher: Fetch
   const oldest = await db.prepare("SELECT MIN(bucket) AS b FROM observer_runs WHERE kind = 'senses' AND status <> 'unavailable'").first<{ b: string | null }>();
   const cover = Boolean(oldest?.b && now - Date.parse(oldest.b) >= THRESHOLDS.IDLE_DAYS * DAY_MS);
   const day = at.slice(0, 10);
-  const findings = compareInventory({ known, lists, traffic7d: traffic, senses_cover_7d: cover, day });
-  const digest = await digestOf(JSON.stringify({ f: findings.map((f) => [f.worker, f.metric]), d: datasets }));
+  // The bindings of every Worker on a reliable scripts list (at most BINDING_READ_CAP reads). A token refused for
+  // every Worker is asked again only after 24 h, like a refused list.
+  const { scripts } = reliableScripts(lists.scripts, traffic, known.declared);
+  let bindings: BindingIndex | null = null;
+  if (scripts) {
+    const refused = /^permission_missing/.test(previous.bindings ?? "") && last && now - Date.parse(last.ran_at) < DAY_MS;
+    bindings = refused
+      ? { workers: Object.fromEntries([...new Set(scripts)].sort().map((w) => [w, { status: "permission_missing", http: Number(/http (\d+)/.exec(previous.bindings)?.[1] ?? 403) } as WorkerBindings])), listed: new Set(scripts).size, cap: 0 }
+      : await readBindingIndex(creds.token, creds.account, scripts, fetcher);
+    datasets.bindings = indexDatasetLine(bindings);
+  } else {
+    datasets.bindings = "skipped: no reliable scripts list";
+  }
+  const findings = compareInventory({ known, lists, bindings, traffic7d: traffic, senses_cover_7d: cover, day });
+  const digest = await digestOf(JSON.stringify({ f: findings.map((f) => [f.worker, f.metric]), d: datasets, b: bindings ? indexDigestInput(bindings) : null }));
   if (last && last.digest === digest && now - Date.parse(last.ran_at) < INVENTORY_HEARTBEAT_MS) return { outcome: "unchanged", findings: findings.length };
   await storeFindings(db, findings, at);
+  const bindingsStored = bindings ? await storeBindingIndex(db, bindings, at) : "not_read";
   const status = Object.values(datasets).every((s) => s.startsWith("ok")) ? "ok" : Object.values(datasets).some((s) => s.startsWith("ok")) ? "partial" : "unavailable";
-  await recordRun(db, { kind: "inventory", bucket: at, ran_at: at, status, datasets: { ...datasets, census_at: known.census_at, senses_cover_7d: cover }, findings: findings.map((f) => ({ worker: f.worker, metric: f.metric, severity: f.severity, detail: f.detail })), digest });
+  await recordRun(db, { kind: "inventory", bucket: at, ran_at: at, status, datasets: { ...datasets, bindings_stored: bindingsStored, census_at: known.census_at, senses_cover_7d: cover }, findings: findings.map((f) => ({ worker: f.worker, metric: f.metric, severity: f.severity, detail: f.detail })), digest });
   return { outcome: "recorded", findings: findings.length };
 }

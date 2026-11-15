@@ -54,6 +54,8 @@ function fakeCf(over: Record<string, Answer> = {}) {
     }
     if (url.endsWith("/workers/observability/telemetry/query")) { calls.push("observability"); return answer("observability", FIX.observability); }
     const path = url.replace(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/`, "");
+    const settings = /^workers\/scripts\/([^/]+)\/settings$/.exec(path);
+    if (settings) { const w = decodeURIComponent(settings[1]); calls.push(`settings:${w}`); return answer(`settings:${w}`, { success: true, result: { bindings: [] } }); }
     const key = (Object.keys(LISTS) as ListKey[]).find((k) => LISTS[k].path === path);
     assert.ok(key, `unexpected ${url}`);
     calls.push(`list:${key}`);
@@ -524,7 +526,8 @@ test("OB17. runInventory: reads the DNA union from the census, writes on change 
   });
   const r = await runInventory({ ...OBS_ENV, DB: db }, now, cf.fetcher, EXTERNAL);
   assert.equal(r.outcome, "recorded");
-  assert.deepEqual(cf.calls.sort(), ["list:d1", "list:durable_objects", "list:kv", "list:queues", "list:r2", "list:scripts"]);
+  assert.deepEqual(cf.calls.sort(), ["list:d1", "list:durable_objects", "list:kv", "list:queues", "list:r2", "list:scripts",
+    "settings:cryptophys-console", "settings:cryptophys-forge-typecheck", "settings:rogue-worker", "settings:xauusd-omega"], "the lists, then one settings read per listed Worker");
   const f = (db.raw.prepare("SELECT worker, metric FROM observer_findings ORDER BY worker, metric").all() as any[]).map((x) => `${x.metric} ${x.worker}`);
   assert.deepEqual(f, ["inventory_permission_missing:d1 account", "undeclared_worker rogue-worker"], "xauusd-omega: its origin's DNA was not read, so it is not undeclared");
   // Unchanged 30 minutes later: no new run row; the refused D1 list is not asked again.
