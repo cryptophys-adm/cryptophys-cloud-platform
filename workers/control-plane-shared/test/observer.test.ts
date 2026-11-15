@@ -716,3 +716,28 @@ test("DR2. no retry when the failed deploy did not restore production, or after 
   await runCycle(k.env as never, k.memory, "scheduled");
   assert.equal(proposals(db, "deploy_commit").length, 3, "the first attempt and two retries are spent");
 });
+
+test("DR3. a deploy_commit that passed but failed before dispatch (no deployment request) is retried after an hour", async () => {
+  const db = migratedDb();
+  const k = kernelEnv(db);
+  const main = NEW + "3".repeat(28);
+  (k.env.DEPLOY as any).pendingDeploys = async () => ({ main_sha: main, units: [{ unit: "console", workflow: "deploy-console.yml", target: "cryptophys-console", reason: "changed" }], skipped: [] });
+  const at = new Date(Date.now() - 2 * HOUR).toISOString();
+  db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+    VALUES ('cns_nd', 'supervisor', 'deploy_commit', 'cryptophys-console', 'routine', ?, '{}', 'deploy', 8, 8, 0, 1, NULL, 'allow', 'failed', ?, ?, ?)`)
+    .run(JSON.stringify({ commit_sha: main, unit: "console" }), JSON.stringify({ executed: false, error: "github_main_not_mirrored" }), at, at);
+  const c = await runCycle(k.env as never, k.memory, "scheduled");
+  assert.equal(proposals(db, "deploy_commit").length, 2, "retried");
+  assert.ok(c.findings.some((f: any) => f.kind === "deploy" && /before anything was dispatched/.test(f.why ?? "")));
+  // A failed proposal that did dispatch something (a deployment request that did not restore) is not retried.
+  const db2 = migratedDb();
+  const k2 = kernelEnv(db2);
+  (k2.env.DEPLOY as any).pendingDeploys = (k.env.DEPLOY as any).pendingDeploys;
+  db2.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+    VALUES ('cns_x2', 'supervisor', 'deploy_commit', 'cryptophys-console', 'routine', ?, '{}', 'deploy', 8, 8, 0, 1, NULL, 'allow', 'executed', '{"executed":true}', ?, ?)`)
+    .run(JSON.stringify({ commit_sha: main, unit: "console" }), at, at);
+  db2.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+    VALUES ('dep_x2', 'cryptophys-console', ?, 'consensus', 'failed', 'cns_x2', 'k_x2', '{"outcome":{"ok":false,"restored":false}}', ?, ?)`).run(main, at, at);
+  await runCycle(k2.env as never, k2.memory, "scheduled");
+  assert.equal(proposals(db2, "deploy_commit").length, 1, "not restored: not retried");
+});

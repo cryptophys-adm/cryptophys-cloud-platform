@@ -552,18 +552,23 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           // Retry a failed, restored deploy of this commit (hardening 2026-11-15), once the brake is off, an hour after
           // the last attempt, and at most DEPLOY_RETRIES_PER_COMMIT times. Anything else seen stays seen.
           const attempts = await env.DB.prepare(
-            `SELECT p.proposal_id, p.decided_at, d.status AS dep_status, json_extract(d.details_json, '$.outcome.restored') AS restored
+            `SELECT p.proposal_id, p.decided_at, p.status AS prop_status, json_extract(p.outcome_json, '$.executed') AS executed, d.status AS dep_status, json_extract(d.details_json, '$.outcome.restored') AS restored
                FROM consensus_proposals p LEFT JOIN deployment_requests d ON d.approval_id = p.proposal_id
               WHERE p.action = 'deploy_commit' AND p.target = ? AND json_extract(p.params_json, '$.commit_sha') = ?
               ORDER BY p.created_at DESC`,
-          ).bind(u.target, pending.main_sha).all<{ proposal_id: string; decided_at: string | null; dep_status: string | null; restored: number | boolean | null }>();
+          ).bind(u.target, pending.main_sha).all<{ proposal_id: string; decided_at: string | null; prop_status: string | null; executed: number | boolean | null; dep_status: string | null; restored: number | boolean | null }>();
           const rows = attempts.results ?? [];
           const last = rows[0];
-          const allFailedRestored = rows.length > 0 && rows.every((r) => r.dep_status === "failed" && (r.restored === 1 || r.restored === true));
+          // An attempt counts as retryable when its deploy failed and restored production, or (2026-11-15) when the
+          // passed proposal failed before anything was dispatched (no deployment request, executed false; e.g.
+          // github_main_not_mirrored), so nothing changed in production.
+          const restoredFailure = (r: (typeof rows)[number]) => r.dep_status === "failed" && (r.restored === 1 || r.restored === true);
+          const undispatched = (r: (typeof rows)[number]) => r.dep_status === null && r.prop_status === "failed" && (r.executed === 0 || r.executed === false);
+          const allFailedRestored = rows.length > 0 && rows.every((r) => restoredFailure(r) || undispatched(r));
           const retryable = brakeOff && allFailedRestored && rows.length <= DEPLOY_RETRIES_PER_COMMIT
             && Boolean(last?.decided_at) && Date.now() - Date.parse(last!.decided_at!) >= DEPLOY_RETRY_AFTER_MS;
           if (!retryable) continue;
-          report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", why: `retry ${rows.length} of ${DEPLOY_RETRIES_PER_COMMIT}: the deploy of main ${pending.main_sha.slice(0, 12)} failed and production was restored` });
+          report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", why: `retry ${rows.length} of ${DEPLOY_RETRIES_PER_COMMIT}: the deploy of main ${pending.main_sha.slice(0, 12)} failed ${rows.every(undispatched) ? "before anything was dispatched" : "and production was restored"}` });
         }
         const r = await proposeConsensus({
           action: "deploy_commit", target: u.target,
