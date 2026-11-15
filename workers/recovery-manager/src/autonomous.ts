@@ -18,12 +18,19 @@
  * precondition and without the deploy planner; the Orchestrator re-checks the plan and follows the native deploy's
  * lock, live verification and restore (deployment-orchestrator/src/recovery-deploy.ts). A rollback returns the Worker to the
  * version the registry recorded before the current one (Wave B, Rollback Worker workflow).
+ *
+ * Cut-over gate 2026-11-15 (owner, "1 setuju"): a force_redeploy_unit plan for the Deployment Orchestrator's own Worker is
+ * never sent to the Orchestrator. This Worker runs it itself, through the rescue executor
+ * (control-plane-shared/src/executor-rescue.ts), so a bug in the Orchestrator's deploy code cannot block its own fix.
  */
 import type { WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { publishAgentReport } from "../../control-plane-shared/src/agents.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { deadline, windows, type LifecycleEnv } from "./lifecycle.ts";
+import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
+import { ORCHESTRATOR_UNIT } from "../../control-plane-shared/src/executor-first.ts";
+import { msToRescueMinute, rescueForRecovery, rescueMissing, type RescueEnv } from "../../control-plane-shared/src/executor-rescue.ts";
 
 export const AI_EXECUTOR = "ai:recovery-manager";
 
@@ -51,6 +58,16 @@ export interface PolicyEvaluator {
 export interface AutonomousEnv extends LifecycleEnv {
   POLICY?: PolicyEvaluator;
   DEPLOY?: RecoveryDeployBinding;
+  /** Gate 2026-11-15, the rescue executor of the Orchestrator's Worker: the Forge's bundles (R2, read only). */
+  BUNDLES?: RescueEnv["BUNDLES"];
+  /** Its live check (cryptophys-drift-detector DriftRpc.probeService). */
+  DRIFT?: RescueEnv["DRIFT"];
+  /** Its record of the deployed commit (cryptophys-platform-registry RegistryRpc.recordNativeDeploy). */
+  REGISTRY?: RescueEnv["REGISTRY"];
+  /** Owner-set secret: a Cloudflare API token with Account > Workers Scripts > Edit, used only for the Orchestrator's Worker. */
+  CF_ORCHESTRATOR_DEPLOY_TOKEN?: string;
+  /** Owner-set secret: the 32-hex Cloudflare account id. */
+  CF_ACCOUNT_ID?: string;
   /** Poll interval and limits; overridable for tests. */
   RECOVERY_DEPLOY_POLL_SECONDS?: string;
 }
@@ -154,6 +171,8 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
     case "force_redeploy_unit": {
       // Break-glass: no drift re-check (the service may well be "in sync" while the platform cannot deploy).
       if (!COMMIT.test(plan.plan_version)) return { status: "failed", detail: `plan_version ${plan.plan_version} is not a full commit` };
+      // Gate 2026-11-15: the Orchestrator's own Worker is deployed here, never by the Orchestrator.
+      if (unitForService(plan.service_id)?.unit === ORCHESTRATOR_UNIT) return rescueStep(env, plan, decisionId, id, step);
       if (!env.DEPLOY?.forceDeployForRecovery) return { status: "blocked", detail: "the Deployment Orchestrator binding has no break-glass deploy" };
       const queued = await step.do(`${id} queue break-glass deploy`, { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } }, async () => {
         try {
@@ -206,6 +225,31 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       // restore_d1_bookmark, rotate_secret
       return { status: "blocked", detail: `${action} needs a credential no Worker holds; the owner carries it out by runbook` };
   }
+}
+
+/** Waits for a deploy minute at most this many times before the rescue step gives up. */
+const RESCUE_MINUTE_TRIES = 4;
+
+/**
+ * Gate 2026-11-15: the break-glass deploy of the Orchestrator's own Worker by the rescue executor, in this Workflow.
+ * It waits (durably) for a minute outside the drift and kernel cron windows, then runs once: the step has no retries,
+ * and the request row it claims makes a replay a no-op (executor-rescue.ts).
+ */
+async function rescueStep(env: AutonomousEnv, plan: Plan, decisionId: string, id: string, step: WorkflowStepLike): Promise<{ status: StageStatus; detail: string }> {
+  const missing = rescueMissing(env as unknown as RescueEnv);
+  if (missing.length) return { status: "blocked", detail: `the rescue deploy of the Orchestrator needs, on cryptophys-recovery-manager: ${missing.join(", ")} (OPERATIONS, rescue deploy)` };
+  for (let i = 1; i <= RESCUE_MINUTE_TRIES; i++) {
+    const wait = await step.do(`${id} rescue minute ${i}`, async () => msToRescueMinute(Date.now()));
+    if (wait > 0) await sleep(step, `${id} rescue wait ${i}`, `${Math.ceil(wait / 1000)} seconds`);
+    const r = await step.do(`${id} rescue deploy ${i}`, { retries: { limit: 0, delay: "10 seconds" }, timeout: "20 minutes" }, async () => {
+      try { return await rescueForRecovery(env as unknown as RescueEnv, plan.plan_id, decisionId); } catch (err) {
+        return { status: "failed" as const, detail: `rescue deploy failed to run: ${String((err as Error)?.message ?? err).slice(0, 200)}` };
+      }
+    });
+    if (r.status === "not_now") continue;
+    return { status: r.status === "succeeded" ? "succeeded" : "failed", detail: r.detail };
+  }
+  return { status: "failed", detail: "the rescue deploy found no deploy minute; nothing in production changed" };
 }
 
 /** Poll one of the Orchestrator's native requests until it finishes. */

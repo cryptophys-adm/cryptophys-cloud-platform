@@ -53,6 +53,7 @@ import {
   assetsConfigFromToml, configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings,
   type AssetsConfig, type ConfigPlan, type PlanStep,
 } from "./config-diff.ts";
+import { ORCHESTRATOR_UNIT, executorFirstVerdict } from "../../control-plane-shared/src/executor-first.ts";
 import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
 
 export const NATIVE_DEPLOY_EXECUTOR = "native:deploy";
@@ -418,7 +419,15 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
   if (unit.unit !== MIGRATING_UNIT) {
     if (!changed) return { migrations: [] };
     const ledger = await appliedMigrations(env.DB);
-    return ledger && sameList(ledger, targetList) ? { migrations: [] } : { reason: "new_migration", service };
+    if (ledger && sameList(ledger, targetList)) return { migrations: [] };
+    // Cut-over gate 2026-11-15 (executor first): the orchestrator may deploy before migrations the Control Plane has
+    // not applied yet when none of them names anything its bundled code at the target reads (executor-first.ts),
+    // the same evidence the Forge's planner used to put it first. It applies none of them.
+    if (unit.unit === ORCHESTRATOR_UNIT && ledger && ledger.every((f) => targetList.includes(f))) {
+      const verdict = await executorFirstVerdict(env.BUNDLES!, target.commit, targetList.filter((f) => !ledger.includes(f)));
+      if (verdict.state === "independent") return { migrations: [] };
+    }
+    return { reason: "new_migration", service };
   }
   if (!target.migration_files || !running.migration_files) return changed ? { reason: "new_migration", service } : { migrations: [] };
   const targetHash = new Map(target.migration_files.map((f) => [f.file, f.sha256]));

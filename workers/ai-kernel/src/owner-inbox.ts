@@ -56,7 +56,9 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "executor_deploy_failed";
+/** The Orchestrator's own failed native deploy of its unit is listed this long, unless a later deploy of it succeeded. */
+export const EXECUTOR_FAILURE_WINDOW_MS = 24 * 3_600_000;
 export interface ProductionProblem {
   code: ProblemCode;
   /** What the problem is about: a service id, a plan id, an advisory id or a month. */
@@ -208,6 +210,13 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     open (control-plane-shared/src/deploy-stall.ts). The subject is the episode (deploy_stall:<last executed
  *     deploy_commit>), so the owner gets one message when it opens and one when a deploy ends it, not one per run or
  *     per new main commit. The Observer's report of it is a warning: a critical one would hold the brake.
+ *  9. executor_deploy_failed (cut-over gate, owner 2026-11-15 "1 setuju"): the newest deploy of the Deployment
+ *     Orchestrator's own unit that the Orchestrator executed (native:deploy or native:break-glass) failed in the last
+ *     24 hours and no later deploy of it succeeded. Its fix cannot go through it: the item points to the rescue path,
+ *     a break-glass plan for cryptophys-deployment-orchestrator, which the Recovery Manager runs without the
+ *     Orchestrator (control-plane-shared/src/executor-rescue.ts). A desired version recorded for the Orchestrator since
+ *     closes it. The subject is the failed request, so one message.
+ *  A succeeded rescue deploy is a break_glass_deployed item too (its warning report comes from the Recovery Manager).
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -291,7 +300,7 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
   try {
     breakGlass = ((await db.prepare(
       `SELECT r.subject, r.created_at, json_extract(r.body_json, '$.alert_key') AS alert_key, json_extract(r.body_json, '$.plan_id') AS plan_id FROM agent_reports r
-       WHERE r.agent_id = 'deployment-orchestrator' AND r.severity = 'warning' AND json_extract(r.body_json, '$.break_glass') = 1
+       WHERE r.agent_id IN ('deployment-orchestrator', 'recovery-manager') AND r.severity = 'warning' AND json_extract(r.body_json, '$.break_glass') = 1
          AND json_extract(r.body_json, '$.alert_key') IS NOT NULL AND r.created_at >= ? AND r.created_at <= ? AND NOT ${resolvedLaterSql("r")}
        ORDER BY r.created_at DESC LIMIT ?`,
     ).bind(iso(now - BREAK_GLASS_WINDOW_MS), iso(now), INBOX_LIMIT).all<{ subject: string; created_at: string; alert_key: string; plan_id: string | null }>()).results ?? [])
@@ -310,5 +319,27 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     if (st.active && subject) stalls = [{ code: "deploys_stalled", subject, detail: stallDetail(st.verdict), since: st.verdict.stall_since ?? st.open[0]?.created_at ?? null, link: "#/pipelines" }];
   } catch { stalls = []; }
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls];
+  let executor: ProductionProblem[] = [];
+  try {
+    const last = await db.prepare(
+      `SELECT request_id, status, requested_version, created_at, json_extract(details_json, '$.executor') AS executor, json_extract(details_json, '$.outcome.reason') AS reason
+         FROM deployment_requests WHERE service_id = 'cryptophys-deployment-orchestrator' AND status IN ('succeeded', 'failed')
+          AND (json_extract(details_json, '$.executor') IN ('native:deploy', 'native:break-glass', 'rescue:deployment-orchestrator'))
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).first<{ request_id: string; status: string; requested_version: string; created_at: string; executor: string; reason: string | null }>();
+    const at = last ? Date.parse(last.created_at) : Number.NaN;
+    // A desired version recorded for it since (a deploy workflow the owner ran, for example) closes the item as well.
+    const since = last ? await db.prepare(
+      "SELECT 1 AS x FROM audit_events WHERE subject = 'cryptophys-deployment-orchestrator' AND event_type = 'registry.desired_version_set' AND created_at > ? LIMIT 1",
+    ).bind(last.created_at).first() : null;
+    if (last && !since && last.status === "failed" && last.executor !== "rescue:deployment-orchestrator" && Number.isFinite(at) && at <= now && now - at <= EXECUTOR_FAILURE_WINDOW_MS) {
+      executor = [{
+        code: "executor_deploy_failed", subject: last.request_id,
+        detail: `The Deployment Orchestrator's own deploy of ${String(last.requested_version).slice(0, 12)} failed (${String(last.reason ?? "unknown").slice(0, 120)}); a fix to it cannot go through it. Write a break-glass plan for cryptophys-deployment-orchestrator: the Recovery Manager deploys it without the Orchestrator (OPERATIONS, rescue deploy)`,
+        since: last.created_at, link: "#/recovery",
+      }];
+    }
+  } catch { executor = []; }
+
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...executor];
 }

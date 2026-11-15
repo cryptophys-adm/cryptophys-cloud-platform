@@ -34,6 +34,9 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // Hardening (d), 2026-11-14: the break-glass deploy bypasses the deploy planner, so its rules are the owner's.
   [/^workers\/control-plane-shared\/src\/break-glass\.ts$/, "break_glass"],
   [/^workers\/deployment-orchestrator\/src\/recovery-deploy\.ts$/, "break_glass"],
+  // Cut-over gate 2026-11-15: the rescue executor deploys the Orchestrator's Worker from the Recovery Manager with its
+  // own Workers Scripts Edit credential, bypassing the Orchestrator; its rules are the owner's as well.
+  [/^workers\/control-plane-shared\/src\/executor-rescue\.ts$/, "break_glass"],
   // The learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"):
   // power-mode.ts says what learning is and that no mode, budget or rate limit applies to it. No agent or evolver
   // reintroduces a learning limit there without the owner's click.
