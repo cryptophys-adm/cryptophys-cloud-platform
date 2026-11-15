@@ -361,8 +361,11 @@ test("G2c2W-3. every refusal keeps the GitHub workflow with its reason in the na
     { label: "the running config differs from its config_sha256", arrange: (b) => {
       const k = `bundles/${OLD}/config/cryptophys-forge.toml`; b.objects.get(k)!.value = String(b.objects.get(k)!.value) + "\n# edited\n";
     }, expect: { reason: "config_hash_mismatch", service: "cryptophys-forge", file: `bundles/${OLD}/config/cryptophys-forge.toml` }, reads: 0 },
-    { label: "a routing change", target: edit(FORGE_TARGET, "workers_dev = true", "workers_dev = false"), expect: { reason: "routing_changed", service: "cryptophys-forge" }, reads: 0 },
-    { label: "a Durable Object migration", target: FORGE_TARGET + '\n[[migrations]]\ntag = "v3"\nnew_sqlite_classes = ["X"]\n', expect: { reason: "do_migration", service: "cryptophys-forge" }, reads: 0 },
+    // Gate 4 part B: turning workers.dev off is destructive, refused unless a break-glass plan names it.
+    { label: "a routing change", target: edit(FORGE_TARGET, "workers_dev = true", "workers_dev = false"), expect: { reason: "workers_dev_disable_owner_run:cryptophys-forge", service: "cryptophys-forge" }, reads: 0 },
+    // Gate 4 part B: an additive Durable Object migration deploys natively (gate4-routes-workflows-do-2026-11-15.test.ts);
+    // a destructive one is still refused from the two configs, before any Cloudflare call.
+    { label: "a destructive Durable Object migration", target: FORGE_TARGET + '\n[[migrations]]\ntag = "v3"\ndeleted_classes = ["X"]\n', expect: { reason: "do_migration_destructive:deleted_classes:v3", service: "cryptophys-forge" }, reads: 0 },
     { label: "[limits] removed (the version's limits could not be verified)", target: edit(FORGE_TARGET, "[limits]\ncpu_ms = 300000\n", ""), expect: { reason: "limits_removed", service: "cryptophys-forge" }, reads: 0 },
     { label: "[placement] (sent, but never read back)", target: FORGE_TARGET + '\n[placement]\nmode = "smart"\n', expect: { reason: "placement_unverified", service: "cryptophys-forge" }, reads: 0 },
     { label: "a new D1 binding carrying the deploy-time placeholder", target: FORGE_TARGET + D1_NEW, expect: { reason: "unresolved_placeholder:__CONTROL_PLANE_D1_DATABASE_ID__", service: "cryptophys-forge" }, reads: 2 },

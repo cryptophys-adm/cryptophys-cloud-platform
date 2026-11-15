@@ -281,7 +281,7 @@ const ARRAY_KINDS: Record<string, KindSpec> = {
   r2_buckets: { type: "r2_bucket", nameField: "binding", fields: { bucket_name: "bucket_name", jurisdiction: "jurisdiction" }, required: ["bucket_name"], ignored: ["preview_bucket_name"] },
   kv_namespaces: { type: "kv_namespace", nameField: "binding", fields: { id: "namespace_id" }, required: ["id"], ignored: ["preview_id"] },
   vectorize: { type: "vectorize", nameField: "binding", fields: { index_name: "index_name" }, required: ["index_name"], ignored: [] },
-  // A workflow's registration (default_retention, limits) is not a binding; any workflow change is ineligible anyway.
+  // A workflow's registration (default_retention, limits) is not a binding: topology.ts registers it (gate 4 part B).
   workflows: { type: "workflow", nameField: "binding", fields: { name: "workflow_name", class_name: "class_name", script_name: "script_name" }, required: ["name", "class_name"], ignored: ["default_retention", "limits"] },
   artifacts: { type: "artifacts", nameField: "binding", fields: { namespace: "namespace" }, required: ["namespace"], ignored: [] },
   worker_loaders: { type: "worker_loader", nameField: "binding", fields: {}, required: [], ignored: [] },
@@ -535,21 +535,35 @@ interface ConfigReading {
   settings: string[];
 }
 
+/**
+ * Gate 4 part B (topology.ts, owner 2026-11-15): with `topology`, the routes (`routes`, `route`), the Durable Object
+ * `[[migrations]]` and the `[[workflows]]` registrations are not refused here; topology.ts plans them (and refuses
+ * what it cannot apply natively). The Workflow bindings stay in the binding plan either way. Without it (the
+ * default), every one of them is refused as before. `workers_dev` and `preview_urls` go to topology.ts only when both
+ * configs set them as booleans; otherwise they stay `routing_changed`.
+ */
+export interface ConfigReadOptions { topology?: boolean }
+
 /** Everything the two configs alone decide: the settings and steps, the declared bindings, or the refusal. */
-function readConfigs(runningToml: string, targetToml: string): ConfigReading | Ineligible {
+function readConfigs(runningToml: string, targetToml: string, opts: ConfigReadOptions = {}): ConfigReading | Ineligible {
   const run = parseToml(runningToml);
   const tgt = parseToml(targetToml);
   if (!run || !tgt) return no("config_unparsed");
 
   for (const k of IDENTITY_KEYS) if (!same(run[k], tgt[k])) return no("identity_changed");
-  for (const k of ROUTING_KEYS) if (!same(run[k], tgt[k])) return no("routing_changed");
+  for (const k of ROUTING_KEYS) {
+    if (opts.topology && (k === "routes" || k === "route")) continue;
+    // topology.ts applies workers_dev / preview_urls when both configs set them explicitly (wrangler's default otherwise depends on the routes).
+    if (opts.topology && typeof run[k] === "boolean" && typeof tgt[k] === "boolean") continue;
+    if (!same(run[k], tgt[k])) return no("routing_changed");
+  }
   // Durable Object migrations are applied only by a script upload that deploys; a version upload cannot.
-  if (!same(run.migrations, tgt.migrations)) return no("do_migration");
+  if (!opts.topology && !same(run.migrations, tgt.migrations)) return no("do_migration");
   if (!same(run.assets, tgt.assets)) return no("assets_config_changed");
   if (!same(run.rules, tgt.rules)) return no("build_rules_changed");
   if (!same(run.previews, tgt.previews)) return no("previews_changed");
   // wrangler registers a workflow (PUT /workflows/{name}) on deploy; a binding alone does not.
-  if (!same(run.workflows, tgt.workflows)) return no("workflow_changed");
+  if (!opts.topology && !same(run.workflows, tgt.workflows)) return no("workflow_changed");
   const consumers = (c: TomlTable) => (isTable(c.queues) ? c.queues.consumers : undefined);
   if (!same(consumers(run), consumers(tgt))) return no("queue_consumer_changed");
   // Not available on version uploads (Cloudflare: multipart upload metadata).
@@ -595,8 +609,8 @@ function readConfigs(runningToml: string, targetToml: string): ConfigReading | I
  * the active version's bindings can decide. No Cloudflare call is needed for this; `planConfigChange` makes the
  * same checks first.
  */
-export function configRefusal(runningToml: string, targetToml: string): string | null {
-  const r = readConfigs(runningToml, targetToml);
+export function configRefusal(runningToml: string, targetToml: string, opts: ConfigReadOptions = {}): string | null {
+  const r = readConfigs(runningToml, targetToml, opts);
   return "eligible" in r ? r.reason : null;
 }
 
@@ -605,8 +619,8 @@ export function configRefusal(runningToml: string, targetToml: string): string |
  * binding records the API returns for the active version. Ineligible (the Worker stays on its GitHub workflow)
  * with an explicit reason whenever a version upload cannot reproduce what `wrangler deploy` would do.
  */
-export function planConfigChange(runningToml: string, targetToml: string, activeBindings: unknown): ConfigPlanResult {
-  const read = readConfigs(runningToml, targetToml);
+export function planConfigChange(runningToml: string, targetToml: string, activeBindings: unknown, opts: ConfigReadOptions = {}): ConfigPlanResult {
+  const read = readConfigs(runningToml, targetToml, opts);
   if ("eligible" in read) return read;
   const { runB, tgtB, metadata, steps, settings } = read;
   const active = readActive(activeBindings);

@@ -18,6 +18,13 @@
 // The deploy itself is the native deploy's: a signed request the cron runs at a SAFE minute under a one-time claim,
 // migrations first (forward-only), then each Worker captured, uploaded, checked, deployed, verified live through the
 // Drift Detector and recorded; any failure restores every changed Worker. This file is a guard path (break_glass).
+//
+// Gate 4 part B (owner 2026-11-15): the plan may also name destructive topology changes in `destructive_topology`
+// (break-glass.ts TOPOLOGY_ITEM: a custom domain removed or changed, a deleted / renamed / transferred Durable Object
+// class, a removed Workflow, workers.dev or previews turned off). The Workers' plan then applies exactly those
+// (deployment-orchestrator/src/topology.ts); an unnamed one keeps its refusal, and a named one that no Worker of the unit
+// changes refuses the deploy (`named_topology_not_pending`). Each is audited before it is applied; the owner notice
+// lists what no restore can give back.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
@@ -45,13 +52,13 @@ export async function recoveryMainHead(db: D1Database): Promise<{ sha: string | 
 }
 
 /** The approved break-glass plan, re-checked in the Orchestrator's own code (break-glass.ts). */
-export async function readBreakGlassPlan(db: D1Database, planId: string): Promise<{ destructive_migrations: string[] }> {
+export async function readBreakGlassPlan(db: D1Database, planId: string): Promise<{ destructive_migrations: string[]; destructive_topology: string[] }> {
   const row = await db.prepare("SELECT plan_version, created_by, approved_by, steps_json FROM recovery_plans WHERE plan_id = ?")
     .bind(planId).first<{ plan_version: string; created_by: string | null; approved_by: string | null; steps_json: string | null }>();
   if (!row) throw new Error("plan_not_executing");
   const bg = approvedBreakGlassPlan(row);
   if (!bg.ok) throw new Error(bg.reason);
-  return { destructive_migrations: bg.destructive_migrations };
+  return { destructive_migrations: bg.destructive_migrations, destructive_topology: bg.destructive_topology };
 }
 
 export interface PendingMigration extends PlannedMigration { destructive: boolean }
@@ -88,13 +95,14 @@ export async function pendingMigrations(db: D1Database, bundles: BundleReader, c
 
 export type BreakGlassChoice =
   | { ok: true; services: PlannedService[]; migrations: PendingMigration[] }
-  | { ok: false; reason: string; service?: string; file?: string; head?: string | null };
+  | { ok: false; reason: string; service?: string; file?: string; head?: string | null; item?: string };
 
 /**
  * Everything the break-glass deploy of `unit` at `sha` needs, read only: main's head, its readiness, the Workers'
  * plan and the pending migrations. Called when the request is queued and again right before it runs.
  */
-export async function breakGlassChoice(env: { DB: D1Database; BUNDLES?: BundleReader }, unit: DeployUnit, sha: string, named: readonly string[], cf?: VersionReader): Promise<BreakGlassChoice> {
+export async function breakGlassChoice(env: { DB: D1Database; BUNDLES?: BundleReader }, unit: DeployUnit, sha: string, named: readonly string[], cf?: VersionReader,
+  namedTopology: readonly string[] = []): Promise<BreakGlassChoice> {
   if (!env.BUNDLES) return { ok: false, reason: "not_configured" };
   if (!HEX40.test(sha)) return { ok: false, reason: "invalid_commit_sha" };
   const head = await recoveryMainHead(env.DB);
@@ -111,8 +119,12 @@ export async function breakGlassChoice(env: { DB: D1Database; BUNDLES?: BundleRe
   if (m.migrations.length && unit.unit !== MIGRATING_UNIT) {
     return { ok: false, reason: "migrations_pending_deploy_control_plane_first", file: m.migrations[0].file };
   }
-  const e = await nativeDeployEligible(env, unit, sha, cf, { migrations: "skip" });
+  const e = await nativeDeployEligible(env, unit, sha, cf, { migrations: "skip", destructiveTopology: namedTopology });
   if (!e.eligible) return { ok: false, reason: e.reason, ...(e.service ? { service: e.service } : {}), ...(e.file ? { file: e.file } : {}) };
+  // Every item the owner approved must be a destructive change of this deploy: else the plan no longer matches main.
+  const present = new Set(e.services.flatMap((s) => s.config?.destructive ?? []));
+  const stale = namedTopology.find((i) => !present.has(i));
+  if (stale) return { ok: false, reason: "named_topology_not_pending", item: stale };
   return { ok: true, services: e.services, migrations: m.migrations };
 }
 
@@ -146,6 +158,8 @@ export const BREAK_GLASS_NOTICE_MS = 24 * 3_600_000;
 export async function reportBreakGlass(agents: AgentRpcBinding | undefined, r: {
   request_id: string; plan_id: string; unit: string; commit_sha: string; outcome: "succeeded" | "failed" | "refused";
   reason?: string | null; restored?: boolean; migrations_applied?: string[]; migration_failed?: string | null; restore_point_at?: string | null; steps?: string[];
+  /** Gate 4 part B: the plan's destructive topology items applied, and what no restore can give back. */
+  destructive_topology_applied?: string[]; irreversible?: string[];
 }) {
   const tag = r.commit_sha.slice(0, 12);
   const ok = r.outcome === "succeeded";
@@ -153,15 +167,18 @@ export async function reportBreakGlass(agents: AgentRpcBinding | undefined, r: {
   const after = ok ? "Every Worker of the unit was verified live."
     : r.outcome === "refused" ? "Nothing in production changed. Acknowledge this report on the Owner page to let routine consensus continue."
     : `${r.restored === false ? "The restore of the changed Workers did not complete: check production now." : "Every changed Worker was restored."} Applied migrations stay (forward-only). Acknowledge this report on the Owner page to let routine consensus continue.`;
+  const lost = r.irreversible?.length ? ` Irreversible, whatever the outcome: ${r.irreversible.join(" ")}` : "";
   return publishAgentReport(agents, "deployment-orchestrator", {
     kind: "platform_digest", severity: ok ? "warning" : "critical",
     subject: `Break-glass deploy of ${r.unit} at ${tag} ${what}`.slice(0, 200),
     body: {
-      explanation: `An owner-approved recovery plan (${r.plan_id}) deployed the ${r.unit} unit at main ${tag} without the deploy planner. ${after}`,
+      explanation: `An owner-approved recovery plan (${r.plan_id}) deployed the ${r.unit} unit at main ${tag} without the deploy planner. ${after}${lost}`.slice(0, 2000),
       break_glass: true, alert_key: breakGlassAlertKey(r.request_id), state: ok ? "open" : r.outcome,
       request_id: r.request_id, plan_id: r.plan_id, unit: r.unit, commit_sha: r.commit_sha, outcome: r.outcome,
       reason: r.reason ?? null, restored: r.restored ?? null, migrations_applied: r.migrations_applied ?? [], migration_failed: r.migration_failed ?? null,
       d1_restore_point_at: r.restore_point_at ?? null, steps: (r.steps ?? []).slice(0, 40),
+      ...(r.destructive_topology_applied?.length ? { destructive_topology_applied: r.destructive_topology_applied } : {}),
+      ...(r.irreversible?.length ? { irreversible: r.irreversible } : {}),
     },
   });
 }

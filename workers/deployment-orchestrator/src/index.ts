@@ -14,6 +14,7 @@ import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, na
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
 import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, resolveBreakGlassNotices, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
+import { TOPOLOGY_ITEM } from "../../control-plane-shared/src/break-glass.ts";
 
 interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
@@ -431,7 +432,7 @@ export async function forceDeployForRecovery(env: Env, planId: string, decisionI
   if (!/^[0-9a-f]{40}$/.test(version)) throw new Error("invalid_version");
   const plan = await verifyRecoveryExecution(env, planId, decisionId, serviceId);
   if (plan.plan_version !== version) throw new Error("plan_not_executing");
-  const { destructive_migrations: named } = await readBreakGlassPlan(env.DB, planId);
+  const { destructive_migrations: named, destructive_topology: namedTopology } = await readBreakGlassPlan(env.DB, planId);
   const unit = unitForService(serviceId);
   if (!unit) throw new Error("no_deploy_unit_for_service");
   if (!env.DEPLOYMENT_LOCK || !nativeDeployConfigured(env)) throw new Error("native_deploy_not_configured");
@@ -449,17 +450,17 @@ export async function forceDeployForRecovery(env: Env, planId: string, decisionI
   };
   const busy = await unitDeployInProgress(env.DB, unit, planId);
   if (busy) return refuse("unit_deploy_in_progress", { request_id: busy });
-  const choice = await breakGlassChoice(env as never, unit, version, named, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!));
-  if (!choice.ok) return refuse(choice.reason, { ...(choice.service ? { service: choice.service } : {}), ...(choice.file ? { file: choice.file } : {}), ...(choice.head !== undefined ? { main_head: choice.head } : {}) });
+  const choice = await breakGlassChoice(env as never, unit, version, named, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!), namedTopology);
+  if (!choice.ok) return refuse(choice.reason, { ...(choice.service ? { service: choice.service } : {}), ...(choice.file ? { file: choice.file } : {}), ...(choice.head !== undefined ? { main_head: choice.head } : {}), ...(choice.item ? { item: choice.item } : {}) });
   const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(lockName))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: version }) });
   const lock = await lockResponse.json() as { claimed?: boolean };
   if (!lockResponse.ok || !lock.claimed) return refuse("deploy_lock_held", { lock: lockName });
-  return queueBreakGlassDeploy(env, planId, decisionId, serviceId, unit, version, named, choice, lockName);
+  return queueBreakGlassDeploy(env, planId, decisionId, serviceId, unit, version, named, choice, lockName, namedTopology);
 }
 
 async function queueBreakGlassDeploy(env: Env, planId: string, decisionId: string, target: string, unit: DeployUnit, sha: string, named: string[],
-  choice: Extract<BreakGlassChoice, { ok: true }>, lockName: string): Promise<Record<string, unknown>> {
+  choice: Extract<BreakGlassChoice, { ok: true }>, lockName: string, namedTopology: string[]): Promise<Record<string, unknown>> {
   const requestId = "dep_" + crypto.randomUUID();
   const at = new Date().toISOString();
   const actor = `recovery:${planId}`;
@@ -468,6 +469,8 @@ async function queueBreakGlassDeploy(env: Env, planId: string, decisionId: strin
     await insertSignedNativeRequest(env, NATIVE_EXECUTORS[BREAK_GLASS_EXECUTOR], row, {
       executor: BREAK_GLASS_EXECUTOR, unit: unit.unit, commit_sha: sha, version_tag: sha.slice(0, 12), services: [...unit.services],
       plan_id: planId, policy_decision_id: decisionId, destructive_migrations: named,
+      // Gate 4 part B: only when the plan names any, so a request queued before it reads exactly as it was signed.
+      ...(namedTopology.length ? { destructive_topology: namedTopology } : {}),
     });
   } catch (err) {
     await releaseLock(env, lockName, sha);
@@ -477,7 +480,8 @@ async function queueBreakGlassDeploy(env: Env, planId: string, decisionId: strin
     event_type: "deployment.break_glass_queued", actor, subject: target, outcome: "approved",
     payload: { request_id: requestId, executor: BREAK_GLASS_EXECUTOR, commit_sha: sha, unit: unit.unit, plan_id: planId, policy_decision_id: decisionId,
       running: choice.services.map((s) => `${s.service}@${s.running_tag}`), migrations: choice.migrations.map((m) => m.file),
-      destructive_migrations: choice.migrations.filter((m) => m.destructive).map((m) => m.file) },
+      destructive_migrations: choice.migrations.filter((m) => m.destructive).map((m) => m.file),
+      ...(namedTopology.length ? { destructive_topology: namedTopology, topology: Object.fromEntries(choice.services.filter((s) => s.config?.topology).map((s) => [s.service, s.config!.topology])) } : {}) },
   });
   return { dispatched: true, executor: BREAK_GLASS_EXECUTOR, mode: "force", request_id: requestId, unit: unit.unit, commit_sha: sha, migrations: choice.migrations.map((m) => m.file) };
 }
@@ -785,7 +789,9 @@ async function queueNativeDeploy(env: Env, source: NativeDeploySource, target: s
     payload: { request_id: requestId, executor: NATIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, running: choice.services.map((s) => `${s.service}@${s.running_tag}`),
       ...(choice.migrations.length ? { migrations: choice.migrations.map((m) => m.file) } : {}),
       // G2c-2: what each planned configuration changes (planned again before the upload).
-      ...(choice.services.some((s) => s.config) ? { config: Object.fromEntries(choice.services.filter((s) => s.config).map((s) => [s.service, { ...s.config!.changes, steps: s.config!.steps }])) } : {}),
+      ...(choice.services.some((s) => s.config) ? { config: Object.fromEntries(choice.services.filter((s) => s.config).map((s) => [s.service, {
+        ...s.config!.changes, steps: s.config!.steps, ...(s.config!.topology ? { topology: s.config!.topology } : {}),
+      }])) } : {}),
       // G2c-2 step 6: how each Worker's static assets will reach the version (decided again before the upload).
       ...(choice.services.some((s) => s.assets) ? { assets: Object.fromEntries(choice.services.filter((s) => s.assets).map((s) => [s.service, {
         mode: s.assets!.mode, running_dist: s.assets!.running_dist, files: s.assets!.files, total_bytes: s.assets!.total_bytes,
@@ -820,6 +826,9 @@ function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, detail
       && details.commit_sha === r.requested_version
       && details.unit === unit.unit
       && Array.isArray(details.destructive_migrations) && details.destructive_migrations.every((f) => typeof f === "string" && /^[0-9]{4}_[a-z0-9_]{1,80}\.sql$/.test(f))
+      // Gate 4 part B: the destructive topology items the plan names, when it names any.
+      && (details.destructive_topology === undefined || (Array.isArray(details.destructive_topology) && details.destructive_topology.length > 0
+        && details.destructive_topology.every((i) => typeof i === "string" && TOPOLOGY_ITEM.test(i))))
       && r.idempotency_key === breakGlassRequestKey(unit, r.requested_version, planId!);
   }
   if (spec.executor === NATIVE_DEPLOY_EXECUTOR) {
@@ -935,14 +944,15 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     let migrations: PlannedMigration[] = [];
     const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher);
     const named = isBreakGlass ? (details.destructive_migrations as string[]) : [];
+    const namedTopology = isBreakGlass ? ((details.destructive_topology as string[] | undefined) ?? []) : [];
     if (isBreakGlass) {
       // Hardening (d): main's head (from the Forge's checks, not the planner), its readiness, the Workers' plan and
       // the pending migrations again. A refusal is terminal, moves nothing and is reported to the owner.
       let refusal: string | null = null;
       try {
-        const c = await breakGlassChoice(env as never, unitForService(r.service_id)!, r.requested_version, named, cf);
+        const c = await breakGlassChoice(env as never, unitForService(r.service_id)!, r.requested_version, named, cf, namedTopology);
         if (c.ok) { plan = c.services; migrations = c.migrations.map((m) => ({ file: m.file, sha256: m.sha256 })); }
-        else refusal = "refused: " + c.reason + (c.service ? " (" + c.service + ")" : "") + (c.file ? " (" + c.file + ")" : "");
+        else refusal = "refused: " + c.reason + (c.service ? " (" + c.service + ")" : "") + (c.file ? " (" + c.file + ")" : "") + (c.item ? " (" + c.item + ")" : "");
       } catch (err) {
         refusal = "forge_unavailable: " + String((err as Error)?.message ?? err).slice(0, 100);
       }
@@ -1010,10 +1020,12 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     }
 
     executed++;
-    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean };
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean;
+      topology_applied?: string[]; do_migrations?: string[]; destructive_topology_applied?: string[]; irreversible?: string[] };
     if (isDeploy) {
       deploysRun++;
-      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations, ...(isBreakGlass ? { destructive: named } : {}) });
+      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan,
+        { ...opts, migrations, ...(isBreakGlass ? { destructive: named, destructiveTopology: namedTopology } : {}) });
     } else if (isRetire) {
       run = await executeRetire(new CloudflareRetire(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher), retirePlan!, opts);
     } else {
@@ -1026,7 +1038,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     await auditQuietly(env, {
       event_type: run.ok ? spec.succeededEvent : spec.failedEvent, actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
       payload: isDeploy
-        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named } : {}), ...run }
+        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named, ...(namedTopology.length ? { destructive_topology: namedTopology } : {}) } : {}), ...run }
         : isRetire
           ? { request_id: r.request_id, executor: spec.executor, worker: r.service_id, proposal_id: String(details.proposal_id), ...run }
           : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
@@ -1039,6 +1051,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         request_id: r.request_id, plan_id: String(details.plan_id), unit: String(details.unit), commit_sha: r.requested_version, outcome: run.ok ? "succeeded" : "failed",
         reason: run.reason ?? null, restored: run.restored, migrations_applied: run.migrations_applied, migration_failed: run.migration_failed ?? null,
         restore_point_at: run.restore_point_at ?? null, steps: run.steps,
+        destructive_topology_applied: run.destructive_topology_applied, irreversible: run.irreversible,
       });
     } else if (isRetire) {
       if (!run.ok) {
@@ -1053,6 +1066,13 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}),
           // G2c-2: script settings (schedules, observability) applied before the failure; restored with the Workers.
           ...(run.settings_applied?.length ? { settings_applied: run.settings_applied } : {}),
+          // Gate 4 part B: custom domains and Workflows applied before the failure (undone first), and Durable Object
+          // migrations, which Cloudflare does not roll back across.
+          ...(run.topology_applied?.length ? { topology_applied: run.topology_applied } : {}),
+          ...(run.do_migrations?.length ? {
+            do_migrations: run.do_migrations,
+            do_migration_action_required: "A Durable Object migration was deployed before the failure. Cloudflare refuses a rollback across it, so the migrated version stays live. The owner decides whether to fix forward.",
+          } : {}),
           // G2c-1: D1 migrations are forward-only; a restore of the Workers never undoes them.
           ...(run.migrations_applied?.length || run.migration_failed ? {
             migrations_applied: run.migrations_applied ?? [], migration_failed: run.migration_failed ?? null, d1_restore_point_at: run.restore_point_at ?? null,
