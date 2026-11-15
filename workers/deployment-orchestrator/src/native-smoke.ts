@@ -65,8 +65,12 @@ export interface SmokeProbe {
   attempts?: number;
 }
 
-/** A URL a workflow requests that the native path does not repeat, and why. */
-export interface NotRepeated { method: string; url: string; why: string }
+/**
+ * A URL a workflow requests that the native path does not repeat, and why. With `filter`, the URL is probed, but
+ * that one term of the workflow's jq filter (`<filter> and <term>`) is not: the probe's `jq` is the workflow's
+ * filter without ` and <term>`.
+ */
+export interface NotRepeated { method: string; url: string; why: string; filter?: string }
 export interface UnitSmoke { unit: string; workflow: string; probes: SmokeProbe[]; not_repeated: NotRepeated[] }
 
 const isObj = (v: unknown): v is Record<string, Json> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -108,9 +112,12 @@ export const SMOKE_TABLE: Readonly<Record<string, UnitSmoke>> = {
     unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml",
     probes: live("cryptophys-deployment-orchestrator",
       { jq: '.status == "ok" and .service == "cryptophys-deployment-orchestrator" and .environment == "production" and .contract_version == "v1"', check: healthUntagged("cryptophys-deployment-orchestrator") },
-      { jq: '.status == "ready" and .service == "cryptophys-deployment-orchestrator" and .production_dispatch_enabled == true and ([.checks[]] | all)',
-        check: (b) => isObj(b) && b.status === "ready" && b.service === "cryptophys-deployment-orchestrator" && b.production_dispatch_enabled === true && allChecks(b.checks) }),
+      // The workflow's ready filter without `.production_dispatch_enabled == true` (not_repeated, below).
+      { jq: '.status == "ready" and .service == "cryptophys-deployment-orchestrator" and ([.checks[]] | all)',
+        check: (b) => isObj(b) && b.status === "ready" && b.service === "cryptophys-deployment-orchestrator" && allChecks(b.checks) }),
     not_repeated: [
+      { method: "GET", url: "cryptophys-deployment-orchestrator/ready", filter: ".production_dispatch_enabled == true",
+        why: "GitHub fallback readiness; not a native readiness condition (cut-over step 7 revokes GH_ACTIONS_TOKEN)" },
       { method: "GET", url: "https://deploy-orchestrator.cryptophys.work/health", why: "advisory in the workflow (--custom-domain: a failure is only a warning)" },
     ],
   },

@@ -4,7 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { migratedDb } from "./harness.ts";
+import { accessCertsResponse, baseEnv, call, CI_JWT, isAccessCerts, migratedDb } from "./harness.ts";
+import orchestrator from "../../deployment-orchestrator/src/index.ts";
 import { DEPLOY_UNITS, unitForService } from "../src/deploy-units.ts";
 import { executeNativeDeploy, nativeDeployEligible, type BundleWorker, type PlannedService } from "../../deployment-orchestrator/src/native-deploy.ts";
 import { SMOKE_SECRETS, SMOKE_TABLE, SmokeRunner, smokeToken, type SmokeProbe } from "../../deployment-orchestrator/src/native-smoke.ts";
@@ -297,7 +298,13 @@ test("G4-3. parity: every URL a deploy workflow probes through Access is in the 
     // The extraction is not vacuous: the three live URLs of every Worker, plus each unit's own steps.
     assert.equal(wf.size, { "deployment-orchestrator": 3, "control-plane": 24, console: 12, "platform-api": 2, forge: 4 }[unit.unit], `${unit.unit}: ${[...wf.keys()].join(", ")}`);
     const table = new Set(t.probes.map(tableKey));
-    const skipped = new Set(t.not_repeated.map((n) => `${n.method} ${n.url}`));
+    const skipped = new Set(t.not_repeated.filter((n) => !n.filter).map((n) => `${n.method} ${n.url}`));
+    // A filter-level exclusion: the URL is probed, one named term of the workflow's filter is not.
+    const termsOff = new Map(t.not_repeated.filter((n) => n.filter).map((n) => [`${n.method} ${n.url}`, n.filter!]));
+    for (const [k, term] of termsOff) {
+      assert.ok(table.has(k), `${unit.unit}: ${k}: a filter exclusion for a URL the table does not probe`);
+      assert.ok([...(wf.get(k) ?? [])].some((jq) => jq.includes(` and ${term}`)), `${unit.unit}: ${k}: the workflow's filter has no term ${term}`);
+    }
     for (const k of skipped) assert.ok(!table.has(k), `${unit.unit}: ${k} is both probed and not repeated`);
     for (const k of wf.keys()) assert.ok(table.has(k) || skipped.has(k), `${unit.unit}: the workflow probes ${k}, the native table does not (add it, or list it in not_repeated with the reason)`);
     for (const k of [...table, ...skipped]) assert.ok(wf.has(k), `${unit.unit}: ${k} is not in ${unit.workflow}`);
@@ -309,9 +316,13 @@ test("G4-3. parity: every URL a deploy workflow probes through Access is in the 
     for (const p of t.probes) {
       if (!p.jq) { assert.equal(p.auth, "none", p.id); continue; }
       assert.equal(typeof p.check, "function", p.id);
-      assert.ok(flat.includes(p.jq), `${unit.unit}: ${p.id}: its jq filter is not in ${unit.workflow}`);
+      const term = p.auth === "service_token" ? termsOff.get(tableKey(p)) : undefined;
       const fromWorkflow = wf.get(tableKey(p));
-      if (fromWorkflow?.size) assert.ok(fromWorkflow.has(p.jq), `${unit.unit}: ${p.id}: the workflow applies ${[...fromWorkflow].join(" | ")} to this URL`);
+      // The workflow's filters for this URL, with the excluded term (if any) taken out: nothing else may differ.
+      const expected = new Set([...(fromWorkflow ?? [])].map((jq) => term ? jq.replace(` and ${term}`, "") : jq));
+      if (!term) assert.ok(flat.includes(p.jq), `${unit.unit}: ${p.id}: its jq filter is not in ${unit.workflow}`);
+      if (fromWorkflow?.size) assert.ok(expected.has(p.jq), `${unit.unit}: ${p.id}: the workflow applies ${[...fromWorkflow].join(" | ")} to this URL`);
+      else assert.ok(!term, `${unit.unit}: ${p.id}: an excluded term on a URL without a workflow filter`);
     }
   }
   // The token the probes send is the one the workflows hold for them.
@@ -481,4 +492,63 @@ test("G4-6. wiring: the planned deploy gets both gate-4 checks once the owner se
   // The smoke tests run after the live check and before new schedules; the unit's step before the desired version.
   assert.ok(nd.indexOf('steps.push(`${service}:verified`)') < nd.indexOf("opts.smoke.afterService") && nd.indexOf("opts.smoke.afterService") < nd.indexOf("for (const step of configPlan?.steps"));
   assert.ok(nd.indexOf("opts.smoke.afterUnit") < nd.indexOf("env.REGISTRY.recordNativeDeploy(requestId)"));
+});
+
+// ================================================================= follow-up: the Orchestrator's readiness without GitHub
+test("G4-7. the orchestrator's smoke test passes without GH_ACTIONS_TOKEN; its one excluded filter term is named, and only that one", async () => {
+  const t = SMOKE_TABLE["deployment-orchestrator"];
+  const ex = t.not_repeated.filter((n) => n.filter);
+  assert.deepEqual(ex.map((n) => [n.method, n.url, n.filter, n.why]), [["GET", "cryptophys-deployment-orchestrator/ready", ".production_dispatch_enabled == true",
+    "GitHub fallback readiness; not a native readiness condition (cut-over step 7 revokes GH_ACTIONS_TOKEN)"]]);
+  for (const u of Object.values(SMOKE_TABLE)) if (u.unit !== "deployment-orchestrator") assert.ok(u.not_repeated.every((n) => !n.filter), u.unit);
+  // The Orchestrator's /ready as it answers with the native deploy configured and the GitHub token revoked.
+  const body = { status: "ready", service: "cryptophys-deployment-orchestrator", production_dispatch_enabled: false, github_fallback: "absent", checks: { production_environment: true, database_schema: true } };
+  const { plan, bundles } = await plannedFor(["cryptophys-deployment-orchestrator"]);
+  const cf = fakeCf((s) => activeBindings("deployment-orchestrator", s));
+  const { env, recorded } = deployEnv(bundles);
+  const net = fakeInternet((url, s) => url.pathname === "/ready" && s.headers["CF-Access-Client-Id"] === CLIENT_ID ? { status: 200, body } : null);
+  const run = await executeNativeDeploy(cf as never, env as never, "req-9", NEW, plan, { delayMs: 0, smoke: runner(net.fetcher), deployVars: REF });
+  assert.equal(run.ok, true, run.reason);
+  assert.deepEqual(run.smoke, { status: "passed", probes: 3 });
+  assert.deepEqual(recorded, ["req-9"]);
+  // Still a real readiness check: a failing check or a not-ready status fails it.
+  const ready = t.probes.find((p) => p.id === "cryptophys-deployment-orchestrator:ready")!.check!;
+  const ctx = { service: "x", tag: TAG, now: 0 };
+  assert.equal(ready(body, ctx), true);
+  assert.equal(ready({ ...body, checks: { ...body.checks, database_schema: false } }, ctx), false);
+  assert.equal(ready({ ...body, status: "not_configured" }, ctx), false);
+});
+
+test("G4-8. the Orchestrator's /ready is ready with the native deploy configured and no GH_ACTIONS_TOKEN; the fallback is reported, not required", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (isAccessCerts(String(input))) return accessCertsResponse();
+    throw new Error(`unexpected fetch ${String(input)}`);
+  }) as typeof fetch;
+  try {
+    const lock = { idFromName: (n: string) => n, get: () => ({ fetch: async () => new Response("{}") }) };
+    const native = {
+      DEPLOYMENT_LOCK: lock, CF_DEPLOY_TOKEN: "deploy-token", CF_ACCOUNT_ID: ACCOUNT,
+      DRIFT: { probeService: async () => ({}) }, REGISTRY: { recordRollback: async () => ({}) }, BUNDLES: { get: async () => null, list: async () => ({ objects: [], truncated: false }) },
+    };
+    const ready = () => new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/ready", { headers: { "cf-access-jwt-assertion": CI_JWT } });
+    const env = (extra: Record<string, unknown>) => baseEnv("cryptophys-deployment-orchestrator", migratedDb(), { ...native, ...extra });
+    const revoked = await call(orchestrator, env({ GH_ACTIONS_TOKEN: "" }), ready());
+    assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+    assert.equal(revoked.body.status, "ready");
+    assert.equal(revoked.body.native_deploy, "configured");
+    assert.equal(revoked.body.github_fallback, "absent");
+    assert.equal(revoked.body.production_dispatch_enabled, false, "the fallback cannot dispatch without its token; informational");
+    assert.equal("github_token_configured" in revoked.body.checks, false, "not a readiness condition with the native deploy");
+    // The native smoke filter accepts this answer; the workflow's own filter (with the fallback term) would not.
+    const check = SMOKE_TABLE["deployment-orchestrator"].probes.find((p) => p.id === "cryptophys-deployment-orchestrator:ready")!.check!;
+    assert.equal(check(revoked.body, { service: "x", tag: TAG, now: 0 }), true);
+    const kept = await call(orchestrator, env({ GH_ACTIONS_TOKEN: "gh-token" }), ready());
+    assert.deepEqual([kept.status, kept.body.github_fallback, kept.body.production_dispatch_enabled], [200, "available", true]);
+    // Without the native deploy the fallback is the only path: its token stays a readiness check.
+    const noNative = await call(orchestrator, baseEnv("cryptophys-deployment-orchestrator", migratedDb(), { DEPLOYMENT_LOCK: lock, GH_ACTIONS_TOKEN: "" }), ready());
+    assert.deepEqual([noNative.status, noNative.body.checks.github_token_configured, noNative.body.github_fallback], [503, false, "absent"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

@@ -1398,9 +1398,14 @@ export default {
     }
 
     if (request.method === "GET" && ["/ready", "/readyz"].includes(url.pathname)) {
+      // Gate 4 (2026-11-15): with the native deploy configured, readiness does not depend on GitHub. GH_ACTIONS_TOKEN
+      // serves only the consensus fallback to the GitHub workflows, which cut-over step 7 revokes; it is reported as
+      // `github_fallback` and `production_dispatch_enabled`, never a readiness check. Without the native deploy the
+      // fallback is the only deploy path, so its token stays a check.
+      const native = nativeDeployConfigured(env);
       const checks = {
         production_environment: env.SERVICE_ENVIRONMENT === "production",
-        github_token_configured: Boolean(env.GH_ACTIONS_TOKEN),
+        ...(native ? {} : { github_token_configured: Boolean(env.GH_ACTIONS_TOKEN) }),
         deployment_lock_binding: Boolean(env.DEPLOYMENT_LOCK),
         database_schema: Boolean(env.DB) && await schemaReady(env as never),
         ai_binding: Boolean(env.AI),
@@ -1410,11 +1415,13 @@ export default {
       return json({
         status: ready ? "ready" : "not_configured",
         service: env.SERVICE_NAME,
-        production_dispatch_enabled: ready,
+        // Informational: whether the GitHub workflow fallback can be dispatched (ready, and its token set).
+        production_dispatch_enabled: ready && Boolean(env.GH_ACTIONS_TOKEN),
+        github_fallback: env.GH_ACTIONS_TOKEN ? "available" : "absent",
         // ADR-0012 phase 2 (informational; not a readiness gate): rollback without GitHub.
         native_rollback: nativeRollbackConfigured(env) ? "configured" : "not_configured",
         // ADR-0012 G2b (informational): code-only deploys from the Forge's bundles.
-        native_deploy: nativeDeployConfigured(env) ? "configured" : "not_configured",
+        native_deploy: native ? "configured" : "not_configured",
         // Gate 4 (informational): the smoke tests through Access, and the deploy-time values' reference.
         native_smoke: new SmokeRunner(env).skipped ? "not_configured" : "configured",
         native_deploy_vars: gate4Eligibility(env).deployVars ? "checked" : "kept_unchecked",
