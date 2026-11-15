@@ -36,7 +36,8 @@ const MOCK = {
     { main_sha: "188b6bb31ed1a17cdaec44ea6180da087395e973", forge_units: [], forge_skipped: [], forge_at: "2026-11-09T06:19:00.000Z", github_units: null, github_skipped: null, github_at: null, agrees: null },
   ] },
   "/api/forge/v1/forge/census": { census: [{ main_sha: "6872844" + "0".repeat(33), status: "changes", organs: 12, agents: 10, engines: 9, voters: 9, taken_at: "2026-11-09T12:04:00.000Z",
-    findings: [{ kind: "unregistered_agent", subject: "forge-steward", detail: "agent forge-steward on cryptophys-forge is in the DNA but not registered (asks for a council seat), which is a long line that wraps on a phone" }], genome: [] }] },
+    findings: [{ kind: "unregistered_agent", subject: "forge-steward", detail: "agent forge-steward on cryptophys-forge is in the DNA but not registered (asks for a council seat), which is a long line that wraps on a phone" }],
+    genome: [{ service: "cryptophys-platform-api", kind: "service", agents: [{ id: "platform-api", display_name: "Platform API AI Agent", capabilities: ["audit.verify", "memory.recall", "platform.observe", "reports.publish"], tier_max: 1, voter: true }], engines: ["summarize_platform_overview"] }] }] },
   "/api/forge/v1/forge/build-usage": { usage: { schema: "build-usage.v1", month: "2026-11", month_start: "2026-11-01T00:00:00.000Z", budget_minutes: 3000, included_minutes: { free: 3000, paid: 6000 }, warn_ratio: 0.8,
     minutes: 412, builds: 214, unmeasured_builds: 1, avg_minutes: 1.9, projected_minutes: 1030, status: "ok",
     by_worker: [{ worker: "cryptophys-forge-typecheck", builds: 120, minutes: 240, unmeasured: 0 }, { worker: "cryptophys-forge-typecheck-cr", builds: 90, minutes: 166, unmeasured: 1 }, { worker: "cryptophys-aether", builds: 4, minutes: 6, unmeasured: 0 }],
@@ -70,7 +71,8 @@ const MOCK = {
       proposals: [{ proposal_id: "cns_2", action: "deploy_commit", target: "cryptophys-deployment-orchestrator-with-a-long-name", class: "routine", status: "executing", approvals: 9, eligible: 9, created_at: "2026-11-08T14:01:00.000Z", decided_at: "2026-11-08T14:01:30.000Z" }],
     },
     requests: [{ request_id: "dep_0", service_id: "cryptophys-platform-api", version: "6fafa095ce3eea19679398a3b2bfb6e596270f7b", status: "failed", requested_by: "edecae24a56f7a12c78455585f23e707.access", origin: "deploy workflow", workflow: "deploy-platform-api.yml", proposal_id: null, run_url: "https://github.com/cryptophys-adm/cryptophys-cloud-platform/actions/runs/1", note: "stale: no workflow run finished within 3 hours", created_at: "2026-11-08T10:00:00.000Z", updated_at: "2026-11-08T13:00:00.000Z" }],
-    deploys: [{ service_id: "cryptophys-deployment-orchestrator", version: "e0bd92815ac9", previous: "6fafa095ce3e", origin: "deploy workflow", actor: "edecae24a56f7a12c78455585f23e707.access", at: "2026-11-08T14:24:17.000Z" }],
+    deploys: [{ service_id: "cryptophys-deployment-orchestrator", version: "e0bd92815ac9", previous: "6fafa095ce3e", origin: "deploy workflow", actor: "edecae24a56f7a12c78455585f23e707.access", at: "2026-11-08T14:24:17.000Z" },
+      { service_id: "cryptophys-platform-api", version: "d4c3b2a1f0e9", previous: "6fafa095ce3e", origin: "native deploy", actor: "native-deploy:dep_2", at: "2026-11-08T14:10:00.000Z" }],
     generated_at: "2026-11-08T14:30:00.000Z",
   },
   "/api/kernel/v1/consensus/report": { window_days: 7, total: 0, scored: 0, agree: 0, false_positive: 0, false_negative: 0, pending: 0, agreement_rate: null, by_action: {}, items: [] },
@@ -109,8 +111,15 @@ Object.assign(MOCK, {
     actor: i % 4 ? "agent:supervisor" : "owner@example.com", subject: SVC[i % SVC.length], outcome: i % 11 ? "succeeded" : "failed", event_hash: "ab".repeat(32), created_at: at(i * 9) })) },
   "/api/policy/v1/decisions": { decisions: Array.from({ length: 80 }, (_, i) => ({ decision_id: `dec_${i}`, subject: "agent:supervisor", action: ["consensus.execute", "agent.syscall", "deploy", "registry.update"][i % 4],
     resource: `deploy_commit:${SVC[i % SVC.length]}`, decision: i % 6 ? "allow" : "deny", reason: i % 6 ? "all policy checks passed" : "failed: target_rate_limit, platform_daily_limit", created_at: at(i * 14) })) },
-  "/api/registry/v1/services": { services: SVC.map((s, i) => ({ service_id: s, display_name: s.replace("cryptophys-", ""), status: i === 10 ? "disabled" : "healthy", desired_version: "7eaf570a4ed5" })) },
-  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", streak: i === 9 ? 1 : 2, observed_at: at(i * 60), last_seen_at: at(i * 3) })) },
+  "/api/registry/v1/services": { services: SVC.map((s, i) => ({ service_id: s, display_name: s.replace("cryptophys-", ""), status: i === 10 ? "disabled" : i === 3 || i === 9 ? "degraded" : "healthy", desired_version: "7eaf570a4ed5",
+    observed_version: i === 10 || i === 9 ? null : i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", updated_at: at(i * 3), metadata: { owner: "cryptophys-adm" } })) },
+  // GET /v1/drift as the Drift Detector serves it: the latest recorded state per service (written on change) and
+  // last_seen_at, the heartbeat. SVC[9] runs an untagged version (a dashboard change since its last deploy).
+  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, observation_id: `obs_${i}`, drifted: i === 3 || i === 9, streak: i === 9 ? 1 : 2, observed_at: at(i * 60 + 300), last_seen_at: at(i * 3),
+    evidence: { run_id: `drift_${i}`, trigger: "scheduled", reasons: i === 3 ? ["version_mismatch"] : i === 9 ? ["observed_version_unavailable"] : [], desired_version: "7eaf570a4ed5" } })) },
+  "/api/drift/v1/drift/cryptophys-platform-api": { service_id: "cryptophys-platform-api", observations: [
+    { observation_id: "obs_0", drifted: false, streak: 2, observed_at: at(300), evidence: { reasons: [] } },
+    { observation_id: "obs_0b", drifted: true, streak: 2, observed_at: at(420), evidence: { reasons: ["version_mismatch"] } }] },
   "/api/recovery/v1/plans": { plans: Array.from({ length: 14 }, (_, i) => ({ plan_id: `plan_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, service_id: SVC[i % 5], title: `Recover ${SVC[i % 5]} from version mismatch`, status: ["draft", "approved", "executing", "completed", "failed", "disabled"][i % 6], created_by: "agent:supervisor", created_at: at(i * 90), steps: [{}, {}] })) },
 });
 {
@@ -365,6 +374,65 @@ for (const width of [390, 1440]) {
     await page.close();
   }
 }
+// Owner 2026-11-15 ("tombol Edit tidak berfungsi"): Services & Drift is read only. A click on a service opens its
+// detail, a bottom sheet on a phone and a side panel on a desktop, with measured values only; a value that was not
+// measured reads "not measured", never a number. The Edit form is gone and an untagged version is labelled as such.
+const DETAIL_CHECKS = [
+  { name: "measured", service: "cryptophys-platform-api", override: {},
+    want: ["Drift", "in sync", "registry heartbeat", "version_mismatch", "Error rate", "CPU p99", "stored hours", "D1 is not attributed to a Worker", "account-wide 41.2 · estimated",
+      "d4c3b2a1f0e9", "native deploy", "6fafa095ce3e", "stale: no workflow run finished within 3 hours", "summarize_platform_overview", "council seat", "300 errors in 1000 requests"],
+    not: ["Edit", "Update service", "Set desired version"], sparks: 3 },
+  { name: "not measured", service: "cryptophys-home", override: {},
+    want: ["disabled", "not measured", "no vitals stored for this Worker", "none among the last 100 recorded", "not in the genome of main", "None for this Worker in the last 7 days."],
+    not: ["0.00 %", " ms", "registry heartbeat"], sparks: 0, unmeasured: 6 },
+  { name: "nothing measured", service: "cryptophys-platform-api",
+    override: { "/api/platform/v1/observer": { schema: "observer.v1", configured: false, available: false, organs: [], anomalies: [], deploys: [] }, "/api/forge/v1/forge/census": { census: [] }, "/api/orchestrator/v1/deployments": { requests: [], deploys: [] } },
+    want: ["the Observer is not configured", "no census taken", "none among the last 100 requests"], not: ["0.00 %", " ms", "41.2"], sparks: 0, unmeasured: 5 },
+];
+for (const width of [390, 1440]) {
+  const page = await browser.newPage({ viewport: { width, height: 900 } });
+  page.on("pageerror", (e) => problems.push(`${width}px infrastructure page error: ${e.message}`));
+  page.on("response", (r) => { if (r.status() >= 400) problems.push(`${width}px infrastructure HTTP ${r.status()} ${r.url()}`); });
+  OVERRIDE = {};
+  await page.goto(`${base}#/infrastructure`);
+  await page.waitForTimeout(700);
+  const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+  for (const w of ["Minutes since last probe", "untagged version (dashboard change)", "more · up to", "Observe now"]) if (!main.includes(w)) problems.push(`${width}px #/infrastructure: missing "${w}"`);
+  for (const w of ["Edit", "Update service", "Set desired version", "other ("]) if (main.includes(w)) problems.push(`${width}px #/infrastructure: still shows "${w}"`);
+  await page.close();
+  for (const check of DETAIL_CHECKS) {
+    OVERRIDE = check.override;
+    const p = await browser.newPage({ viewport: { width, height: 900 } });
+    p.on("pageerror", (e) => problems.push(`${width}px detail/${check.name} page error: ${e.message}`));
+    await p.goto(`${base}#/infrastructure`);
+    await p.waitForTimeout(700);
+    await p.click(`[aria-label="Details of ${check.service}"]`);
+    await p.waitForTimeout(500);
+    const sheet = await p.evaluate(() => {
+      const el = document.querySelector('[data-testid="service-detail"]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { text: el.textContent ?? "", top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, sparks: el.querySelectorAll("svg[role=img]").length, vw: window.innerWidth, vh: window.innerHeight };
+    });
+    if (!sheet) { problems.push(`${width}px detail (${check.name}): no detail panel opened`); await p.close(); continue; }
+    for (const w of check.want) if (!sheet.text.includes(w)) problems.push(`${width}px detail (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (sheet.text.includes(w)) problems.push(`${width}px detail (${check.name}): shows "${w}"`);
+    if (sheet.sparks < check.sparks) problems.push(`${width}px detail (${check.name}): ${sheet.sparks} sparklines, expected ${check.sparks}`);
+    if (check.sparks === 0 && sheet.sparks > 0) problems.push(`${width}px detail (${check.name}): draws ${sheet.sparks} sparklines without a measured series`);
+    const unmeasured = (sheet.text.match(/not measured/g) ?? []).length;
+    if (check.unmeasured && unmeasured < check.unmeasured) problems.push(`${width}px detail (${check.name}): ${unmeasured} "not measured", expected at least ${check.unmeasured}`);
+    // A bottom sheet on a phone (full width, on the bottom edge), a side panel on a desktop (right edge, full height).
+    if (width < 1024 && !(Math.abs(sheet.bottom - sheet.vh) <= 1 && sheet.left <= 1 && Math.abs(sheet.right - sheet.vw) <= 1 && sheet.top > 0)) problems.push(`${width}px detail (${check.name}): not a bottom sheet (${JSON.stringify(sheet).slice(-120)})`);
+    if (width >= 1024 && !(Math.abs(sheet.right - sheet.vw) <= 1 && sheet.top <= 1 && Math.abs(sheet.bottom - sheet.vh) <= 1 && sheet.width <= 520)) problems.push(`${width}px detail (${check.name}): not a side panel (${JSON.stringify(sheet).slice(-120)})`);
+    const overflow = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px detail (${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await p.screenshot({ path: path.join(process.env.SHOTS, `${width}-infrastructure-${check.name.replace(/ /g, "_")}.png`) });
+    await p.keyboard.press("Escape");
+    await p.waitForTimeout(200);
+    if (await p.$('[data-testid="service-detail"]')) problems.push(`${width}px detail (${check.name}): Escape does not close it`);
+    await p.close();
+  }
+}
 OVERRIDE = {};
 await browser.close();
 server.close();
@@ -372,4 +440,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, and the Owner page as approver, operator and empty.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);

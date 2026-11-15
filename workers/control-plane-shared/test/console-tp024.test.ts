@@ -106,8 +106,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["recovery.disable", "recovery", "POST", "/v1/plans/{id}/disable", false, "DISABLE {id13}"],
   ["registry.services", "registry", "GET", "/v1/services", false, null],
   ["registry.service", "registry", "GET", "/v1/services/{id}", false, null],
-  ["registry.upsert", "registry", "PUT", "/v1/services/{id}", true, "UPDATE {id}"],
-  ["registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", true, "VERSION {id}"],
+  // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): registry.upsert and registry.desired_version are removed with
+  // the Infrastructure page's Edit form.
   ["registry.accounts", "registry", "GET", "/v1/accounts", false, null],
   ["registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"],
   ["registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"],
@@ -116,6 +116,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null],
   ["policy.evaluate", "policy", "POST", "/v1/evaluate", false, null],
   ["drift.list", "drift", "GET", "/v1/drift", false, null],
+  // Owner 2026-11-15: the service detail panel reads a service's recorded drift changes (read only).
+  ["drift.service", "drift", "GET", "/v1/drift/{id}", false, null],
   ["drift.observe", "drift", "POST", "/v1/observe", false, null],
   ["audit.events", "audit", "GET", "/v1/events", false, null],
   ["audit.event", "audit", "GET", "/v1/events/{id}", false, null],
@@ -126,10 +128,11 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 69 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 68 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
-  assert.equal(UI_ROUTES.length, 69);
+  // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
+  assert.equal(UI_ROUTES.length, 68);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -138,8 +141,10 @@ test("1. route table: exactly the 69 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 69);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 68);
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
+  assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
+  assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
   assert.ok(!UI_ROUTES.some((r) => r.service === "orchestrator" && r.method !== "GET"), "no UI route writes to the Orchestrator");
   assert.ok(!UI_ROUTES.some((r) => r.confirm?.includes("{sha12}")), "no phrase template needs a commit SHA any more");
   // every field equals §4, in order
@@ -149,9 +154,9 @@ test("1. route table: exactly the 69 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the twenty-one approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes; since 2026-11-13 the acknowledgement of a critical report and the alert channels)", () => {
+test("2. approver flags: exactly the nineteen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation; since 2026-11-13 the acknowledgement of a critical report and the alert channels; the registry writes left on 2026-11-15)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
+  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -232,7 +237,9 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the Vision page's read-only row (ADR-0016 T0).
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy row, orchestrator POST /v1/deployments (owner 2026-11-14).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 68);
+  // - the two registry PUT rows, a service record and a desired version (owner 2026-11-15).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 66);
+  assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
   const env = consoleEnv();
@@ -320,6 +327,7 @@ test("13. confirmation dialog traps Tab focus, cancels on Escape and enables onl
 
 test("14. Observe now stays disabled until its request settles, with no lock timer", () => {
   const inf = read("src/pages/Infrastructure.tsx");
+  assert.match(inf, /route: "drift\.observe"/, "Observe now stays (owner 2026-11-15)");
   assert.match(inf, /disabled=\{busy\}/);
   assert.match(inf, /after: \(\) => \{ setBusy\(false\)/);
   assert.match(inf, /onError: \(\) => setBusy\(false\)/);
@@ -342,4 +350,24 @@ test("10. Aether's overview: GET reaches the AETHER binding as GET /v1/overview;
   }
   assert.equal(aether.calls.length, 1, "refused requests never reach Aether");
   assert.equal(SERVICE_BINDINGS.aether, "AETHER");
+});
+
+test("15. owner 2026-11-15: the registry edit routes are gone; the Console refuses them without reaching the Registry", async () => {
+  const env = consoleEnv();
+  const registry = recorder();
+  (env as Record<string, unknown>).REGISTRY = registry.binding;
+  for (const path of ["/api/registry/v1/services/cryptophys-platform-api", "/api/registry/v1/services/cryptophys-platform-api/desired-version"]) {
+    const put = creq("PUT", path, { jwt: APPROVER_JWT });
+    put.headers.set("origin", ORIGIN);
+    put.headers.set("x-cryptophys-console", "1");
+    const refused = await run(env, put);
+    assert.deepEqual([refused.status, refused.body.error], [404, "not_allowed"], `PUT ${path} is not forwarded`);
+  }
+  assert.equal(registry.calls.length, 0, "the Registry is never reached");
+  // Reads stay: the list and one record; the detail panel's drift history is a GET of an allow-listed row.
+  assert.equal((await run(env, creq("GET", "/api/registry/v1/services", { jwt: OPERATOR_JWT }))).status, 200);
+  assert.equal((await run(env, creq("GET", "/api/registry/v1/services/cryptophys-platform-api", { jwt: OPERATOR_JWT }))).status, 200);
+  assert.equal(registry.calls.length, 2);
+  assert.equal((await run(env, creq("GET", "/api/drift/v1/drift/cryptophys-platform-api", { jwt: OPERATOR_JWT }))).status, 200);
+  assert.ok(UI_ROUTES.every((r) => r.service !== "registry" || r.method === "GET" || r.id.startsWith("registry.account")), "only account routes write to the Registry");
 });

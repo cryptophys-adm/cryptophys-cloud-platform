@@ -79,8 +79,9 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("recovery.disable", "recovery", "POST", "/v1/plans/{id}/disable", false, "DISABLE {id13}"),
   r("registry.services", "registry", "GET", "/v1/services", false, null),
   r("registry.service", "registry", "GET", "/v1/services/{id}", false, null),
-  r("registry.upsert", "registry", "PUT", "/v1/services/{id}", true, "UPDATE {id}"),
-  r("registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", true, "VERSION {id}"),
+  // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): registry.upsert (PUT /v1/services/{id}, "UPDATE {id}") and
+  // registry.desired_version (PUT /v1/services/{id}/desired-version, "VERSION {id}") are removed with the
+  // Infrastructure page's Edit form: records come from the DNA, the census and consensus deploys.
   // Users page (owner decision 2026-11-07): owners manage accounts; the server checks the owner and the phrase.
   r("registry.accounts", "registry", "GET", "/v1/accounts", false, null),
   r("registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"),
@@ -90,6 +91,8 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null),
   r("policy.evaluate", "policy", "POST", "/v1/evaluate", false, null),
   r("drift.list", "drift", "GET", "/v1/drift", false, null),
+  // Owner 2026-11-15: a service's recorded drift changes for its detail panel (read only; already allow-listed).
+  r("drift.service", "drift", "GET", "/v1/drift/{id}", false, null),
   r("drift.observe", "drift", "POST", "/v1/observe", false, null),
   r("audit.events", "audit", "GET", "/v1/events", false, null),
   r("audit.event", "audit", "GET", "/v1/events/{id}", false, null),

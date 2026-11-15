@@ -56,17 +56,19 @@ test("H3. registry writes: an operator person is refused, an approver or the dep
   assert.equal((await call(registry, env, req("GET", "/v1/services", undefined, OUTSIDER_JWT))).status, 403);
 });
 
-test("H4. Console: manual execution routes are gone; plan creation and registry writes are approver-only", () => {
+test("H4. Console: manual execution routes are gone; plan creation is approver-only; the registry writes are gone (owner 2026-11-15)", () => {
   const ids = new Set(UI_ROUTES.map((r) => r.id));
   assert.equal(ids.has("recovery.execute_start"), false);
   assert.equal(ids.has("recovery.execute_finish"), false);
-  for (const id of ["recovery.create", "registry.upsert", "registry.desired_version"]) {
-    assert.equal(UI_ROUTES.find((r) => r.id === id)?.approverOnly, true, id);
+  assert.equal(UI_ROUTES.find((r) => r.id === "recovery.create")?.approverOnly, true, "recovery.create");
+  // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): the approver-only registry writes left the Console with the Edit form.
+  for (const id of ["registry.upsert", "registry.desired_version"]) {
+    assert.equal(UI_ROUTES.find((r) => r.id === id), undefined, `${id} is gone`);
   }
   const detail = readFileSync(new URL("workers/console/ui/src/pages/RecoveryDetail.tsx", ROOT), "utf8");
   assert.doesNotMatch(detail, /execute_finish|execute_start/, "no page calls the removed routes");
   assert.match(readFileSync(new URL("workers/console/ui/src/pages/Recovery.tsx", ROOT), "utf8"), /include_synthetic/);
-  assert.match(readFileSync(new URL("workers/console/ui/src/pages/Infrastructure.tsx", ROOT), "utf8"), /who\.approver/);
+  assert.doesNotMatch(readFileSync(new URL("workers/console/ui/src/pages/Infrastructure.tsx", ROOT), "utf8"), /registry\.upsert|registry\.desired_version|function Editor/, "no Edit form on the Infrastructure page");
 });
 
 test("H5. retired workflows and the request-workflow carve-out are gone; one validation workflow remains", () => {

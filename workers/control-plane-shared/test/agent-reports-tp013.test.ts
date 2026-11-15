@@ -79,48 +79,46 @@ test("TP-013 policy deny reports, allow silent, no loop, outage safe", async () 
   assert.equal(decT.decision, "deny");
 });
 
-test("TP-013 registry new service, disable, no noise, outage safe", async () => {
+test("TP-013 registry reports are gone with PUT /v1/services/{id} (owner 2026-11-15): no write, no report, outage safe", async () => {
+  // The Registry reported a new or disabled service from its hand-written record route. That route is gone (records
+  // come from the DNA, the census, migrations and consensus), so neither a write nor a report happens.
   const base = { display_name: "News Ingest", environment: "production", status: "registered", metadata: { owner: "x", purpose: "y", data_classification: "internal" } };
 
-  // new service
+  // new service: refused, nothing reported
   const db = migratedDb();
   const rec = recorder();
   const env: any = baseEnv("cryptophys-platform-registry", db, { AGENTS: rec.binding });
   const created = await call(registry, env, req("PUT", "/v1/services/cryptophys-news", base));
-  assert.equal(created.status, 201);
-  assert.equal(rec.calls.length, 1);
-  assert.equal(rec.calls[0].agentId, "platform-registry");
-  assert.equal(rec.calls[0].input.severity, "info");
-  assert.equal(rec.calls[0].input.body.service_id, "cryptophys-news");
-  assert.equal("metadata" in rec.calls[0].input.body, false);
+  assert.equal(created.status, 405);
+  assert.equal(created.body.error, "method_not_allowed");
+  assert.equal(rec.calls.length, 0);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM service_registry WHERE service_id = 'cryptophys-news'").get() as any).n, 0);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type IN ('registry.service_registered', 'registry.service_updated')").get() as any).n, 0);
 
-  // disable
+  // disable an existing service: refused, its status unchanged, nothing reported
   const rec2 = recorder();
   const env2: any = baseEnv("cryptophys-platform-registry", db, { AGENTS: rec2.binding });
-  const updated = await call(registry, env2, req("PUT", "/v1/services/cryptophys-news", { ...base, status: "disabled" }));
-  assert.equal(updated.status, 200);
-  assert.equal(rec2.calls.length, 1);
-  assert.equal(rec2.calls[0].input.severity, "warning");
-  assert.equal(rec2.calls[0].input.body.previous_status, "registered");
+  const updated = await call(registry, env2, req("PUT", "/v1/services/cryptophys-audit-ledger", { ...base, status: "disabled" }));
+  assert.equal(updated.status, 405);
+  assert.equal(rec2.calls.length, 0);
+  assert.equal((db.raw.prepare("SELECT status FROM service_registry WHERE service_id = 'cryptophys-audit-ledger'").get() as any).status, "registered");
+  assert.equal(rec2.calls.filter((c) => c.input?.severity === "warning").length, 0);
 
-  // no noise: same status
+  // the desired version is still recorded (the deploy workflows' route) and, as before, never reported
   const rec3 = recorder();
   const env3: any = baseEnv("cryptophys-platform-registry", db, { AGENTS: rec3.binding });
-  await call(registry, env3, req("PUT", "/v1/services/cryptophys-news", { ...base, status: "disabled" }));
+  const dv = await call(registry, env3, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4" }));
+  assert.equal(dv.status, 200);
   assert.equal(rec3.calls.length, 0);
-  // no noise: change to non-disabled
-  const rec4 = recorder();
-  const env4: any = baseEnv("cryptophys-platform-registry", db, { AGENTS: rec4.binding });
-  // service currently disabled; update to degraded (not from healthy? existing disabled -> no report regardless)
-  await call(registry, env4, req("PUT", "/v1/services/cryptophys-news", { ...base, status: "degraded" }));
-  assert.equal(rec4.calls.length, 0);
 
-  // outage: throwing binding leaves 201 unchanged
+  // outage: a throwing binding changes nothing
   const dbT = migratedDb();
   const throwing: AgentRpcBinding = { whoami: async () => ({}), observe: async () => ({}), syscall: async () => { throw new Error("boom"); } };
   const envT: any = baseEnv("cryptophys-platform-registry", dbT, { AGENTS: throwing });
   const createdT = await call(registry, envT, req("PUT", "/v1/services/cryptophys-news2", base));
-  assert.equal(createdT.status, 201);
-  const updatedT = await call(registry, envT, req("PUT", "/v1/services/cryptophys-news2", { ...base, status: "disabled" }));
-  assert.equal(updatedT.status, 200);
+  assert.equal(createdT.status, 405);
+  assert.match(createdT.body.detail, /DNA, the census, migrations and consensus/);
+  assert.equal((dbT.raw.prepare("SELECT COUNT(*) AS n FROM service_registry WHERE service_id = 'cryptophys-news2'").get() as any).n, 0);
+  const dvT = await call(registry, envT, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4" }));
+  assert.equal(dvT.status, 200);
 });

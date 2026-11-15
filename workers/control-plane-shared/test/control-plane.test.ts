@@ -160,30 +160,31 @@ test("audit ledger appends, redacts, lists, fetches and verifies events", async 
 
 // ---------------------------------------------------------------- registry
 
-test("registry exposes the seeded inventory and enforces ownership metadata", async () => {
+test("registry exposes the seeded inventory; a service record is no longer written by hand (owner 2026-11-15)", async () => {
   const db = migratedDb();
   const env = { ...baseEnv("cryptophys-platform-registry", db), APPROVER_IDENTITIES: APPROVER_EMAIL };
   const list = await call(registry, env, req("GET", "/v1/services"));
   assert.equal(list.body.services.length, 18); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042)
   assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-audit-ledger").metadata.owner, "cryptophys-adm");
 
+  // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): PUT /v1/services/{id} is gone. Records come from the DNA, the
+  // census, migrations and consensus; nobody, not the deploy token, an approver or an operator, writes one by hand.
   const base = { display_name: "News Ingest", environment: "production", status: "registered", actor: "operator@cryptophys" };
-  const missing = await call(registry, env, req("PUT", "/v1/services/cryptophys-news", { ...base, metadata: { owner: "x" } }));
-  assert.equal(missing.status, 400);
-  assert.match(missing.body.detail, /purpose/);
-  const badClass = await call(registry, env, req("PUT", "/v1/services/cryptophys-news", { ...base, metadata: { owner: "x", purpose: "y", data_classification: "secret" } }));
-  assert.equal(badClass.status, 400);
-  const created = await call(registry, env, req("PUT", "/v1/services/cryptophys-news", { ...base, metadata: { owner: "x", purpose: "y", data_classification: "internal" } }));
-  assert.equal(created.status, 201);
-  const updated = await call(registry, env, req("PUT", "/v1/services/cryptophys-news", { ...base, status: "disabled", metadata: { owner: "x", purpose: "y", data_classification: "internal" } }));
-  assert.equal(updated.status, 200);
-  assert.equal(updated.body.service.status, "disabled");
-  assert.equal((await call(registry, env, req("PUT", "/v1/services/Bad_ID", base))).status, 400);
+  const record = { ...base, metadata: { owner: "x", purpose: "y", data_classification: "internal" } };
+  const gone = await call(registry, env, req("PUT", "/v1/services/cryptophys-news", record));
+  assert.equal(gone.status, 405, "the deploy token cannot register a service");
+  assert.equal(gone.body.error, "method_not_allowed");
+  assert.match(gone.body.detail, /DNA/);
+  assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-news", record, APPROVER_JWT))).status, 405, "nor an approver");
+  assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-audit-ledger", { ...record, status: "disabled" }, APPROVER_JWT))).status, 405, "nor change an existing record");
+  assert.equal((await call(registry, env, req("PUT", "/v1/services/Bad_ID", base))).status, 400, "a malformed id is still refused first");
+  assert.equal((await call(registry, env, req("GET", "/v1/services/cryptophys-news"))).status, 404, "nothing was registered");
+  assert.equal((await call(registry, env, req("GET", "/v1/services/cryptophys-audit-ledger"))).body.service.status, "registered", "nothing was changed");
 
-  // Hardening 2026-11-08: a person needs the approver role to set a desired version or change a record; the deploy
-  // workflow's service token (CI_JWT, above) keeps recording versions.
+  // Hardening 2026-11-08: a person needs the approver role to set a desired version; the deploy workflow's service
+  // token (CI_JWT, above) keeps recording versions (record-desired-version.sh, deploy-control-plane.yml, rollback-worker.yml).
   assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "a" }, OPERATOR_JWT))).status, 403, "an operator person cannot set the desired version");
-  assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-news", { ...base, metadata: { owner: "x", purpose: "y", data_classification: "internal" } }, OPERATOR_JWT))).status, 403, "nor change a service record");
+  assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-news", record, OPERATOR_JWT))).status, 403, "nor reach the removed record route (refused before its 405)");
   const dv = await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "823108ad3da4", actor: "spoofed" }, APPROVER_JWT));
   const dvEvent = db.raw.prepare("SELECT actor FROM audit_events WHERE event_type = 'registry.desired_version_set' ORDER BY rowid DESC LIMIT 1").get() as { actor: string };
   assert.equal(dvEvent.actor, APPROVER_EMAIL, "the verified identity is recorded, not the body's actor");
@@ -192,7 +193,7 @@ test("registry exposes the seeded inventory and enforces ownership metadata", as
   assert.equal((await call(registry, env, req("PUT", "/v1/services/cryptophys-platform-api/desired-version", { desired_version: "main", actor: "a" }))).status, 400);
 
   const events = db.raw.prepare("SELECT event_type FROM audit_events ORDER BY rowid").all().map((r: any) => r.event_type);
-  assert.deepEqual(events, ["registry.service_registered", "registry.service_updated", "registry.desired_version_set"]);
+  assert.deepEqual(events, ["registry.desired_version_set"], "no registry.service_registered or registry.service_updated any more");
 });
 
 // ---------------------------------------------------------------- policy engine

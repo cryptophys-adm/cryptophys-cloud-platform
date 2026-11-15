@@ -10,13 +10,13 @@ import { ago } from "../lib/format";
  * account inventory. Every value comes from GET /v1/observer on the Platform API (measured by the Cloudflare GraphQL
  * Analytics API); the one estimate (rows per request) is labelled so. A missing value is a dash.
  */
-const pct = (v: unknown) => (typeof v === "number" ? `${(v * 100).toFixed(v < 0.01 ? 2 : 1)} %` : "—");
-const msv = (v: unknown) => (typeof v === "number" ? `${v.toLocaleString("en-US", { maximumFractionDigits: 1 })} ms` : "—");
+export const pct = (v: unknown) => (typeof v === "number" ? `${(v * 100).toFixed(v < 0.01 ? 2 : 1)} %` : "—");
+export const msv = (v: unknown) => (typeof v === "number" ? `${v.toLocaleString("en-US", { maximumFractionDigits: 1 })} ms` : "—");
 const int = (v: unknown) => (typeof v === "number" ? v.toLocaleString("en-US") : "—");
 const short = (s: string) => String(s).replace(/^cryptophys-/, "");
 
 /** A single-series sparkline (the column header names it, so no legend); gaps where nothing was measured. */
-function Spark({ points, label }: { points: Array<number | null>; label: string }) {
+export function Spark({ points, label }: { points: Array<number | null>; label: string }) {
   const vals = points.filter((p): p is number => typeof p === "number");
   if (vals.length < 2) return <span className="text-[10px] text-slate-500">—</span>;
   const max = Math.max(...vals) || 1;
