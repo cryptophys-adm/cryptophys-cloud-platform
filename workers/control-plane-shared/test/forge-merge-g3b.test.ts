@@ -13,6 +13,7 @@ import { syscall } from "../../ai-kernel/src/syscall.ts";
 import { ownerDecide } from "../../ai-kernel/src/consensus.ts";
 import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { changeState, mergeForConsensus } from "../../forge/src/consensus-merge.ts";
+import { MAIN_NOT_FIRST_PARENT } from "../../forge/src/changes.ts";
 import { FLUSH, ZERO_SHA, forgeMerge, pktLine, type Fetch } from "../../forge/src/merge.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -23,7 +24,9 @@ const C0 = "0".repeat(39) + "1";
 const M = "1".repeat(40);   // canonical main
 const H = "2".repeat(40);   // the change request's head, a child of M
 const X = "3".repeat(40);   // a head that does not contain M
-const COMMITS: Record<string, string[]> = { [C0]: [], [M]: [C0], [H]: [M], [X]: [C0] };
+const S = "4".repeat(40);   // `git merge main` on X: main is the SECOND parent (the incident of 2026-11-14)
+const F = "5".repeat(40);   // the same merge with main as the FIRST parent
+const COMMITS: Record<string, string[]> = { [C0]: [], [M]: [C0], [H]: [M], [X]: [C0], [S]: [X, M], [F]: [M, X] };
 const CR = "fg-claude-x";
 const text = (u: Uint8Array) => new TextDecoder().decode(u);
 
@@ -210,4 +213,65 @@ test("M6. wiring: the kernel binds the Forge's MergeRpc; the Console offers the 
   assert.match(read("workers/forge/src/worker.ts"), /export class MergeRpc extends WorkerEntrypoint/);
   assert.match(read("workers/console/ui/src/pages/Consensus.tsx"), /"merge_owner_change"/);
   assert.match(read("docs/GITHUB-CUTOVER.md"), /forge_controls\.merge_path/);
+});
+
+test("M7. the linear-history guard (incident 2026-11-14): main merged in as the second parent is never proposed, voted or fast-forwarded", async () => {
+  const db = migratedDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  // A row registered without the stored reason (before 0071, or before main moved): the live state still blocks it.
+  await seedChange(db, S);
+  const g = gitWorld({ platform: { "refs/heads/main": M }, "platform-work": { "refs/heads/main": M, "refs/heads/claude/x": S } });
+  const forgeEnv = { DB: db, ARTIFACTS: g.binding };
+  const state = (await changeState(forgeEnv as never, CR))!;
+  assert.deepEqual([state.verdict, state.reasons, state.contains_main, state.main_sha], ["blocked", [MAIN_NOT_FIRST_PARENT], true, M]);
+  assert.match(mergeVote({ action: "merge_change", target: CR, params: { head_sha: S }, class: "routine" }, evidence(state))!.reason, /verdict is blocked/);
+
+  // The Supervisor reads the live state and proposes nothing for it.
+  const mem = new Map<string, unknown>();
+  const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, v); } };
+  let reads = 0;
+  const counting = (e: Record<string, unknown>, fe: unknown) => ({ ...e, FORGE_MERGE: { ...(e.FORGE_MERGE as object), changeState: async (id: string) => { reads++; return changeState(fe as never, id); } } });
+  const env = kernelEnv(db, forgeEnv, g.fetchImpl);
+  await runCycle(counting(env, forgeEnv) as never, memory, "scheduled", Date.now());
+  assert.equal(reads, 1, "read, then skipped: its verdict is blocked");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action LIKE 'merge%'").get() as any).n, 0);
+  // Proposed by hand anyway: every voter rejects it and nothing is pushed.
+  await syscall(env as never, "supervisor", "consensus.propose", { action: "merge_change", target: CR, params: { head_sha: S } });
+  assert.equal((db.raw.prepare("SELECT status FROM consensus_proposals WHERE action = 'merge_change'").get() as any).status, "rejected");
+  assert.equal(g.pushes.length, 0);
+  assert.equal(g.refs.platform["refs/heads/main"], M);
+  // The fast-forward itself refuses it, even with the executor's flag.
+  assert.equal((await forgeMerge(g.binding as never, "platform", { base: M, head: S }, g.fetchImpl, { canonical: true })).reason, "main_not_first_parent");
+  assert.equal((await forgeMerge(g.binding as never, "platform", { base: M, head: X }, g.fetchImpl, { canonical: true })).reason, "not_fast_forward");
+
+  // A row the Forge stored as refused (history_blocked_reason, migration 0071) is not even read by the Supervisor.
+  const db2 = migratedDb();
+  db2.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  db2.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  await seedChange(db2, S);
+  db2.raw.prepare("UPDATE forge_change_requests SET history_blocked_reason = 'main_not_first_parent' WHERE cr_id = ?").run(CR);
+  const forgeEnv2 = { DB: db2, ARTIFACTS: g.binding };
+  reads = 0;
+  await runCycle(counting(kernelEnv(db2, forgeEnv2, g.fetchImpl), forgeEnv2) as never, memory, "scheduled", Date.now());
+  assert.equal(reads, 0);
+  assert.equal((db2.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action LIKE 'merge%'").get() as any).n, 0);
+  assert.deepEqual((await changeState(forgeEnv2 as never, CR))!.reasons, [MAIN_NOT_FIRST_PARENT], "the stored and the live reason are the same, once");
+});
+
+test("M8. the same merge with main as the first parent passes the guard and merges by consensus", async () => {
+  const db = migratedDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  await seedChange(db, F);
+  const g = gitWorld({ platform: { "refs/heads/main": M }, "platform-work": { "refs/heads/main": M, "refs/heads/claude/x": F } });
+  const forgeEnv = { DB: db, ARTIFACTS: g.binding };
+  const state = (await changeState(forgeEnv as never, CR))!;
+  assert.deepEqual([state.verdict, state.contains_main], ["would_merge", true]);
+  const mem = new Map<string, unknown>();
+  const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, v); } };
+  await runCycle(kernelEnv(db, forgeEnv, g.fetchImpl) as never, memory, "scheduled", Date.now());
+  const p = db.raw.prepare("SELECT * FROM consensus_proposals WHERE action = 'merge_change'").get() as any;
+  assert.equal(p.status, "executed", p.outcome_json);
+  assert.equal(g.refs.platform["refs/heads/main"], F, "main fast-forwards; its previous head M stays its first parent");
 });

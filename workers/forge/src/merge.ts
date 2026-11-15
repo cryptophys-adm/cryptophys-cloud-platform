@@ -16,7 +16,9 @@
 // client is what normally refuses. So forgeMerge checks ancestry through the binding before it pushes,
 // and it only ever moves a branch from its current head to a descendant of it. Anything else is
 // `not_fast_forward`: the branch must first be updated to include main (a rebase or a merge commit
-// made by the contributor), and then it is checked again.
+// made by the contributor), and then it is checked again. A head that reaches the branch's current head only
+// through a second parent is `main_not_first_parent` (the linear-history guard, incident 2026-11-14): the
+// fast-forward would leave the branch's previous heads off its first-parent history.
 //
 // G3a writes only the scratch repository `merge-spike`. forgeMerge refuses the canonical repository
 // `platform` until G3b, which waits for the cut-over (G6): while GitHub is canonical, a Forge merge of
@@ -313,6 +315,46 @@ export async function isAncestor(repo: Pick<ArtifactsReader, "readCommit">, ance
   return false;
 }
 
+/**
+ * The linear-history guard (incident 2026-11-14): how far the first-parent walk from a change request's head looks
+ * for main's head. One commit read per step, so a branch with more than this many commits on its first-parent line
+ * above main reads as `merged_in`/`absent` and is refused (fail closed). It equals isAncestor's bound, so a linear
+ * branch that isAncestor accepts is always accepted here too.
+ */
+export const FIRST_PARENT_WALK = 500;
+
+/**
+ * True when `ancestor` is `descendant` or on its first-parent chain (parent 1, its parent 1, …) within `maxDepth`
+ * commit reads. A commit that cannot be read, a root, or a longer chain answers false (fail closed).
+ */
+export async function onFirstParentChain(repo: Pick<ArtifactsReader, "readCommit">, ancestor: string, descendant: string, maxDepth = FIRST_PARENT_WALK): Promise<boolean> {
+  if (!validSha(ancestor) || !validSha(descendant)) return false;
+  let sha = descendant;
+  for (let reads = 0; reads < maxDepth; reads++) {
+    if (sha === ancestor) return true;
+    const first = parentsOf(await repo.readCommit(sha) as CommitRecord | null)[0];
+    if (!first) return false;
+    sha = first;
+  }
+  return sha === ancestor;
+}
+
+/**
+ * Where main's head stands in a change request's history:
+ *   first_parent  on the head's first-parent chain: a fast-forward keeps main's own heads on main's first-parent line;
+ *   merged_in     reachable only through a second (or later) parent: the branch merged main with main as the SECOND
+ *                 parent, so a fast-forward would take main's previous heads off its first-parent line
+ *                 (main_not_first_parent);
+ *   absent        not reachable within the bounds: the head does not contain main (not_based_on_main).
+ * The common case (a rebase, or a merge with main first) costs one first-parent walk; only a refused head pays for
+ * the full ancestry walk as well.
+ */
+export type MainPosition = "first_parent" | "merged_in" | "absent";
+export async function mainPosition(repo: Pick<ArtifactsReader, "readCommit">, main: string, head: string): Promise<MainPosition> {
+  if (await onFirstParentChain(repo, main, head)) return "first_parent";
+  return (await isAncestor(repo, main, head)) ? "merged_in" : "absent";
+}
+
 // ---------------------------------------------------------------- the merge
 
 export interface MergeRepo extends ArtifactsReader {
@@ -330,8 +372,9 @@ export async function refHead(repo: Pick<ArtifactsReader, "log">, ref: string): 
 
 /**
  * Fast-forward `branch` of `repoName` from `base` to `head`. Refuses unless `base` is the branch's
- * current head (`base_not_current`) and `head` descends from it (`not_fast_forward`); a branch that
- * does not contain the current base must be updated first. After the push the branch is read back
+ * current head (`base_not_current`) and `head` descends from it (`not_fast_forward`) along its
+ * first-parent chain (`main_not_first_parent`); a branch that does not contain the current base must be
+ * updated first. After the push the branch is read back
  * through the binding and must equal `head`.
  */
 /**
@@ -350,7 +393,10 @@ export async function forgeMerge(binding: MergeBinding, repoName: string, opts: 
   const repo = await binding.get(repoName);
   try {
     if ((await refHead(repo, branch)) !== base) return refuse("base_not_current");
-    if (!(await isAncestor(repo, base, head))) return refuse("not_fast_forward");
+    const position = await mainPosition(repo, base, head);
+    if (position === "absent") return refuse("not_fast_forward");
+    // The linear-history guard (incident 2026-11-14): the branch's current head must stay on its first-parent line.
+    if (position === "merged_in") return refuse("main_not_first_parent");
     const remote = (await repo.info())?.remote ?? "";
     if (!trustedRemoteFor(remote, repoName)) return refuse("untrusted_remote");
     const token = await repo.createToken("write", MERGE_TOKEN_TTL_S);
