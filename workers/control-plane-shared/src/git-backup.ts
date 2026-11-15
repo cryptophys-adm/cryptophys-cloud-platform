@@ -6,6 +6,12 @@
 // Owner 2026-11-13: the owner is contacted only for critical reports and approval requests. A stale backup
 // (no success for GIT_BACKUP_STALE_MS) is shown on the Console only; it is not an owner notice and is never
 // emailed or sent to Telegram.
+//
+// Gate 8 (owner 2026-11-15): once per UTC day the Forge verifies the newest stored bundle in code, as `git bundle
+// verify` and index-pack would (forge/src/bundle-verify.ts), and records the result on its row (migration 0076:
+// verified_at, verify_status, verify_details). `verify` below is the newest of those results. Unlike a stale
+// backup, a failed verify means the copy in R2 is unusable or is not the one recorded: it is a production problem
+// on the Owner page (ai-kernel owner-inbox.ts, git_backup_unverified). Before migration 0076 `verify` is null.
 import type { D1Database } from "./types.ts";
 
 export const GIT_BACKUP_PREFIX = "git-backups/platform/";
@@ -15,6 +21,8 @@ export const GIT_BACKUP_RETAINED_DAYS = 30;
 export const GIT_BACKUP_ROW_RETENTION_DAYS = 90;
 /** The Console shows the backup as stale when no run has succeeded for this long. */
 export const GIT_BACKUP_STALE_MS = 48 * 3_600_000;
+/** A verify that failed because R2 could not be read (not because of the bundle) is retried after this long. */
+export const GIT_BACKUP_VERIFY_RETRY_MS = 3_600_000;
 
 export interface GitBackupRef { name: string; sha: string }
 export interface GitBackupRun {
@@ -22,6 +30,16 @@ export interface GitBackupRun {
   r2_key: string | null; bundle_sha256: string | null; bundle_bytes: number | null; pack_bytes: number | null;
   pack_sha1: string | null; pack_version: number | null; objects: number | null; refs: number | null;
   error: string | null; pruned_at: string | null;
+  /** Migration 0076: the newest verify of this run's bundle (null before one ran, or before 0076). */
+  verified_at?: string | null; verify_status?: "verified" | "failed" | null;
+}
+export type GitBackupVerifyStatus = "verified" | "failed";
+/** The newest daily verify of a stored bundle (forge/src/bundle-verify.ts). */
+export interface GitBackupVerify {
+  run_id: string; r2_key: string | null; main_sha: string; day: string;
+  verified_at: string; verify_status: GitBackupVerifyStatus;
+  /** What was checked and measured (objects, deltas, refs, reachable, …), or `reason` for a failure. */
+  details: Record<string, unknown> | null;
 }
 export type GitBackupStatus = "no_data" | "stale" | "failing" | "ok";
 export interface GitBackupView {
@@ -35,6 +53,8 @@ export interface GitBackupView {
   last_ok_run: (GitBackupRun & { ref_list: GitBackupRef[] }) | null;
   /** The newest runs, newest first. */
   runs: GitBackupRun[];
+  /** The newest verify (`git bundle verify` in code) of a stored bundle; null before one ran, or before migration 0076. */
+  verify: GitBackupVerify | null;
   /** Successful runs whose bundle retention has not deleted. */
   retained_bundles: number;
   retained_days: number;
@@ -42,12 +62,31 @@ export interface GitBackupView {
   observed_at: string;
 }
 
-const COLUMNS = "run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, pack_bytes, pack_sha1, pack_version, objects, refs, error, pruned_at";
+const BASE_COLUMNS = "run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, pack_bytes, pack_sha1, pack_version, objects, refs, error, pruned_at";
+const VERIFY_COLUMNS = `${BASE_COLUMNS}, verified_at, verify_status`;
+
+/** The newest verify of a stored bundle. Null when none ran; undefined before migration 0076. */
+export async function latestGitBackupVerify(db: D1Database): Promise<GitBackupVerify | null | undefined> {
+  let row: { run_id: string; r2_key: string | null; main_sha: string; day: string; verified_at: string; verify_status: GitBackupVerifyStatus; verify_details: string | null } | null;
+  try {
+    row = await db.prepare(
+      "SELECT run_id, r2_key, main_sha, day, verified_at, verify_status, verify_details FROM forge_git_backups WHERE verified_at IS NOT NULL ORDER BY verified_at DESC LIMIT 1",
+    ).first() ?? null;
+  } catch {
+    return undefined;
+  }
+  if (!row) return null;
+  let details: Record<string, unknown> | null = null;
+  try { const d = JSON.parse(row.verify_details ?? "null"); details = d && typeof d === "object" && !Array.isArray(d) ? d : null; } catch { details = null; }
+  return { run_id: row.run_id, r2_key: row.r2_key, main_sha: row.main_sha, day: row.day, verified_at: row.verified_at, verify_status: row.verify_status, details };
+}
 
 /** The latest git backups. Null before migration 0054. */
 export async function gitBackup(db: D1Database, nowMs = Date.now(), limit = 10): Promise<GitBackupView | null> {
   const n = Math.max(1, Math.min(50, Math.floor(limit) || 10));
   let runs: GitBackupRun[]; let lastOk: (GitBackupRun & { refs_json: string | null }) | null; let oldest: { ran_at: string } | null; let retained: { n: number } | null;
+  const verify = await latestGitBackupVerify(db);
+  const COLUMNS = verify === undefined ? BASE_COLUMNS : VERIFY_COLUMNS;
   try {
     runs = (await db.prepare(`SELECT ${COLUMNS} FROM forge_git_backups ORDER BY ran_at DESC LIMIT ?`).bind(n).all<GitBackupRun>()).results ?? [];
     lastOk = await db.prepare(`SELECT ${COLUMNS}, refs_json FROM forge_git_backups WHERE status = 'ok' ORDER BY ran_at DESC LIMIT 1`).first<GitBackupRun & { refs_json: string | null }>() ?? null;
@@ -70,7 +109,7 @@ export async function gitBackup(db: D1Database, nowMs = Date.now(), limit = 10):
   return {
     schema: "git-backup.v1", status, stale, latest_run: latest,
     last_ok_run: okRun ? { ...okRun, ref_list: refList } : null,
-    runs, retained_bundles: Number(retained?.n ?? 0), retained_days: GIT_BACKUP_RETAINED_DAYS,
+    runs, verify: verify ?? null, retained_bundles: Number(retained?.n ?? 0), retained_days: GIT_BACKUP_RETAINED_DAYS,
     stale_after_hours: GIT_BACKUP_STALE_MS / 3_600_000, observed_at: new Date(nowMs).toISOString(),
   };
 }

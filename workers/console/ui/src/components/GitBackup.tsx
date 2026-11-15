@@ -7,7 +7,9 @@ import { ago } from "../lib/format";
  * ADR-0012 gate 8: the off-Artifacts copy of the repository. Once per UTC day per head of main the Forge clones
  * cryptophys/platform over Git smart HTTP and writes it to R2 as a git bundle (GET /v1/forge/git-backup). Every
  * value comes from that response; a missing value is "—". A backup that has not succeeded for 48 hours is shown
- * here only (owner 2026-11-13: the owner is contacted for critical reports and approvals only).
+ * here only (owner 2026-11-13: the owner is contacted for critical reports and approvals only). Gate 8 (owner
+ * 2026-11-15): `verify` is the newest daily `git bundle verify` in code of a stored bundle (migration 0076); a failed
+ * one is also an Owner page item (git_backup_unverified).
  */
 const STATUS_TONE: Record<string, "green" | "amber" | "red" | "slate"> = { ok: "green", failing: "amber", stale: "red", no_data: "slate" };
 const STATUS_TEXT: Record<string, string> = { ok: "backed up", failing: "last run failed", stale: "stale", no_data: "not taken yet" };
@@ -21,6 +23,8 @@ export default function GitBackup({ data, loading }: { data: any; loading: boole
   const ok = b?.last_ok_run;
   const latest = b?.latest_run;
   const runs: any[] = Array.isArray(b?.runs) ? b.runs : [];
+  const v = b?.verify;
+  const vd = v?.details ?? null;
   return (
     <Panel title="Repository backup · git bundle in R2" icon={<Archive className="h-3.5 w-3.5 text-emerald-300" />}
       right={<Badge tone={STATUS_TONE[b?.status] ?? "slate"}>{b ? STATUS_TEXT[b.status] ?? b.status : "—"}</Badge>}>
@@ -29,14 +33,24 @@ export default function GitBackup({ data, loading }: { data: any; loading: boole
           {b.stale ? (
             <p className="text-[11px] text-rose-200">No git backup has succeeded for {num(b.stale_after_hours)} hours{latest?.status === "failed" && latest.error ? `; latest error: ${latest.error}` : ""}.</p>
           ) : null}
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
             <Stat label="Last bundle" value={ok ? ago(ok.ran_at) : "never"} tone={b.stale ? "critical" : ok ? "good" : undefined}
               sub={ok ? `main ${short(ok.main_sha, 12)}` : "—"} />
             <Stat label="SHA-256" value={<span className="mono text-[12px]" title={ok?.bundle_sha256 ?? ""}>{short(ok?.bundle_sha256, 16)}</span>}
               sub={ok ? `pack SHA-1 ${short(ok.pack_sha1, 12)}` : "—"} />
             <Stat label="Size" value={ok ? size(ok.bundle_bytes) : "—"} sub={ok ? `${num(ok.objects)} objects · ${num(ok.refs)} branches` : "—"} />
             <Stat label="Retained" value={num(b.retained_bundles)} sub={`newest per day, last ${num(b.retained_days)} days`} />
+            <Stat label="Bundle verify" value={v ? (v.verify_status === "verified" ? "verified" : v.verify_status === "failed" ? "failed" : String(v.verify_status ?? "—")) : "not yet"}
+              tone={v?.verify_status === "verified" ? "good" : v?.verify_status === "failed" ? "critical" : undefined}
+              sub={v ? `${ago(v.verified_at)} · main ${short(v.main_sha, 7)}` : "—"} />
           </div>
+          {v && v.verify_status === "failed" ? (
+            <p className="mono break-words text-[10px] leading-relaxed text-rose-200">git bundle verify of {v.r2_key ?? "—"} failed: {typeof vd?.reason === "string" ? vd.reason : "—"}</p>
+          ) : v && v.verify_status === "verified" ? (
+            <p className="text-[10px] leading-relaxed text-slate-400">
+              Verified {v.day ?? "—"} bundle: {num(vd?.objects)} objects ({num(vd?.deltas)} deltas resolved), {num(vd?.reachable)} reachable from {num(vd?.refs)} branches, pack SHA-1 and SHA-256 match the record.
+            </p>
+          ) : null}
           {latest && latest.status === "failed" ? (
             <p className="mono break-words text-[10px] leading-relaxed text-amber-200">Latest run {ago(latest.ran_at)} failed: {latest.error ?? "—"}</p>
           ) : null}
@@ -51,7 +65,7 @@ export default function GitBackup({ data, loading }: { data: any; loading: boole
             ]} />
           ) : null}
           <p className="text-[10px] leading-relaxed text-slate-500">
-            The Forge clones the Artifacts repository over Git smart HTTP with a short-lived read token and stores the result as a git bundle in R2, the copy that remains when GitHub is archived. Restore: download the bundle, run git bundle verify on it, then git clone it into a new directory.
+            The Forge clones the Artifacts repository over Git smart HTTP with a short-lived read token and stores the result as a git bundle in R2, the copy that remains when GitHub is archived. Each UTC day the newest bundle is read back and checked in code as git bundle verify and index-pack would: the header, the pack checksum, every object and delta, the refs and everything they reach, and its SHA-256 against the record. Restore: download the bundle, run git bundle verify on it, then git clone it into a new directory.
           </p>
         </div>
       )}
