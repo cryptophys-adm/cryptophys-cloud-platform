@@ -2,7 +2,7 @@
 // Runtime entry point: the Access-gated HTTP handler, the DeploymentLock Durable Object,
 // and the RPC health entrypoint used by the Drift Detector.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
+import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployForConsensus, deployForRecovery, forceDeployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import { resolveSecrets } from "../../control-plane-shared/src/secrets.ts";
@@ -50,6 +50,10 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   /** Autonomous recovery: the Recovery Manager's lifecycle Workflow runs an approved plan's redeploy step. */
   async deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string) {
     return deployForRecovery(await resolved(this.env), planId, decisionId, serviceId, version);
+  }
+  /** Hardening (d): the break-glass step force_redeploy_unit of an owner-approved plan (recovery-deploy.ts), native only. */
+  async forceDeployForRecovery(planId: string, decisionId: string, serviceId: string, version: string) {
+    return forceDeployForRecovery(await resolved(this.env), planId, decisionId, serviceId, version);
   }
   async runStatus(workflow: string, commitSha: string) {
     return runStatus(await resolved(this.env), workflow, commitSha);

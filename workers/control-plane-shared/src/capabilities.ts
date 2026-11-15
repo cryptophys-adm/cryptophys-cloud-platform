@@ -174,5 +174,10 @@ export async function verifySyscallDecision(db: D1Database, decisionId: unknown,
   }
 }
 
-/** Step actions a recovery plan may name (the Recovery Manager validates them; nothing runs them automatically). */
-export const RECOVERY_STEP_ACTIONS = ["rollback_worker_version", "redeploy_commit", "disable_service", "restore_d1_bookmark", "rotate_secret", "manual"] as const;
+/**
+ * Step actions a recovery plan may name (the Recovery Manager validates them). force_redeploy_unit is the break-glass
+ * deploy (break-glass.ts): written and approved by people only, never in an AI draft.
+ */
+export const RECOVERY_STEP_ACTIONS = ["rollback_worker_version", "redeploy_commit", "disable_service", "restore_d1_bookmark", "rotate_secret", "force_redeploy_unit", "manual"] as const;
+/** Steps an AI draft never proposes: owner-run actions (ADR-0009) and the break-glass deploy. */
+export const OWNER_ONLY_STEP_ACTIONS: readonly string[] = ["restore_d1_bookmark", "rotate_secret", "force_redeploy_unit"];

@@ -27,6 +27,7 @@ import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit
 import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
+import { resolvedLaterSql } from "./syscall.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -51,8 +52,10 @@ export const HANDLING_GRACE_MS = 30 * 60_000;
 export const DEPLOY_HANDLING_WINDOW_MS = 2 * 3_600_000;
 /** A recovery plan that failed or expired this recently is reported. */
 export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
+/** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
+export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed";
 export interface ProductionProblem {
   code: ProblemCode;
   /** What the problem is about: a service id, a plan id, an advisory id or a month. */
@@ -194,6 +197,11 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *  5. critical_advisory: an npm advisory of severity critical in a runtime lockfile (high stays console-only).
  *  6. build_minutes_exhausted: the month's measured Workers Builds minutes are at or over the budget (80% stays
  *     console-only).
+ *  7. break_glass_deployed (hardening (d), owner 2026-11-14 "Ya, begitu"): a break-glass deploy (force_redeploy_unit)
+ *     succeeded in the last 24 hours. The Orchestrator's report of it is a warning, so it does not hold the consensus
+ *     brake; the owner still hears of it here. One item per request (subject: the report's alert_key
+ *     break_glass:<request_id>); it closes after 24 hours or when the Orchestrator reports it resolved. A failed one
+ *     is a critical report instead (critical_reports).
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -273,5 +281,21 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     since: null, link: "#/code",
   }] : [];
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds];
+  let breakGlass: ProductionProblem[] = [];
+  try {
+    breakGlass = ((await db.prepare(
+      `SELECT r.subject, r.created_at, json_extract(r.body_json, '$.alert_key') AS alert_key, json_extract(r.body_json, '$.plan_id') AS plan_id FROM agent_reports r
+       WHERE r.agent_id = 'deployment-orchestrator' AND r.severity = 'warning' AND json_extract(r.body_json, '$.break_glass') = 1
+         AND json_extract(r.body_json, '$.alert_key') IS NOT NULL AND r.created_at >= ? AND r.created_at <= ? AND NOT ${resolvedLaterSql("r")}
+       ORDER BY r.created_at DESC LIMIT ?`,
+    ).bind(iso(now - BREAK_GLASS_WINDOW_MS), iso(now), INBOX_LIMIT).all<{ subject: string; created_at: string; alert_key: string; plan_id: string | null }>()).results ?? [])
+      .filter((r, i, all) => all.findIndex((x) => x.alert_key === r.alert_key) === i)
+      .map((r) => ({
+        code: "break_glass_deployed" as const, subject: String(r.alert_key),
+        detail: `${r.subject.slice(0, 160)} at ${r.created_at}: the deploy planner was bypassed for this unit; this item closes by itself after 24 hours`,
+        since: r.created_at, link: typeof r.plan_id === "string" && /^plan_[0-9a-f-]{36}$/.test(r.plan_id) ? `#/recovery/${r.plan_id}` : "#/pipelines",
+      }));
+  } catch { breakGlass = []; }
+
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass];
 }
