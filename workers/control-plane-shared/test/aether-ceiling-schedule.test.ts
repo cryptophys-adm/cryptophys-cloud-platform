@@ -188,7 +188,7 @@ test("AC5. over AgentRpc, the Knowledge Council proposes only doctrine actions",
 });
 
 test("AC6. EXTERNAL_ORIGINS includes Aether over EXT_ORGANISM_AETHER, bound in the Forge like xauusd's", () => {
-  assert.deepEqual(EXTERNAL_ORIGINS.map((o) => o.origin), ["xauusd", "aether"]);
+  assert.deepEqual(EXTERNAL_ORIGINS.map((o) => o.origin), ["xauusd", "aether", "cta"]);
   assert.deepEqual({ ...AETHER, ceiling: undefined }, { origin: "aether", schema: "aether-organism.v1", binding: "EXT_ORGANISM_AETHER", services: [HOST], ceiling: undefined });
   assert.match(read("workers/forge/wrangler.toml"), /binding = "EXT_ORGANISM_AETHER"\nservice = "cryptophys-aether"\nentrypoint = "OrganismDna"/);
   const dna = async () => aetherDna();
@@ -332,4 +332,15 @@ test("AC-G. the external capability ceilings (organism.ts) are a guard path: rai
   assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
   assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "capability_ceiling").length, 1);
   assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), null);
+});
+
+test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling; unbound, the Forge does not read it", () => {
+  const CTA = EXTERNAL_ORIGINS.find((o) => o.origin === "cta")!;
+  assert.deepEqual({ ...CTA }, { origin: "cta", schema: "cta-organism.v1", binding: "EXT_ORGANISM_CTA", services: ["cryptophys-cta"] });
+  const c = externalCeilingFor(CTA, "cta-editor");
+  assert.deepEqual([c.tier_max, [...c.capabilities], c.proposals], [EXTERNAL_CEILING.tier_max, [...EXTERNAL_CEILING.capabilities], []]);
+  for (const cap of ["signals.observe", "reports.publish"]) assert.ok(EXTERNAL_CEILING.capabilities.includes(cap), `${cap} is within the general ceiling`);
+  const dna = async () => ({});
+  assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_AETHER: { dna } } as never).map((r) => r.origin.origin), ["aether"], "no EXT_ORGANISM_CTA binding yet: cta is not read");
+  assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_CTA: { dna } } as never).map((r) => r.origin.origin), ["cta"]);
 });
