@@ -27,6 +27,7 @@ import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit
 import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
+import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -52,7 +53,7 @@ export const DEPLOY_HANDLING_WINDOW_MS = 2 * 3_600_000;
 /** A recovery plan that failed or expired this recently is reported. */
 export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "deploys_stalled";
 export interface ProductionProblem {
   code: ProblemCode;
   /** What the problem is about: a service id, a plan id, an advisory id or a month. */
@@ -194,6 +195,11 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *  5. critical_advisory: an npm advisory of severity critical in a runtime lockfile (high stays console-only).
  *  6. build_minutes_exhausted: the month's measured Workers Builds minutes are at or over the budget (80% stays
  *     console-only).
+ *  7. deploys_stalled (owner 2026-11-14): main's head passed the Forge checks, a deploy unit does not run it, the plan
+ *     lists a unit or a skip, and no deploy_commit has executed for more than 2 hours, or that episode's alarm is still
+ *     open (control-plane-shared/src/deploy-stall.ts). The subject is the episode (deploy_stall:<last executed
+ *     deploy_commit>), so the owner gets one message when it opens and one when a deploy ends it, not one per run or
+ *     per new main commit. The Observer's report of it is a warning: a critical one would hold the brake.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -273,5 +279,12 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     since: null, link: "#/code",
   }] : [];
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds];
+  let stalls: ProductionProblem[] = [];
+  try {
+    const st = await stallState(db, now);
+    const subject = st.verdict.alert_key ?? st.open[0]?.alert_key;
+    if (st.active && subject) stalls = [{ code: "deploys_stalled", subject, detail: stallDetail(st.verdict), since: st.verdict.stall_since ?? st.open[0]?.created_at ?? null, link: "#/pipelines" }];
+  } catch { stalls = []; }
+
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...stalls];
 }
