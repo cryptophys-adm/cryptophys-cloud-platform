@@ -637,6 +637,26 @@ async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof
  * applied script settings are restored first (newest first), then every changed service to its captured
  * deployment, newest change first; applied migrations stay (forward-only).
  */
+
+/**
+ * Reading a version just uploaded can answer 404 for a moment (2026-11-15, control-plane at d300ee1: the upload of
+ * cryptophys-platform-registry succeeded, the read of that version answered cloudflare_api_404_100146, and the
+ * deploy restored the two services already moved). Only a 404 is read again, at most UPLOADED_READ_ATTEMPTS times;
+ * every other answer, and a 404 that persists, fails the deploy as before. Nothing is deployed before this read.
+ */
+export const UPLOADED_READ_ATTEMPTS = 4;
+export const UPLOADED_READ_DELAY_MS = 2_000;
+export async function readUploaded<T>(read: () => Promise<T>, delayMs?: number): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await read();
+    } catch (err) {
+      if (i >= UPLOADED_READ_ATTEMPTS || !/^cloudflare_api_404(_|$)/.test(String((err as Error)?.message ?? err))) throw err;
+      await sleep(delayMs ?? UPLOADED_READ_DELAY_MS);
+    }
+  }
+}
+
 export async function executeNativeDeploy(
   cf: CloudflareWorkers,
   env: { DRIFT: DriftProbeBinding; REGISTRY: RegistryRollbackBinding; BUNDLES: BundleReader; DB?: D1Database },
@@ -751,7 +771,7 @@ export async function executeNativeDeploy(
       steps.push(`${service}:uploaded`);
       if (configPlan) {
         // G2c-2: the new version must bind exactly the plan and run with its settings, or traffic never moves.
-        const uploaded = await cf.version(service, versionId);
+        const uploaded = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
         const b = verifyPlannedBindings(configPlan, uploaded.resources?.bindings);
         if (!b.ok) throw new Error(`planned_bindings_differ: ${b.reason}${b.binding ? ` (${b.binding})` : ""}`);
         steps.push(`${service}:bindings_match`);
@@ -761,7 +781,7 @@ export async function executeNativeDeploy(
       } else {
         // keep_bindings copies from the script's latest version, which need not be the active one. The guard is
         // this comparison: the new version must bind exactly what production binds now, or traffic never moves.
-        const uploaded = await cf.versionBindingSet(service, versionId);
+        const uploaded = await readUploaded(() => cf.versionBindingSet(service, versionId), opts.delayMs);
         if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
         steps.push(`${service}:bindings_match`);
       }
