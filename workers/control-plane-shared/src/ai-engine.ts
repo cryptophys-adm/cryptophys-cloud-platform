@@ -1,5 +1,6 @@
 import type { AiBinding, D1Database } from "./types.ts";
 import { redact } from "./http.ts";
+import { GROWTH_AI_BUDGET_RATIO, SURVIVAL_AI_BUDGET, isLearningAiPurpose, type AiPurpose } from "./power-mode.ts";
 
 /**
  * Per-Worker AI Engine (architecture/AI-ENGINE-REQUIREMENT.md).
@@ -11,6 +12,9 @@ import { redact } from "./http.ts";
  *
  * Budget: a per-service daily request cap plus a coordinated account-wide cap,
  * both enforced in D1 (`ai_usage`) before inference. No paid or external fallback.
+ * Learning is exempt (owner 2026-11-14, the learning mandate, power-mode.ts): a call with
+ * `{ purpose: "learning" }` is recorded in `ai_usage` like any other but never refused by
+ * either cap, in any power mode (survival's quarter included).
  */
 
 /**
@@ -46,6 +50,11 @@ export interface AiTask<T> {
   validate(output: unknown): T | null;
   /** Optional: why validate() rejected this output, as a short slug. Never echoes output content. */
   diagnose?(output: unknown): string;
+}
+
+/** Per-call options. `purpose: "learning"` only at a learning call site (power-mode.ts LEARNING_AI_PURPOSE). */
+export interface AiCallOptions {
+  purpose?: AiPurpose;
 }
 
 export interface AiEngineOptions {
@@ -166,8 +175,28 @@ export class AiEngine {
     return Boolean(this.ai) && this.allowedModels.includes(this.model);
   }
 
-  /** Reserve one request from the per-service and account-wide daily budgets. */
-  private async reserve(day: string): Promise<boolean> {
+  /**
+   * Reserve one request from the per-service and account-wide daily budgets. A learning call is metered (the same
+   * ai_usage row counts it) but never refused: the learning mandate (power-mode.ts).
+   */
+  private async reserve(day: string, purpose?: AiPurpose): Promise<boolean> {
+    if (isLearningAiPurpose(purpose)) {
+      // Also counted in learning_requests (migration 0067), so the Console can show learning's own AI use.
+      try {
+        await this.db.prepare(
+          `INSERT INTO ai_usage (service_id, day, requests, failures, learning_requests) VALUES (?, ?, 1, 0, 1)
+           ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1, learning_requests = learning_requests + 1`,
+        ).bind(this.service, day).run();
+      } catch (err) {
+        if (!/learning_requests/i.test(String((err as Error)?.message ?? err))) throw err;
+        // Before migration 0067: metered in requests only.
+        await this.db.prepare(
+          `INSERT INTO ai_usage (service_id, day, requests, failures) VALUES (?, ?, 1, 0)
+           ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1`,
+        ).bind(this.service, day).run();
+      }
+      return true;
+    }
     let mode = "homeostasis";
     try {
       const overrideRow = await this.db.prepare(
@@ -187,16 +216,17 @@ export class AiEngine {
       // Graceful fallback if table does not exist in early migration tests
     }
 
+    // Survival throttles AI-heavy work here, for every model call but learning's (power-mode.ts).
     const effectiveDailyLimit = mode === "survival"
-      ? Math.min(20, Math.floor(this.dailyLimit * 0.25))
+      ? Math.min(SURVIVAL_AI_BUDGET.max_per_service, Math.floor(this.dailyLimit * SURVIVAL_AI_BUDGET.ratio))
       : mode === "growth"
-        ? Math.floor(this.dailyLimit * 2.0)
+        ? Math.floor(this.dailyLimit * GROWTH_AI_BUDGET_RATIO)
         : this.dailyLimit;
 
     const effectiveAccountLimit = mode === "survival"
-      ? Math.min(50, Math.floor(this.accountDailyLimit * 0.25))
+      ? Math.min(SURVIVAL_AI_BUDGET.max_account, Math.floor(this.accountDailyLimit * SURVIVAL_AI_BUDGET.ratio))
       : mode === "growth"
-        ? Math.floor(this.accountDailyLimit * 2.0)
+        ? Math.floor(this.accountDailyLimit * GROWTH_AI_BUDGET_RATIO)
         : this.accountDailyLimit;
 
     // One conditional UPSERT is required: a separate SUM then INSERT lets concurrent Workers
@@ -231,7 +261,7 @@ export class AiEngine {
     }
   }
 
-  async run<T>(task: AiTask<T>, input: unknown, correlationId: string): Promise<AiOutcome<T>> {
+  async run<T>(task: AiTask<T>, input: unknown, correlationId: string, options: AiCallOptions = {}): Promise<AiOutcome<T>> {
     const unavailable = (reason: string): AiOutcome<T> => ({ status: "unavailable", reason, correlation_id: correlationId });
     if (!this.allowedTasks.includes(task.name)) return unavailable("task_not_allowed");
     if (!this.ai) return unavailable("ai_binding_missing");
@@ -243,7 +273,7 @@ export class AiEngine {
     const day = utcDay();
     let reserved: boolean;
     try {
-      reserved = await this.reserve(day);
+      reserved = await this.reserve(day, options.purpose);
     } catch {
       return unavailable("budget_store_unavailable");
     }
@@ -340,9 +370,10 @@ export class AiEngine {
 
   /**
    * Compute a 384-dimension embedding vector using `@cf/baai/bge-small-en-v1.5` (TP-008).
-   * Uses the same per-service and account-wide daily budget accounting as `run()` under task `embed`.
+   * Uses the same per-service and account-wide daily budget accounting as `run()` under task `embed`;
+   * `{ purpose: "learning" }` (the memory.remember embedding) is metered but never refused by a budget.
    */
-  async embed(text: string, correlationId = "embed"): Promise<AiOutcome<number[]>> {
+  async embed(text: string, correlationId = "embed", options: AiCallOptions = {}): Promise<AiOutcome<number[]>> {
     const unavailable = (reason: string): AiOutcome<number[]> => ({ status: "unavailable", reason, correlation_id: correlationId });
     if (!this.allowedTasks.includes("embed")) return unavailable("task_not_allowed");
     if (!this.ai) return unavailable("ai_binding_missing");
@@ -353,7 +384,7 @@ export class AiEngine {
     const day = utcDay();
     let reserved: boolean;
     try {
-      reserved = await this.reserve(day);
+      reserved = await this.reserve(day, options.purpose);
     } catch {
       return unavailable("budget_store_unavailable");
     }

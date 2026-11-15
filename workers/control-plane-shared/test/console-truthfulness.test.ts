@@ -86,3 +86,17 @@ test("T6. Knowledge (owner 2026-11-13): the training view reads Aether's model r
   assert.match(k, /const critical = o\?\.sync\?\.market_open \? checks : \[\];/);
   assert.match(k, /Nothing needs you\. The knowledge loop is running by itself\./);
 });
+
+test("T7. owner 2026-11-14: Organism and the overview show the power mode's reason and what it blocks, from GET /v1/metabolism, and \"not measured\" otherwise", () => {
+  const org = read("pages/Organism.tsx"), cmd = read("pages/Command.tsx"), usage = read("components/CloudflareUsage.tsx");
+  for (const [name, s] of [["Organism", org], ["Command", cmd]] as const) {
+    assert.match(s, /\?\.mode \?\? \{\}/, `${name} reads the kernel's mode block`);
+    assert.match(s, /Array\.isArray\(pm\.blocked_capabilities\) \? pm\.blocked_capabilities : null/, `${name}: a missing list is not an empty list`);
+    assert.match(s, /blocked === null \? "not measured"/, `${name} shows "not measured" for an unreported list`);
+    assert.match(s, /typeof pm\.reason === "string" \? pm\.reason : "not measured"/, `${name} shows the reason or "not measured"`);
+  }
+  assert.match(org, /typeof budget\.projected_month_usd === "number" \?/, "the projection is shown only when measured");
+  assert.match(org, /infra_burn_source === "estimate" \? " · estimate"/, "an estimated burn is labelled");
+  // The free-tier rule is gone from the Console's explanation of the Supervisor.
+  for (const s of [org, usage]) assert.doesNotMatch(s, /0\.20 a day|pauses non-essential AI spending \(memory and knowledge proposals\)/);
+});
