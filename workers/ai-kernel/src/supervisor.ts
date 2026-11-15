@@ -27,6 +27,14 @@ import { observerCycle } from "./observer-watch.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
+/**
+ * Hardening 2026-11-15: a deploy_commit that executed but whose deploy failed with production restored (for example
+ * the native read-after-upload 404 of that day) may be proposed again for the same commit after this long, at most
+ * DEPLOY_RETRIES_PER_COMMIT more times. Before, "once per unit and commit" left such a commit undeployed until the
+ * next main commit. A failed deploy that did not restore production is never retried automatically.
+ */
+export const DEPLOY_RETRY_AFTER_MS = 3_600_000;
+export const DEPLOY_RETRIES_PER_COMMIT = 2;
 /** Default of the Policy Engine platform_daily_limit; the live value is the council-adjustable policy parameter. */
 export const DAILY_DEPLOY_LIMIT = POLICY_PARAMETERS["daily-deploy-limit"].default;
 /** Wave C: denied or failed syscalls in one hour before the supervisor proposes suspending an agent. */
@@ -525,7 +533,23 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
              AND (status <> 'shadow_blocked' OR created_at >= ?)
              AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
         ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString(), brakeOff ? 1 : 0).first();
-        if (seen) continue;
+        if (seen) {
+          // Retry a failed, restored deploy of this commit (hardening 2026-11-15), once the brake is off, an hour after
+          // the last attempt, and at most DEPLOY_RETRIES_PER_COMMIT times. Anything else seen stays seen.
+          const attempts = await env.DB.prepare(
+            `SELECT p.proposal_id, p.decided_at, d.status AS dep_status, json_extract(d.details_json, '$.outcome.restored') AS restored
+               FROM consensus_proposals p LEFT JOIN deployment_requests d ON d.approval_id = p.proposal_id
+              WHERE p.action = 'deploy_commit' AND p.target = ? AND json_extract(p.params_json, '$.commit_sha') = ?
+              ORDER BY p.created_at DESC`,
+          ).bind(u.target, pending.main_sha).all<{ proposal_id: string; decided_at: string | null; dep_status: string | null; restored: number | boolean | null }>();
+          const rows = attempts.results ?? [];
+          const last = rows[0];
+          const allFailedRestored = rows.length > 0 && rows.every((r) => r.dep_status === "failed" && (r.restored === 1 || r.restored === true));
+          const retryable = brakeOff && allFailedRestored && rows.length <= DEPLOY_RETRIES_PER_COMMIT
+            && Boolean(last?.decided_at) && Date.now() - Date.parse(last!.decided_at!) >= DEPLOY_RETRY_AFTER_MS;
+          if (!retryable) continue;
+          report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", why: `retry ${rows.length} of ${DEPLOY_RETRIES_PER_COMMIT}: the deploy of main ${pending.main_sha.slice(0, 12)} failed and production was restored` });
+        }
         const r = await proposeConsensus({
           action: "deploy_commit", target: u.target,
           params: { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, reason: u.reason.slice(0, 200) },

@@ -666,3 +666,53 @@ test("OB-inv1. an empty Workers list while declared Workers have traffic orphans
   assert.deepEqual(kinds(one), ["orphaned_declaration cryptophys-forge"]);
   assert.ok(!one.some((f) => f.worker === "__unknown__"), "__unknown__ is an analytics placeholder, never an undeclared Worker");
 });
+
+// Hardening 2026-11-15: a failed, restored deploy of main's head is retried (at most twice, an hour apart, brake off).
+test("DR1. a deploy_commit whose deploy failed and was restored is proposed again after an hour; never three times", async () => {
+  const db = migratedDb();
+  const k = kernelEnv(db);
+  const main = NEW + "1".repeat(28);
+  (k.env.DEPLOY as any).pendingDeploys = async () => ({ main_sha: main, units: [{ unit: "console", workflow: "deploy-console.yml", target: "cryptophys-console", reason: "changed" }], skipped: [] });
+  const seed = (id: string, agoMs: number, depStatus: string, restored: boolean) => {
+    const at = new Date(Date.now() - agoMs).toISOString();
+    db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+      VALUES (?, 'supervisor', 'deploy_commit', 'cryptophys-console', 'routine', ?, '{}', 'deploy', 8, 8, 0, 1, NULL, 'allow', 'executed', '{}', ?, ?)`)
+      .run(id, JSON.stringify({ commit_sha: main, unit: "console" }), at, at);
+    db.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+      VALUES (?, 'cryptophys-console', ?, 'consensus', ?, ?, ?, ?, ?, ?)`)
+      .run(`dep_${id}`, main, depStatus, id, `k_${id}`, JSON.stringify({ outcome: { ok: false, reason: "cloudflare_api_404_100146", restored } }), at, at);
+  };
+  // Failed and restored 30 minutes ago: not yet.
+  seed("cns_a", 30 * 60_000, "failed", true);
+  await runCycle(k.env as never, k.memory, "scheduled");
+  assert.equal(proposals(db, "deploy_commit").length, 1, "too early to retry");
+  // Two hours ago instead: retried once.
+  db.raw.prepare("UPDATE consensus_proposals SET created_at = ?, decided_at = ? WHERE proposal_id = 'cns_a'").run(new Date(Date.now() - 2 * HOUR).toISOString(), new Date(Date.now() - 2 * HOUR).toISOString());
+  const c = await runCycle(k.env as never, k.memory, "scheduled");
+  assert.equal(proposals(db, "deploy_commit").length, 2, "retried after an hour");
+  assert.ok(c.findings.some((f: any) => f.kind === "deploy" && /retry 1 of 2/.test(f.why ?? "")));
+});
+
+test("DR2. no retry when the failed deploy did not restore production, or after the retries are spent", async () => {
+  const db = migratedDb();
+  const k = kernelEnv(db);
+  const main = NEW + "2".repeat(28);
+  (k.env.DEPLOY as any).pendingDeploys = async () => ({ main_sha: main, units: [{ unit: "console", workflow: "deploy-console.yml", target: "cryptophys-console", reason: "changed" }], skipped: [] });
+  const seed = (id: string, agoMs: number, restored: boolean) => {
+    const at = new Date(Date.now() - agoMs).toISOString();
+    db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+      VALUES (?, 'supervisor', 'deploy_commit', 'cryptophys-console', 'routine', ?, '{}', 'deploy', 8, 8, 0, 1, NULL, 'allow', 'executed', '{}', ?, ?)`)
+      .run(id, JSON.stringify({ commit_sha: main, unit: "console" }), at, at);
+    db.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
+      VALUES (?, 'cryptophys-console', ?, 'consensus', 'failed', ?, ?, ?, ?, ?)`)
+      .run(`dep_${id}`, main, id, `k_${id}`, JSON.stringify({ outcome: { ok: false, restored } }), at, at);
+  };
+  seed("cns_x", 3 * HOUR, false);
+  await runCycle(k.env as never, k.memory, "scheduled");
+  assert.equal(proposals(db, "deploy_commit").length, 1, "not restored: never retried automatically");
+  db.raw.prepare("DELETE FROM deployment_requests").run();
+  db.raw.prepare("DELETE FROM consensus_proposals").run();
+  seed("cns_1", 5 * HOUR, true); seed("cns_2", 4 * HOUR, true); seed("cns_3", 3 * HOUR, true);
+  await runCycle(k.env as never, k.memory, "scheduled");
+  assert.equal(proposals(db, "deploy_commit").length, 3, "the first attempt and two retries are spent");
+});
