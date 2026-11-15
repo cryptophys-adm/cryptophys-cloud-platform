@@ -88,6 +88,20 @@ Re-check them before you act; commands and limits change.
 - **Owner page.** Acknowledge the critical reports the outage left open once they are handled, so that the brake releases.
 - **The report.** Agents publish reports; a person does not. Write the incident record as a reviewed document (step 5 of "Incident handling": timeline, impact, every command run, versions and bookmarks, follow-up work), and submit it as a change request like any other.
 
+## When the deploy executor's own fix is blocked (2026-11-15)
+
+The Deployment Orchestrator executes every native deploy and every break-glass deploy, its own included. A bug in that path can block its fix: on 2026-11-15 the native Control Plane deploy failed twice on reading a version it had just uploaded (`cloudflare_api_404_100146`, a different Worker each time), the fix (4e64060) lived in the Orchestrator, and the planner deploys the Control Plane before the Orchestrator. `force_redeploy_unit` does not help here: it runs through the same executor.
+
+**Signs.** The same `deploy_commit` of one unit fails again with the same reason, the fix for that reason is merged on main, and the fix is in `workers/deployment-orchestrator/` (or in what it imports) while the Orchestrator is not yet on that commit.
+
+**Way out (owner only, GitHub Actions on main; GitHub main must equal canonical main):**
+1. Acknowledge the critical report on the Owner page once production is checked (each failed native deploy restores the Workers it changed; the Drift Detector's tags show what runs).
+2. Run `deploy-deployment-orchestrator.yml`: `confirm_production` = `DEPLOY`, `commit_sha` = main's full 40-character head, no trailing space (the workflow refuses anything else before it deploys).
+3. If the blocked unit is the Control Plane, run `deploy-control-plane.yml` with the same inputs. It deploys with wrangler, not through the Orchestrator, and applies pending migrations.
+4. The planner then continues with the remaining units on its own.
+
+Run two dispatches of the same workflow and the second waits for the first (one concurrency group per unit); there is no harm, but check each run's result.
+
 ## Registered platform and XAUUSD AI agents (ADR-0007, TP-009, 0016, 0017)
 
 There are no third-party or IDE external agents. The AI Worker OS process table (`agents`) registers only:
