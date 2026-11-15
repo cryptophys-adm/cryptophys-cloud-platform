@@ -7,7 +7,11 @@ import { readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
 import { observerView, type Finding } from "../src/observer.ts";
 import { LISTS, compareInventory, runInventory, type KnownOrganism, type ListKey, type ListResult } from "../src/observer-inventory.ts";
-import { BINDING_READ_CAP, boundBy, indexDatasetLine, parseBindings, readBindingIndex, settingsUrl, type BindingIndex } from "../src/observer-bindings.ts";
+import {
+  BINDING_READ_CAP, boundBy, consumersUrl, indexDatasetLine, parseBindings, parseQueueConsumers, queueConsumersDatasetLine, queueReferences, readBindingIndex, readQueueConsumerIndex, settingsUrl,
+  type BindingIndex, type QueueConsumerIndex,
+} from "../src/observer-bindings.ts";
+import { CI_PREVIEW_RESOURCES, ciPreviewOf, parseList } from "../src/observer-inventory.ts";
 
 const SETTINGS = JSON.parse(readFileSync(new URL("./fixtures/observer-worker-settings.json", import.meta.url), "utf8"));
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -34,6 +38,8 @@ function fakeCf(over: Record<string, Answer> = {}) {
     const path = url.replace(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/`, "");
     const s = /^workers\/scripts\/([^/]+)\/settings$/.exec(path);
     if (s) { const w = decodeURIComponent(s[1]); calls.push(`settings:${w}`); return answer(`settings:${w}`, settings()); }
+    const c = /^queues\/([^/]+)\/consumers$/.exec(path);
+    if (c) { const q = decodeURIComponent(c[1]); calls.push(`consumers:${q}`); return answer(`consumers:${q}`, { success: true, result: [] }); }
     const key = (Object.keys(LISTS) as ListKey[]).find((k) => LISTS[k].path === path);
     assert.ok(key, `unexpected ${url}`);
     calls.push(`list:${key}`);
@@ -227,4 +233,161 @@ test("BI7. a token refused for every Worker's bindings is not asked again within
   assert.deepEqual(dayLater.calls.filter((c) => c.startsWith("settings:")), ["settings:cryptophys-console"]);
   const f = db.raw.prepare("SELECT metric, kind FROM observer_findings WHERE metric LIKE '%bindings%'").all() as any[];
   assert.deepEqual([...new Set(f.map((x) => `${x.metric} ${x.kind}`))], ["inventory_permission_missing:bindings capability"]);
+});
+
+// ------------------------------------------------------------------------------------- queue consumers (2026-11-15)
+// xauusd-webhook-events-dlq was reported unbound: it is the dead_letter_queue of xauusd-webhook-events, whose consumer
+// is xauusd-ai-trading-assistant. Consumers and dead-letter queues are consumer settings, not Worker bindings.
+const Q_EVENTS = "q000000000000000000000000000ev01";
+const Q_DLQ = "q000000000000000000000000000dl01";
+const Q_PULL = "q000000000000000000000000000pl01";
+const Q_ORPHAN = "q000000000000000000000000000or01";
+const workerConsumer = (queue: string, script: string, dlq = "") => ({ consumer_id: `c-${queue}`, type: "worker", queue_name: queue, script_name: script, dead_letter_queue: dlq, settings: { batch_size: 10, max_retries: 3 } });
+const pullConsumer = (queue: string) => ({ consumer_id: `c-${queue}`, type: "http_pull", queue_name: queue, dead_letter_queue: "", settings: { batch_size: 10, visibility_timeout_ms: 30000 } });
+const queueRow = (id: string, name: string, consumers?: unknown[], total?: number) => ({ queue_id: id, queue_name: name, created_on: "2026-10-01T00:00:00Z", producers: [], producers_total_count: 0,
+  ...(consumers ? { consumers, consumers_total_count: total ?? consumers.length } : {}) });
+const QUEUES_LIST = { success: true, result: [
+  queueRow(Q_EVENTS, "xauusd-webhook-events", [workerConsumer("xauusd-webhook-events", "xauusd-ai-trading-assistant", "xauusd-webhook-events-dlq")]),
+  queueRow(Q_DLQ, "xauusd-webhook-events-dlq", []),
+  queueRow(Q_PULL, "pull-only", [pullConsumer("pull-only")]),
+  queueRow(Q_ORPHAN, "orphaned-queue", []),
+] };
+const fullIndex = () => index({ "xauusd-ai-trading-assistant": { status: "ok", bindings: [] }, "cryptophys-console": { status: "ok", bindings: [] } });
+
+test("BQ1. the queues list's consumers: Worker, pull and dead-letter queue, used only when the list carries all of them", async () => {
+  assert.deepEqual(parseQueueConsumers([workerConsumer("a", "w1", "a-dlq"), pullConsumer("a"), { type: "worker", script: "w2", settings: { dead_letter_queue: "b-dlq" } }, { service: "w3" }, null]), [
+    { type: "http_pull" },
+    { type: "worker", script: "w1", dead_letter_queue: "a-dlq" },
+    { type: "worker", script: "w2", dead_letter_queue: "b-dlq" }, // older shape: script, settings.dead_letter_queue
+    { type: "worker", script: "w3" },
+  ]);
+  assert.equal(parseQueueConsumers(undefined), null);
+  const items = parseList("queues", { success: true, result: [...QUEUES_LIST.result, queueRow("q-more", "more-than-listed", [pullConsumer("more-than-listed")], 3), queueRow("q-none", "no-consumers-field")] });
+  assert.deepEqual(items.map((x) => [x.name, x.consumers?.length ?? null]), [
+    ["xauusd-webhook-events", 1], ["xauusd-webhook-events-dlq", 0], ["pull-only", 1], ["orphaned-queue", 0], ["more-than-listed", null], ["no-consumers-field", null],
+  ], "consumers_total_count above the array's length, or no consumers field: read per queue");
+  // Only the queues the list did not answer for are read on the consumers endpoint, by queue id.
+  const cf = fakeCf({ "consumers:q-more": { success: true, result: [pullConsumer("more-than-listed"), workerConsumer("more-than-listed", "w9")] } });
+  const qi = await readQueueConsumerIndex("analytics-token", ACCOUNT, items, cf.fetcher);
+  assert.deepEqual(cf.calls.sort(), ["consumers:q-more", "consumers:q-none"]);
+  assert.equal(consumersUrl(ACCOUNT, Q_EVENTS), `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/queues/${Q_EVENTS}/consumers`);
+  assert.equal(queueConsumersDatasetLine(qi), "ok: 6 queues, 4 consumers (4 from the list)");
+  assert.deepEqual(Object.fromEntries(queueReferences(qi).refs), {
+    "xauusd-webhook-events": ["consumer: Worker xauusd-ai-trading-assistant"],
+    "xauusd-webhook-events-dlq": ["dead_letter_queue of xauusd-webhook-events"],
+    "pull-only": ["consumer: http_pull"],
+    "more-than-listed": ["consumer: http_pull", "consumer: Worker w9"],
+  });
+  // The cap: at most `cap` endpoint reads; the rest are skipped and named.
+  const capped = await readQueueConsumerIndex("analytics-token", ACCOUNT, [1, 2, 3].map((n) => ({ id: `q${n}`, name: `queue-${n}` })), fakeCf().fetcher, 2);
+  assert.deepEqual(Object.values(capped.queues).map((r) => r.status), ["ok", "ok", "skipped"]);
+});
+
+test("BQ2. a dead-letter queue and a queue with only a consumer are referenced, never unbound; an orphaned queue still is", async () => {
+  const qi: QueueConsumerIndex = await readQueueConsumerIndex("analytics-token", ACCOUNT, parseList("queues", QUEUES_LIST), fakeCf().fetcher);
+  const fs = compareInventory({ known: known(), lists: { queues: { status: "ok", items: parseList("queues", QUEUES_LIST) } }, bindings: fullIndex(), queue_consumers: qi, traffic7d: new Map(), senses_cover_7d: false, day: "2026-11-15" });
+  assert.deepEqual(kinds(fs).filter((k) => k.startsWith("unbound") || k.startsWith("queue_consumers")), ["unbound_resource queues:orphaned-queue"],
+    "no binding anywhere: the DLQ is the dead_letter_queue of xauusd-webhook-events, pull-only has a pull consumer, xauusd-webhook-events a consumer Worker");
+  const orphan = fs.find((f) => f.metric === "unbound_resource")!;
+  assert.deepEqual([orphan.severity, orphan.sample.referenced_by, orphan.sample.queues_read], ["info", [], 4]);
+  const dlq = fs.find((f) => f.metric === "undeclared_resource" && f.worker === "queues:xauusd-webhook-events-dlq")!;
+  assert.deepEqual(dlq.sample.referenced_by, ["dead_letter_queue of xauusd-webhook-events"], "the reason is recorded on the queue's finding");
+});
+
+test("BQ3. consumer settings that could not be read: no queue is unbound in that run, and a finding names what was unread", async () => {
+  const listed = parseList("queues", { success: true, result: QUEUES_LIST.result.map((r) => queueRow(r.queue_id, r.queue_name)) }); // no consumers in the list
+  const broken = fakeCf({
+    [`consumers:${Q_EVENTS}`]: () => new Response("oops", { status: 500 }), // the queue whose consumer names the DLQ
+    [`consumers:${Q_PULL}`]: { success: true, result: [pullConsumer("pull-only")] },
+  });
+  const qi = await readQueueConsumerIndex("analytics-token", ACCOUNT, listed, broken.fetcher);
+  assert.match(queueConsumersDatasetLine(qi), /^partial: 3 of 4 queues read, 1 consumers \(1 unavailable\)$/);
+  const input = { known: known(), lists: { queues: { status: "ok" as const, items: listed } }, bindings: fullIndex(), traffic7d: new Map(), senses_cover_7d: false, day: "2026-11-15" };
+  const fs = compareInventory({ ...input, queue_consumers: qi });
+  assert.ok(!fs.some((f) => f.metric === "unbound_resource"), "the DLQ's source queue is unread: no queue is proven unbound, not even orphaned-queue");
+  const unread = fs.find((f) => f.metric === "queue_consumers_unread")!;
+  assert.deepEqual([unread.worker, unread.severity, unread.kind, unread.sample.unread], ["account", "info", "inventory", [{ queue: "xauusd-webhook-events", status: "unavailable" }]]);
+  // Not read at all this run: the same rule.
+  const none = compareInventory(input);
+  assert.deepEqual(kinds(none).filter((k) => k.startsWith("unbound") || k.startsWith("queue_consumers")), ["queue_consumers_unread account"]);
+  // Every consumers read refused: one capability finding naming Queues Read (what the list itself needs), no unbound.
+  const refusedAll = Object.fromEntries([Q_EVENTS, Q_DLQ, Q_PULL, Q_ORPHAN].map((q) => [`consumers:${q}`, () => new Response("{}", { status: 403 })]));
+  const refused = compareInventory({ ...input, queue_consumers: await readQueueConsumerIndex("analytics-token", ACCOUNT, listed, fakeCf(refusedAll).fetcher) });
+  assert.deepEqual(kinds(refused).filter((k) => !k.startsWith("undeclared")), ["inventory_permission_missing:queue_consumers account"]);
+  const cap = refused.find((f) => f.metric === "inventory_permission_missing:queue_consumers")!;
+  assert.deepEqual([cap.kind, cap.sample.permission, cap.sample.http], ["capability", LISTS.queues.permission, 403]);
+});
+
+test("BQ4. runInventory: queue consumers are read, part of the datasets and the digest; a refused consumers read is not asked again within the hour", async () => {
+  const db = migratedDb();
+  const now = Date.parse("2026-11-15T10:57:00.000Z");
+  db.raw.prepare("INSERT INTO forge_organism_census (main_sha, status, organs, agents, engines, voters, findings, genome, taken_at) VALUES (?, 'consistent', 1, 0, 0, 0, '[]', ?, ?)").run(
+    "a".repeat(40), JSON.stringify([{ service: "cryptophys-console", kind: "service" }]), new Date(now - 3_600_000).toISOString());
+  const base = { "list:scripts": { success: true, result: [{ id: "cryptophys-console" }, { id: "xauusd-ai-trading-assistant" }] }, "list:queues": QUEUES_LIST };
+  assert.equal((await runInventory({ ...ENV, DB: db }, now, fakeCf(base).fetcher, {})).outcome, "recorded");
+  const unbound = () => (db.raw.prepare("SELECT worker FROM observer_findings WHERE metric = 'unbound_resource' ORDER BY worker").all() as any[]).map((r) => r.worker);
+  assert.deepEqual(unbound(), ["queues:orphaned-queue"]);
+  const run = () => JSON.parse((db.raw.prepare("SELECT datasets_json FROM observer_runs WHERE kind = 'inventory' ORDER BY ran_at DESC LIMIT 1").get() as any).datasets_json);
+  assert.equal(run().queue_consumers, "ok: 4 queues, 2 consumers (4 from the list)");
+  // The DLQ setting removed: a new run row (the digest covers consumers), and the DLQ is now unbound.
+  const noDlq = { ...base, "list:queues": { success: true, result: [queueRow(Q_EVENTS, "xauusd-webhook-events", [workerConsumer("xauusd-webhook-events", "xauusd-ai-trading-assistant")]), ...QUEUES_LIST.result.slice(1)] } };
+  assert.equal((await runInventory({ ...ENV, DB: db }, now + 30 * 60_000, fakeCf(noDlq).fetcher, {})).outcome, "recorded");
+  // A list without consumers and every consumers read refused: the capability finding; not asked again within the hour.
+  const bare = { ...base, "list:queues": { success: true, result: [queueRow(Q_EVENTS, "xauusd-webhook-events")] }, [`consumers:${Q_EVENTS}`]: () => new Response("{}", { status: 403 }) };
+  const first = fakeCf(bare);
+  await runInventory({ ...ENV, DB: db }, now + 60 * 60_000, first.fetcher, {});
+  assert.deepEqual(first.calls.filter((c) => c.startsWith("consumers:")), [`consumers:${Q_EVENTS}`]);
+  assert.equal(run().queue_consumers, "permission_missing: http 403");
+  const again = fakeCf(bare);
+  await runInventory({ ...ENV, DB: db }, now + 75 * 60_000, again.fetcher, {});
+  assert.ok(!again.calls.some((c) => c.startsWith("consumers:")), "not asked again within the hour");
+  const later = fakeCf(bare);
+  await runInventory({ ...ENV, DB: db }, now + 125 * 60_000, later.fetcher, {});
+  assert.deepEqual(later.calls.filter((c) => c.startsWith("consumers:")), [`consumers:${Q_EVENTS}`]);
+});
+
+// ------------------------------------------------------------------------------------- CI preview resources (2026-11-15)
+// The xauusd repository's deploy-preview-worker.yml deploys a preview Worker per pull request from wrangler.preview.jsonc
+// and deletes it after its E2E tests: between pull requests nothing binds its KV, D1 and queues.
+test("BP1. a resource named in a CI preview config is ci_preview (informational), never unbound; an orphaned one still is", async () => {
+  const queues = { success: true, result: [
+    queueRow("q-prev", "xauusd-webhook-events-preview", []), // its consumer, the preview Worker, is deleted after each run
+    queueRow("q-prev-dlq", "xauusd-webhook-events-preview-dlq", []),
+    queueRow(Q_ORPHAN, "orphaned-queue", []),
+  ] };
+  const qi = await readQueueConsumerIndex("analytics-token", ACCOUNT, parseList("queues", queues), fakeCf().fetcher);
+  const idx = index({ "xauusd-ai-trading-assistant": { status: "ok", bindings: [{ type: "kv_namespace", name: "SIGNAL_CACHE", id: "4ada6196de5a4000a28a047bf6b30ff3" }] }, "cryptophys-console": { status: "ok", bindings: [] } });
+  const fs = compareInventory({
+    known: known(), traffic7d: new Map(), senses_cover_7d: false, day: "2026-11-15", bindings: idx, queue_consumers: qi,
+    lists: {
+      kv: kvList(["0cbd6ecc0fbc4dc99342960456ca71e5", "xauusd-preview-signal-cache"], ["2000943b5db042f582b03043c75d5b1c", "renamed-on-the-account"], ["773182e4a26c444e8f56c3e58a1987ef", "xauusd-preview-knowledge-base"],
+        ["4ada6196de5a4000a28a047bf6b30ff3", "xauusd-signal-cache"], ["ffff0000000000000000000000000001", "stray-kv"]),
+      d1: kvList(["90f53f14-ff7b-46c1-b146-a1efd4e13018", "xauusd-signals-preview"], ["cp-uuid", "cryptophys-control-plane"], ["old-uuid", "old-db"]),
+      queues: { status: "ok", items: parseList("queues", queues) },
+    },
+  });
+  assert.deepEqual(kinds(fs).filter((k) => /^(unbound_resource|ci_preview) /.test(k)), [
+    "ci_preview d1:xauusd-signals-preview",
+    "ci_preview kv:renamed-on-the-account", // matched by the config's id
+    "ci_preview kv:xauusd-preview-knowledge-base",
+    "ci_preview kv:xauusd-preview-signal-cache",
+    "ci_preview queues:xauusd-webhook-events-preview",
+    "ci_preview queues:xauusd-webhook-events-preview-dlq",
+    "unbound_resource d1:old-db",
+    "unbound_resource kv:stray-kv",
+    "unbound_resource queues:orphaned-queue",
+  ], "the production KV is bound; the preview resources are ci_preview; the orphans stay unbound");
+  for (const f of fs.filter((x) => x.metric === "ci_preview")) {
+    assert.equal(f.severity, "info");
+    assert.match(String(f.sample.source), /^cryptophys-adm\/xauusd-ai-trading-assistant wrangler\.preview\.jsonc/);
+    assert.match(f.detail, /used intermittently by CI previews/);
+  }
+  // Each entry names its source; a queue matches by name only, never by an id it does not have.
+  assert.equal(CI_PREVIEW_RESOURCES.length, 6);
+  for (const r of CI_PREVIEW_RESOURCES) assert.ok(r.source && r.name, `${r.name} names its source`);
+  assert.equal(ciPreviewOf("queues", { id: "xauusd-webhook-events-preview", name: "other" }), null);
+  assert.equal(ciPreviewOf("kv", { id: "90f53f14-ff7b-46c1-b146-a1efd4e13018", name: "x" }), null, "a D1 id is not a KV entry");
+  // While queue consumers are unread, no queue is ci_preview or unbound (neither is proven).
+  const partial = compareInventory({ known: known(), traffic7d: new Map(), senses_cover_7d: false, day: "2026-11-15", bindings: idx, lists: { queues: { status: "ok", items: parseList("queues", queues) } } });
+  assert.ok(!partial.some((f) => /^(unbound_resource|ci_preview)$/.test(f.metric)));
 });

@@ -11,6 +11,8 @@
  *   binding is kept as {type, name} and, for a resource, the id it points at.
  * - Stored in observer_worker_bindings (migration 0068), one row per listed Worker, rewritten when the inventory
  *   records a run. `boundBy` answers "which live Workers bind X", and whether that answer is complete.
+ * - Queues are also referenced by consumer settings (consumers, dead-letter queues), which are not bindings: see
+ *   "queue consumers" below.
  */
 import type { D1Database } from "./types.ts";
 
@@ -141,6 +143,139 @@ export function indexDatasetLine(index: BindingIndex): string {
   if (ok.length === rows.length) return `ok: ${ok.length} of ${rows.length} Workers, ${bindings} bindings`;
   const by = (s: string) => rows.filter((r) => r.status === s).length;
   return `partial: ${ok.length} of ${rows.length} Workers read, ${bindings} bindings (${["permission_missing", "unavailable", "skipped"].filter((s) => by(s)).map((s) => `${by(s)} ${s}`).join(", ")})`;
+}
+
+// ------------------------------------------------------------------------------------------------ queue consumers
+
+/**
+ * Queue consumers (2026-11-15). A queue is referenced by a Worker binding (a producer), by its own consumers (a Worker
+ * or an HTTP pull consumer) and by the dead_letter_queue setting of another queue's consumer. Consumers and dead-letter
+ * queues are consumer settings, not Worker bindings: on 2026-11-15 the Observer reported xauusd-webhook-events-dlq,
+ * the dead-letter queue of xauusd-webhook-events (consumed by xauusd-ai-trading-assistant), as unbound.
+ *
+ * Cloudflare API reference, Queues > List Queues (GET /accounts/{account}/queues: each queue carries `consumers` and
+ * `consumers_total_count`) and Queues > Consumers > List Queue Consumers
+ * (GET /accounts/{account}/queues/{queue_id}/consumers). A consumer has `type` (worker | http_pull), `script_name` for
+ * a Worker and `dead_letter_queue` (empty when none). Both reads need Queues Read (or Workers Scripts Read), the
+ * permission the queues list already needs. The list's consumers are used when it carries all of them; any other
+ * queue is read on the consumers endpoint, at most QUEUE_CONSUMER_READ_CAP per run, the rest named as unread.
+ */
+export const QUEUE_CONSUMER_READ_CAP = 50;
+export const QUEUE_CONSUMERS_PERMISSION = "Account > Queues > Read";
+export const consumersUrl = (account: string, queueId: string) =>
+  `https://api.cloudflare.com/client/v4/accounts/${account}/queues/${encodeURIComponent(queueId)}/consumers`;
+
+/** A consumer as the inventory keeps it: its type, the Worker for a Worker consumer, and its dead-letter queue. */
+export interface QueueConsumer { type: string; script?: string; dead_letter_queue?: string }
+export type QueueConsumers =
+  | { status: "ok"; consumers: QueueConsumer[]; source: "list" | "endpoint" }
+  | { status: "permission_missing"; http: number }
+  | { status: "unavailable"; reason: string }
+  | { status: "skipped"; reason: "cap" };
+/** queue name → its consumers (or why they were not read). */
+export interface QueueConsumerIndex { queues: Record<string, QueueConsumers>; cap: number }
+/** A queue on the list: its name, the id the consumers endpoint takes, and its consumers when the list carried them all. */
+export interface ListedQueue { id: string; name: string; consumers?: QueueConsumer[] }
+
+/** The consumers of a list row or an endpoint answer (pure; exported for tests). Null when it is not an array. */
+export function parseQueueConsumers(rows: unknown): QueueConsumer[] | null {
+  if (!Array.isArray(rows)) return null;
+  const out: QueueConsumer[] = [];
+  for (const c of rows) {
+    if (!c || typeof c !== "object") continue;
+    // script_name is the documented field; script and service are read too, in case an older answer uses them.
+    const script = str(c.script_name ?? c.script ?? c.service);
+    const type = str(c.type, 32) ?? (script ? "worker" : "unknown");
+    const dlq = str(c.dead_letter_queue ?? c.settings?.dead_letter_queue);
+    const q: QueueConsumer = { type };
+    if (script) q.script = script;
+    if (dlq) q.dead_letter_queue = dlq;
+    out.push(q);
+  }
+  return out.sort((a, b) => a.type.localeCompare(b.type) || (a.script ?? "").localeCompare(b.script ?? "") || (a.dead_letter_queue ?? "").localeCompare(b.dead_letter_queue ?? ""));
+}
+
+/** The consumers a List Queues row carries, only when it carries all of them (consumers_total_count, when given). */
+export function listedConsumers(row: any): QueueConsumer[] | undefined {
+  const parsed = parseQueueConsumers(row?.consumers);
+  if (!parsed) return undefined;
+  const total = row?.consumers_total_count;
+  return typeof total === "number" && total > row.consumers.length ? undefined : parsed;
+}
+
+export async function readQueueConsumers(token: string, account: string, queueId: string, fetcher: Fetch): Promise<QueueConsumers> {
+  let res: Response;
+  try {
+    res = await fetcher(consumersUrl(account, queueId), { headers: { authorization: `Bearer ${token}` } });
+  } catch (err) {
+    return { status: "unavailable", reason: String((err as Error)?.message ?? err).slice(0, 120) };
+  }
+  if (res.status === 401 || res.status === 403) { await res.body?.cancel(); return { status: "permission_missing", http: res.status }; }
+  const body = await res.json().catch(() => null) as any;
+  if (!res.ok || !body || body.success === false) return { status: "unavailable", reason: `http_${res.status}` };
+  const consumers = parseQueueConsumers(body.result);
+  return consumers ? { status: "ok", consumers, source: "endpoint" } : { status: "unavailable", reason: "no_consumers_array" };
+}
+
+/**
+ * The consumers of every listed queue: from the list when it carried them, otherwise from the consumers endpoint (at
+ * most `cap` reads, by name). `refusedHttp`: the endpoint refused this token recently; it is not asked again.
+ */
+export async function readQueueConsumerIndex(token: string, account: string, queues: readonly ListedQueue[], fetcher: Fetch, cap = QUEUE_CONSUMER_READ_CAP, refusedHttp: number | null = null): Promise<QueueConsumerIndex> {
+  const out: Record<string, QueueConsumers> = {};
+  const toRead: ListedQueue[] = [];
+  for (const q of [...queues].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (Object.hasOwn(out, q.name)) continue;
+    if (q.consumers) out[q.name] = { status: "ok", consumers: q.consumers, source: "list" };
+    else if (refusedHttp !== null) out[q.name] = { status: "permission_missing", http: refusedHttp };
+    else toRead.push(q);
+  }
+  const read = toRead.slice(0, cap);
+  for (let i = 0; i < read.length; i += BINDING_READ_CONCURRENCY) {
+    const chunk = read.slice(i, i + BINDING_READ_CONCURRENCY);
+    const results = await Promise.all(chunk.map((q) => readQueueConsumers(token, account, q.id, fetcher)));
+    chunk.forEach((q, j) => { out[q.name] = results[j]; });
+  }
+  for (const q of toRead.slice(cap)) out[q.name] = { status: "skipped", reason: "cap" };
+  return { queues: Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b))), cap };
+}
+
+/**
+ * What references each queue through consumer settings: "consumer: Worker <name>", "consumer: http_pull", and
+ * "dead_letter_queue of <queue>". `complete` is false when any queue's consumers were not read; then a queue with no
+ * reference may still be the dead-letter queue of an unread one, and proves nothing.
+ */
+export function queueReferences(index: QueueConsumerIndex): { refs: Map<string, string[]>; complete: boolean; unread: Array<{ queue: string; status: string }> } {
+  const refs = new Map<string, string[]>();
+  const add = (q: string, why: string) => { const l = refs.get(q) ?? refs.set(q, []).get(q)!; if (!l.includes(why)) l.push(why); };
+  const unread: Array<{ queue: string; status: string }> = [];
+  for (const [q, r] of Object.entries(index.queues)) {
+    if (r.status !== "ok") { unread.push({ queue: q, status: r.status === "skipped" ? `skipped (${r.reason})` : r.status }); continue; }
+    for (const c of r.consumers) {
+      add(q, c.type === "worker" && c.script ? `consumer: Worker ${c.script}` : `consumer: ${c.type}`);
+      if (c.dead_letter_queue && c.dead_letter_queue !== q) add(c.dead_letter_queue, `dead_letter_queue of ${q}`);
+    }
+  }
+  return { refs, complete: unread.length === 0, unread };
+}
+
+/** The datasets line: "ok: 3 queues, 2 consumers (3 from the list)", "partial: …", "permission_missing: http 403". */
+export function queueConsumersDatasetLine(index: QueueConsumerIndex): string {
+  const rows = Object.values(index.queues);
+  if (rows.length === 0) return "ok: 0 queues";
+  const ok = rows.filter((r) => r.status === "ok") as Array<Extract<QueueConsumers, { status: "ok" }>>;
+  const consumers = ok.reduce((n, r) => n + r.consumers.length, 0);
+  const fromList = ok.filter((r) => r.source === "list").length;
+  if (ok.length === rows.length) return `ok: ${rows.length} queues, ${consumers} consumers (${fromList} from the list)`;
+  const refused = rows.filter((r) => r.status === "permission_missing") as Array<Extract<QueueConsumers, { status: "permission_missing" }>>;
+  if (ok.length === 0 && refused.length === rows.length) return `permission_missing: http ${refused[0].http}`;
+  const by = (s: string) => rows.filter((r) => r.status === s).length;
+  return `partial: ${ok.length} of ${rows.length} queues read, ${consumers} consumers (${["permission_missing", "unavailable", "skipped"].filter((s) => by(s)).map((s) => `${by(s)} ${s}`).join(", ")})`;
+}
+
+/** A stable, compact form of the consumer index for the inventory's digest: a consumer change is a new run row. */
+export function queueConsumersDigestInput(index: QueueConsumerIndex): unknown {
+  return Object.entries(index.queues).map(([q, r]) => [q, r.status === "ok" ? r.consumers.map((c) => [c.type, c.script ?? "", c.dead_letter_queue ?? ""]) : r.status]);
 }
 
 // ------------------------------------------------------------------------------------------------ storage

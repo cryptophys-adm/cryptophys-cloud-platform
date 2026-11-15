@@ -14,6 +14,10 @@
  * an index, part of the digest. unbound_resource (informational): a listed KV/D1/R2/Queue that no live Worker binds
  * and no wrangler.toml declares, only when every Worker was read. binding_to_missing_resource (warning): a Worker binds
  * a KV/D1/R2/Queue that a readable list does not contain. bindings_unread / bindings_cap_exceeded name what was not read.
+ * Queues (2026-11-15): a queue is referenced by a binding, by a consumer (a Worker or HTTP pull) or as the
+ * dead_letter_queue of another queue's consumer (consumer settings, read from the queues list or the consumers
+ * endpoint); unbound_resource for queues only when every queue's consumers were read, else queue_consumers_unread.
+ * ci_preview (informational): a resource that would be unbound but is named in a CI preview config (CI_PREVIEW_RESOURCES).
  * Never reported: preview or environment copies of a declared Worker (<name>-preview, -staging, -dev, -pr-<n>,
  * -cr-<n>), Workers the registry marks disabled (being retired), and the organs of an external origin whose DNA the
  * census could not read. Aether is report only. A list the token may not read (401/403) is a capability finding
@@ -21,7 +25,11 @@
  */
 import type { D1Database } from "./types.ts";
 import { THRESHOLDS, REPORT_ONLY_WORKERS, observerCredentials, recordRun, storeFindings, type Finding, type ObserverEnv } from "./observer.ts";
-import { BINDINGS_PERMISSION, RESOURCE_BINDING, indexComplete, indexDatasetLine, indexDigestInput, readBindingIndex, storeBindingIndex, type BindingIndex, type WorkerBindings } from "./observer-bindings.ts";
+import {
+  BINDINGS_PERMISSION, QUEUE_CONSUMERS_PERMISSION, RESOURCE_BINDING, indexComplete, indexDatasetLine, indexDigestInput, listedConsumers, queueConsumersDatasetLine,
+  queueConsumersDigestInput, queueReferences, readBindingIndex, readQueueConsumerIndex, storeBindingIndex,
+  type BindingIndex, type QueueConsumer, type QueueConsumerIndex, type QueueConsumers, type WorkerBindings,
+} from "./observer-bindings.ts";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 const DAY_MS = 86_400_000;
@@ -40,6 +48,32 @@ export const DECLARED_RESOURCES = Object.freeze({
   kv: Object.freeze([] as string[]),
   queues: Object.freeze([] as string[]),
 });
+
+/**
+ * Resources used intermittently by CI preview Workers (2026-11-15). The xauusd repository's deploy-preview-worker.yml
+ * deploys a temporary preview Worker on every pull request from wrangler.preview.jsonc, runs its E2E tests and deletes
+ * it, so between pull requests nothing binds or consumes these, and they were reported as unbound_resource. Such a
+ * resource is `ci_preview` (informational), never unbound_resource. The census reads an external organ's DNA over
+ * RPC (EXT_ORGANISM_*, OrganismDna.dna()), never its repository's files, so it cannot see a preview config; this
+ * reviewed list names each resource with its source, a CI preview config: a wrangler.preview.jsonc, or the
+ * `previews` / `env.preview` block of a wrangler.jsonc or wrangler.toml. A KV namespace or D1 database matches by its
+ * id (the config's) or its name on the account; a queue (the config names queues) by its name.
+ */
+export interface CiPreviewResource { resource: "d1" | "kv" | "r2" | "queues"; name: string; id?: string; source: string }
+const XAUUSD_PREVIEW = "cryptophys-adm/xauusd-ai-trading-assistant wrangler.preview.jsonc";
+const XAUUSD_PREVIEWS_BLOCK = `${XAUUSD_PREVIEW} and the previews block of its wrangler.jsonc`;
+export const CI_PREVIEW_RESOURCES: readonly CiPreviewResource[] = Object.freeze([
+  { resource: "kv", name: "xauusd-preview-signal-cache", id: "0cbd6ecc0fbc4dc99342960456ca71e5", source: `${XAUUSD_PREVIEWS_BLOCK} (SIGNAL_CACHE)` },
+  { resource: "kv", name: "xauusd-preview-webhook-buffer", id: "2000943b5db042f582b03043c75d5b1c", source: `${XAUUSD_PREVIEWS_BLOCK} (WEBHOOK_BUFFER)` },
+  { resource: "kv", name: "xauusd-preview-knowledge-base", id: "773182e4a26c444e8f56c3e58a1987ef", source: `${XAUUSD_PREVIEWS_BLOCK} (KNOWLEDGE_BASE)` },
+  { resource: "d1", name: "xauusd-signals-preview", id: "90f53f14-ff7b-46c1-b146-a1efd4e13018", source: `${XAUUSD_PREVIEWS_BLOCK} (DB)` },
+  { resource: "queues", name: "xauusd-webhook-events-preview", source: `${XAUUSD_PREVIEW} (queues.producers XAUUSD_EVENTS, queues.consumers)` },
+  { resource: "queues", name: "xauusd-webhook-events-preview-dlq", source: `${XAUUSD_PREVIEW} (dead_letter_queue of xauusd-webhook-events-preview)` },
+].map((r) => Object.freeze(r as CiPreviewResource)));
+/** The CI preview entry a listed resource matches, if any. */
+export function ciPreviewOf(key: "d1" | "kv" | "r2" | "queues", item: { id: string; name: string }, list: readonly CiPreviewResource[] = CI_PREVIEW_RESOURCES): CiPreviewResource | null {
+  return list.find((r) => r.resource === key && ((r.id !== undefined && r.id === item.id) || r.name === item.name)) ?? null;
+}
 
 /** A preview or environment copy of `base` (Workers Builds previews, wrangler environments). */
 export const PREVIEW_SUFFIX = /^(.+?)-(preview|staging|dev|pr-\d+|cr-\d+)$/;
@@ -61,8 +95,16 @@ export const LISTS: Readonly<Record<ListKey, { path: string; permission: string 
   durable_objects: { path: "workers/durable_objects/namespaces?per_page=100", permission: "Account > Workers Scripts > Read" },
 });
 
-export interface LiveItem { id: string; name: string; script?: string }
+/** `consumers`: a queue's consumers, only when the queues list carried all of them (else they are read per queue). */
+export interface LiveItem { id: string; name: string; script?: string; consumers?: QueueConsumer[] }
 export type ListResult = { status: "ok"; items: LiveItem[] } | { status: "permission_missing"; http: number } | { status: "unavailable"; reason: string } | { status: "skipped" };
+
+const queueItem = (r: any): LiveItem => {
+  const item: LiveItem = { id: String(r.queue_id ?? r.queue_name), name: String(r.queue_name ?? r.queue_id) };
+  const consumers = listedConsumers(r);
+  if (consumers) item.consumers = consumers;
+  return item;
+};
 
 export function parseList(key: ListKey, body: any): LiveItem[] {
   const result = body?.result;
@@ -74,7 +116,7 @@ export function parseList(key: ListKey, body: any): LiveItem[] {
       : key === "d1" ? (r?.uuid ? { id: String(r.uuid), name: String(r.name ?? r.uuid) } : null)
       : key === "kv" ? (r?.id ? { id: String(r.id), name: String(r.title ?? r.id) } : null)
       : key === "r2" ? (r?.name ? { id: String(r.name), name: String(r.name) } : null)
-      : key === "queues" ? (r?.queue_id || r?.queue_name ? { id: String(r.queue_id ?? r.queue_name), name: String(r.queue_name ?? r.queue_id) } : null)
+      : key === "queues" ? (r?.queue_id || r?.queue_name ? queueItem(r) : null)
       : r?.id ? { id: String(r.id), name: String(r.class ?? r.name ?? r.id), ...(r.script ? { script: String(r.script) } : {}) } : null;
     if (item) out.push(item);
   }
@@ -129,6 +171,8 @@ export interface InventoryInput {
   lists: Partial<Record<ListKey, ListResult>>;
   /** The live Workers' bindings (null or absent: not read this run). */
   bindings?: BindingIndex | null;
+  /** Every listed queue's consumers (null or absent: not read this run, so no queue is proven unbound). */
+  queue_consumers?: QueueConsumerIndex | null;
   /** Requests per script over the last 7 days (observer_vitals). */
   traffic7d: Map<string, number>;
   /** The Observer has stored senses for at least 7 days (idle findings need that). */
@@ -185,12 +229,15 @@ export function compareInventory(i: InventoryInput): Finding[] {
       out.push(finding(i.day, w, "idle_worker", `${w} is declared but had no traffic for ${THRESHOLDS.IDLE_DAYS} days`, { requests_7d: 0, declared: true }));
     }
   }
+  const queueRefs = i.queue_consumers ? queueReferences(i.queue_consumers) : null;
   const resource = (key: "d1" | "kv" | "r2" | "queues", declared: readonly string[]) => {
     const l = i.lists[key];
     if (l?.status !== "ok") return;
     const names = new Set(l.items.map((x) => x.name));
     for (const x of l.items) {
-      if (!declared.includes(x.name)) out.push(finding(i.day, `${key}:${x.name}`, "undeclared_resource", `${key.toUpperCase()} ${x.name} is on the account; no wrangler.toml of this repository binds it (storage has no DNA yet; informational)`, { resource: key, id: x.id, name: x.name }));
+      // A queue's consumers and the queues that name it as their dead-letter queue (what references it besides bindings).
+      const refs = key === "queues" && queueRefs ? { referenced_by: (queueRefs.refs.get(x.name) ?? []).slice(0, 10) } : {};
+      if (!declared.includes(x.name)) out.push(finding(i.day, `${key}:${x.name}`, "undeclared_resource", `${key.toUpperCase()} ${x.name} is on the account; no wrangler.toml of this repository binds it (storage has no DNA yet; informational)`, { resource: key, id: x.id, name: x.name, ...refs }));
     }
     for (const d of declared) if (!names.has(d)) out.push(finding(i.day, `${key}:${d}`, "orphaned_declaration", `${key.toUpperCase()} ${d} is bound in this repository but is not on the account`, { resource: key, name: d }, "warning"));
   };
@@ -202,7 +249,8 @@ export function compareInventory(i: InventoryInput): Finding[] {
       out.push(finding(i.day, `do:${ns.name}`, "undeclared_resource", `Durable Object namespace ${ns.name}${ns.script ? ` of ${ns.script}` : ""} belongs to no Worker in the DNA (informational)`, { resource: "durable_objects", id: ns.id, script: ns.script ?? null }));
     }
   }
-  if (i.bindings) out.push(...compareBindings(i.day, i.bindings, i.lists));
+  out.push(...compareQueueConsumers(i.day, i.lists.queues, i.queue_consumers ?? null));
+  if (i.bindings) out.push(...compareBindings(i.day, i.bindings, i.lists, i.queue_consumers ?? null));
   for (const [key, l] of Object.entries(i.lists) as Array<[ListKey, ListResult]>) {
     if (l.status === "permission_missing") {
       out.push({ ...finding(i.day, "account", `inventory_permission_missing:${key}`, `The Observer's token may not list ${key} (HTTP ${l.http}); the inventory needs ${LISTS[key].permission} on the same token (owner)`, { http: l.http, permission: LISTS[key].permission }), kind: "capability" });
@@ -211,8 +259,26 @@ export function compareInventory(i: InventoryInput): Finding[] {
   return out;
 }
 
+/**
+ * What the run could not read of the queues' consumer settings (pure; part of compareInventory, exported for tests).
+ * While any is unread, no queue is reported unbound: it may be consumed, or be another queue's dead-letter queue.
+ */
+export function compareQueueConsumers(day: string, queues: ListResult | undefined, index: QueueConsumerIndex | null): Finding[] {
+  if (queues?.status !== "ok" || queues.items.length === 0) return [];
+  if (!index) return [finding(day, "account", "queue_consumers_unread", `The consumers of the account's ${queues.items.length} queue(s) were not read this run; "no consumer and no dead-letter reference" is not proven, so no queue is reported unbound`, { queues: queues.items.length, unread: queues.items.slice(0, 20).map((q) => q.name) })];
+  const rows = Object.entries(index.queues);
+  const { unread } = queueReferences(index);
+  if (unread.length === 0) return [];
+  const refused = rows.filter(([, r]) => r.status === "permission_missing") as Array<[string, Extract<QueueConsumers, { status: "permission_missing" }>]>;
+  if (refused.length === unread.length && rows.every(([, r]) => r.status !== "ok" || r.source === "list")) {
+    // Every endpoint read refused: one capability finding naming the permission (the queues list needs the same one).
+    return [{ ...finding(day, "account", "inventory_permission_missing:queue_consumers", `The Observer's token may not read the consumers of ${refused.length} queue(s) (HTTP ${refused[0][1].http}); reading them needs ${QUEUE_CONSUMERS_PERMISSION} on the same token (owner), and until then no queue is reported unbound`, { http: refused[0][1].http, permission: QUEUE_CONSUMERS_PERMISSION, unread: refused.slice(0, 20).map(([q]) => q) }), kind: "capability" }];
+  }
+  return [finding(day, "account", "queue_consumers_unread", `The consumers of ${unread.length} of ${rows.length} queue(s) could not be read (${unread.slice(0, 5).map((u) => `${u.queue}: ${u.status}`).join(", ")}${unread.length > 5 ? ", …" : ""}); "no consumer and no dead-letter reference" is not proven, so no queue is reported unbound`, { queues: rows.length, unread: unread.slice(0, 20), cap: index.cap })];
+}
+
 /** The binding index against the readable resource lists (pure; part of compareInventory, exported for tests). */
-export function compareBindings(day: string, index: BindingIndex, lists: Partial<Record<ListKey, ListResult>>): Finding[] {
+export function compareBindings(day: string, index: BindingIndex, lists: Partial<Record<ListKey, ListResult>>, queueConsumers: QueueConsumerIndex | null = null): Finding[] {
   const out: Finding[] = [];
   const rows = Object.entries(index.workers).sort(([a], [b]) => a.localeCompare(b));
   const refused = rows.filter(([, r]) => r.status === "permission_missing") as Array<[string, Extract<WorkerBindings, { status: "permission_missing" }>]>;
@@ -228,6 +294,8 @@ export function compareBindings(day: string, index: BindingIndex, lists: Partial
     }
   }
   const complete = indexComplete(index);
+  // Queues are referenced by bindings, consumers and dead-letter settings; unproven while any consumer is unread.
+  const queueRefs = queueConsumers ? queueReferences(queueConsumers) : null;
   const missing = new Map<string, Array<{ resource: string; name: string; id: string }>>();
   for (const key of ["d1", "kv", "r2", "queues"] as const) {
     const l = lists[key];
@@ -237,12 +305,20 @@ export function compareBindings(day: string, index: BindingIndex, lists: Partial
     const bound = new Map<string, string[]>();
     for (const [w, r] of rows) if (r.status === "ok") for (const b of r.bindings) if (b.type === type && b.id) (bound.get(b.id) ?? bound.set(b.id, []).get(b.id)!).push(w);
     // Unbound: only when every Worker was read, never from a partial index.
-    if (complete) {
+    if (complete && (key !== "queues" || queueRefs?.complete)) {
       const declared = DECLARED_RESOURCES[key] as readonly string[];
       for (const x of l.items) {
         const ref = match === "id" ? x.id : x.name;
         if (bound.has(ref) || declared.includes(x.name)) continue;
-        out.push(finding(day, `${key}:${x.name}`, "unbound_resource", `${key.toUpperCase()} ${x.name} (${ref}) is on the account; no live Worker binds it and no wrangler.toml of this repository declares it (informational)`, { resource: key, id: x.id, name: x.name, workers_read: rows.length }));
+        if (key === "queues" && queueRefs!.refs.has(x.name)) continue; // consumed, or another queue's dead-letter queue
+        const queueSample = key === "queues" ? { referenced_by: [], queues_read: Object.keys(queueConsumers!.queues).length } : {};
+        // Bound only while a CI preview Worker exists (one per pull request): informational, never unbound.
+        const preview = ciPreviewOf(key, x);
+        if (preview) {
+          out.push(finding(day, `${key}:${x.name}`, "ci_preview", `${key.toUpperCase()} ${x.name} (${ref}) is used intermittently by CI previews (${preview.source}); no live Worker binds it between pull requests (informational)`, { resource: key, id: x.id, name: x.name, source: preview.source, workers_read: rows.length, ...queueSample }));
+          continue;
+        }
+        out.push(finding(day, `${key}:${x.name}`, "unbound_resource", `${key.toUpperCase()} ${x.name} (${ref}) is on the account; no live Worker binds it${key === "queues" ? ", it has no consumer, no queue names it as its dead-letter queue," : ""} and no wrangler.toml of this repository declares it (informational)`, { resource: key, id: x.id, name: x.name, workers_read: rows.length, ...queueSample }));
       }
     }
     for (const [w, r] of rows) {
@@ -308,8 +384,19 @@ export async function runInventory(env: ObserverEnv, now: number, fetcher: Fetch
   } else {
     datasets.bindings = "skipped: no reliable scripts list";
   }
-  const findings = compareInventory({ known, lists, bindings, traffic7d: traffic, senses_cover_7d: cover, day });
-  const digest = await digestOf(JSON.stringify({ f: findings.map((f) => [f.worker, f.metric]), d: datasets, b: bindings ? indexDigestInput(bindings) : null }));
+  // The consumers of every listed queue (consumer Workers, pull consumers and dead-letter queues are consumer settings,
+  // not bindings): from the queues list when it carries them, else per queue (at most QUEUE_CONSUMER_READ_CAP reads).
+  let queueConsumers: QueueConsumerIndex | null = null;
+  const queues = lists.queues;
+  if (queues?.status === "ok") {
+    const refusedHttp = recentlyRefused(previous.queue_consumers) ? Number(/http (\d+)/.exec(previous.queue_consumers)?.[1] ?? 403) : null;
+    queueConsumers = await readQueueConsumerIndex(creds.token, creds.account, queues.items, fetcher, undefined, refusedHttp);
+    datasets.queue_consumers = queueConsumersDatasetLine(queueConsumers);
+  } else {
+    datasets.queue_consumers = "skipped: no queues list";
+  }
+  const findings = compareInventory({ known, lists, bindings, queue_consumers: queueConsumers, traffic7d: traffic, senses_cover_7d: cover, day });
+  const digest = await digestOf(JSON.stringify({ f: findings.map((f) => [f.worker, f.metric]), d: datasets, b: bindings ? indexDigestInput(bindings) : null, q: queueConsumers ? queueConsumersDigestInput(queueConsumers) : null }));
   if (last && last.digest === digest && now - Date.parse(last.ran_at) < INVENTORY_HEARTBEAT_MS) return { outcome: "unchanged", findings: findings.length };
   await storeFindings(db, findings, at);
   const bindingsStored = bindings ? await storeBindingIndex(db, bindings, at) : "not_read";
