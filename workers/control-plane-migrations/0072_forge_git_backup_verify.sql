@@ -1,4 +1,4 @@
--- 0076 (ADR-0012 gate 8, owner 2026-11-15 "1 setuju"): the daily verify of a stored git bundle. Once per UTC day,
+-- 0072 (ADR-0012 gate 8, owner 2026-11-15 "1 setuju"): the daily verify of a stored git bundle. Once per UTC day,
 -- after the backup step, the Forge reads the newest stored bundle back from R2 and checks it in code as
 -- `git bundle verify` and git's index-pack would (forge/src/bundle-verify.ts): the header, no prerequisites, the
 -- pack's SHA-1, every entry inflated and every delta resolved, the refs and everything they reach, and the bundle

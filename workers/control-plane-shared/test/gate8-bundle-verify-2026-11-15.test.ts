@@ -2,7 +2,7 @@
 // report. The Forge has no git binary (workerd), so forge/src/bundle-verify.ts parses the bundle header, checks the
 // pack's SHA-1, inflates every entry with its own inflate, resolves every delta, computes every object id, checks the
 // refs and their connectivity, and compares the bundle with its D1 row (SHA-256, size, pack SHA-1, objects, main,
-// branches). The result goes on the row (migration 0076) and into the audit chain (forge.git_backup_verified); a
+// branches). The result goes on the row (migration 0072) and into the audit chain (forge.git_backup_verified); a
 // failure is a production problem on the Owner page (git_backup_unverified). The fixtures are git's own bundles
 // (test/fixtures/gate8-bundles.json) and packs built here from known bytes.
 import { test } from "node:test";
@@ -377,7 +377,7 @@ test("BV8. a failed verify is recorded and audited, becomes an Owner page proble
   assert.deepEqual(verifyAudits(db).map((e) => e.outcome), ["failed", "failed", "failed", "verified"]);
 });
 
-test("BV9. the Forge tick runs git_backup_verify after git_backup when the bucket is bound; nothing to verify, no get(), and before migration 0076", async () => {
+test("BV9. the Forge tick runs git_backup_verify after git_backup when the bucket is bound; nothing to verify, no get(), and before migration 0072", async () => {
   const db = migratedDb();
   const steps = await forgeTick({ DB: db as never, BUNDLES: bucketWith(new Map()).bucket as never }, "platform", null);
   assert.deepEqual(steps.git_backup_verify, { outcome: "no_bundle" });
@@ -387,7 +387,7 @@ test("BV9. the Forge tick runs git_backup_verify after git_backup when the bucke
   assert.equal(none.git_backup_verify, undefined, "no bucket, no step");
   const tick = read("workers/forge/src/tick.ts");
   assert.ok(tick.indexOf('step("git_backup"') < tick.indexOf('step("git_backup_verify"'), "after the backup step");
-  // Before migration 0076: the view has no verify, the tick reports and throws nothing.
+  // Before migration 0072: the view has no verify, the tick reports and throws nothing.
   const old = migratedDb();
   for (const c of ["verified_at", "verify_status", "verify_details"]) {
     old.raw.exec("DROP INDEX IF EXISTS idx_forge_git_backups_verified");
@@ -401,8 +401,8 @@ test("BV9. the Forge tick runs git_backup_verify after git_backup when the bucke
   assert.deepEqual([t.outcome, t.recorded], ["failed", false]);
 });
 
-test("BV10. migration 0076 is additive (three nullable columns, a CHECK on verify_status), and the change touches no guard path", () => {
-  const sql = read("workers/control-plane-migrations/0076_forge_git_backup_verify.sql");
+test("BV10. migration 0072 is additive (three nullable columns, a CHECK on verify_status), and the change touches no guard path", () => {
+  const sql = read("workers/control-plane-migrations/0072_forge_git_backup_verify.sql");
   const code = sql.replace(/--[^\n]*/g, "");
   assert.doesNotMatch(code, /\b(DROP|DELETE|UPDATE|RENAME|INSERT)\b/i, "additive only: the native migration path applies it");
   assert.equal((code.match(/ALTER TABLE forge_git_backups ADD COLUMN/g) ?? []).length, 3);
@@ -415,7 +415,7 @@ test("BV10. migration 0076 is additive (three nullable columns, a CHECK on verif
   assert.throws(() => db.raw.prepare("UPDATE forge_git_backups SET verify_status = 'ok' WHERE run_id = 'x'").run(), /CHECK/);
   for (const p of [
     "workers/forge/src/bundle-verify.ts", "workers/forge/src/tick.ts", "workers/control-plane-shared/src/git-backup.ts", "workers/ai-kernel/src/owner-inbox.ts",
-    "workers/control-plane-migrations/0076_forge_git_backup_verify.sql", "workers/console/ui/src/components/GitBackup.tsx", "workers/console/ui/src/pages/Owner.tsx",
+    "workers/control-plane-migrations/0072_forge_git_backup_verify.sql", "workers/console/ui/src/components/GitBackup.tsx", "workers/console/ui/src/pages/Owner.tsx",
     "workers/control-plane-shared/test/gate8-bundle-verify-2026-11-15.test.ts", "workers/control-plane-shared/test/fixtures/gate8-bundles.json",
   ]) assert.equal(criticalPathReason(p), null, p);
   // The docs say what verify covers and when the gate is met.

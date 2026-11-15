@@ -579,7 +579,7 @@ export const TRANSIENT_VERIFY_FAILURES: ReadonlySet<string> = new Set(["r2_get_f
 
 /**
  * Once per UTC day, after git_backup: `git bundle verify` in code of the newest stored bundle (status ok, not
- * pruned), then the result on its row (verified_at, verify_status, verify_details; migration 0076) and the audit
+ * pruned), then the result on its row (verified_at, verify_status, verify_details; migration 0072) and the audit
  * event forge.git_backup_verified (outcome verified or failed). A failed verify is a production problem the owner
  * sees (ai-kernel owner-inbox.ts, git_backup_unverified). Never throws.
  */

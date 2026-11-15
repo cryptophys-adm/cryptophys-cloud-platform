@@ -210,7 +210,7 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     deploy_commit>), so the owner gets one message when it opens and one when a deploy ends it, not one per run or
  *     per new main commit. The Observer's report of it is a warning: a critical one would hold the brake.
  *  9. git_backup_unverified (gate 8, owner 2026-11-15): the newest daily verify of a stored git bundle
- *     (forge/src/bundle-verify.ts, migration 0076) failed: the off-Artifacts copy of the repository is unusable or
+ *     (forge/src/bundle-verify.ts, migration 0072) failed: the off-Artifacts copy of the repository is unusable or
  *     is not the one recorded. One item per bundle (subject: its run id); it closes when a later verify succeeds.
  *     A backup that is only stale stays on the Console (owner 2026-11-13); this is not a stale backup.
  */

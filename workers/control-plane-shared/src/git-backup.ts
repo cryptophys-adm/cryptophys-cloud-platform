@@ -8,10 +8,10 @@
 // emailed or sent to Telegram.
 //
 // Gate 8 (owner 2026-11-15): once per UTC day the Forge verifies the newest stored bundle in code, as `git bundle
-// verify` and index-pack would (forge/src/bundle-verify.ts), and records the result on its row (migration 0076:
+// verify` and index-pack would (forge/src/bundle-verify.ts), and records the result on its row (migration 0072:
 // verified_at, verify_status, verify_details). `verify` below is the newest of those results. Unlike a stale
 // backup, a failed verify means the copy in R2 is unusable or is not the one recorded: it is a production problem
-// on the Owner page (ai-kernel owner-inbox.ts, git_backup_unverified). Before migration 0076 `verify` is null.
+// on the Owner page (ai-kernel owner-inbox.ts, git_backup_unverified). Before migration 0072 `verify` is null.
 import type { D1Database } from "./types.ts";
 
 export const GIT_BACKUP_PREFIX = "git-backups/platform/";
@@ -30,7 +30,7 @@ export interface GitBackupRun {
   r2_key: string | null; bundle_sha256: string | null; bundle_bytes: number | null; pack_bytes: number | null;
   pack_sha1: string | null; pack_version: number | null; objects: number | null; refs: number | null;
   error: string | null; pruned_at: string | null;
-  /** Migration 0076: the newest verify of this run's bundle (null before one ran, or before 0076). */
+  /** Migration 0072: the newest verify of this run's bundle (null before one ran, or before 0072). */
   verified_at?: string | null; verify_status?: "verified" | "failed" | null;
 }
 export type GitBackupVerifyStatus = "verified" | "failed";
@@ -53,7 +53,7 @@ export interface GitBackupView {
   last_ok_run: (GitBackupRun & { ref_list: GitBackupRef[] }) | null;
   /** The newest runs, newest first. */
   runs: GitBackupRun[];
-  /** The newest verify (`git bundle verify` in code) of a stored bundle; null before one ran, or before migration 0076. */
+  /** The newest verify (`git bundle verify` in code) of a stored bundle; null before one ran, or before migration 0072. */
   verify: GitBackupVerify | null;
   /** Successful runs whose bundle retention has not deleted. */
   retained_bundles: number;
@@ -65,7 +65,7 @@ export interface GitBackupView {
 const BASE_COLUMNS = "run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, pack_bytes, pack_sha1, pack_version, objects, refs, error, pruned_at";
 const VERIFY_COLUMNS = `${BASE_COLUMNS}, verified_at, verify_status`;
 
-/** The newest verify of a stored bundle. Null when none ran; undefined before migration 0076. */
+/** The newest verify of a stored bundle. Null when none ran; undefined before migration 0072. */
 export async function latestGitBackupVerify(db: D1Database): Promise<GitBackupVerify | null | undefined> {
   let row: { run_id: string; r2_key: string | null; main_sha: string; day: string; verified_at: string; verify_status: GitBackupVerifyStatus; verify_details: string | null } | null;
   try {

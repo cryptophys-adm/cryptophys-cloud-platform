@@ -8,7 +8,7 @@ import { ago } from "../lib/format";
  * cryptophys/platform over Git smart HTTP and writes it to R2 as a git bundle (GET /v1/forge/git-backup). Every
  * value comes from that response; a missing value is "—". A backup that has not succeeded for 48 hours is shown
  * here only (owner 2026-11-13: the owner is contacted for critical reports and approvals only). Gate 8 (owner
- * 2026-11-15): `verify` is the newest daily `git bundle verify` in code of a stored bundle (migration 0076); a failed
+ * 2026-11-15): `verify` is the newest daily `git bundle verify` in code of a stored bundle (migration 0072); a failed
  * one is also an Owner page item (git_backup_unverified).
  */
 const STATUS_TONE: Record<string, "green" | "amber" | "red" | "slate"> = { ok: "green", failing: "amber", stale: "red", no_data: "slate" };
