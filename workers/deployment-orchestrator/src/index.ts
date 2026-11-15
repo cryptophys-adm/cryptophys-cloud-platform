@@ -10,6 +10,8 @@ import { verifyConsensusExecution } from "../../control-plane-shared/src/consens
 import { DEPLOY_UNITS, isMigration, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitForService, unitRegistryState, type DeployUnit, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
 import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
+import type { DeployVarReference } from "./deploy-vars.ts";
+import { SmokeRunner, smokeToken } from "./native-smoke.ts";
 import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
@@ -54,6 +56,12 @@ export interface Env extends NativeRollbackEnv {
   BUNDLES?: BundleReader;
   /** ADR-0012 G6 gate 9: Access apps/policies Edit, groups and IdPs Edit, service tokens Read (owner 2026-11-13). */
   CF_ACCESS_TOKEN?: string;
+  /**
+   * Gate 4 (owner 2026-11-15): the Access service token the native deploy's smoke tests send (native-smoke.ts), the
+   * `cryptophys-ci` token the workflows use. Worker secrets set by the owner; unset, the smoke tests are skipped.
+   */
+  CF_ACCESS_CLIENT_ID?: string;
+  CF_ACCESS_CLIENT_SECRET?: string;
 }
 
 const SERVICE = "cryptophys-deployment-orchestrator";
@@ -266,11 +274,26 @@ type NativeChoice = { eligible: true; services: PlannedService[]; migrations: Pl
  */
 async function nativeDeployChoice(env: Env, unit: DeployUnit, sha: string): Promise<NativeChoice> {
   if (!nativeDeployConfigured(env)) return { eligible: false, reason: "not_configured" };
-  const e = await nativeDeployEligible(env, unit, sha, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!));
+  const e = await nativeDeployEligible(env, unit, sha, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!), gate4Eligibility(env));
   return e.eligible
     ? { eligible: true, services: e.services, migrations: e.migrations }
     : { eligible: false, reason: e.reason, ...(e.service ? { service: e.service } : {}), ...(e.file ? { file: e.file } : {}) };
 }
+/**
+ * Gate 4 (owner 2026-11-15): once the owner has set the Access service token (CF_ACCESS_CLIENT_ID and
+ * CF_ACCESS_CLIENT_SECRET), the deploy-time --var values are checked (deploy-vars.ts) against the Orchestrator's own
+ * Access and account values and the token's Client ID, and the smoke tests run (native-smoke.ts). Before that the
+ * earlier rule applies alone: the values are kept verbatim (the digest or the plan check).
+ */
+function gate4Eligibility(env: Env): { deployVars?: DeployVarReference } {
+  const t = smokeToken(env);
+  if ("reason" in t && t.reason === "access_service_token_not_set") return {};
+  return { deployVars: { ACCESS_TEAM_DOMAIN: env.ACCESS_TEAM_DOMAIN, ACCESS_AUD: env.ACCESS_AUD, CF_ACCOUNT_ID: env.CF_ACCOUNT_ID, ...("id" in t ? { CI_CLIENT_ID: t.id } : {}) } };
+}
+const gate4Smoke = (env: Env, fetcher: typeof fetch, delayMs?: number) => {
+  const runner = new SmokeRunner(env, fetcher, delayMs !== undefined ? { delayMs } : {});
+  return runner.skipped ? {} : { smoke: runner };
+};
 const ineligibility = (c: NativeChoice) => c.eligible ? null : { reason: c.reason, ...(c.service ? { service: c.service } : {}), ...(c.file ? { file: c.file } : {}) };
 
 /**
@@ -958,7 +981,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         if (head.sha !== r.requested_version) refusal = "commit_not_current_main";
         else if (!(await forgeReady(env.DB, r.requested_version)).ready) refusal = "ci_not_green";
         else {
-          const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf);
+          const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, gate4Eligibility(env));
           if (e.eligible) { plan = e.services; migrations = e.migrations; }
           else refusal = "not_eligible: " + e.reason + (e.service ? " (" + e.service + ")" : "");
         }
@@ -1013,7 +1036,12 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean };
     if (isDeploy) {
       deploysRun++;
-      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations, ...(isBreakGlass ? { destructive: named } : {}) });
+      // Gate 4: the deploy-time values and the smoke tests through Access, on the planned path. The break-glass deploy
+      // (recovery-deploy.ts, the owner's last resort) keeps its own rules unchanged.
+      run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, {
+        ...opts, migrations,
+        ...(isBreakGlass ? { destructive: named } : { ...gate4Eligibility(env), ...gate4Smoke(env, fetcher, opts.delayMs) }),
+      });
     } else if (isRetire) {
       run = await executeRetire(new CloudflareRetire(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher), retirePlan!, opts);
     } else {
@@ -1370,9 +1398,14 @@ export default {
     }
 
     if (request.method === "GET" && ["/ready", "/readyz"].includes(url.pathname)) {
+      // Gate 4 (2026-11-15): with the native deploy configured, readiness does not depend on GitHub. GH_ACTIONS_TOKEN
+      // serves only the consensus fallback to the GitHub workflows, which cut-over step 7 revokes; it is reported as
+      // `github_fallback` and `production_dispatch_enabled`, never a readiness check. Without the native deploy the
+      // fallback is the only deploy path, so its token stays a check.
+      const native = nativeDeployConfigured(env);
       const checks = {
         production_environment: env.SERVICE_ENVIRONMENT === "production",
-        github_token_configured: Boolean(env.GH_ACTIONS_TOKEN),
+        ...(native ? {} : { github_token_configured: Boolean(env.GH_ACTIONS_TOKEN) }),
         deployment_lock_binding: Boolean(env.DEPLOYMENT_LOCK),
         database_schema: Boolean(env.DB) && await schemaReady(env as never),
         ai_binding: Boolean(env.AI),
@@ -1382,11 +1415,16 @@ export default {
       return json({
         status: ready ? "ready" : "not_configured",
         service: env.SERVICE_NAME,
-        production_dispatch_enabled: ready,
+        // Informational: whether the GitHub workflow fallback can be dispatched (ready, and its token set).
+        production_dispatch_enabled: ready && Boolean(env.GH_ACTIONS_TOKEN),
+        github_fallback: env.GH_ACTIONS_TOKEN ? "available" : "absent",
         // ADR-0012 phase 2 (informational; not a readiness gate): rollback without GitHub.
         native_rollback: nativeRollbackConfigured(env) ? "configured" : "not_configured",
         // ADR-0012 G2b (informational): code-only deploys from the Forge's bundles.
-        native_deploy: nativeDeployConfigured(env) ? "configured" : "not_configured",
+        native_deploy: native ? "configured" : "not_configured",
+        // Gate 4 (informational): the smoke tests through Access, and the deploy-time values' reference.
+        native_smoke: new SmokeRunner(env).skipped ? "not_configured" : "configured",
+        native_deploy_vars: gate4Eligibility(env).deployVars ? "checked" : "kept_unchecked",
         checks
       }, ready ? 200 : 503);
     }
