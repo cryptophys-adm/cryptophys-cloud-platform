@@ -90,6 +90,36 @@ Each step is reversible until step 7.
   (`destructive_migration`); with the workflows off it cannot be deployed. The two change requests reopened before the fix
   stay `closed` in D1; their merges are in the audit chain (`forge.merged`).
 
+### 2026-11-14: the deploy planner stall, and the gate for steps 6–7
+
+- From main 6db8d31 (about 15:00 UTC) no deploy was planned for about 7 hours. Branch updates had been merged with main as the
+  second parent, so the Control Plane's deployed version (3cd2f94) left main's first-parent history. The Forge's planner looked
+  only there, recorded `compare_failed_or_diverged`, and with new migrations pending refused every unit
+  (`new_migration_control_plane_unavailable`), the Forge's own fix included.
+- The way out was one `deploy-control-plane.yml` run on main 0a9e30f, started by the owner (run 43644788075, attempt 2,
+  success at 22:03 UTC; attempt 1 failed on a clock-dependent test, fixed in `claude/ob5-clock-fix`). The planner recovered
+  at once (22:04: `control-plane` planned first).
+- Owner-approved hardening, each its own change request: (a) a linear-history guard (`main_not_first_parent`, migration 0071);
+  (b) the planner resolves deployed versions by ancestry, plans migrations from D1's applied list, and redeploys a unit in full
+  when its version cannot be resolved; (c) a deploy stall alarm after 2 hours; (d) a break-glass recovery step
+  `force_redeploy_unit`; (e) a last-resort runbook in OPERATIONS; (f) one drill of (d).
+- **Gate (owner, 2026-11-14): steps 6–7 wait until**
+  - the linear-history guard (a), the deploy planner's ancestry and D1-migration rules (b) and the deploy stall alarm (c) are live;
+  - the break-glass recovery step `force_redeploy_unit` (d) has been exercised once in production, with the owner's click (drill (f));
+  - native deploys have run cleanly for 24 hours.
+
+### 2026-11-15: the executor's own bug blocked its fix
+
+- The native control-plane deploy failed twice on reading a version it had just uploaded: at d300ee1 (09:08 UTC, on
+  `cryptophys-platform-registry`) and at 4e64060 (10:38 UTC, on `cryptophys-ai-kernel`), both `cloudflare_api_404_100146`.
+  Each failure restored the services already moved and opened a critical report, so the consensus brake held until the owner
+  acknowledged it.
+- The fix (4e64060: a 404 on that read is read again, at most 4 times) lives in the Deployment Orchestrator, which executes
+  the deploys. The planner deploys the Control Plane first and the orchestrator after it, so the fix could not go live through
+  the path it repairs. The way out is an owner-run workflow deploy (the orchestrator first, then the Control Plane).
+- **Gate addition:** steps 6–7 also wait until a fix to the deploy executor itself can reach production without the executor
+  (an executor-first planner rule, or a named runbook path in OPERATIONS), proven once.
+
 ## Rollback of the cut-over
 
 Before step 7, rolling back means re-enabling the workflows and pushing the Forge's `main` back to GitHub.
