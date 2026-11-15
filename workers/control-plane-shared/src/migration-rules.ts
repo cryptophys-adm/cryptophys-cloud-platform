@@ -4,7 +4,8 @@
  *
  * - DESTRUCTIVE_SQL is the Forge's owner-only rule for migrations (workers/forge/src/changes.ts, ADR-0012 §2.4):
  *   a migration that drops, deletes or rewrites data needs the owner. A test keeps the two regular expressions
- *   equal. A migration that matches it is never applied natively; it stays on the GitHub workflow.
+ *   equal. A migration that matches it is not applied by a native deploy; it stays on the GitHub workflow. The one
+ *   exception is the owner-approved break-glass deploy (break-glass.ts), and only for a file its plan names.
  * - D1 runs one statement per prepared statement, so a migration file is split into its statements here and
  *   applied as one D1 batch (one transaction). The splitter knows SQLite's quoting, comments and the
  *   BEGIN … END body of CREATE TRIGGER. A test applies every repository migration through it and compares the

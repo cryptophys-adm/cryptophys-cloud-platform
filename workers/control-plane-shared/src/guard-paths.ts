@@ -30,6 +30,9 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // Owner 2026-11-14 ("naikan batas kapabilitas aether"): the external capability ceilings (the general one and
   // Aether's per-agent one) live in organism.ts; raising any of them is the owner's, never a routine merge.
   [/^workers\/control-plane-shared\/src\/organism\.ts$/, "capability_ceiling"],
+  // Hardening (d), 2026-11-14: the break-glass deploy bypasses the deploy planner, so its rules are the owner's.
+  [/^workers\/control-plane-shared\/src\/break-glass\.ts$/, "break_glass"],
+  [/^workers\/deployment-orchestrator\/src\/recovery-deploy\.ts$/, "break_glass"],
 ];
 
 /** The guard-path reason of one repository path, or null for a routine path. */
