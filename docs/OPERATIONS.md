@@ -11,7 +11,7 @@
 
 1. To pause deployments, pull the brake: consensus mode `shadow` or the kill switch (`kernel_controls.agents_enabled`). Restricting the GitHub production Environment also stops the workflow fallback.
 2. Inspect the deployments ledger (Console Pipelines, `GET /v1/deployments`), the commit SHA, the workflow run if the fallback ran, and the Cloudflare Worker logs.
-3. Roll back natively (consensus `rollback_worker_version`, or an approved recovery plan), or revert through a reviewed change that the agents then deploy by consensus; do not use force-push as routine rollback. Since 2026-11-14 (owner) there is no Console or Orchestrator path that deploys outside consensus (`docs/SSOT.md`, "Paths to production").
+3. Roll back natively (consensus `rollback_worker_version`, or an approved recovery plan), or revert through a reviewed change that the agents then deploy by consensus; do not use force-push as routine rollback. Since 2026-11-14 (owner) there is no Console or Orchestrator path that deploys outside consensus (`docs/SSOT.md`, "Paths to production"). When the Forge, the Orchestrator and consensus are all down, the owner uses "Last resort: the organism is down" below.
 4. If a token or secret is exposed, revoke/rotate it at its issuer immediately.
 5. Record the timeline, impact, mitigation, and follow-up work in a reviewed document or issue.
 
@@ -24,8 +24,10 @@
   - `owner_attention`: draft recovery plans, critical proposals and pending knowledge proposals waiting for an owner click. Since 2026-11-11 (owner: "buat notif telegram jika ada yang perlu approve owner di semua cerebrum") this topic also goes to the owner's Telegram through the Service Binding `OWNER_TELEGRAM` (the xauusd AI Worker's `OwnerNotifier`, which holds the bot; the platform holds no Telegram credential): one message when items open or change and one when they are resolved; a failed send is retried at the next run;
   - `drift`: drifted, unhealthy, never observed, or not observed for 45 minutes;
   - `critical_reports`: critical agent reports in the last 24 h.
+  - `production_unhandled` (Telegram): production problems no agent is handling, among them the deploy stall alarm below.
   - Each opened, changed or closed notice is an `owner.notice_*` audit event. A failed email is retried at the next run.
   - The live notices are at `GET /v1/notices` on the AI Kernel and in the Console under Command → "Needs your attention".
+- Deploy stall alarm (owner 2026-11-14, `control-plane-shared/src/deploy-stall.ts`; `docs/SSOT.md`, "The Observer"): at :27 and :57 the Platform API's Observer raises one warning report (`platform_digest`, agent `platform-api`, `body.source = "deploy_stall"`) per stall episode when main's head is `ready`, a deploy unit does not run it, the plan lists a unit or a skip, and no `deploy_commit` has executed for more than 2 hours. The report names main's sha, the plan's `forge_skipped` reasons, the age of the last executed `deploy_commit` and the units behind; the owner gets it on Telegram as the `production_unhandled` item `deploys_stalled`. It is a warning, not critical, so it never holds the consensus brake that the fixing deploy needs. It resolves itself (a `Resolved:` info report with the same `alert_key`, and the notice closes) once a `deploy_commit` executes. To act on it: read the skip reasons, fix the planner input (for `compare_failed_or_diverged`, a registry `desired_version` the Forge cannot find in main's history), and let the agents deploy. If the organism itself is down, see "Last resort: the organism is down" below.
 - Readiness of every control-plane Worker lists the individual checks that failed.
 
 ## Recovery posture
@@ -36,6 +38,55 @@ Durable state lives only in D1 `cryptophys-control-plane` (owner `cryptophys-adm
 - RPO: minutes (Time Travel granularity). RTO: under 30 minutes (restore + redeploy through the workflow).
 - Restore verification: after any restore, run `GET /v1/verify` on the Audit Ledger and a drift observation, and record the restore as a new audit event.
 - Recovery plans for each service are stored in the Recovery Manager and need a second person to approve.
+
+## Last resort: the organism is down
+
+**For the owner only, and only when the organism is down:** the Forge, the Deployment Orchestrator and consensus are unavailable, so no `deploy_commit`, `rollback_worker_version` or approved recovery plan can run. While any of them works, use the normal paths above: they are the only paths to production (`docs/SSOT.md`, "Paths to production"). Agents never use this section. A person with the owner's Cloudflare login acts directly on the Workers, and records it afterwards. Checked against the Cloudflare docs on 2026-11-14:
+- [Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/), last updated 2026-11-12;
+- [Wrangler Workers commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/), last updated 2026-10-26;
+- [Versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/) and [Infrastructure as code](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/) (the REST calls);
+- the API reference [List Versions](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/list/);
+- [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/), last updated 2026-11-06.
+
+Re-check them before you act; commands and limits change.
+
+**0. Before you touch anything.**
+- Pull the brake if the AI Kernel still answers: `POST /v1/kernel/agents-enabled` with `{"enabled": false}` (any operator), or consensus mode `shadow`. Otherwise, once the organism comes back, the Drift Detector sees your version as drift from `desired_version`, and the Supervisor proposes to redeploy over it.
+- Use your own credentials: the dashboard, `wrangler login`, or an API token you create for this (Account → Workers Scripts → Edit; D1 → Edit for a restore). Never use or copy a Worker's secret (`CF_DEPLOY_TOKEN` and the others), and never commit or paste a token.
+- Prefer a rollback to an existing version. It keeps that version's code, bindings, vars and secrets exactly as they were deployed. A fresh `wrangler deploy` from a checkout needs what the deploy workflows substitute (the D1 `database_id` for `__CONTROL_PLANE_D1_DATABASE_ID__`, `OPERATOR_IDENTITIES`, the version `--tag`), so it is the last of the last resorts.
+
+**1. Find the last good version.** Every platform deploy tags its version with the first 12 characters of the commit (`wrangler deploy --tag`, annotation `workers/tag`), and the registry records the same tag.
+- What each Worker should run: `npx wrangler d1 execute cryptophys-control-plane --remote --command "SELECT service_id, desired_version, updated_at FROM service_registry WHERE status != 'disabled' ORDER BY service_id"`.
+- What was deployed, and how it ended: `npx wrangler d1 execute cryptophys-control-plane --remote --command "SELECT service_id, requested_version, status, requested_by, updated_at, details_json FROM deployment_requests ORDER BY updated_at DESC LIMIT 30"`. A `succeeded` row before the trouble started is a good candidate; `details_json` names the unit, the workflow and the consensus proposal.
+- The version id for that tag: `npx wrangler versions list --name <worker> --json` (the recent versions, with their tag and message), `npx wrangler deployments list --name <worker>` (which versions served traffic, and when), and `npx wrangler versions view <version-id> --name <worker>` to check one. Rollback reaches only the 100 most recent versions.
+- Without D1: the dashboard's **Deployments** list (below) shows each version's tag and message (`commit <sha>`).
+
+**2. Roll back or redeploy a Worker.** Worker names are those of the registry: `cryptophys-ai-kernel`, `cryptophys-deployment-orchestrator`, `cryptophys-forge`, and so on. A Control Plane problem may need all six Workers of the unit (`control-plane-shared/src/deploy-units.ts`).
+- **Dashboard.** Workers & Pages → the Worker → **Deployments** lists its versions and its deployments. To roll back, select the three dots next to the version, then **Rollback**. A rollback is a new deployment with that version at 100 % of traffic, on all of the Worker's routes and domains.
+- **Wrangler.** `npx wrangler rollback <version-id> --name <worker> --message "owner last resort: <why>"`. Without a version id it picks the version uploaded before the latest one, so always give the id. `npx wrangler versions deploy <version-id>@100% --name <worker> --message "owner last resort: <why>" -y` does the same for any recent version.
+- **REST API** (base `https://api.cloudflare.com/client/v4`, header `Authorization: Bearer <your token>`):
+  - list versions: `GET /accounts/{account_id}/workers/scripts/{script_name}/versions?per_page=100`;
+  - inspect one: `GET .../versions/{version_id}`;
+  - list deployments: `GET .../deployments`;
+  - deploy (the call the Orchestrator's native rollback makes, `native-rollback.ts`): `POST .../deployments` with `{"strategy": "percentage", "versions": [{"version_id": "<id>", "percentage": 100}], "annotations": {"workers/message": "owner last resort: <why>"}}`.
+- **Refusals.** Cloudflare refuses a rollback across a Durable Object class change (the AI Kernel holds Durable Objects), or to a version bound to an R2 bucket, KV namespace or queue that no longer exists.
+- **Console assets.** Pages loaded before a Console rollback may still ask for the newer version's assets for a while.
+- **New code.** When no existing version is good, the deploy workflows' own `workflow_dispatch` (`deploy-<unit>.yml`, input `commit_sha`, `confirm_production: DEPLOY`) is still on GitHub until the owner retires it (`docs/GITHUB-CUTOVER.md`). It deploys only GitHub's main head and keeps the substitutions, the SAFE minute and the live check.
+- **Check.** `/health` and `/ready` of each Worker you changed answer, and `npx wrangler deployments status --name <worker>` shows your version.
+
+**3. Restore the control-plane database (D1 Time Travel).** This is critical and destructive, and only the owner decides it (`docs/SSOT.md`, "Backups"). It overwrites `cryptophys-control-plane` in place for every service, so everything written after the restore point is gone from the live database: audit events, consensus, reports and registry changes. In-flight queries fail.
+- **Window.** The account is on Workers Paid, so the window is 30 days (7 on Free).
+- **Where to restore to.** A Control Plane deploy through `deploy-control-plane.yml` logs a pre-migration bookmark ("Pre-migration D1 bookmark" in its run summary); the native path does not. For any other point in time: `npx wrangler d1 time-travel info cryptophys-control-plane --timestamp=<RFC3339 or unix>`.
+- **Restore.** `npx wrangler d1 time-travel restore cryptophys-control-plane --bookmark=<bookmark>` (or `--timestamp=...`).
+- **Undo.** The restore prints the bookmark from before it, which undoes it. Write it down first.
+- **Migrations.** `d1_migrations` goes back with the data, so after a restore to before a migration, roll the Control Plane Workers back to versions from before that migration too: their readiness requires every migration they were built with (`REQUIRED_MIGRATIONS`). Then let the next Control Plane deploy apply the migrations again.
+- **Older than 30 days.** The daily backup in R2 `cryptophys-d1-backups` (Recovery Manager, 90 days) is the only copy.
+
+**4. Afterwards: record it.**
+- **Audit.** Once the Audit Ledger answers, record each action as an audit event: `POST /v1/events` on `cryptophys-audit-ledger` as yourself, through Access (the Console does not forward it). Use `{"event_type": "owner.last_resort_rollback" | "owner.last_resort_deploy" | "owner.d1_restore", "subject": "<worker or cryptophys-control-plane>", "outcome": "success" | "failed", "payload": {...}}`. The payload holds the from and to version ids and tags, the bookmark restored to and the undo bookmark, the time, and the reason. After a D1 restore, also run `GET /v1/verify` (it must return `"valid": true`) and a drift observation (Console Infrastructure → observe now).
+- **Registry.** Make the registry match what runs: `PUT /v1/services/{service_id}/desired-version` on the Platform Registry (approver) with the tag now live. Or leave the old `desired_version` deliberately, so that the agents redeploy main once they are healthy. Then switch agents back on (`POST /v1/kernel/agents-enabled` `{"enabled": true}`, approver).
+- **Owner page.** Acknowledge the critical reports the outage left open once they are handled, so that the brake releases.
+- **The report.** Agents publish reports; a person does not. Write the incident record as a reviewed document (step 5 of "Incident handling": timeline, impact, every command run, versions and bookmarks, follow-up work), and submit it as a change request like any other.
 
 ## Registered platform and XAUUSD AI agents (ADR-0007, TP-009, 0016, 0017)
 
