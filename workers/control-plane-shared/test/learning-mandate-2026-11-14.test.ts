@@ -5,7 +5,7 @@
 // the grants, the owner's kill switch, identity, the audit chain, the knowledge content-safety validator and size bounds.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, migratedDb } from "./harness.ts";
 import { CAPABILITIES, agentSyscallChecks, hourlyLimit, verifySyscallDecision } from "../src/capabilities.ts";
 import { verifyAuditChain } from "../src/audit.ts";
@@ -192,8 +192,17 @@ test("LM5. the learning embedding succeeds with the daily AI budget exhausted, i
 test("LM6. only the learning call site passes purpose learning; memory.remember's embedding does, and a failed recall no longer skips the remember", async () => {
   const workers = new URL("workers/", ROOT);
   const users: string[] = [];
-  for (const f of readdirSync(workers, { recursive: true }) as string[]) {
-    if (!/\/src\/.*\.tsx?$/.test(`/${f}`) || f.includes("node_modules") || f.includes("/dist/")) continue;
+  // A plain walk (readdirSync + statSync, no `recursive` option): the Forge's runner in workerd lists directories
+  // one level at a time, and the recursive form returned nothing there (check of 4807e3f, 2026-11-15).
+  const walk = (rel: string): string[] => (readdirSync(new URL(rel, workers)) as string[]).flatMap((n) => {
+    if (n === "node_modules" || n === "dist") return [];
+    const f = `${rel}${n}`;
+    return statSync(new URL(f, workers)).isDirectory() ? walk(`${f}/`) : [f];
+  });
+  const files = walk("");
+  assert.ok(files.some((f) => f === "ai-kernel/src/memory.ts"), `the walk reaches the sources (${files.length} files)`);
+  for (const f of files) {
+    if (!/\/src\/.*\.tsx?$/.test(`/${f}`)) continue;
     // Code only: the engine's and power-mode.ts's comments describe the flag.
     const text = readFileSync(new URL(f, workers), "utf8").split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
     if (/purpose:\s*(LEARNING_AI_PURPOSE|["']learning["'])/.test(text)) users.push(f);
