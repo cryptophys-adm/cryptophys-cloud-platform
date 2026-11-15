@@ -8,6 +8,7 @@
 //   and, once a day per head of main, the npm dependency audit (dependency-audit.ts, ADR-0012 G5).
 //   and the branches pushed to the work repository platform-work, as change requests (work-repo.ts, G4);
 //   and, once per UTC day per head of main, a git bundle of platform to R2 (git-backup.ts, ADR-0012 gate 8);
+//   and, once per UTC day, `git bundle verify` in code of the newest stored bundle (bundle-verify.ts, gate 8);
 //   and the type-check source of forge-sourced change requests: their head copied to cr/<cr_id> of platform
 //   (transfer.ts, gate 6); and the G3a merge spike on the scratch repository until it has succeeded once (gate 5).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
@@ -22,6 +23,7 @@ import { buildUsageTick } from "./build-usage.ts";
 import { dependencyAuditTick } from "./dependency-audit.ts";
 import { WORK_REPO, workBranchesTick } from "./work-repo.ts";
 import { gitBackupTick, type GitBackupBucket } from "./git-backup.ts";
+import { gitBackupVerifyTick, type VerifyBucket } from "./bundle-verify.ts";
 import { crSourcesTick } from "./transfer.ts";
 import { mergeSpikeUntilProven } from "./merge.ts";
 
@@ -111,6 +113,11 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
       const repo = await env.ARTIFACTS!.get(repoName);
       try { return await gitBackupTick({ DB: env.DB, BUNDLES: env.BUNDLES as unknown as GitBackupBucket }, repo as never, nowMs()); } finally { repo[Symbol.dispose]?.(); }
     });
+  }
+  if (env.BUNDLES) {
+    // Gate 8 (owner 2026-11-15): once per UTC day, after the backup, the newest stored bundle read back from R2 and
+    // verified in code (header, pack checksum, every object, refs and connectivity, SHA-256 against its row).
+    await step("git_backup_verify", () => gitBackupVerifyTick({ DB: env.DB, BUNDLES: env.BUNDLES as unknown as VerifyBucket }, nowMs()));
   }
   // Main's head first (2026-11-14): every deploy waits for the main check of the head it deploys
   // (forge-gate forge_main_check_pending), so a steady stream of change requests must not starve it. Change

@@ -48,6 +48,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   build_minutes_exhausted: "build minutes used up",
   break_glass_deployed: "break-glass deploy",
   deploys_stalled: "deploys stalled",
+  git_backup_unverified: "git backup failed verify",
 };
 
 /** One production problem no agent is handling: what, since when, and the page with the evidence. */
