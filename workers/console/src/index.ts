@@ -79,7 +79,8 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   ...rows("recovery", "POST", ["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/disable"]),
   ...rows("registry", "GET", ["/v1/services", "/v1/services/{id}", "/v1/accounts"]),
   ...rows("registry", "POST", ["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable"]),
-  ...rows("registry", "PUT", ["/v1/services/{id}", "/v1/services/{id}/desired-version"]),
+  // Owner 2026-11-15: no registry write of a service record or desired version is forwarded any more (the
+  // Infrastructure page is read only); the deploy workflows record versions on the Registry directly.
   ...rows("policy", "GET", ["/v1/decisions", "/v1/decisions/{id}"]),
   ...rows("policy", "POST", ["/v1/evaluate"]),
   ...rows("drift", "GET", ["/v1/drift", "/v1/drift/{id}"]),

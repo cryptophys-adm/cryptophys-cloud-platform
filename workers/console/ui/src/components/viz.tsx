@@ -100,12 +100,20 @@ export interface BarItem { label: string; value: number; parts?: Segment[]; href
  * Horizontal bars sorted by size: magnitude per category (events per type, agents per host).
  * With `parts` each bar is stacked; pass `series` so the legend names them.
  */
-export function BarList({ items, max = 10, color = STATUS.info, series, unit = "", empty = "No data.", keepOrder = false }: { items: BarItem[]; max?: number; color?: string; series?: { label: string; color: string }[]; unit?: string; empty?: string; keepOrder?: boolean }) {
+/**
+ * `rest` says how the items beyond `max` are folded into one bar: "sum" for counts that add up, "max" for values
+ * that do not (an age in minutes: twelve services seen 7 minutes ago are not "84 minutes").
+ */
+export function BarList({ items, max = 10, color = STATUS.info, series, unit = "", empty = "No data.", keepOrder = false, rest: fold = "sum" }: { items: BarItem[]; max?: number; color?: string; series?: { label: string; color: string }[]; unit?: string; empty?: string; keepOrder?: boolean; rest?: "sum" | "max" }) {
   const tip = useTip();
   const sorted = keepOrder ? [...items] : [...items].sort((a, b) => b.value - a.value);
   const head = sorted.slice(0, max);
   const rest = sorted.slice(max);
-  if (rest.length) head.push({ label: `other (${rest.length})`, value: rest.reduce((n, i) => n + i.value, 0) });
+  if (rest.length) {
+    head.push(fold === "max"
+      ? { label: `${rest.length} more · up to`, value: Math.max(...rest.map((i) => i.value)) }
+      : { label: `other (${rest.length})`, value: rest.reduce((n, i) => n + i.value, 0) });
+  }
   const top = Math.max(1, ...head.map((i) => i.value));
   if (!head.length) return <p className="py-2 text-[12px] text-slate-500">{empty}</p>;
   return (

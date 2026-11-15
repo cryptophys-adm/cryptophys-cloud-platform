@@ -6,7 +6,7 @@ The active separately deployed TypeScript Workers implement the logical control 
 |---|---|---|---|
 | `cryptophys-platform-api` | AI Worker OS gateway with its own AI engine | Operational | `GET /health`, `/ready`, `/`, `GET /v1/overview[?advisory=true]` |
 | `cryptophys-deployment-orchestrator` | Consensus and recovery deploys (native, or the unit's workflow as fallback) and native rollback, ledgered in `deployment_requests` and audited | Operational | `GET /v1/deployments` (read only; the manual `POST` was removed 2026-11-14 by the owner) |
-| `cryptophys-platform-registry` | Desired inventory and ownership | Operational | `GET /v1/services`, `GET/PUT /v1/services/{id}`, `PUT /v1/services/{id}/desired-version` |
+| `cryptophys-platform-registry` | Desired inventory and ownership | Operational | `GET /v1/services`, `GET /v1/services/{id}`, `PUT /v1/services/{id}/desired-version` (deploy workflows; `PUT /v1/services/{id}` removed 2026-11-15) |
 | `cryptophys-policy-engine` | Deterministic policy decisions | Operational | `POST /v1/evaluate`, `GET /v1/decisions[/{id}]` |
 | `cryptophys-drift-detector` | Desired-vs-observed version and health | Operational, cron every 15 min | `POST /v1/observe`, `GET /v1/drift[/{service_id}]` |
 | `cryptophys-audit-ledger` | Append-only hash-chained audit log | Operational | `POST /v1/events`, `GET /v1/events[/{id}]`, `GET /v1/verify` |

@@ -1,11 +1,11 @@
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
-import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
+import type { AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   SERVICE_ID, VERSION_TAG, errorResponse, healthResponse, json, newId, nowIso, readJsonObject,
   serviceMetadata, stringField, type JsonObject,
 } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { boundedString, boundedStringArray, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
+import { boundedString, boundedStringArray, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authenticate, isOwner, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
@@ -15,9 +15,6 @@ import { disableAccount, listAccounts, resyncLogin, upsertAccount, whoAmI, type 
 export type Env = AccountsEnv & { AGENTS?: AgentRpcBinding };
 
 const SERVICE = "cryptophys-platform-registry";
-const ENVIRONMENTS = ["development", "preview", "production"];
-const STATUSES = ["registered", "healthy", "degraded", "unavailable", "disabled"];
-const CLASSIFICATIONS = ["public", "internal", "confidential", "restricted"];
 
 interface ServiceRow {
   service_id: string;
@@ -34,7 +31,12 @@ interface ServiceRow {
 
 interface Tagging { tags: string[]; normalized_description: string }
 
-const tagTask: AiTask<Tagging> = {
+/**
+ * The Registry's own AI engine (AI-ENGINE-REQUIREMENT.md; its DNA declares this task). Advisory only. Its only
+ * caller was PUT /v1/services/{id} (`?advisory=true`), removed 2026-11-15 by the owner with the Console's Edit form;
+ * the engine stays declared until the owner rewires or retires it (as the Orchestrator's riskTask, 2026-11-14).
+ */
+export const tagTask: AiTask<Tagging> = {
   name: "suggest_tags",
   instructions:
     'Suggest inventory tags for a registered platform service. Return {"tags": up to 6 lowercase kebab-case strings, ' +
@@ -63,68 +65,6 @@ function present(row: ServiceRow): JsonObject {
 
 const getService = (env: Env, id: string) =>
   env.DB.prepare("SELECT * FROM service_registry WHERE service_id = ?").bind(id).first<ServiceRow>();
-
-async function upsertService(request: Request, env: Env, id: string, url: URL, actor: string): Promise<Response> {
-  const body = await readJsonObject(request);
-  if (!body.ok) return body.response;
-  const b = body.value;
-  const displayName = stringField(b, "display_name", 120);
-  const environment = stringField(b, "environment", 20);
-  const status = stringField(b, "status", 20);
-  const endpoint = stringField(b, "endpoint", 300, false);
-  for (const v of [displayName, environment, status, endpoint]) if (v instanceof Error) return errorResponse(400, "invalid_request", v.message);
-  if (!ENVIRONMENTS.includes(environment as string)) return errorResponse(400, "invalid_request", `environment must be one of ${ENVIRONMENTS.join(", ")}`);
-  if (!STATUSES.includes(status as string)) return errorResponse(400, "invalid_request", `status must be one of ${STATUSES.join(", ")}`);
-  if (endpoint && !/^https:\/\/[A-Za-z0-9.-]+(\/[\w./-]*)?$/.test(endpoint as string)) return errorResponse(400, "invalid_request", "endpoint must be an https URL");
-
-  const metadata = b.metadata;
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return errorResponse(400, "invalid_request", "metadata object is required");
-  const m = metadata as JsonObject;
-  // RESOURCE-OWNERSHIP.md: owner, purpose and data classification are mandatory.
-  for (const key of ["owner", "purpose", "data_classification"]) {
-    if (typeof m[key] !== "string" || !(m[key] as string).trim()) return errorResponse(400, "invalid_request", `metadata.${key} is required`);
-  }
-  if (!CLASSIFICATIONS.includes(m.data_classification as string)) {
-    return errorResponse(400, "invalid_request", `metadata.data_classification must be one of ${CLASSIFICATIONS.join(", ")}`);
-  }
-  const metadataJson = JSON.stringify(metadata);
-  if (metadataJson.length > 8192) return errorResponse(413, "payload_too_large", "metadata exceeds 8192 characters");
-
-  const existing = await getService(env, id);
-  const now = nowIso();
-  await env.DB.prepare(
-    `INSERT INTO service_registry (service_id, display_name, endpoint, desired_version, observed_version, environment, status, metadata_json, created_at, updated_at)
-     VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
-     ON CONFLICT(service_id) DO UPDATE SET display_name = excluded.display_name, endpoint = excluded.endpoint,
-       environment = excluded.environment, status = excluded.status, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at`,
-  ).bind(id, displayName, endpoint ?? null, environment, status, metadataJson, now, now).run();
-  await appendAuditEvent(env.DB, {
-    event_type: existing ? "registry.service_updated" : "registry.service_registered",
-    actor,
-    subject: id,
-    outcome: "success",
-    payload: { environment, status, endpoint: endpoint ?? null, metadata },
-  });
-  if (existing === null) {
-    await publishAgentReport(env.AGENTS, "platform-registry", {
-      kind: "platform_digest", severity: "info",
-      subject: `Service ${id} registered (${environment})`,
-      body: { service_id: id, environment, status, actor },
-    });
-  } else if (existing.status !== "disabled" && status === "disabled") {
-    await publishAgentReport(env.AGENTS, "platform-registry", {
-      kind: "platform_digest", severity: "warning",
-      subject: `Service ${id} disabled`,
-      body: { service_id: id, environment, previous_status: existing.status, actor },
-    });
-  }
-  const saved = await getService(env, id);
-  const response: JsonObject = { service: saved ? present(saved) : null };
-  if (url.searchParams.get("advisory") === "true" && saved) {
-    response.advisory = await engineFor(env, SERVICE, [tagTask.name]).run(tagTask, present(saved), newId("corr"));
-  }
-  return json(response, existing ? 200 : 201);
-}
 
 async function setDesiredVersion(request: Request, env: Env, id: string, actor: string): Promise<Response> {
   const body = await readJsonObject(request);
@@ -248,8 +188,8 @@ export default {
       if (path === "/ready" || path === "/readyz") return readinessResponse(env);
       if (path === "/") {
         return serviceMetadata(env, "Desired inventory and resource ownership metadata", [
-          "GET /v1/services", "GET /v1/services/{service_id}", "PUT /v1/services/{service_id}",
-          "PUT /v1/services/{service_id}/desired-version",
+          "GET /v1/services", "GET /v1/services/{service_id}",
+          "PUT /v1/services/{service_id}/desired-version (approver, or the deploy workflows' service token)",
           "GET /v1/accounts/me (any Access identity)", "GET /v1/accounts", "POST /v1/accounts (owner, GRANT)",
           "POST /v1/accounts/{email}/disable (owner, REVOKE)", "POST /v1/accounts/sync-login (owner, SYNC)",
         ]);
@@ -281,8 +221,10 @@ export default {
       }
     }
     const match = /^\/v1\/services\/([^/]+)(\/desired-version)?$/.exec(path);
-    // Changing what production should run (a service record, a desired version) is an approver's act
-    // for a person; the deploy workflows (service token) record versions as before. Reads stay with operators.
+    // Changing what production should run (a desired version) is an approver's act for a person; the deploy
+    // workflows (service token: record-desired-version.sh, deploy-control-plane.yml, rollback-worker.yml) record
+    // versions as before. Reads stay with operators. A PUT of a bare record keeps the writers' gate and then answers
+    // 405 (below), so a caller who may not write is still refused as before.
     const gate = match && request.method === "PUT" ? requireApproverOrServiceOperator : requireOperator;
     const operator = await gate(request, env);
     if (!operator.ok) return operator.response;
@@ -294,9 +236,11 @@ export default {
       if (!match) return errorResponse(404, "not_found");
       const id = decodeURIComponent(match[1]);
       if (!SERVICE_ID.test(id)) return errorResponse(400, "invalid_service_id");
-      if (request.method === "PUT") {
-        return match[2] ? await setDesiredVersion(request, env, id, operator.actor) : await upsertService(request, env, id, url, operator.actor);
-      }
+      if (request.method === "PUT" && match[2]) return await setDesiredVersion(request, env, id, operator.actor);
+      // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): PUT /v1/services/{id} is gone. A service record comes from
+      // the DNA, the census, migrations and consensus (registry_disable_service / registry_enable_service); a manual
+      // edit conflicted with the DNA and created false drift. Nothing else called it.
+      if (request.method === "PUT") return errorResponse(405, "method_not_allowed", "service records come from the DNA, the census, migrations and consensus; PUT /v1/services/{id} was removed (owner 2026-11-15)");
       if (match[2]) return errorResponse(405, "method_not_allowed");
       if (request.method === "GET") {
         const row = await getService(env, id);
