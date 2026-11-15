@@ -636,3 +636,45 @@ guard64.executescript(retire64_sql)
 assert guard64.execute("SELECT * FROM service_registry ORDER BY service_id").fetchall() == guard_before, "0064 touches only disabled rows with JSON metadata"
 guard64.close()
 print("PASS: 0064 retire signal-engine and home (rows kept and disabled, marker only, history kept, idempotent, guarded)")
+
+
+# Migration 0068 (owner 2026-11-15, "tambahkan"): the Observer's binding index. Additive: one table only; one row per
+# listed Worker with its read status; bindings_json is a JSON array; "is KV X bound" is answerable with json_each.
+bind_db = sqlite3.connect(":memory:")
+bind_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0068_":
+        bind_db.executescript(migration.read_text(encoding="utf-8"))
+bind_before = {r[0] for r in bind_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+bind_before_rows = {t: bind_db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("service_registry", "observer_runs", "observer_findings")}
+bind_sql = (ROOT / "0068_observer_worker_bindings.sql").read_text(encoding="utf-8")
+for _ in range(2):
+    bind_db.executescript(bind_sql)
+bind_after = {r[0] for r in bind_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert bind_after - bind_before == {"observer_worker_bindings", "sqlite_autoindex_observer_worker_bindings_1"}, sorted(bind_after - bind_before)
+assert bind_before <= bind_after, "0068 removes nothing"
+assert {t: bind_db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in bind_before_rows} == bind_before_rows, "0068 changes no rows"
+bind_db.execute("""INSERT INTO observer_worker_bindings (worker, status, bindings_json, observed_at) VALUES
+    ('mt5-mcp', 'ok', '[{"type":"kv_namespace","name":"OAUTH_KV","id":"49d3a958aaaabbbbccccddddeeeeffff"},{"type":"d1","name":"DB","id":"u1"}]', '2026-11-15T10:27:00.000Z'),
+    ('cryptophys-console', 'ok', '[]', '2026-11-15T10:27:00.000Z')""")
+bind_db.execute("INSERT INTO observer_worker_bindings (worker, status, detail, observed_at) VALUES ('xauusd-omega', 'permission_missing', 'http 403', '2026-11-15T10:27:00.000Z')")
+assert bind_db.execute("SELECT bindings_json FROM observer_worker_bindings WHERE worker = 'xauusd-omega'").fetchone() == ("[]",)
+expect_integrity_error("0068 one row per Worker", lambda: bind_db.execute(
+    "INSERT INTO observer_worker_bindings (worker, status, observed_at) VALUES ('mt5-mcp', 'ok', 't')"))
+expect_integrity_error("0068 status", lambda: bind_db.execute(
+    "INSERT INTO observer_worker_bindings (worker, status, observed_at) VALUES ('w', 'guessed', 't')"))
+for bad in ("{}", "not json", '{"type":"kv_namespace"}'):
+    expect_integrity_error(f"0068 bindings_json {bad!r}", lambda b=bad: bind_db.execute(
+        "INSERT INTO observer_worker_bindings (worker, status, bindings_json, observed_at) VALUES ('w2', 'ok', ?, 't')", (b,)))
+# The operator's question, as the report gives it: who binds KV 49d3a958…, and which Workers were not read.
+is_bound = """SELECT w.worker, w.status FROM observer_worker_bindings w
+  WHERE w.status <> 'ok' OR EXISTS (SELECT 1 FROM json_each(w.bindings_json) b
+    WHERE json_extract(b.value, '$.type') = 'kv_namespace' AND json_extract(b.value, '$.id') LIKE ?) ORDER BY w.worker"""
+assert bind_db.execute(is_bound, ("49d3a958%",)).fetchall() == [("mt5-mcp", "ok"), ("xauusd-omega", "permission_missing")]
+assert bind_db.execute(is_bound, ("8044368b%",)).fetchall() == [("xauusd-omega", "permission_missing")], "unbound, except for the Worker not read"
+bind_code = "\n".join(line.split("--", 1)[0] for line in bind_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|RENAME)\b", bind_code), "0068 is additive: CREATE TABLE only"
+assert bind_code.count("CREATE TABLE IF NOT EXISTS") == 1 and bind_code.count(";") == 1
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", bind_sql, re.I), "0068 is not destructive"
+bind_db.close()
+print("PASS: 0068 observer worker bindings (additive, one row per Worker, JSON array, is-bound query)")

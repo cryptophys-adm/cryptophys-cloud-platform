@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "compatibility_date": "2026-10-01",
+    "compatibility_flags": ["nodejs_compat"],
+    "usage_model": "standard",
+    "placement": { "mode": "smart" },
+    "limits": { "cpu_ms": 30000 },
+    "logpush": false,
+    "observability": { "enabled": true, "head_sampling_rate": 1 },
+    "tags": ["cf:service=mt5-mcp"],
+    "tail_consumers": [],
+    "annotations": { "workers/message": "deploy", "workers/tag": "v42" },
+    "bindings": [
+      { "type": "plain_text", "name": "PLATFORM_NAME", "text": "a value that must never be stored" },
+      { "type": "secret_text", "name": "UPSTREAM_TOKEN" },
+      { "type": "json", "name": "FEATURES", "json": { "search": true } },
+      { "type": "kv_namespace", "name": "OAUTH_KV", "namespace_id": "49d3a9580000000000000000000000aa" },
+      { "type": "d1", "name": "DB", "database_id": "5c6f2a1e-0000-4000-8000-000000000001" },
+      { "type": "d1", "name": "LEGACY_DB", "id": "5c6f2a1e-0000-4000-8000-000000000002" },
+      { "type": "r2_bucket", "name": "BUNDLES", "bucket_name": "cryptophys-forge-bundles", "jurisdiction": "eu" },
+      { "type": "queue", "name": "JOBS", "queue_name": "mt5-jobs" },
+      { "type": "service", "name": "AGENTS", "service": "cryptophys-ai-kernel", "entrypoint": "AgentRpc", "environment": "production" },
+      { "type": "durable_object_namespace", "name": "SESSIONS", "class_name": "McpSession", "namespace_id": "do000000000000000000000000000001" },
+      { "type": "durable_object_namespace", "name": "SUPERVISOR", "class_name": "SupervisorAgent", "script_name": "cryptophys-ai-kernel" },
+      { "type": "workflow", "name": "FLOW", "workflow_name": "mt5-sync", "class_name": "SyncFlow" },
+      { "type": "analytics_engine", "name": "EVENTS", "dataset": "mt5_events" },
+      { "type": "ai", "name": "AI" },
+      { "type": "version_metadata", "name": "VERSION" },
+      { "type": "secret_key", "name": "SIGNING", "algorithm": { "name": "HMAC" }, "format": "raw", "usages": ["sign"] }
+    ]
+  }
+}
