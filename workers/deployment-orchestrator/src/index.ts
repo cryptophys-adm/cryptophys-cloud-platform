@@ -785,7 +785,9 @@ async function queueNativeDeploy(env: Env, source: NativeDeploySource, target: s
     payload: { request_id: requestId, executor: NATIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, running: choice.services.map((s) => `${s.service}@${s.running_tag}`),
       ...(choice.migrations.length ? { migrations: choice.migrations.map((m) => m.file) } : {}),
       // G2c-2: what each planned configuration changes (planned again before the upload).
-      ...(choice.services.some((s) => s.config) ? { config: Object.fromEntries(choice.services.filter((s) => s.config).map((s) => [s.service, { ...s.config!.changes, steps: s.config!.steps }])) } : {}),
+      ...(choice.services.some((s) => s.config) ? { config: Object.fromEntries(choice.services.filter((s) => s.config).map((s) => [s.service, {
+        ...s.config!.changes, steps: s.config!.steps, ...(s.config!.topology ? { topology: s.config!.topology } : {}),
+      }])) } : {}),
       // G2c-2 step 6: how each Worker's static assets will reach the version (decided again before the upload).
       ...(choice.services.some((s) => s.assets) ? { assets: Object.fromEntries(choice.services.filter((s) => s.assets).map((s) => [s.service, {
         mode: s.assets!.mode, running_dist: s.assets!.running_dist, files: s.assets!.files, total_bytes: s.assets!.total_bytes,
@@ -1010,7 +1012,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     }
 
     executed++;
-    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean };
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean;
+      topology_applied?: string[]; do_migrations?: string[] };
     if (isDeploy) {
       deploysRun++;
       run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, { ...opts, migrations, ...(isBreakGlass ? { destructive: named } : {}) });
@@ -1053,6 +1056,13 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}),
           // G2c-2: script settings (schedules, observability) applied before the failure; restored with the Workers.
           ...(run.settings_applied?.length ? { settings_applied: run.settings_applied } : {}),
+          // Gate 4 part B: custom domains and Workflows applied before the failure (undone first), and Durable Object
+          // migrations, which Cloudflare does not roll back across.
+          ...(run.topology_applied?.length ? { topology_applied: run.topology_applied } : {}),
+          ...(run.do_migrations?.length ? {
+            do_migrations: run.do_migrations,
+            do_migration_action_required: "A Durable Object migration was deployed before the failure. Cloudflare refuses a rollback across it, so the migrated version stays live. The owner decides whether to fix forward.",
+          } : {}),
           // G2c-1: D1 migrations are forward-only; a restore of the Workers never undoes them.
           ...(run.migrations_applied?.length || run.migration_failed ? {
             migrations_applied: run.migrations_applied ?? [], migration_failed: run.migration_failed ?? null, d1_restore_point_at: run.restore_point_at ?? null,

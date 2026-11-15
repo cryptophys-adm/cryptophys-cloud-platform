@@ -1,0 +1,495 @@
+// ADR-0012 G6 gate 4 part B (docs/GITHUB-CUTOVER.md; owner 2026-11-15, "1 setuju"): the changes the G2c-2 plan refused
+// (`routing_changed` for routes, `do_migration`, `workflow_changed`) planned and applied natively, through the Cloudflare
+// API with CF_DEPLOY_TOKEN, where that can be done safely. What cannot is refused with a reason that names it.
+//
+// The plan is always "the target config against what the running config declared AND what Cloudflare reports live":
+//   - Custom domains (`routes = [{ pattern, custom_domain = true }]`). A new one is attached with the Workers Custom
+//     Domains API (PUT /accounts/{a}/workers/domains, Workers Scripts Write) after the new version is verified live, and
+//     read back (GET ?hostname=: exactly one record, on this Worker). On any later failure it is detached again (DELETE
+//     /workers/domains/{id}), before the deployments are restored. One already attached to this Worker needs nothing;
+//     one on another Worker is refused (`custom_domain_on_other_worker:<host>`): attaching would move it.
+//   - Zone routes (a `route`/`routes` pattern without `custom_domain`). Creating one needs the zone permission
+//     Workers Routes Edit, which the deploy token cannot hold (owner decision 2026-11-06, ADR-0010). A new zone route is
+//     accepted only when the script list already reports it for this Worker (attached by the owner); otherwise
+//     `zone_route_needs_zone_token:<pattern>`.
+//   - Removing or changing a route or a custom domain is the owner's (`custom_domain_removal_owner_run:<host>`,
+//     `zone_route_removal_owner_run:<pattern>`, `route_changed_owner_run:<pattern>`): a removal takes a hostname off the
+//     internet, and `wrangler deploy` itself never detaches an undeclared custom domain. Decided from the two configs,
+//     before any Cloudflare call.
+//   - Durable Object migrations (`[[migrations]]`). The running config's entries must be the first entries of the target's
+//     (`do_migration_history_changed`), and the script's live `migration_tag` must be the running config's last tag
+//     (`do_migration_tag_differs`), or already the target's (applied: nothing to send). The pending entries may only add
+//     classes (`new_sqlite_classes`, `new_classes`); `deleted_classes`, `renamed_classes` and `transferred_classes` are the
+//     owner's (`do_migration_destructive:<kind>:<tag>`). Cloudflare applies a migration only through the Script Upload
+//     API, which uploads and deploys at once (a version upload with a pending migration is refused), so the Worker is
+//     deployed by `CloudflareWorkers.deployScript` with `{ old_tag, new_tag, steps }`, and then checked: the new active
+//     deployment, the script's migration tag, the planned bindings and settings, and the live tag (Drift Detector).
+//     RESTORE: Cloudflare refuses a rollback across a Durable Object class change (docs/OPERATIONS.md), so on a failure
+//     after that upload the executor still tries to restore the captured deployment, Cloudflare refuses, and the run
+//     ends `restored: false` with a critical report: the new version stays live, forward-only like a D1 migration. A
+//     Worker with static assets is refused (`do_migration_with_assets`).
+//   - Workflows (`[[workflows]]`, the Workflows API, Workers Scripts Write). A new one (live 404) is created (PUT
+//     /accounts/{a}/workflows/{name} with class_name, script_name, default_retention, limits) after the version is live;
+//     a changed one is updated, but only when the live Workflow still runs the running config's class on this script
+//     (`workflow_live_differs:<name>`). Each is read back (class_name, script_name). On a later failure an updated one is
+//     put back to the running definition; a created one is kept (deleting a Workflow destroys its instances), and the
+//     restored code simply does not bind it. A Workflow already live that the running config did not declare is refused
+//     (`workflow_set_outside_config:<name>`), one of another script (`workflow_other_script:<name>`) as well, and removing
+//     one is the owner's (`workflow_removal_owner_run:<name>`). The Workflow binding itself is in the binding plan
+//     (config-diff.ts) and verified on the uploaded version like every binding.
+// `workers_dev` and `preview_urls` stay `routing_changed` (config-diff.ts). A Worker whose configs change none of these
+// reads nothing here and is deployed exactly as before.
+//
+// Owner-run: every refusal above keeps the unit's deploy workflow as its path (deployForConsensus dispatches it while
+// GitHub is there); after the cut-over, the owner applies the change by hand (docs/OPERATIONS.md, "Last resort") and
+// records the desired version, after which the running and target configs agree. The break-glass deploy
+// (`force_redeploy_unit`) plans through the same eligibility, so it refuses them too.
+
+import { parseToml, type TomlTable, type TomlValue } from "./config-diff.ts";
+import type { CloudflareWorkers, DeploymentVersions, ExtraModule, VersionMetadata } from "./native-rollback.ts";
+
+const API = "https://api.cloudflare.com/client/v4";
+const HOST = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+const RECORD_ID = /^[A-Za-z0-9-]{1,64}$/;
+const ZONE_ID = /^[0-9a-f]{32}$/;
+const TAG = /^[A-Za-z0-9._-]{1,64}$/;
+const CLASS = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
+const WORKFLOW = /^[A-Za-z0-9_-]{1,64}$/;
+/** Reads of a custom domain after it was attached or detached. */
+export const TOPOLOGY_VERIFY_ATTEMPTS = 4;
+export const TOPOLOGY_VERIFY_DELAY_MS = 2_000;
+
+const isTable = (v: unknown): v is TomlTable => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+function canonical(value: unknown): string {
+  const norm = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(norm);
+    if (v && typeof v === "object") return Object.fromEntries(Object.keys(v).sort().map((k) => [k, norm((v as Record<string, unknown>)[k])]));
+    return v;
+  };
+  return JSON.stringify(norm(value));
+}
+const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------------------------------------------------
+// The client: Workers Custom Domains and Workflows (account level, CF_DEPLOY_TOKEN)
+// ---------------------------------------------------------------------------------------------------------
+
+export interface DomainRecord { id: string; hostname: string; service: string; enabled: boolean | null }
+export interface WorkflowBody {
+  class_name: string;
+  script_name: string;
+  default_retention?: { success_retention?: string | number; error_retention?: string | number };
+  limits?: { steps?: number };
+}
+export interface WorkflowRecord { class_name: string; script_name: string }
+
+export class CloudflareTopology {
+  private readonly token: string;
+  private readonly account: string;
+  private readonly fetcher: typeof fetch;
+  constructor(token: string, account: string, fetcher: typeof fetch = fetch) {
+    this.token = token;
+    this.account = account;
+    // Called as a plain function (see CloudflareWorkers): workerd throws "Illegal invocation" otherwise.
+    this.fetcher = (input, init) => fetcher(input, init);
+  }
+
+  private async call(method: "GET" | "PUT" | "DELETE", path: string, body?: unknown): Promise<{ status: number; result: unknown }> {
+    const res = await this.fetcher(`${API}/accounts/${this.account}/${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const json = await res.json().catch(() => null) as { success?: boolean; result?: unknown; errors?: { code: number }[] } | null;
+    if (!res.ok || json?.success !== true) {
+      const err = new Error(`cloudflare_api_${res.status}_${(json?.errors ?? []).map((e) => e.code).join("-") || "error"}`);
+      (err as Error & { status?: number }).status = res.status;
+      throw err;
+    }
+    return { status: res.status, result: json.result };
+  }
+
+  /** The custom domains on exactly this hostname. Throws when the list cannot be read. */
+  async domains(hostname: string): Promise<DomainRecord[]> {
+    if (!HOST.test(hostname)) throw new Error("invalid_hostname");
+    const r = await this.call("GET", `workers/domains?hostname=${encodeURIComponent(hostname)}`);
+    if (!Array.isArray(r.result)) throw new Error("custom_domains_unreadable");
+    const out: DomainRecord[] = [];
+    for (const d of r.result as Array<Record<string, unknown>>) {
+      if (d?.hostname !== hostname) continue;
+      if (typeof d.id !== "string" || !RECORD_ID.test(d.id) || typeof d.service !== "string") throw new Error("custom_domains_unreadable");
+      out.push({ id: d.id, hostname, service: d.service, enabled: typeof d.enabled === "boolean" ? d.enabled : null });
+    }
+    return out;
+  }
+
+  async attachDomain(input: { hostname: string; service: string; zone_id?: string; zone_name?: string }): Promise<void> {
+    if (!HOST.test(input.hostname) || !/^[a-z0-9-]{1,63}$/.test(input.service)) throw new Error("invalid_custom_domain");
+    await this.call("PUT", "workers/domains", { hostname: input.hostname, service: input.service, ...(input.zone_id ? { zone_id: input.zone_id } : {}), ...(input.zone_name ? { zone_name: input.zone_name } : {}) });
+  }
+
+  async detachDomain(id: string): Promise<void> {
+    if (!RECORD_ID.test(id)) throw new Error("invalid_domain_id");
+    await this.call("DELETE", `workers/domains/${id}`);
+  }
+
+  /** One Workflow: its class and script, or null when Cloudflare answers 404. Any other failure throws. */
+  async workflow(name: string): Promise<WorkflowRecord | null> {
+    if (!WORKFLOW.test(name)) throw new Error("invalid_workflow_name");
+    let r: { result: unknown };
+    try { r = await this.call("GET", `workflows/${name}`); } catch (err) {
+      if ((err as { status?: number }).status === 404) return null;
+      throw err;
+    }
+    const w = r.result as { class_name?: unknown; script_name?: unknown } | null;
+    if (typeof w?.class_name !== "string" || typeof w.script_name !== "string") throw new Error("workflow_unreadable");
+    return { class_name: w.class_name, script_name: w.script_name };
+  }
+
+  /** Create or update one Workflow (PUT is both). */
+  async putWorkflow(name: string, body: WorkflowBody): Promise<void> {
+    if (!WORKFLOW.test(name) || !CLASS.test(body.class_name) || !/^[a-z0-9-]{1,63}$/.test(body.script_name)) throw new Error("invalid_workflow");
+    await this.call("PUT", `workflows/${name}`, body);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Reading the two configs (pure)
+// ---------------------------------------------------------------------------------------------------------
+
+export interface RouteEntry { pattern: string; custom_domain: boolean; zone_id?: string; zone_name?: string }
+export interface MigrationStep { new_classes?: string[]; new_sqlite_classes?: string[] }
+/** The `migrations` field of a script upload (Cloudflare: WorkersMultipleStepMigrations). */
+export interface DoMigrationUpload { old_tag?: string; new_tag: string; steps: MigrationStep[] }
+interface MigrationEntry { tag: string; [kind: string]: TomlValue }
+interface WorkflowDef { name: string; body: WorkflowBody }
+
+const ROUTE_KEYS = new Set(["pattern", "custom_domain", "zone_id", "zone_name"]);
+function routeEntry(v: unknown): RouteEntry | null {
+  if (typeof v === "string") return v.length && v.length <= 255 ? { pattern: v, custom_domain: false } : null;
+  if (!isTable(v) || Object.keys(v).some((k) => !ROUTE_KEYS.has(k))) return null;
+  if (typeof v.pattern !== "string" || !v.pattern.length || v.pattern.length > 255) return null;
+  if (v.custom_domain !== undefined && typeof v.custom_domain !== "boolean") return null;
+  if (v.zone_id !== undefined && (typeof v.zone_id !== "string" || !ZONE_ID.test(v.zone_id))) return null;
+  if (v.zone_name !== undefined && (typeof v.zone_name !== "string" || !HOST.test(v.zone_name))) return null;
+  const e: RouteEntry = { pattern: v.pattern, custom_domain: v.custom_domain === true };
+  // A custom domain is a hostname: no path, no wildcard (Cloudflare refuses either).
+  if (e.custom_domain && !HOST.test(e.pattern)) return null;
+  if (typeof v.zone_id === "string") e.zone_id = v.zone_id;
+  if (typeof v.zone_name === "string") e.zone_name = v.zone_name;
+  return e;
+}
+function routeEntries(cfg: TomlTable): Map<string, RouteEntry> | null {
+  const raw: unknown[] = [];
+  if (cfg.route !== undefined) raw.push(cfg.route);
+  if (cfg.routes !== undefined) { if (!Array.isArray(cfg.routes)) return null; raw.push(...cfg.routes); }
+  const out = new Map<string, RouteEntry>();
+  for (const v of raw) {
+    const e = routeEntry(v);
+    if (!e || out.has(e.pattern)) return null;
+    out.set(e.pattern, e);
+  }
+  return out;
+}
+
+const MIGRATION_KINDS = ["new_classes", "new_sqlite_classes", "deleted_classes", "renamed_classes", "transferred_classes"] as const;
+const ADDITIVE = new Set(["new_classes", "new_sqlite_classes"]);
+const classList = (v: unknown) => Array.isArray(v) && v.every((c) => typeof c === "string" && CLASS.test(c));
+function migrationEntries(cfg: TomlTable): MigrationEntry[] | null {
+  const v = cfg.migrations;
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) return null;
+  const tags = new Set<string>();
+  const out: MigrationEntry[] = [];
+  for (const m of v) {
+    if (!isTable(m) || typeof m.tag !== "string" || !TAG.test(m.tag) || tags.has(m.tag)) return null;
+    for (const [k, x] of Object.entries(m)) {
+      if (k === "tag") continue;
+      if (!(MIGRATION_KINDS as readonly string[]).includes(k)) return null;
+      if (ADDITIVE.has(k) || k === "deleted_classes") { if (!classList(x)) return null; }
+      else if (!Array.isArray(x) || !x.every((e) => isTable(e))) return null;
+    }
+    tags.add(m.tag);
+    out.push(m as MigrationEntry);
+  }
+  return out;
+}
+
+const WORKFLOW_KEYS = new Set(["name", "binding", "class_name", "script_name", "default_retention", "limits"]);
+const retentionValue = (v: unknown) => (typeof v === "string" && v.length > 0 && v.length <= 64) || (typeof v === "number" && Number.isInteger(v) && v >= 0);
+function workflowDefs(cfg: TomlTable, script: string): Map<string, WorkflowDef> | string {
+  const v = cfg.workflows;
+  const out = new Map<string, WorkflowDef>();
+  if (v === undefined) return out;
+  if (!Array.isArray(v)) return "workflow_unreadable:workflows";
+  for (const w of v) {
+    if (!isTable(w)) return "workflow_unreadable:workflows";
+    for (const k of Object.keys(w)) if (!WORKFLOW_KEYS.has(k)) return `workflow_unreadable:${k}`;
+    if (typeof w.name !== "string" || !WORKFLOW.test(w.name) || out.has(w.name)) return "workflow_unreadable:name";
+    if (typeof w.class_name !== "string" || !CLASS.test(w.class_name)) return "workflow_unreadable:class_name";
+    if (w.script_name !== undefined && w.script_name !== script) return `workflow_other_script:${w.name}`;
+    const body: WorkflowBody = { class_name: w.class_name, script_name: script };
+    if (w.default_retention !== undefined) {
+      const r = w.default_retention;
+      if (!isTable(r) || Object.keys(r).some((k) => k !== "success_retention" && k !== "error_retention") || !Object.values(r).every(retentionValue)) return "workflow_unreadable:default_retention";
+      body.default_retention = { ...r } as WorkflowBody["default_retention"];
+    }
+    if (w.limits !== undefined) {
+      const l = w.limits;
+      if (!isTable(l) || Object.keys(l).some((k) => k !== "steps") || (l.steps !== undefined && (typeof l.steps !== "number" || !Number.isInteger(l.steps) || l.steps < 1))) return "workflow_unreadable:limits";
+      body.limits = { ...l } as WorkflowBody["limits"];
+    }
+    out.set(w.name, { name: w.name, body });
+  }
+  return out;
+}
+
+/** What the two configs alone say about routes, Durable Object migrations and Workflows. */
+export interface TopologyDiff {
+  changed: boolean;
+  customDomains: RouteEntry[];
+  zoneRoutes: RouteEntry[];
+  migration: { from: string | null; to: string; steps: MigrationStep[] } | null;
+  workflows: { create: WorkflowDef[]; update: Array<{ name: string; from: WorkflowBody; to: WorkflowBody }> };
+  /** Script-level settings a script upload sends from the target config (observability, logpush, tail_consumers). */
+  scriptSettings: Record<string, unknown>;
+}
+
+/**
+ * The topology change between the running and the target config of `script`, or the refusal the configs alone
+ * decide (removals, destructive Durable Object migrations, a rewritten migration history, unreadable entries).
+ * Pure: no Cloudflare call.
+ */
+export function topologyDiff(runningToml: string, targetToml: string, script: string): { diff: TopologyDiff } | { reason: string } {
+  const run = parseToml(runningToml);
+  const tgt = parseToml(targetToml);
+  if (!run || !tgt) return { reason: "config_unparsed" };
+  const scriptSettings: Record<string, unknown> = {};
+  for (const k of ["observability", "logpush", "tail_consumers"] as const) if (tgt[k] !== undefined) scriptSettings[k] = tgt[k];
+  const diff: TopologyDiff = { changed: false, customDomains: [], zoneRoutes: [], migration: null, workflows: { create: [], update: [] }, scriptSettings };
+
+  // Routes and custom domains.
+  if (!same(run.routes, tgt.routes) || !same(run.route, tgt.route)) {
+    const r = routeEntries(run);
+    const t = routeEntries(tgt);
+    if (!r || !t) return { reason: "routes_unreadable" };
+    for (const [pattern, e] of r) {
+      const now = t.get(pattern);
+      if (!now) return { reason: `${e.custom_domain ? "custom_domain" : "zone_route"}_removal_owner_run:${pattern}` };
+      if (!same(e, now)) return { reason: `route_changed_owner_run:${pattern}` };
+    }
+    for (const [pattern, e] of t) {
+      if (r.has(pattern)) continue;
+      (e.custom_domain ? diff.customDomains : diff.zoneRoutes).push(e);
+    }
+    diff.changed ||= diff.customDomains.length + diff.zoneRoutes.length > 0;
+  }
+
+  // Durable Object migrations.
+  if (!same(run.migrations, tgt.migrations)) {
+    const r = migrationEntries(run);
+    const t = migrationEntries(tgt);
+    if (!r || !t) return { reason: "do_migration_unreadable" };
+    if (t.length < r.length || r.some((m, i) => !same(m, t[i]))) return { reason: "do_migration_history_changed" };
+    const steps: MigrationStep[] = [];
+    for (const m of t.slice(r.length)) {
+      for (const kind of MIGRATION_KINDS) {
+        if (ADDITIVE.has(kind)) continue;
+        const x = m[kind];
+        if (Array.isArray(x) && x.length) return { reason: `do_migration_destructive:${kind}:${m.tag}` };
+      }
+      const step: MigrationStep = {};
+      for (const kind of ["new_classes", "new_sqlite_classes"] as const) {
+        const x = m[kind] as string[] | undefined;
+        if (x?.length) step[kind] = [...x];
+      }
+      if (!step.new_classes && !step.new_sqlite_classes) return { reason: `do_migration_unreadable:${m.tag}` };
+      steps.push(step);
+    }
+    if (steps.length) {
+      diff.migration = { from: r.at(-1)?.tag ?? null, to: t.at(-1)!.tag, steps };
+      diff.changed = true;
+    }
+  }
+
+  // Workflows: their registrations (the bindings are in the binding plan).
+  if (!same(run.workflows, tgt.workflows)) {
+    const r = workflowDefs(run, script);
+    if (typeof r === "string") return { reason: r };
+    const t = workflowDefs(tgt, script);
+    if (typeof t === "string") return { reason: t };
+    for (const name of r.keys()) if (!t.has(name)) return { reason: `workflow_removal_owner_run:${name}` };
+    for (const [name, w] of t) {
+      const was = r.get(name);
+      if (!was) diff.workflows.create.push(w);
+      else if (!same(was.body, w.body)) diff.workflows.update.push({ name, from: was.body, to: w.body });
+    }
+    diff.changed ||= diff.workflows.create.length + diff.workflows.update.length > 0;
+  }
+  return { diff };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The plan against what Cloudflare reports (read only)
+// ---------------------------------------------------------------------------------------------------------
+
+export type TopologyStep =
+  | { kind: "custom_domain"; hostname: string; zone_id?: string; zone_name?: string }
+  /** `restore` is the running definition; null for a Workflow this deploy creates (kept on a restore). */
+  | { kind: "workflow"; name: string; body: WorkflowBody; restore: WorkflowBody | null };
+export interface TopologyPlan {
+  /** Applied in order after the Worker is verified live; undone newest first on a later failure. */
+  steps: TopologyStep[];
+  /** A Durable Object migration: the Worker is deployed through the Script Upload API with it. */
+  migration: DoMigrationUpload | null;
+  scriptSettings: Record<string, unknown>;
+  /** For the audit trail: `custom_domain:+<host>`, `zone_route:=<pattern>`, `do_migration:<from>-><to>`, `workflow:<create|update>:<name>`. */
+  changes: string[];
+}
+export const NO_TOPOLOGY: TopologyPlan = Object.freeze({ steps: [], migration: null, scriptSettings: {}, changes: [] }) as TopologyPlan;
+export const hasTopology = (p: TopologyPlan | null | undefined) => Boolean(p && (p.steps.length || p.migration));
+
+/** The Cloudflare reads the plan needs (CloudflareWorkers provides them). */
+export interface TopologyReader {
+  topology?: () => Pick<CloudflareTopology, "domains" | "workflow">;
+  migrationTag?: (script: string) => Promise<string | null>;
+  scriptRoutes?: (script: string) => Promise<Array<{ pattern: string; script: string | null }> | null>;
+}
+
+/**
+ * The topology plan of one Worker: `topologyDiff`, then, only when it changes something, the live state it needs.
+ * Never throws: a read that fails is `topology_read_failed:<error>`.
+ */
+export async function planTopology(cf: TopologyReader, script: string, runningToml: string, targetToml: string, opts: { assets?: boolean } = {}):
+  Promise<{ plan: TopologyPlan } | { reason: string }> {
+  const d = topologyDiff(runningToml, targetToml, script);
+  if ("reason" in d) return d;
+  const diff = d.diff;
+  if (!diff.changed) return { plan: NO_TOPOLOGY };
+  const steps: TopologyStep[] = [];
+  const changes: string[] = [];
+  let migration: DoMigrationUpload | null = null;
+  try {
+    if (diff.customDomains.length || diff.workflows.create.length || diff.workflows.update.length) {
+      if (!cf.topology) return { reason: "topology_unverifiable" };
+    }
+    const topo = cf.topology?.();
+    for (const e of diff.customDomains) {
+      const live = await topo!.domains(e.pattern);
+      const other = live.find((x) => x.service !== script);
+      if (other) return { reason: `custom_domain_on_other_worker:${e.pattern}` };
+      if (live.some((x) => x.service === script)) { changes.push(`custom_domain:=${e.pattern}`); continue; }
+      steps.push({ kind: "custom_domain", hostname: e.pattern, ...(e.zone_id ? { zone_id: e.zone_id } : {}), ...(e.zone_name ? { zone_name: e.zone_name } : {}) });
+      changes.push(`custom_domain:+${e.pattern}`);
+    }
+    if (diff.zoneRoutes.length) {
+      if (!cf.scriptRoutes) return { reason: "route_unverifiable" };
+      const live = await cf.scriptRoutes(script);
+      if (!live) return { reason: "route_unverifiable" };
+      for (const e of diff.zoneRoutes) {
+        if (!live.some((r) => r.pattern === e.pattern && (r.script === null || r.script === script))) return { reason: `zone_route_needs_zone_token:${e.pattern}` };
+        changes.push(`zone_route:=${e.pattern}`);
+      }
+    }
+    if (diff.migration) {
+      if (opts.assets) return { reason: "do_migration_with_assets" };
+      if (!cf.migrationTag) return { reason: "topology_unverifiable" };
+      const tag = await cf.migrationTag(script);
+      if (tag === diff.migration.to) changes.push(`do_migration:=${tag}`);
+      else if (tag !== diff.migration.from) return { reason: "do_migration_tag_differs" };
+      else {
+        migration = { ...(diff.migration.from ? { old_tag: diff.migration.from } : {}), new_tag: diff.migration.to, steps: diff.migration.steps };
+        changes.push(`do_migration:${diff.migration.from ?? "none"}->${diff.migration.to}`);
+      }
+    }
+    for (const w of diff.workflows.create) {
+      const live = await topo!.workflow(w.name);
+      if (live) return { reason: `workflow_set_outside_config:${w.name}` };
+      steps.push({ kind: "workflow", name: w.name, body: w.body, restore: null });
+      changes.push(`workflow:create:${w.name}`);
+    }
+    for (const w of diff.workflows.update) {
+      const live = await topo!.workflow(w.name);
+      if (!live || live.script_name !== script || live.class_name !== w.from.class_name) return { reason: `workflow_live_differs:${w.name}` };
+      steps.push({ kind: "workflow", name: w.name, body: w.to, restore: w.from });
+      changes.push(`workflow:update:${w.name}`);
+    }
+  } catch (err) {
+    return { reason: `topology_read_failed:${String((err as Error)?.message ?? err).slice(0, 80)}` };
+  }
+  return { plan: { steps, migration, scriptSettings: diff.scriptSettings, changes } };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Applying, verifying, restoring
+// ---------------------------------------------------------------------------------------------------------
+
+export const topologyStepLabel = (s: TopologyStep) => s.kind === "custom_domain" ? `custom_domain:${s.hostname}` : `workflow:${s.name}`;
+
+/**
+ * Apply one step and read it back. `onWrite` is called right before the first write, so the caller restores an
+ * ambiguous failure as well, and never undoes what this step did not change. Throws on any difference.
+ */
+export async function applyTopologyStep(topo: Pick<CloudflareTopology, "domains" | "attachDomain" | "workflow" | "putWorkflow">, script: string, step: TopologyStep,
+  onWrite: () => void, opts: { delayMs?: number } = {}): Promise<void> {
+  if (step.kind === "custom_domain") {
+    const before = await topo.domains(step.hostname);
+    if (before.some((x) => x.service !== script)) throw new Error(`custom_domain_on_other_worker:${step.hostname}`);
+    if (before.some((x) => x.service === script)) return; // attached meanwhile: nothing to do, nothing to undo
+    onWrite();
+    await topo.attachDomain({ hostname: step.hostname, service: script, ...(step.zone_id ? { zone_id: step.zone_id } : {}), ...(step.zone_name ? { zone_name: step.zone_name } : {}) });
+    for (let i = 0; ; i++) {
+      const now = await topo.domains(step.hostname);
+      if (now.length === 1 && now[0].service === script && now[0].enabled !== false) return;
+      if (i >= TOPOLOGY_VERIFY_ATTEMPTS - 1) throw new Error(`custom_domain_not_attached:${step.hostname}`);
+      await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+    }
+  }
+  onWrite();
+  await topo.putWorkflow(step.name, step.body);
+  const now = await topo.workflow(step.name);
+  if (!now || now.class_name !== step.body.class_name || now.script_name !== step.body.script_name) throw new Error(`workflow_not_applied:${step.name}`);
+}
+
+/** Undo one applied step; returns the step label for the audit trail. Throws when the undo cannot be verified. */
+export async function restoreTopologyStep(topo: Pick<CloudflareTopology, "domains" | "detachDomain" | "workflow" | "putWorkflow">, script: string, step: TopologyStep,
+  opts: { delayMs?: number } = {}): Promise<string> {
+  if (step.kind === "custom_domain") {
+    for (const d of (await topo.domains(step.hostname)).filter((x) => x.service === script)) await topo.detachDomain(d.id);
+    for (let i = 0; ; i++) {
+      if (!(await topo.domains(step.hostname)).some((x) => x.service === script)) return `custom_domain_detached:${step.hostname}`;
+      if (i >= TOPOLOGY_VERIFY_ATTEMPTS - 1) throw new Error(`custom_domain_still_attached:${step.hostname}`);
+      await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+    }
+  }
+  // A Workflow this deploy created is kept: deleting one destroys its instances (owner-run). The restored code does not bind it.
+  if (!step.restore) return `workflow_kept:${step.name}`;
+  await topo.putWorkflow(step.name, step.restore);
+  const now = await topo.workflow(step.name);
+  if (!now || now.class_name !== step.restore.class_name || now.script_name !== step.restore.script_name) throw new Error(`workflow_not_restored:${step.name}`);
+  return `workflow_restored:${step.name}`;
+}
+
+/**
+ * Deploy one Worker with its Durable Object migration (the Script Upload API uploads and deploys at once), then check
+ * what Cloudflare reports: a new single deployment at 100% (read again a few times, it can lag) and the script's
+ * migration tag equal to the plan's `new_tag`. Returns the new active version id. The caller has recorded the captured
+ * deployment as changed before this call, and verifies bindings, settings and the live tag afterwards.
+ */
+export async function deployWithDoMigration(cf: Pick<CloudflareWorkers, "deployScript" | "active" | "migrationTag">, service: string,
+  upload: { module: string; text: string; metadata: VersionMetadata; extra: ExtraModule[] }, plan: TopologyPlan, captured: DeploymentVersions,
+  opts: { delayMs?: number } = {}): Promise<string> {
+  if (!plan.migration) throw new Error("do_migration_missing");
+  await cf.deployScript(service, upload.module, upload.text, upload.metadata, upload.extra, plan.migration, plan.scriptSettings);
+  let versionId: string | null = null;
+  for (let i = 0; i < TOPOLOGY_VERIFY_ATTEMPTS && !versionId; i++) {
+    if (i > 0) await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+    const now = await cf.active(service);
+    if (now.length === 1 && now[0].percentage === 100 && !captured.some((c) => c.version_id === now[0].version_id)) versionId = now[0].version_id;
+  }
+  if (!versionId) throw new Error("do_migration_deployment_unreadable");
+  const tag = await cf.migrationTag(service);
+  if (tag !== plan.migration.new_tag) throw new Error(`do_migration_tag_not_applied: ${String(tag).slice(0, 64)}`);
+  return versionId;
+}

@@ -15,6 +15,7 @@
 // only at minutes outside the drift and kernel cron windows (wait-cron-window.sh SAFE).
 
 import { AssetsUploader, assetsMetadata, type AssetsConfig } from "./assets-upload.ts";
+import { CloudflareTopology, type DoMigrationUpload } from "./topology.ts";
 
 export const NATIVE_EXECUTOR = "native:rollback";
 /** Must stay a subset of SAFE in .github/scripts/wait-cron-window.sh. */
@@ -153,6 +154,52 @@ export class CloudflareWorkers {
    * Returns the new version id.
    */
   async uploadVersion(script: string, moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[] = []): Promise<string> {
+    const form = this.uploadForm(moduleName, moduleText, metadata, extra, {});
+    const r = await this.call<{ id?: string }>(`${script}/versions`, { method: "POST", body: form });
+    if (typeof r?.id !== "string" || !UUID.test(r.id)) throw new Error("version_upload_unreadable");
+    return r.id;
+  }
+
+  /**
+   * Gate 4 part B (topology.ts): a Durable Object migration. Cloudflare applies `migrations` only on the Script Upload
+   * API (`PUT /accounts/{a}/workers/scripts/{name}`), which uploads AND deploys the new version at once; a version upload
+   * with a pending migration is refused (Cloudflare docs, "Deployment management: Durable Object migrations"). Only a
+   * planned configuration may be sent this way (its bindings, the secrets kept), never static assets. The caller reads
+   * the new active deployment and the script's migration tag afterwards; nothing is returned from here.
+   */
+  async deployScript(script: string, moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[], migrations: DoMigrationUpload,
+    settings: Record<string, unknown> = {}): Promise<void> {
+    if (!metadata.config || metadata.assets) throw new Error("invalid_script_upload");
+    if (!migrations || !/^[A-Za-z0-9._-]{1,64}$/.test(migrations.new_tag) || !Array.isArray(migrations.steps) || !migrations.steps.length) throw new Error("invalid_script_upload");
+    // A script upload also sets script-level settings; the target config's own values are sent so none is reset.
+    const scriptSettings = Object.fromEntries(Object.entries(settings).filter(([k]) => k === "observability" || k === "logpush" || k === "tail_consumers"));
+    const form = this.uploadForm(moduleName, moduleText, metadata, extra, { migrations, ...scriptSettings });
+    await this.call<unknown>(script, { method: "PUT", body: form });
+  }
+
+  /**
+   * Gate 4 part B: the tag of the Durable Object migration last applied to the script (`migration_tag` in the account's
+   * script list; null when the script reports none). Throws when the list cannot be read or does not hold the script once.
+   */
+  async migrationTag(script: string): Promise<string | null> {
+    if (!/^[a-z0-9-]{1,63}$/.test(script)) throw new Error("invalid_script_name");
+    const r = await this.call<unknown>("");
+    if (!Array.isArray(r)) throw new Error("script_list_unreadable");
+    const items = r.filter((x) => (x as { id?: unknown })?.id === script) as Array<{ migration_tag?: unknown }>;
+    if (items.length !== 1) throw new Error("script_not_listed");
+    const tag = items[0].migration_tag;
+    if (tag === undefined || tag === null || tag === "") return null;
+    if (typeof tag !== "string") throw new Error("migration_tag_unreadable");
+    return tag;
+  }
+
+  /** Gate 4 part B: the Workers Custom Domains and Workflows client, with the same token, account and fetcher. */
+  topology(): CloudflareTopology {
+    return new CloudflareTopology(this.token, this.account, this.fetcher);
+  }
+
+  /** The multipart body of a version or script upload (the metadata part, the main module and each extra module). */
+  private uploadForm(moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[], scriptFields: Record<string, unknown>): FormData {
     if (!/^[a-z0-9-]{1,63}\.mjs$/.test(moduleName) || metadata.main_module !== moduleName) throw new Error("invalid_module_name");
     if (!/^[0-9a-f]{12}$/.test(metadata.tag)) throw new Error("invalid_version_tag");
     const names = new Set<string>([moduleName]);
@@ -189,14 +236,13 @@ export class CloudflareWorkers {
         ? { bindings: config.bindings, keep_bindings: [...config.keep_bindings], ...(config.limits ? { limits: config.limits } : {}), ...(config.placement ? { placement: config.placement } : {}) }
         : { ...(assetsBinding.length ? { bindings: assetsBinding } : {}), keep_bindings: [...KEEP_BINDINGS] }),
       ...assetsFields,
+      ...scriptFields,
       annotations: { "workers/tag": metadata.tag, "workers/message": metadata.message.slice(0, 100) },
     })], { type: "application/json" }));
     form.append(moduleName, new Blob([moduleText], { type: "application/javascript+module" }), moduleName);
     // G2c-1: each extra module is its own part, named as the main module imports it ("./<name>" from the root).
     for (const m of extra) form.append(m.name, new Blob([m.data as BlobPart], { type: m.type }), m.name);
-    const r = await this.call<{ id?: string }>(`${script}/versions`, { method: "POST", body: form });
-    if (typeof r?.id !== "string" || !UUID.test(r.id)) throw new Error("version_upload_unreadable");
-    return r.id;
+    return form;
   }
 
   /**
