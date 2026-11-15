@@ -543,10 +543,13 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   // ADR-0012 G3b: after the cut-over (merge path forge), a change request on platform-work whose every check passed is
   // proposed for merge, one per cycle: merge_change for routine paths, merge_owner_change (the owner's click) when it
   // touches a guard path. Once per request and head; a policy veto (shadow_blocked) is retried after an hour.
+  // A request the Forge refused is never proposed: not based on main (blocked_reason), or main merged in as the second
+  // parent (history_blocked_reason main_not_first_parent, the linear-history guard of 2026-11-14). The Forge's live
+  // state is the last word: changeState reports such a head as verdict blocked, which maps to no action below.
   if (env.FORGE_MERGE && trigger !== "operator" && (await mergePath(env.DB)) === "forge") {
     try {
       const open = (await env.DB.prepare(
-        "SELECT cr_id, head_sha FROM forge_change_requests WHERE status = 'open' AND source = 'forge' AND blocked_reason IS NULL ORDER BY updated_at ASC LIMIT 10",
+        "SELECT cr_id, head_sha FROM forge_change_requests WHERE status = 'open' AND source = 'forge' AND blocked_reason IS NULL AND history_blocked_reason IS NULL ORDER BY updated_at ASC LIMIT 10",
       ).all<{ cr_id: string; head_sha: string }>()).results ?? [];
       const hourAgo = new Date(now - 3_600_000).toISOString();
       for (const cr of open) {

@@ -6,10 +6,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
 import forge, { FORGE_MIGRATIONS } from "../../forge/src/index.ts";
-import { FLUSH, ZERO_SHA, pktLine, type Fetch } from "../../forge/src/merge.ts";
+import { FIRST_PARENT_WALK, FLUSH, ZERO_SHA, mainPosition, onFirstParentChain, pktLine, type Fetch } from "../../forge/src/merge.ts";
 import { MAX_REGISTRATIONS_PER_TICK, WORK_READ_TOKEN_TTL_S, workBranchesTick, workChangeId } from "../../forge/src/work-repo.ts";
 import { forgeTick } from "../../forge/src/tick.ts";
-import { changeVerdict, listChanges, nextChangeHead, registerChange, NOT_BASED_ON_MAIN, TYPECHECK_NOT_CONFIGURED } from "../../forge/src/changes.ts";
+import { changeVerdict, listChanges, nextChangeHead, registerChange, MAIN_NOT_FIRST_PARENT, NOT_BASED_ON_MAIN, TYPECHECK_NOT_CONFIGURED } from "../../forge/src/changes.ts";
 import { crBuildsTick } from "../../forge/src/cr-builds.ts";
 import type { ArtifactsTreeEntry, CheckDeps } from "../../forge/src/checks.ts";
 
@@ -261,17 +261,28 @@ test("G4-4. base = canonical main when it is an ancestor of the head; otherwise 
   assert.equal(await nextChangeHead(db as never, work as never, Date.now(), "platform-work"), B, "the blocked head is skipped");
   assert.equal(await nextChangeHead(db as never, work as never, Date.now(), "platform"), null, "forge-sourced heads are never read from platform");
 
-  // The contributor merges main into the stale branch and pushes: it is re-registered, no longer blocked.
+  // The contributor runs `git merge main` on the stale branch (main becomes the SECOND parent) and pushes: it now
+  // contains main, but the linear-history guard (incident 2026-11-14) refuses it: main_not_first_parent.
   const MERGED = sha("8");
-  COMMITS[MERGED] = { parents: [OLD, M1], files: { ...BASE_FILES, "README.md": "y", "workers/forge/src/c.ts": "old base" }, message: "merge main" };
+  const FIXED = sha("9");
+  const files = { ...BASE_FILES, "README.md": "y", "workers/forge/src/c.ts": "old base" };
+  COMMITS[MERGED] = { parents: [OLD, M1], files, message: "merge main" };
+  COMMITS[FIXED] = { parents: [M1, OLD], files, message: "merge the branch into main" };
   try {
-    const ns2 = namespace({ platform: { commits: [M0, M1], refs: { "refs/heads/main": M1 } }, "platform-work": { commits: [M0, M1, OLD, MERGED], refs: { "refs/heads/main": M0, "refs/heads/claude/stale": MERGED } } });
+    const ns2 = namespace({ platform: { commits: [M0, M1], refs: { "refs/heads/main": M1 } }, "platform-work": { commits: [M0, M1, OLD, MERGED, FIXED], refs: { "refs/heads/main": M0, "refs/heads/claude/stale": MERGED } } });
     await workBranchesTick({ DB: db as never, ARTIFACTS: ns2.binding as never }, Date.now(), gitServer(ns2.repos).fetchImpl);
     const after = rowsOf(db).find((r: any) => r.cr_id === "fg-claude-stale");
-    assert.deepEqual([after.head_sha, after.base_sha, after.blocked_reason, JSON.parse(after.changed_paths)], [MERGED, M1, null, ["A workers/forge/src/c.ts"]]);
+    assert.deepEqual([after.head_sha, after.base_sha, after.blocked_reason, after.history_blocked_reason, after.changed_paths], [MERGED, M1, null, "main_not_first_parent", null]);
+    assert.deepEqual((await listChanges(db as never, 10)).changes.find((c: any) => c.cr_id === "fg-claude-stale")!.reasons, [MAIN_NOT_FIRST_PARENT]);
+    assert.equal(await nextChangeHead(db as never, await ns2.binding.get("platform-work") as never, Date.now(), "platform-work"), null, "never checked");
     // fg-claude-based vanished from ns2: it is closed with its verdict frozen.
     assert.equal(rowsOf(db).find((r: any) => r.cr_id === "fg-claude-based").status, "closed");
-  } finally { delete COMMITS[MERGED]; }
+    // The contributor redoes the merge with main as the FIRST parent and pushes: re-registered, no longer blocked.
+    ns2.push("platform-work", "claude/stale", FIXED);
+    await workBranchesTick({ DB: db as never, ARTIFACTS: ns2.binding as never }, Date.now(), gitServer(ns2.repos).fetchImpl);
+    const fixed = rowsOf(db).find((r: any) => r.cr_id === "fg-claude-stale");
+    assert.deepEqual([fixed.head_sha, fixed.base_sha, fixed.blocked_reason, fixed.history_blocked_reason, JSON.parse(fixed.changed_paths)], [FIXED, M1, null, null, ["A workers/forge/src/c.ts"]]);
+  } finally { delete COMMITS[MERGED]; delete COMMITS[FIXED]; }
 });
 
 test("G4-5. main moving re-evaluates open requests; a branch whose main is not in platform-work is not based on main", async () => {
@@ -453,6 +464,116 @@ test("G4-9. migration 0052: source admits forge with repo platform-work only; ex
 });
 
 function read(p: string) { return readFileSync(new URL(p, ROOT), "utf8"); }
+
+// ---------------------------------------------------------------- the linear-history guard (incident 2026-11-14)
+// Branches were updated with `git merge main` (main as the SECOND parent). The Forge merges by fast-forwarding main to
+// the head, so main's previous heads (the deployed versions) left main's first-parent history and the deploy planner
+// stopped planning. Main's head must be on the head's first-parent chain.
+
+test("G4-LH1. first parent passes, second parent is main_not_first_parent, linear passes, an older base is still not_based_on_main", async () => {
+  const MAIN_FIRST = sha("a"); const MAIN_SECOND = sha("b");
+  const files = { ...BASE_FILES, "README.md": "y", "workers/forge/src/c.ts": "old base" };
+  COMMITS[MAIN_FIRST] = { parents: [M1, OLD], files, message: "merge work (main first)" };
+  COMMITS[MAIN_SECOND] = { parents: [OLD, M1], files, message: "merge main (main second)" };
+  try {
+    const ns = standard();
+    ns.push("platform-work", "claude/linear", B, [A, B]);
+    ns.push("platform-work", "claude/main-first", MAIN_FIRST, [OLD, MAIN_FIRST]);
+    ns.push("platform-work", "claude/main-second", MAIN_SECOND, [OLD, MAIN_SECOND]);
+    ns.push("platform-work", "claude/old-base", OLD, [OLD]);
+    const db = migratedDb();
+    const out = await workBranchesTick({ DB: db as never, ARTIFACTS: ns.binding as never }, Date.now(), gitServer(ns.repos).fetchImpl);
+    assert.deepEqual([out.registered, out.blocked], [["fg-claude-linear", "fg-claude-main-first", "fg-claude-main-second", "fg-claude-old-base"], 2]);
+    const row = (id: string) => rowsOf(db).find((r: any) => r.cr_id === id);
+    const state = (id: string) => [row(id).base_sha, row(id).blocked_reason, row(id).history_blocked_reason];
+    assert.deepEqual(state("fg-claude-linear"), [M1, null, null], "a plain linear branch on top of main passes");
+    assert.deepEqual(state("fg-claude-main-first"), [M1, null, null], "main as the first parent passes");
+    assert.deepEqual(JSON.parse(row("fg-claude-main-first").changed_paths), ["A workers/forge/src/c.ts"]);
+    assert.deepEqual(state("fg-claude-main-second"), [M1, null, "main_not_first_parent"], "main as the second parent is refused");
+    assert.equal(row("fg-claude-main-second").changed_paths, null, "a refused head is not diffed");
+    assert.deepEqual(state("fg-claude-old-base"), [M1, "not_based_on_main", null], "an older main without main's head is not_based_on_main, as before");
+
+    const listed = new Map((await listChanges(db as never, 10)).changes.map((c: any) => [c.cr_id, c]));
+    assert.deepEqual([listed.get("fg-claude-main-second")!.verdict, listed.get("fg-claude-main-second")!.reasons, listed.get("fg-claude-main-second")!.blocked_reason], ["blocked", [MAIN_NOT_FIRST_PARENT], "main_not_first_parent"]);
+    assert.deepEqual([listed.get("fg-claude-old-base")!.verdict, listed.get("fg-claude-old-base")!.reasons], ["blocked", [NOT_BASED_ON_MAIN]]);
+    for (const id of ["fg-claude-linear", "fg-claude-main-first"]) assert.notEqual(listed.get(id)!.verdict, "blocked", id);
+    assert.match(MAIN_NOT_FIRST_PARENT, /^main_not_first_parent: .*second parent.*Rebase the branch onto main, or merge with main as the first parent/);
+    assert.match(MAIN_NOT_FIRST_PARENT, new RegExp(`within ${FIRST_PARENT_WALK} commits`));
+    assert.deepEqual(changeVerdict({ blocked_reason: null, history_blocked_reason: "main_not_first_parent" }, null, null), { verdict: "blocked", reasons: [MAIN_NOT_FIRST_PARENT] });
+    assert.deepEqual(changeVerdict({ blocked_reason: "not_based_on_main", history_blocked_reason: null }, null, null), { verdict: "blocked", reasons: [NOT_BASED_ON_MAIN] });
+
+    // Only the two accepted heads are ever checked.
+    const work = await ns.binding.get("platform-work");
+    const picked: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const next = await nextChangeHead(db as never, work as never, Date.now(), "platform-work");
+      if (!next) break;
+      picked.push(next);
+      db.raw.prepare("INSERT INTO forge_check_runs (commit_sha, status, runner, started_at) VALUES (?, 'passed', 'forge-runner/1', ?)").run(next, new Date().toISOString());
+    }
+    assert.deepEqual(picked.sort(), [B, MAIN_FIRST].sort());
+    const audit = auditOf(db).filter((a: any) => a.event_type === "forge.change_registered" && a.subject === "fg-claude-main-second");
+    assert.equal(JSON.parse(audit[0].payload_json).history_blocked_reason, "main_not_first_parent");
+  } finally { delete COMMITS[MAIN_FIRST]; delete COMMITS[MAIN_SECOND]; }
+});
+
+test("G4-LH2. the first-parent walk: bounded (fail closed), unreadable commits answer false, mainPosition tells the three cases apart", async () => {
+  const chain: Record<string, string[]> = {};
+  const id = (n: number) => n.toString(16).padStart(40, "0");
+  for (let n = 1; n <= FIRST_PARENT_WALK + 2; n++) chain[id(n)] = n === 1 ? [] : [id(n - 1)];
+  chain[sha("c")] = [id(3), sha("d")];                // id(3) first, sha("d") second
+  chain[sha("e")] = [sha("d"), id(3)];                // id(3) second
+  chain[sha("d")] = [];
+  let reads = 0;
+  const repo = { readCommit: async (h: string) => { reads++; return chain[h] ? { hash: h, treeHash: "f".repeat(40), parents: chain[h] } : null; } };
+  assert.equal(await onFirstParentChain(repo, id(1), id(FIRST_PARENT_WALK + 1)), true, "exactly the bound away is found");
+  reads = 0;
+  assert.equal(await onFirstParentChain(repo, id(1), id(FIRST_PARENT_WALK + 2)), false, "one past the bound fails closed");
+  assert.equal(reads, FIRST_PARENT_WALK, "one read per step, at most the bound");
+  assert.equal(await onFirstParentChain(repo, id(5), id(5)), true, "a head equal to main");
+  assert.equal(await onFirstParentChain(repo, id(5), sha("f")), false, "an unreadable head");
+  assert.equal(await onFirstParentChain(repo, "not-a-sha", id(5)), false);
+  assert.equal(await mainPosition(repo, id(3), sha("c")), "first_parent");
+  assert.equal(await mainPosition(repo, id(3), sha("e")), "merged_in");
+  assert.equal(await mainPosition(repo, id(4), sha("c")), "absent", "a newer main than the branch's");
+});
+
+test("G4-LH3. GitHub-sourced requests: a head that reaches its base only through a second parent is main_not_first_parent too", async () => {
+  const GH_SECOND = sha("b"); const GH_FIRST = sha("a");
+  const files = { ...BASE_FILES, "README.md": "y", "workers/forge/src/c.ts": "old base" };
+  COMMITS[GH_SECOND] = { parents: [OLD, M1], files, message: "merge main (main second)" };
+  COMMITS[GH_FIRST] = { parents: [M1, OLD], files, message: "merge work (main first)" };
+  try {
+    const ns = namespace({ platform: { commits: [M0, M1, OLD, GH, GH_SECOND, GH_FIRST], refs: { "refs/heads/main": M1 } } });
+    const repo = await ns.binding.get("platform");
+    const db = migratedDb();
+    const input = (number: number, head: string) => ({ number, source_branch: `feature/${number}`, title: "t", author: "a", head_sha: head, base_sha: M1, github_ci: "success" });
+    const second = await registerChange(db as never, repo as never, input(1, GH_SECOND), "ci");
+    const first = await registerChange(db as never, repo as never, input(2, GH_FIRST), "ci");
+    const linear = await registerChange(db as never, repo as never, input(3, GH), "ci");
+    assert.deepEqual([second.history_blocked_reason, first.history_blocked_reason, linear.history_blocked_reason], ["main_not_first_parent", null, null]);
+    assert.deepEqual(changeVerdict(second, null, null), { verdict: "blocked", reasons: [MAIN_NOT_FIRST_PARENT] });
+    // Re-registering the same head and base keeps the stored reason (no walk); a new head recomputes it.
+    assert.equal((await registerChange(db as never, repo as never, input(1, GH_SECOND), "ci")).history_blocked_reason, "main_not_first_parent");
+    assert.equal((await registerChange(db as never, repo as never, input(1, GH_FIRST), "ci")).history_blocked_reason, null);
+  } finally { delete COMMITS[GH_SECOND]; delete COMMITS[GH_FIRST]; }
+});
+
+test("G4-LH4. migration 0071: an additive column that admits only main_not_first_parent; the Forge requires it", () => {
+  assert.ok((FORGE_MIGRATIONS as readonly string[]).includes("0071_forge_linear_history_guard.sql"));
+  const db = migratedDb();
+  const ins = (id: string, reason: string | null) => () => db.raw.prepare(
+    `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, status, created_at, updated_at, repo, history_blocked_reason)
+     VALUES (?, 'forge', 0, 'b', 'b', 't', 'a', ?, ?, 'open', 'n', 'n', 'platform-work', ?)`).run(id, A, M1, reason);
+  ins("fg-a", "main_not_first_parent")();
+  ins("fg-b", null)();
+  assert.throws(ins("fg-c", "not_based_on_main"), /CHECK/);
+  assert.throws(ins("fg-d", "anything"), /CHECK/);
+  const sql = read("workers/control-plane-migrations/0071_forge_linear_history_guard.sql").replace(/--[^\n]*/g, "");
+  assert.match(sql.trim(), /^ALTER TABLE forge_change_requests ADD COLUMN history_blocked_reason TEXT CHECK \(.*\);$/);
+  assert.doesNotMatch(sql, /\b(DROP|DELETE|UPDATE|RENAME|INSERT)\b/i, "additive only: the native migration path applies it");
+  assert.match(read("workers/ai-kernel/src/supervisor.ts"), /blocked_reason IS NULL AND history_blocked_reason IS NULL/, "the Supervisor never proposes a refused head");
+});
 
 test("G4-MF. main's head is checked before change requests; a main check past the budget defers them, never the reverse (2026-11-14)", async () => {
   const ns = standard();
