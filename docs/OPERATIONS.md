@@ -90,17 +90,49 @@ Re-check them before you act; commands and limits change.
 
 ## When the deploy executor's own fix is blocked (2026-11-15)
 
-The Deployment Orchestrator executes every native deploy and every break-glass deploy, its own included. A bug in that path can block its fix: on 2026-11-15 the native Control Plane deploy failed twice on reading a version it had just uploaded (`cloudflare_api_404_100146`, a different Worker each time), the fix (4e64060) lived in the Orchestrator, and the planner deploys the Control Plane before the Orchestrator. `force_redeploy_unit` does not help here: it runs through the same executor.
+The Deployment Orchestrator executes every native deploy and every break-glass deploy of the other units. A bug in that path can block its fix: on 2026-11-15 the native Control Plane deploy failed on reading a version it had just uploaded (`cloudflare_api_404_100146`, a different Worker each time), the fix (4e64060) lived in the Orchestrator, and the planner deployed the Control Plane before the Orchestrator because a migration was pending.
 
-**Signs.** The same `deploy_commit` of one unit fails again with the same reason, the fix for that reason is merged on main, and the fix is in `workers/deployment-orchestrator/` (or in what it imports) while the Orchestrator is not yet on that commit.
+Two changes close this (cut-over gate, owner 2026-11-15, "1 setuju"):
+- **Executor first.** When main changes the orchestrator unit, the planner deploys it first and alone, also while a D1 migration is pending, provided no pending migration names a table, column or index that the Orchestrator's bundled code at main mentions (`control-plane-shared/src/executor-first.ts`; the Forge reads main's bundles and the migration SQL, the Orchestrator's own native deploy checks the same evidence). When one does, or the evidence cannot be read, the Control Plane goes first as before, and the plan's skip says why (`executor_first_not_proven:<reason>`). The Orchestrator's readiness needs no migration after 0029, so a pending migration alone never makes it unready.
+- **Rescue deploy.** If the Orchestrator then cannot deploy itself, its unit is deployed by the Recovery Manager, without the Orchestrator ("Rescue deploy of the Deployment Orchestrator" below).
 
-**Way out (owner only, GitHub Actions on main; GitHub main must equal canonical main):**
+**Signs.** The Owner page lists "deploy executor blocked" (`executor_deploy_failed`): the Orchestrator's own last native deploy of its unit failed in the last 24 hours. Or the same `deploy_commit` of a unit fails again with the same reason, the fix for that reason is merged on main, and the fix is in `workers/deployment-orchestrator/` (or in what it imports) while the Orchestrator is not yet on that commit.
+
+**Way out (owner).**
 1. Acknowledge the critical report on the Owner page once production is checked (each failed native deploy restores the Workers it changed; the Drift Detector's tags show what runs).
-2. Run `deploy-deployment-orchestrator.yml`: `confirm_production` = `DEPLOY`, `commit_sha` = main's full 40-character head, no trailing space (the workflow refuses anything else before it deploys).
-3. If the blocked unit is the Control Plane, run `deploy-control-plane.yml` with the same inputs. It deploys with wrangler, not through the Orchestrator, and applies pending migrations.
-4. The planner then continues with the remaining units on its own.
+2. Run the rescue deploy of the Orchestrator at main's head (below). The planner then continues with the remaining units through the fixed Orchestrator, on its own.
+3. Only if the rescue deploy is not configured or refuses: until cut-over step 6, run `deploy-deployment-orchestrator.yml` (`confirm_production` = `DEPLOY`, `commit_sha` = main's full 40-character head, no trailing space) and, if the blocked unit is the Control Plane, `deploy-control-plane.yml` with the same inputs. Two dispatches of the same workflow queue behind each other (one concurrency group per unit).
 
-Run two dispatches of the same workflow and the second waits for the first (one concurrency group per unit); there is no harm, but check each run's result.
+## Rescue deploy of the Deployment Orchestrator
+
+An owner-approved break-glass plan (`force_redeploy_unit`, "Break-glass deploy" below) whose service is `cryptophys-deployment-orchestrator` is not sent to the Orchestrator. The Recovery Manager's plan Workflow deploys the Orchestrator's Worker itself (`control-plane-shared/src/executor-rescue.ts`, a guard path), with its own credential and its own Cloudflare client that can address only that script. A bug in the Orchestrator's deploy code cannot block it. A bug in the shared files it uses (`break-glass.ts`, `forge-gate.ts`, `executor-first.ts`, `migration-rules.ts`, `audit.ts`, `agents.ts`), or a broken Recovery Manager, Drift Detector or Platform Registry, can.
+
+**What it does.** At a SAFE minute (the Orchestrator's own deploy minutes), once per plan:
+1. It re-checks the plan in its own code: executing, its own `recovery.execute` allow within 2 hours, written and approved by two different people, the full commit of main's head with the Forge's checks ready, and no destructive migration named (it applies no migration).
+2. It reads the Orchestrator's module from the Forge's bundle of that commit and checks its hash. The Worker must be single-module, without static assets or `[limits]`, with the same `wrangler.toml` as the version it runs: a configuration change is the Orchestrator's own path.
+3. A pending D1 migration is allowed only when the Orchestrator's code reads nothing it introduces (the executor-first rule). The Control Plane applies it afterwards.
+4. It refuses while another native deploy is queued or running.
+5. It captures the active deployment, uploads the module as a version that keeps every binding, and checks that the new version binds exactly what the active one binds; a 404 on reading it back is read again. Then it deploys at 100 %, verifies the version live through the Drift Detector (health and tag), and records the desired version through the Platform Registry. On any failure after the deploy call it restores the captured deployment.
+6. The request is `deployment_requests` executor `rescue:deployment-orchestrator`, audited as `deployment.rescue_started`, `deployment.rescue_succeeded`, `deployment.rescue_failed` or `deployment.rescue_refused`. A success is a warning report from `recovery-manager` (Owner page "break-glass deploy", Telegram, no brake). A failure is a critical report that holds routine consensus until acknowledged. A refusal changes nothing and fails the plan (`recovery_failed`).
+
+**One-time setup (owner).** Until these are set, the plan's step reports `blocked` and names what is missing; nothing is deployed and the Orchestrator is not asked instead.
+1. Create a Cloudflare API token for this purpose only: dashboard → My Profile → API Tokens → Create Token → Custom token, permission **Account → Workers Scripts → Edit**, the platform account only. Use a new token rather than a copy of `CF_DEPLOY_TOKEN`, so either can be revoked alone.
+2. Set it on `cryptophys-recovery-manager` (Workers → `cryptophys-recovery-manager` → Settings → Variables and Secrets → Add → Secret) as **`CF_ORCHESTRATOR_DEPLOY_TOKEN`**, and the account id (32 hex) as the secret **`CF_ACCOUNT_ID`**.
+3. The bindings `BUNDLES` (R2 `cryptophys-forge-bundles`), `DRIFT` (Drift Detector `DriftRpc`) and `REGISTRY` (Platform Registry `RegistryRpc`) come with the Recovery Manager's `wrangler.toml`; they are live once the Control Plane runs the commit of this change.
+
+**Proof drill (once; closes the cut-over gate of 2026-11-15).** Do it when the Orchestrator is healthy and nothing else is deploying, at a commit of main whose orchestrator bundle is code-only against the running version (any main head, if the Orchestrator's `wrangler.toml` has not changed since its running version).
+1. On the Console's Code page, note main's full head and that its checks are ready. On Infrastructure, note the Orchestrator's running tag.
+2. An approver writes the plan (Console → Recovery → Create Plan, or `POST /v1/plans`): service `cryptophys-deployment-orchestrator`, plan version the full 40-character head, one step `force_redeploy_unit` with no `destructive_migrations`, optionally a `manual` note "rescue drill".
+3. The owner (another approver) approves it. That click is the only one.
+4. Watch the plan's pipeline on the Recovery page. Within one SAFE minute (at most 8 minutes), step 1 reads "rescue deploy of the Orchestrator at <tag> succeeded without the Orchestrator (request dep_…)", and then verify succeeds.
+5. Check the evidence:
+   - the audit chain has `deployment.rescue_started` and `deployment.rescue_succeeded` for the request, and no `deployment.break_glass_queued` or `deployment.native_deploy_*` event for it;
+   - `deployment_requests` has the row with executor `rescue:deployment-orchestrator`, status `succeeded`;
+   - the Orchestrator's Worker runs a new version tagged with main's head (`npx wrangler deployments list --name cryptophys-deployment-orchestrator`), its message "rescue deploy …";
+   - the Drift Detector shows the Orchestrator in sync, and the Owner page lists the "break-glass deploy" warning, which closes after 24 hours.
+6. Record the request id, the plan id and the time in `docs/GITHUB-CUTOVER.md` (the gate's status line).
+
+If the drill fails, the step's detail and the critical report give the reason, and the Orchestrator was restored. Fix the cause in a change request, then write a new plan: a plan deploys at most once.
 
 ## Registered platform and XAUUSD AI agents (ADR-0007, TP-009, 0016, 0017)
 
@@ -166,6 +198,8 @@ Deleting a Worker is irreversible and critical (ADR-0009 §1). `retire-worker.ym
 **Deploy plan after a retirement (2026-11-13).** The Forge plans under a registry fingerprint over its own list of deploy units; the Orchestrator looks the plan up by its own list. After `cryptophys-home` was removed from the units (#316), the Orchestrator (deployed first) no longer found the old Forge's plan, so nothing was pending, the Forge's own redeploy included, until the Forge was deployed by an ops request. Since then the Orchestrator also accepts the Forge's newest plan for main's head when every registry input that plan names is unchanged (`fingerprintStillHolds` in `forge-gate.ts`), so adding or retiring a unit no longer stalls the agents.
 
 ## Break-glass deploy (`force_redeploy_unit`, hardening (d))
+
+**The Orchestrator's own unit** (service `cryptophys-deployment-orchestrator`) is the exception: its plan is run by the Recovery Manager's rescue executor, not by the Orchestrator ("Rescue deploy of the Deployment Orchestrator" above). Everything below describes the other units.
 
 **When to use it.** Only when the normal paths cannot deploy: the Forge's deploy planner records no plan or plans nothing for main's head while a unit must be deployed (on 2026-11-14 it stopped planning any unit, so no consensus `deploy_commit` could deploy anything, its own fix included), or a recovery plan's `redeploy_commit` is skipped as "Already in sync" while the platform still needs the commit. Do not use it for routine deploys, for a commit that is not main's head, or while another deploy of the unit is queued or running.
 
