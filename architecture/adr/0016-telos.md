@@ -163,6 +163,11 @@ All of it is metric-form and console-truthful.
 - **Console.** The Vision page (`#/vision`, in the nav after Organism) reads only `kernel.vision`, which is one more read-only row in the Console allow-list. It shows the mission, identity, constitution, and the goals with their KPIs. A `null` baseline or target is shown as "not measured yet", never as a number. The render smoke test renders the page.
 - **Not built:** the self-model (T1), the Strategist (T2), intents and the experience ledger (T3), vision growth (T4), morphogenesis (T5), and the vision's version history on the Console.
 
+## Inputs ready for T1 and T2 (2026-11-15)
+
+- **The trading organ's health.** Since 2026-11-15 (owner) the Signal Analyst publishes a metric snapshot of the xauusd organ: an `xauusd_digest` report with `body.schema = "trading_organ_health.v1"` and `metrics` of `{metric, value, baseline_7d, z}` (decision shares, flips, confidence, the latest decision's age in bars and staleness incidents over 24 h and 7 days; the 7- and 30-day hit rates are `null` with `status: "unavailable_source_field"` until `signals.observe` reads xauusd's outcome scores). It is published on a material change or every 6 h, never with a price level (`docs/SSOT.md`, "Trading organ health").
+- **T1** takes the newest snapshot into the "Mind" section of the self-model (outcome scores). **T2**: the Strategist reads it with the other reports, and a regression of its z-scores is a candidate triggered wake. Neither is built; nothing reads the snapshot for them yet.
+
 ## Consequences
 
 - **Good.** The organism gains direction, memory of what worked, and foresight about its ecosystem. Growth becomes measurable. The owner steers the mission and the constitution, not every change.

@@ -7,6 +7,7 @@ import { ago, listOf } from "../lib/format";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import CognitionPanel from "../components/CognitionPanel";
+import OrganHealthChips from "../components/OrganHealthChips";
 import { statusTone } from "./Consensus";
 import { DataTable, STATUS, StatusBar, VoteBar } from "../components/viz";
 
@@ -193,6 +194,7 @@ export default function Command() {
               </div>
             </div>
           )}
+          <div className="mt-3 border-t border-white/5 pt-3"><OrganHealthChips h={ov?.trading_organ_health} /></div>
           <p className="mt-3 text-[10px] uppercase tracking-widest text-slate-600">Advisory relay · not an order</p>
         </Panel>
       </div>

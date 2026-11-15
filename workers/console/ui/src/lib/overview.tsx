@@ -16,6 +16,11 @@ export interface Overview {
     error?: string;
   };
   xauusd_latest?: { decision?: string; confidence?: number; candle_key?: string; decided_at?: string; reported_at?: string; error?: string } | null;
+  /** The Signal Analyst's newest trading organ health snapshot (owner 2026-11-15): metric, value, 7-day baseline, z. */
+  trading_organ_health?: {
+    report_id?: string; reported_at?: string; observed_at?: string | null; bar_minutes?: number | null; stale?: boolean | null; error?: string;
+    metrics?: { metric: string; value: number | null; baseline_7d: number | null; z: number | null; status?: string }[];
+  } | null;
 }
 
 const Ctx = createContext<{ ov: Overview | null; error: string | null; loading: boolean; refresh: () => Promise<void> } | null>(null);

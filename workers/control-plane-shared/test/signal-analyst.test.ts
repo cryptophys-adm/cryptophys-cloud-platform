@@ -83,7 +83,9 @@ test("no price level reaches a kernel report, the cycle memory or the observatio
   assert.equal(obs.latest.reasoning, "Rejected [level] twice; the prior level was [level]; sell below [level] with the stop above [level] and the target near [level].");
   const cycle = await runSignalCycle(env as any, mem, "operator", NOW);
   const body = JSON.parse(((db as any).raw.prepare("SELECT body_json FROM agent_reports WHERE agent_id='signal-analyst'").get() as any).body_json);
-  assert.deepEqual([body.decision, body.confidence, body.risk_reward], ["SELL", 0.6, 2.4]);
+  // Since 2026-11-15 the cycle publishes a metric snapshot, not the decision: only the stance and confidence remain.
+  assert.equal(body.schema, "trading_organ_health.v1");
+  assert.deepEqual([body.latest.decision, body.latest.confidence, "risk_reward" in body.latest, "reasoning" in body.latest], ["SELL", 0.6, false, false]);
   const PRICE = /\b(?:\d{3,}(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)\b/;
   for (const [what, value] of [["report body", body], ["cycle report", cycle], ["observation", obs]] as const) {
     const text = JSON.stringify(value);
@@ -147,7 +149,7 @@ test("TP-017 stale rule", async () => {
   assert.equal(r3.stale, true);
 });
 
-test("TP-017 first digest", async () => {
+test("TP-017 first cycle: one metric snapshot (2026-11-15), no decision digest", async () => {
   const { env, db, mem } = kernelEnv(migratedDb(), { XAUUSD_AI: fakeXauusd([item()]) });
   const cycle = await runSignalCycle(env as any, mem, "operator", NOW);
   const reports = (db as any).raw.prepare("SELECT * FROM agent_reports WHERE agent_id='signal-analyst'").all();
@@ -156,7 +158,11 @@ test("TP-017 first digest", async () => {
   assert.equal(r.kind, "xauusd_digest");
   assert.equal(r.severity, "info");
   assert.equal(r.ai_status, "deterministic");
-  assert.ok(JSON.parse(r.body_json).disclaimer);
+  const body = JSON.parse(r.body_json);
+  assert.ok(body.disclaimer);
+  assert.equal(body.schema, "trading_organ_health.v1");
+  assert.equal(body.publish_reason, "first");
+  for (const k of ["decision", "reasoning", "risk_reward"]) assert.equal(k in body, false, `the snapshot carries no ${k}`);
 });
 
 test("TP-017 no repeat", async () => {
@@ -175,17 +181,21 @@ test("TP-017 no repeat", async () => {
   assert.equal(reports2, 1);
 });
 
-test("TP-017 change and flip", async () => {
-  const { env, db, mem } = kernelEnv(migratedDb(), { XAUUSD_AI: fakeXauusd([item({ decision: "WAIT" })]) });
+test("TP-017 change and flip: WAIT -> BUY is no warning, BUY -> SELL is one flip warning", async () => {
+  const H = 3_600_000;
+  const key = (openMs: number) => `OANDA:XAUUSD:60:${openMs}`;
+  const { env, db, mem } = kernelEnv(migratedDb(), { XAUUSD_AI: fakeXauusd([item({ candle_key: key(NOW - H), decision: "WAIT" })]) });
   await runSignalCycle(env as any, mem, "operator", NOW);
-  // new candle WAIT->BUY info
-  (env as any).XAUUSD_AI = fakeXauusd([item({ candle_key: "OANDA:XAUUSD:60:1793876400000", decision: "BUY" })]);
-  await runSignalCycle(env as any, mem, "operator", NOW + 3600_000);
-  // new candle BUY->SELL warning
-  (env as any).XAUUSD_AI = fakeXauusd([item({ candle_key: "OANDA:XAUUSD:60:1793880000000", decision: "SELL" })]);
-  await runSignalCycle(env as any, mem, "operator", NOW + 7200_000);
-  const rows = (db as any).raw.prepare("SELECT severity FROM agent_reports WHERE agent_id='signal-analyst' ORDER BY rowid").all();
-  assert.equal(rows[rows.length - 1].severity, "warning");
+  // new candle WAIT->BUY: no warning
+  (env as any).XAUUSD_AI = fakeXauusd([item({ candle_key: key(NOW), decision: "BUY" })]);
+  await runSignalCycle(env as any, mem, "operator", NOW + H);
+  const warn = () => (db as any).raw.prepare("SELECT subject, body_json FROM agent_reports WHERE agent_id='signal-analyst' AND severity='warning' ORDER BY rowid").all();
+  assert.equal(warn().length, 0);
+  // new candle BUY->SELL: one warning
+  (env as any).XAUUSD_AI = fakeXauusd([item({ candle_key: key(NOW + H), decision: "SELL" })]);
+  await runSignalCycle(env as any, mem, "operator", NOW + 2 * H);
+  assert.equal(warn().length, 1);
+  assert.match(warn()[0].subject, /^XAUUSD H1 flip BUY -> SELL /);
 });
 
 test("TP-017 six-hour heartbeat", async () => {

@@ -91,7 +91,17 @@ Object.assign(MOCK, {
     agent_reports_24h: { counts: { critical: 1, warning: 4, info: 31, critical_acknowledged: 1 }, latest_attention: [
       { report_id: "r1", agent_id: "auditor", kind: "audit_digest", severity: "critical", subject: "Audit chain verified; 3 denied syscalls by platform-api in one hour, which is a long subject that wraps", created_at: at(30) },
       { report_id: "r2", agent_id: "supervisor", kind: "platform_digest", severity: "warning", subject: "Console drifts persistently", created_at: at(70) }] },
-    xauusd_latest: { decision: "HOLD", confidence: 0.61, candle_key: "XAUUSD:60:2026-11-09T12:00", decided_at: at(20), reported_at: at(19) } } },
+    xauusd_latest: { decision: "HOLD", confidence: 0.61, candle_key: "XAUUSD:60:2026-11-09T12:00", decided_at: at(20), reported_at: at(19) },
+    trading_organ_health: { report_id: "rpt_toh", reported_at: at(19), observed_at: at(19), bar_minutes: 60, stale: false, metrics: [
+      { metric: "decisions_24h", value: 24, baseline_7d: 23.8, z: 0.4 }, { metric: "share_buy_24h", value: 0.25, baseline_7d: 0.2, z: 1.1 },
+      { metric: "share_sell_24h", value: 0.125, baseline_7d: null, z: null }, { metric: "share_wait_24h", value: 0.625, baseline_7d: 0.7, z: -2.3 },
+      { metric: "share_no_trade_24h", value: 0, baseline_7d: 0, z: 0 }, { metric: "latest_decision_age_bars", value: 0.37, baseline_7d: 0.4, z: -0.2 },
+      { metric: "flips_24h", value: 4, baseline_7d: 0.6, z: 3.4 }, { metric: "confidence_mean_24h", value: 0.512, baseline_7d: null, z: null },
+      { metric: "confidence_p50_24h", value: 0.5, baseline_7d: null, z: null }, { metric: "confidence_min_24h", value: null, baseline_7d: null, z: null },
+      { metric: "confidence_max_24h", value: 0.9, baseline_7d: null, z: null },
+      { metric: "hit_rate_7d", value: null, baseline_7d: null, z: null, status: "unavailable_source_field" },
+      { metric: "hit_rate_30d", value: null, baseline_7d: null, z: null, status: "unavailable_source_field" },
+      { metric: "staleness_incidents_24h", value: 0, baseline_7d: 0.1, z: -0.3 }, { metric: "staleness_incidents_7d", value: 1, baseline_7d: 1, z: 0 }] } } },
   "/api/kernel/v1/consensus": { mode: "deploy", stats_24h: { executed: 6, shadow_passed: 3, shadow_blocked: 2, rejected: 1, failed: 1, pending_owner: 1, expired: 1 },
     proposals: Array.from({ length: 60 }, (_, i) => ({ proposal_id: `cns_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, proposer_agent_id: "supervisor",
       action: ACTIONS[i % ACTIONS.length], target: i % 6 === 3 ? "forge-steward" : SVC[i % SVC.length], class: i % 6 === 4 ? "critical" : "routine",

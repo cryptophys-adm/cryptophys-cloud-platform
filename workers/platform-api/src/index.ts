@@ -129,7 +129,10 @@ export default {
       }
       const body: Record<string, unknown> = { overview };
       if (url.searchParams.get("advisory") === "true" && env.DB) {
-        body.advisory = await engineFor({ ...env, DB: env.DB }, SERVICE, [overviewTask.name]).run(overviewTask, overview, `overview:${Date.now()}`);
+        // The trading organ's metric snapshot (2026-11-15) is for the Console chips, not the summary: it stays out of
+        // the AI input, which keeps its 8,000-character bound.
+        const { trading_organ_health: _organHealth, ...summaryInput } = overview;
+        body.advisory = await engineFor({ ...env, DB: env.DB }, SERVICE, [overviewTask.name]).run(overviewTask, summaryInput, `overview:${Date.now()}`);
       }
       return json(body);
     }

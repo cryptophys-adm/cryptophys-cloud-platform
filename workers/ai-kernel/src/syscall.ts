@@ -192,11 +192,13 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   let xauusdLatest: JsonObject | null | { error: string } = null;
   try {
     const row = await env.DB.prepare(
-      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND json_extract(body_json, '$.decision') IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      // A flip warning carries the decision at the top level; the metric snapshot (2026-11-15) in `latest`.
+      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND (json_extract(body_json, '$.decision') IS NOT NULL OR json_extract(body_json, '$.latest.decision') IS NOT NULL) ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).first<{ report_id: string; created_at: string; body_json: string }>();
     if (row) {
       let body: any = {};
       try { body = JSON.parse(row.body_json); } catch { body = {}; }
+      if (body?.decision === undefined && body?.latest && typeof body.latest === "object") body = body.latest;
       const decisionRaw = body?.decision;
       const decision = ["BUY","SELL","WAIT","NO_TRADE"].includes(decisionRaw) ? decisionRaw : "UNKNOWN";
       const conf = typeof body?.confidence === "number" && body.confidence >= 0 && body.confidence <= 1 ? body.confidence : null;
@@ -214,6 +216,18 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     xauusdLatest = { error: "xauusd_latest_unavailable" };
   }
 
+  // trading_organ_health (owner 2026-11-15): the Signal Analyst's newest metric snapshot, for the overview chips.
+  let tradingOrganHealth: JsonObject | null = null;
+  try {
+    const row = await env.DB.prepare(
+      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND json_extract(body_json, '$.schema') = 'trading_organ_health.v1' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    ).first<{ report_id: string; created_at: string; body_json: string }>();
+    if (row) tradingOrganHealth = { report_id: row.report_id, reported_at: row.created_at, ...presentOrganHealth(row.body_json) };
+  } catch (err) {
+    console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "trading_organ_health_unavailable", message: String((err as Error)?.message ?? err) }));
+    tradingOrganHealth = { error: "trading_organ_health_unavailable" };
+  }
+
   return {
     observed_at: new Date(now).toISOString(),
     services,
@@ -221,6 +235,28 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     agents_enabled: await agentsEnabled(env.DB),
     agent_reports_24h: agentReports24h,
     xauusd_latest: xauusdLatest,
+    trading_organ_health: tradingOrganHealth,
+  };
+}
+
+const finiteOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** Only the known fields of a trading_organ_health.v1 body, each of the expected type: numbers and names, no text. */
+export function presentOrganHealth(bodyJson: string): JsonObject {
+  let body: any = {};
+  try { body = JSON.parse(bodyJson); } catch { body = {}; }
+  const metrics = (Array.isArray(body?.metrics) ? body.metrics : []).slice(0, 32)
+    .filter((m: any) => m && typeof m.metric === "string" && /^[a-z0-9_]{1,40}$/.test(m.metric))
+    .map((m: any) => {
+      const out: JsonObject = { metric: m.metric, value: finiteOrNull(m.value), baseline_7d: finiteOrNull(m.baseline_7d), z: finiteOrNull(m.z) };
+      if (m.status === "unavailable_source_field") out.status = m.status;
+      return out;
+    });
+  return {
+    observed_at: typeof body?.observed_at === "string" ? body.observed_at.slice(0, 40) : null,
+    bar_minutes: finiteOrNull(body?.bar_minutes),
+    stale: typeof body?.stale === "boolean" ? body.stale : null,
+    metrics,
   };
 }
 
