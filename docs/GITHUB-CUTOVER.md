@@ -91,9 +91,14 @@ Each step is reversible until step 7.
   merges took main's previous heads, the deployed versions, off main's first-parent history; the deploy planner stopped
   planning and every deploy stuck. The Forge now refuses such a head (`main_not_first_parent`, the linear-history guard,
   migration 0071): main's head must be on the head's first-parent chain, within 500 commits.
-- Open before step 6: a migration the Forge marks destructive (an `UPDATE`, like 0058) has no native path
-  (`destructive_migration`); with the workflows off it cannot be deployed. The two change requests reopened before the fix
-  stay `closed` in D1; their merges are in the audit chain (`forge.merged`).
+- ~~Open before step 6: a migration the Forge marks destructive (an `UPDATE`, like 0058) has no native path
+  (`destructive_migration`); with the workflows off it cannot be deployed.~~ **Built (owner 2026-11-15, "1 setuju"):** the
+  Supervisor proposes the critical action `deploy_destructive_migration`, naming the commit and each destructive file with its
+  sha256, instead of a routine `deploy_commit`. After the owner's click the native deploy first reads and records D1's Time
+  Travel bookmark (`deployment.restore_point_recorded`, `details_json.restore_point`), then applies only the named files. A
+  failure reports the bookmark; D1 is never restored automatically (OPERATIONS, "Destructive D1 migrations"). Needs
+  Account → D1 → Read on `CF_DEPLOY_TOKEN`. Met once one owner-approved destructive deploy has succeeded live. The two change
+  requests reopened before the fix stay `closed` in D1; their merges are in the audit chain (`forge.merged`).
 
 ### 2026-11-14: the deploy planner stall, and the gate for steps 6–7
 
