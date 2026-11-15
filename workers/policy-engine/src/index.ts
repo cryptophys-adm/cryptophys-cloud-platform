@@ -2,6 +2,7 @@ import { MERGE_ACTIONS } from "../../control-plane-shared/src/consensus-rules.ts
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { approvedBreakGlassPlan, hasBreakGlassStep, storedSteps } from "../../control-plane-shared/src/break-glass.ts";
 import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
+import { survivalDenies } from "../../control-plane-shared/src/power-mode.ts";
 import { describeResource, explainReason } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
@@ -79,13 +80,13 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     // Over HTTP the subject is the caller's Access identity, so a person cannot pose as an agent.
     checks.push(...(await agentSyscallChecks(db, String(context.__subject ?? ""), resource)));
     const powerMode = await getActivePowerMode(db);
-    if (powerMode === "survival") {
-      // Survival saves AI tokens only. consensus.propose is never throttled: deploys, rollbacks and
-      // agent suspensions must stay possible on weekends and in drawdowns (owner 2026-11-10).
-      const nonEssential = ["memory.remember", "knowledge.propose"];
-      if (nonEssential.includes(resource)) {
-        checks.push(check("power_mode_survival", false, `capability ${resource} is throttled in survival mode to conserve treasury runway`));
-      }
+    // Survival throttles AI-heavy work only (control-plane-shared/src/power-mode.ts). consensus.propose is never
+    // throttled: deploys, rollbacks and agent suspensions must stay possible on weekends and in drawdowns (owner
+    // 2026-11-10). Learning is the highest mandate (owner 2026-11-14): memory.remember and knowledge.propose are
+    // allowed in every mode, weekend survival included, have no rate_limit check (capabilities.ts hourlyLimit) and
+    // their model calls are never refused by an AI budget (ai-engine.ts, purpose "learning").
+    if (powerMode === "survival" && survivalDenies(resource)) {
+      checks.push(check("power_mode_survival", false, `capability ${resource} is AI-heavy work, throttled in survival mode`));
     }
   } else if (action === "consensus.execute") {
     // ADR-0009: the Policy Engine is a veto on every consensus outcome, whatever the vote.

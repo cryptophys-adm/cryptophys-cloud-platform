@@ -174,7 +174,7 @@ export default function CloudflareUsage() {
               </Badge>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              The Supervisor records the cycle's billable cost as a daily burn (cycle-to-date cost ÷ days observed). Above $0.20 a day it enters survival mode, which pauses non-essential AI spending (memory and knowledge proposals); consensus is never blocked. The intents below are advisories: nothing else is changed automatically.
+              The Supervisor records the cycle's billable cost as a daily burn (cycle-to-date cost ÷ days observed) and projects the month as that burn × the days of the UTC month. When the projection exceeds the monthly infrastructure budget (policy parameter infra-budget-usd-month), it enters survival mode, which throttles AI-heavy work only (AI request budgets at a quarter); learning (memory and knowledge proposals) and consensus are never blocked. The budget, the projection and what the mode blocks are on the Power mode panel above. The intents below are advisories: nothing else is changed automatically.
             </p>
             {intents.length > 0 && (
               <div className="space-y-1.5 pt-1">

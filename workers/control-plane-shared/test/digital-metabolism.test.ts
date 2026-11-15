@@ -71,7 +71,7 @@ test("P2-M8 an owner ledger entry makes the treasury measured; cycles before it 
   assert.equal(earlier.runway_days, null, "a cycle of the placeholder period shows no runway");
 });
 
-test("P2-M4 policy engine throttles non-essential capabilities during Survival Mode", async () => {
+test("P2-M4 policy engine: survival mode no longer throttles learning (owner 2026-11-14: learning is core)", async () => {
   const db = migratedDb();
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
 
@@ -84,12 +84,13 @@ test("P2-M4 policy engine throttles non-essential capabilities during Survival M
   const mode1 = await getActivePowerMode(db);
   assert.equal(mode1, "survival");
 
-  // In survival mode, non-essential Tier 1 syscalls like memory.remember are denied
+  // Owner 2026-11-14: until then survival denied memory.remember (and knowledge.propose); learning is core now, and
+  // survival throttles AI-heavy work only (power-mode.ts: the AI request budgets at 25%).
   const res = await evaluatePolicy(db, "agent.syscall", "memory.remember", { __subject: "agent:signal-analyst" });
-  assert.equal(res.decision, "deny");
+  assert.equal(res.decision, "allow", res.reason);
   const survivalCheck = res.checks.find((c) => c.id === "power_mode_survival");
-  assert.ok(survivalCheck, "power_mode_survival check present");
-  assert.equal(survivalCheck?.passed, false);
+  assert.equal(survivalCheck, undefined, "no power_mode_survival check for a learning capability");
+  assert.equal(res.checks.every((c) => c.passed), true);
 
   // Restore homeostasis
   await db.prepare("UPDATE metabolism_controls SET value = 'homeostasis' WHERE control = 'power_mode'").run();
@@ -169,7 +170,7 @@ test("P2-M5 survival mode never throttles consensus.propose (deploys, rollbacks,
   assert.equal(res.checks.find((c) => c.id === "power_mode_survival"), undefined);
   assert.equal(res.decision, "allow", res.reason);
   const mem = await evaluatePolicy(db, "agent.syscall", "memory.remember", { __subject: "agent:supervisor" });
-  assert.ok(mem.checks.some((c) => c.id === "power_mode_survival" && !c.passed), "memory still throttled");
+  assert.ok(!mem.checks.some((c) => c.id === "power_mode_survival" && !c.passed), "learning is not throttled in survival (owner 2026-11-14)");
 });
 
 test("P2-M5 the supervisor never enters growth on its own, and every mode change is audited", async () => {
@@ -241,7 +242,8 @@ test("P2-M7 supervisor reports billable usage overages from infra_burn_metrics a
   const overageFinding = report.findings.find((f: any) => f.kind === "billable_usage_overage");
   assert.ok(overageFinding);
   assert.equal(overageFinding.service_id, "cryptophys-ai-kernel");
-  assert.equal(overageFinding.action, "throttle_free_tier");
-  assert.equal(overageFinding.outcome, "throttled");
+  // Owner 2026-11-14: the account is on Workers Paid; the finding reports the cost and throttles nothing.
+  assert.equal(overageFinding.action, "report_billable_cost");
+  assert.equal(overageFinding.outcome, "reported");
   assert.match(String(overageFinding.why ?? ""), /1\.41 USD/);
 });

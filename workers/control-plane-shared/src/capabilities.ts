@@ -6,6 +6,9 @@
  *  Tier 0 observe   read-only; authorized in the kernel against this catalog, not persisted.
  *  Tier 1 propose   creates a draft that a human must approve (e.g. a recovery plan).
  *  Tier 2 act       reversible, bounded action; allowed by policy with a rate limit and kill switch.
+ * Learning (memory.remember, knowledge.propose) has no rate limit (owner 2026-11-14, the learning mandate: "learning
+ * tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"): no max_per_hour, and hourlyLimit() ignores one if it
+ * were added back. Its grants, the kill switch, identity checks and the audit chain still apply.
  *  Tier 3 human     irreversible (deploy, secrets, data deletion); never allowed for an agent.
  * Fund movements (wallets, withdrawals, transfers, signing transactions, swaps) are prohibited at every
  * tier. Trading (orders, brokers, exchange accounts) is no longer prohibited (owner 2026-11-12, "larangan
@@ -14,6 +17,7 @@
  * action is always critical. No trading capability is in the catalog yet; one arrives only by reviewed code.
  */
 import type { D1Database } from "./types.ts";
+import { isLearningCapability } from "./power-mode.ts";
 
 export type Tier = 0 | 1 | 2 | 3;
 export interface Capability { tier: Tier; reversible: boolean; description: string; max_per_hour?: number }
@@ -26,10 +30,10 @@ export const CAPABILITIES: Record<string, Capability> = {
   "metabolism.observe": { tier: 0, reversible: true, description: "Read treasury balance, burn rate, market status and active power mode" },
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
   "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
-  "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize", max_per_hour: 12 },
+  "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize (learning: no rate limit)" },
   "doctrine.status": { tier: 0, reversible: true, description: "Read the doctrine amendments Cerebrum executed (the Knowledge Council applies only these)" },
   "knowledge.status": { tier: 0, reversible: true, description: "Read the review status of the calling agent's own learned-knowledge proposals" },
-  "knowledge.propose": { tier: 1, reversible: true, description: "Draft a learned-knowledge candidate (Aether); a person approves it for shadow testing or rejects it", max_per_hour: 6 },
+  "knowledge.propose": { tier: 1, reversible: true, description: "Draft a learned-knowledge candidate (Aether); a person approves it for shadow testing or rejects it (learning: no rate limit)" },
   "consensus.propose": { tier: 1, reversible: true, description: "Propose a platform action to the control-plane consensus (ADR-0009); voting and the Policy Engine decide", max_per_hour: 4 },
   "deploy.release": { tier: 3, reversible: false, description: "Deploy a new Worker version (GitHub Actions with human gates only)" },
   "secrets.rotate": { tier: 3, reversible: false, description: "Rotate or replace a secret (human only)" },
@@ -40,6 +44,16 @@ export const CAPABILITIES: Record<string, Capability> = {
 export const PROHIBITED_CAPABILITY = /wallet|withdraw|transfer|sign[._-]?tx|swap|mev|deposit|payout/i;
 /** Trading (owner 2026-11-12): allowed, but only at tier 2 or above and, as a consensus action, only as critical. */
 export const TRADING_CAPABILITY = /trad(e|ing)|order|broker|exchange[._-]?account/i;
+
+/**
+ * The hourly syscall limit of a capability, or null when it has none. A learning capability never has one (the
+ * learning mandate, power-mode.ts), whatever its catalog entry says.
+ */
+export function hourlyLimit(capability: string): number | null {
+  if (isLearningCapability(capability)) return null;
+  const cap = Object.hasOwn(CAPABILITIES, capability) ? CAPABILITIES[capability] : undefined;
+  return cap?.max_per_hour && cap.max_per_hour > 0 ? cap.max_per_hour : null;
+}
 
 export const AGENT_SUBJECT = /^agent:([a-z0-9-]{2,40})$/;
 
@@ -108,12 +122,14 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
     add("external_tier_limit", Boolean(cap) && cap!.tier <= 1, "agents with an active external principal may only use tier <= 1 capabilities");
   }
   add("not_human_only", Boolean(cap) && cap!.tier < 3, "tier 3 capabilities require a human");
-  if (cap?.max_per_hour && agent) {
+  // No rate_limit check at all for a capability without an hourly limit (learning, tier 0 reads).
+  const limit = hourlyLimit(capability);
+  if (limit !== null && agent) {
     const since = new Date(now - 3_600_000).toISOString();
     const used = await db.prepare(
       "SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = ? AND capability = ? AND consumed_at >= ?",
     ).bind(agent.agent_id, capability, since).first<{ n: number }>();
-    add("rate_limit", (used?.n ?? 0) < cap.max_per_hour, `at most ${cap.max_per_hour} consumed syscalls per hour`);
+    add("rate_limit", (used?.n ?? 0) < limit, `at most ${limit} consumed syscalls per hour`);
   }
   return checks;
 }
@@ -125,8 +141,10 @@ export async function agentSyscallChecks(db: D1Database, subject: string, capabi
  */
 export async function verifySyscallDecision(db: D1Database, decisionId: unknown, agentId: string, capability: string, now = Date.now()): Promise<void> {
   if (typeof decisionId !== "string" || !/^dec_[0-9a-f-]{36}$/.test(decisionId)) throw new Error("policy_decision_required");
-  const cap = CAPABILITIES[capability];
-  if (!cap || cap.tier === 0 || cap.tier >= 3 || !cap.max_per_hour || PROHIBITED_CAPABILITY.test(capability)) {
+  const cap = Object.hasOwn(CAPABILITIES, capability) ? CAPABILITIES[capability] : undefined;
+  // Every tier 1-2 target is rate limited, except learning (the learning mandate): it has no hourly limit.
+  const limit = hourlyLimit(capability);
+  if (!cap || cap.tier === 0 || cap.tier >= 3 || (limit === null && !isLearningCapability(capability)) || PROHIBITED_CAPABILITY.test(capability)) {
     throw new Error("policy_decision_invalid");
   }
   const row = await db.prepare("SELECT subject, action, resource, decision, created_at FROM policy_decisions WHERE decision_id = ?")
@@ -158,14 +176,14 @@ export async function verifySyscallDecision(db: D1Database, decisionId: unknown,
          AND EXISTS (SELECT 1 FROM json_each(a.capabilities_json) j WHERE j.value = ?)
          AND NOT (? > 1 AND EXISTS (SELECT 1 FROM agent_principals ap WHERE ap.agent_id = a.agent_id AND ap.revoked_at IS NULL))
      )
-     AND EXISTS (SELECT 1 FROM kernel_controls k WHERE k.control = 'agents_enabled' AND k.value = '1')
+     AND EXISTS (SELECT 1 FROM kernel_controls k WHERE k.control = 'agents_enabled' AND k.value = '1')${limit === null ? "" : `
      AND (SELECT COUNT(*) FROM agent_syscall_consumptions c
-          WHERE c.agent_id = ? AND c.capability = ? AND c.consumed_at >= ?) < ?`,
+          WHERE c.agent_id = ? AND c.capability = ? AND c.consumed_at >= ?) < ?`}`,
   ).bind(
     decisionId, agentId, capability, nowAt,
     decisionId, `agent:${agentId}`, capability, cutoff, nowAt,
     agentId, cap.tier, capability, cap.tier,
-    agentId, capability, new Date(now - 3_600_000).toISOString(), cap.max_per_hour,
+    ...(limit === null ? [] : [agentId, capability, new Date(now - 3_600_000).toISOString(), limit]),
   ).run();
   if ((consumed.meta.changes ?? 0) !== 1) {
     const used = await db.prepare("SELECT 1 AS x FROM agent_syscall_consumptions WHERE decision_id = ?").bind(decisionId).first();

@@ -130,6 +130,7 @@ All of it is metric-form and console-truthful.
 
 ## Rules that do not change
 
+- **Learning is the highest mandate: no organ, mode, budget, rate limit or agent may limit it** (owner 2026-11-14: "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"). It is the constitution's first line. No intent, evolution or Strategist proposal may add a rate limit, a daily cap, a power-mode denial or an AI budget refusal to `memory.remember`, `knowledge.propose` or the AI calls they need; `control-plane-shared/src/power-mode.ts` is a guard path (`learning_mandate`). The grants, the kill switch, the audit chain, the knowledge content-safety validator and size bounds still apply (ADR-0009, amendment 2026-11-14).
 - Consensus, the brake, rollback, backups, the append-only audit chain and the kill switches.
 - No fund movement. Trading actions need the owner's click. No widening of trading autonomy by any intent.
 - Guard paths and the constitution change only through `merge_owner_change` and the owner's click.

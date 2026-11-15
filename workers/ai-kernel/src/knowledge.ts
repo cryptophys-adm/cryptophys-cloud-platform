@@ -11,11 +11,17 @@
  * measured outcomes or a role reminder, natural language within 300 characters, every number in the
  * text found in the evidence, at least 10 cited decision cards, and no price, level, size or order
  * wording anywhere. Advisory only: nothing here changes an agent, a prompt or a parameter.
+ *
+ * Learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi"): an
+ * agent may propose as many candidates as it learns. There is no daily cap (KNOWLEDGE_MAX_PER_DAY = 20 and the
+ * knowledge_daily_limit error were removed) and no hourly rate limit (capabilities.ts). The validator and the size
+ * bound below are content safety, not limits on learning, and stay.
  */
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
+import { knowledgeDedupHash, missingDedupColumn } from "./learning-dedup.ts";
 
 export const KNOWLEDGE_ITEM_VERSION = "cryptophys.knowledge-item.v1";
 export const KNOWLEDGE_KINDS = ["caution", "role_reminder", "param_candidate"] as const;
@@ -23,7 +29,6 @@ export const CLAIM_TYPES = ["measured_outcome", "role_reminder"] as const;
 export const KNOWLEDGE_STATUSES = ["pending", "approved", "rejected", "expired"] as const;
 /** A proposal not decided within 14 days expires; the agent may propose it again with fresh evidence. */
 export const KNOWLEDGE_REVIEW_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-export const KNOWLEDGE_MAX_PER_DAY = 20;
 export const MIN_CITED_CARDS = 10;
 const MAX_ITEM_BYTES = 8 * 1024;
 
@@ -323,26 +328,46 @@ export async function proposeKnowledge(db: D1Database, agentId: string, decision
   const errors = validateKnowledgeItem(item);
   if (errors.length) throw new Error(`invalid_knowledge_item: ${errors.slice(0, 8).join("; ")}`);
   const it = item as Record<string, unknown>;
-  const today = new Date(now).toISOString().slice(0, 10);
-  const used = await db.prepare("SELECT COUNT(*) AS n FROM knowledge_proposals WHERE proposer_agent_id = ? AND created_at >= ?").bind(agentId, `${today}T00:00:00.000Z`).first<{ n: number }>();
-  if ((used?.n ?? 0) >= KNOWLEDGE_MAX_PER_DAY) throw new Error("knowledge_daily_limit");
   const itemJson = JSON.stringify(item);
   const sha = await sha256Hex(itemJson);
+  // Exact-duplicate dedup, not a cap (learning-dedup.ts): the same claim of this agent, still pending or decided,
+  // returns that proposal; nothing new is written and nothing is refused. An expired proposal is never matched.
+  const dedup = await knowledgeDedupHash(agentId, it);
+  let same: ProposalRow | null = null;
+  try {
+    same = await db.prepare(
+      "SELECT * FROM knowledge_proposals WHERE proposer_agent_id = ? AND dedup_sha256 = ? AND status != 'expired' ORDER BY created_at LIMIT 1",
+    ).bind(agentId, dedup).first<ProposalRow>();
+  } catch (err) {
+    if (!missingDedupColumn(err)) throw err;
+  }
+  if (same) return deduplicated(same);
   const proposalId = newId("knw");
   const createdAt = new Date(now).toISOString();
+  const insert = (withDedup: boolean) => db.prepare(
+    `INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decision_id, created_at${withDedup ? ", dedup_sha256" : ""})
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?${withDedup ? ", ?" : ""})`,
+  ).bind(proposalId, agentId, it.item_id as string, it.version as number, it.kind as string, itemJson, sha, decisionId, createdAt, ...(withDedup ? [dedup] : [])).run();
   try {
-    await db.prepare(
-      `INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decision_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
-    ).bind(proposalId, agentId, it.item_id as string, it.version as number, it.kind as string, itemJson, sha, decisionId, createdAt).run();
+    try { await insert(true); } catch (err) { if (!missingDedupColumn(err)) throw err; await insert(false); }
   } catch {
+    // The same item_id and version already exists. Byte-identical content (rows from before migration 0067
+    // included) is the same proposal; different content under an existing version is an identity error.
+    const prior = await db.prepare("SELECT * FROM knowledge_proposals WHERE proposer_agent_id = ? AND item_id = ? AND item_version = ?")
+      .bind(agentId, it.item_id as string, it.version as number).first<ProposalRow>();
+    if (prior && prior.content_sha256 === sha) return deduplicated(prior);
     throw new Error("knowledge_item_version_exists");
   }
   await appendAuditEvent(db, {
     event_type: "knowledge.proposed", actor: `agent:${agentId}`, subject: `${it.item_id as string}@${it.version as number}`, outcome: "pending",
     payload: { proposal_id: proposalId, kind: it.kind as string, content_sha256: sha },
   });
-  return { proposal_id: proposalId, item_id: it.item_id as string, item_version: it.version as number, status: "pending", content_sha256: sha, created_at: createdAt };
+  return { proposal_id: proposalId, item_id: it.item_id as string, item_version: it.version as number, status: "pending", content_sha256: sha, created_at: createdAt, deduplicated: false };
+}
+
+/** The answer for an exact duplicate: the existing proposal's id and status, and that nothing was written. */
+function deduplicated(r: ProposalRow): JsonObject {
+  return { proposal_id: r.proposal_id, item_id: r.item_id, item_version: r.item_version, status: r.status, content_sha256: r.content_sha256, created_at: r.created_at, deduplicated: true };
 }
 
 /** knowledge.status (tier 0): the calling agent's own proposals, newest first, without item bodies. */
