@@ -245,8 +245,11 @@ test("four or more denied syscalls in 24h produce a warning; a quiet hour produc
   assert.equal(warnRows[0].severity, "warning");
   const warnBody = JSON.parse(warnRows[0].body_json);
   assert.equal(warnBody.counts_24h.denied_agent_syscalls, 4);
-  assert.equal(warnBody.counts_24h.agent_actions_by_agent[0].agent_id, SIGNAL_ANALYST_ID);
-  assert.equal(warnBody.counts_24h.agent_actions_by_agent[0].denied, 4);
+  // The Auditor's own memory of its daily report is listed too (the learning mandate: a failed recall no longer skips
+  // the remember), so the Signal Analyst's row is looked up by id.
+  const sigRow = warnBody.counts_24h.agent_actions_by_agent.find((a: any) => a.agent_id === SIGNAL_ANALYST_ID);
+  assert.equal(sigRow?.agent_id, SIGNAL_ANALYST_ID);
+  assert.equal(sigRow.denied, 4);
 });
 
 // ---------------------------------------------------------------- AC 3: Auditor cannot call recovery.propose, signals.reingest, or platform.observe

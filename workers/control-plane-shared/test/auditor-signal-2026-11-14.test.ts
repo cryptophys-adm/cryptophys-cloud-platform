@@ -48,14 +48,18 @@ function deny(db: Db, at: number, hoursAgo: number, subject: string, action: str
   }
 }
 
-/** The measured production day (2026-11-14, 24 h): every denial a guard working as designed. */
-function measuredDay(db: Db, at: number) {
+/** The guards of the measured day: rate limit, CI not green and a vote that did not pass (24 denials). */
+function guardDay(db: Db, at: number) {
   for (let i = 0; i < 19; i++) deny(db, at, 0.5 + i, "agent:supervisor", "agent.syscall", "consensus.propose", "failed: rate_limit");
+  for (let i = 0; i < 4; i++) deny(db, at, 4 + i, CI_CLIENT_ID, "deploy", "cryptophys-platform-api", "failed: ci_green");
+  deny(db, at, 6, "agent:supervisor", "consensus.execute", "merge_change:fg-x", "failed: consensus_passed");
+}
+/** The measured production day (2026-11-14, 24 h): the guards, plus 14 learning calls survival mode refused. */
+function measuredDay(db: Db, at: number) {
+  guardDay(db, at);
   for (let i = 0; i < 9; i++) deny(db, at, 1 + i, "agent:auditor", "agent.syscall", "memory.remember", "failed: power_mode_survival");
   for (let i = 0; i < 4; i++) deny(db, at, 2 + i, "agent:signal-analyst", "agent.syscall", "memory.remember", "failed: power_mode_survival");
   deny(db, at, 3, "agent:aether-curator", "agent.syscall", "knowledge.propose", "failed: power_mode_survival");
-  for (let i = 0; i < 4; i++) deny(db, at, 4 + i, CI_CLIENT_ID, "deploy", "cryptophys-platform-api", "failed: ci_green");
-  deny(db, at, 6, "agent:supervisor", "consensus.execute", "merge_change:fg-x", "failed: consensus_passed");
 }
 
 const row = (reason: string, recent: number, count: number, subject = "agent:supervisor", action = "agent.syscall"): DenialRow => ({ subject, action, reason, recent, count });
@@ -115,16 +119,40 @@ test("A3. unexpected denials: zero baseline warns, a new reason code warns, the 
   assert.deepEqual([flood.baseline_daily_expected, flood.delta_expected_vs_baseline, flood.warn], [1, 499, false]);
 });
 
-test("A4. the Auditor: the measured survival/rate-limit day produces no warning; its daily digest carries the metrics", async () => {
+test("A4. the Auditor: the measured day's 14 survival-refused learning calls warn (owner 2026-11-14: learning is core); the guards stay expected", async () => {
   const { env, db } = kernelEnv();
   const mem = memory();
   const now = Date.now();
   measuredDay(db, now);
   const obs = await verifyAudit(env as never, now) as unknown as AuditObservation;
-  assert.deepEqual([obs.denials!.expected_24h, obs.denials!.unexpected_24h, obs.denials!.warn], [38, 0, false]);
+  // Until 2026-11-14 all 38 were expected and nothing warned; the 14 learning denials are now their own metric.
+  assert.deepEqual([obs.denials!.expected_24h, obs.denials!.unexpected_24h, obs.denials!.learning_blocked_24h, obs.denials!.total_24h], [24, 0, 14, 38]);
+  assert.deepEqual([obs.denials!.warn, obs.denials!.unexpected_warn, obs.denials!.learning_warn, obs.denials!.verdict], [true, false, true, "learning_blocked"]);
+  assert.deepEqual(obs.denials!.learning_blocked.by_capability, [{ capability: "memory.remember", count_24h: 13 }, { capability: "knowledge.propose", count_24h: 1 }]);
+  assert.deepEqual(obs.denials!.learning_blocked.by_reason, [{ reason: "power_mode_survival", count_24h: 14 }]);
+  assert.ok(!obs.denials!.by_reason.some((r) => r.reason === "power_mode_survival"), "a learning denial is not listed as an expected guard outcome");
   assert.equal(obs.counts_24h.denied_agent_syscalls, 33, "the raw counts stay: 19 + 9 + 4 + 1 agent syscall denials");
-  assert.deepEqual(obs.denials!.by_agent.find((a) => a.agent_id === "auditor"), { agent_id: "auditor", denied: 9, denied_expected: 9, denied_unexpected: 0, failed: 0 });
+  assert.deepEqual(obs.denials!.by_agent.find((a) => a.agent_id === "auditor"), { agent_id: "auditor", denied: 9, denied_expected: 0, denied_learning: 9, denied_unexpected: 0, failed: 0 });
   assert.deepEqual(obs.counts_24h.policy_denies_by_action, [{ action: "agent.syscall", count: 33 }, { action: "consensus.execute", count: 1 }, { action: "deploy", count: 4 }]);
+
+  // An ordinary hourly cycle publishes one warning that names the blocked learning.
+  const hourly = new Date(now); hourly.setUTCHours(5, 37, 0, 0);
+  const cycle = await runAuditCycle(env as never, mem, "scheduled", hourly.getTime());
+  assert.deepEqual([cycle.findings[0].action, cycle.findings[0].severity], ["reports.publish", "warning"]);
+  const body = JSON.parse((db.raw.prepare("SELECT body_json FROM agent_reports WHERE agent_id = 'auditor'").get() as any).body_json);
+  assert.deepEqual(body.trigger_reasons, ["learning_blocked:14"]);
+  assert.match(body.metrics.join(" "), /Learning blocked \(memory or knowledge proposals refused\): 14 in 24 h: memory 13, knowledge proposals 1\. Learning is core\. Warning\./);
+});
+
+test("A4b. the Auditor: a day of guards only (rate limit, CI, vote) produces no warning; its daily digest carries the metrics", async () => {
+  const { env, db } = kernelEnv();
+  const mem = memory();
+  const now = Date.now();
+  guardDay(db, now);
+  const obs = await verifyAudit(env as never, now) as unknown as AuditObservation;
+  assert.deepEqual([obs.denials!.expected_24h, obs.denials!.unexpected_24h, obs.denials!.learning_blocked_24h, obs.denials!.warn], [24, 0, 0, false]);
+  assert.equal(obs.counts_24h.denied_agent_syscalls, 19, "the raw count: the Supervisor's 19 rate-limited syscalls");
+  assert.deepEqual(obs.denials!.by_agent.find((a) => a.agent_id === "supervisor"), { agent_id: "supervisor", denied: 19, denied_expected: 19, denied_learning: 0, denied_unexpected: 0, failed: 0 });
 
   // An ordinary hourly cycle: no report at all (before, more than 3 denied syscalls was a warning).
   const hourly = new Date(now); hourly.setUTCHours(5, 37, 0, 0);
@@ -139,10 +167,10 @@ test("A4. the Auditor: the measured survival/rate-limit day produces no warning;
   const report = db.raw.prepare("SELECT severity, body_json FROM agent_reports WHERE agent_id = 'auditor'").get() as any;
   const body = JSON.parse(report.body_json);
   assert.equal(report.severity, "info");
-  assert.deepEqual([body.denials.expected_24h, body.denials.unexpected_24h, body.denials.verdict], [38, 0, "expected_only"]);
+  assert.deepEqual([body.denials.expected_24h, body.denials.unexpected_24h, body.denials.verdict], [24, 0, "expected_only"]);
   assert.deepEqual(body.denials.expected_reasons, ["power_mode_survival", "rate_limit", "ci_green", "consensus_passed"]);
   assert.deepEqual(body.metrics, body.denials.interpretation);
-  assert.ok(!body.trigger_reasons.some((r: string) => /denied|denial/.test(r)));
+  assert.ok(!body.trigger_reasons.some((r: string) => /denied|denial|learning/.test(r)));
 });
 
 test("A5. the Auditor warns on an unexpected denial (new reason, zero baseline), and the reason names it", async () => {
@@ -154,8 +182,9 @@ test("A5. the Auditor warns on an unexpected denial (new reason, zero baseline),
   const cycle = await runAuditCycle(env as never, mem, "scheduled", now);
   assert.deepEqual([cycle.findings[0].action, cycle.findings[0].severity], ["reports.publish", "warning"]);
   const body = JSON.parse((db.raw.prepare("SELECT body_json FROM agent_reports WHERE agent_id = 'auditor'").get() as any).body_json);
-  assert.deepEqual(body.trigger_reasons, ["unexpected_denials:1", "new_denial_reason_capability_granted:1", "new_denial_reason_tier_within_agent_limit:1"]);
-  assert.deepEqual([body.denials.expected_24h, body.denials.unexpected_24h], [38, 1]);
+  // The measured day's blocked learning (owner 2026-11-14) is named as well.
+  assert.deepEqual(body.trigger_reasons, ["unexpected_denials:1", "new_denial_reason_capability_granted:1", "new_denial_reason_tier_within_agent_limit:1", "learning_blocked:14"]);
+  assert.deepEqual([body.denials.expected_24h, body.denials.unexpected_24h], [24, 1]);
 });
 
 // ---------------------------------------------------------------- (b) the digest validator
