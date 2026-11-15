@@ -198,6 +198,23 @@ function observeAll(db: Db) {
 }
 const desired = (db: Db, svc: string) => (db.raw.prepare("SELECT desired_version FROM service_registry WHERE service_id = ?").get(svc) as any).desired_version;
 
+/** Gate 2026-11-15: the Orchestrator's own version (its D1 binding) and D1's Time Travel bookmark, in front of `inner`. */
+const TT_DB = "0d1d1d1d-0000-4000-8000-000000000001";
+const TT_VERSION = "0ccccccc-0000-4000-8000-000000000001";
+const TT_BOOKMARK = "00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683";
+function timeTravel(inner: typeof fetch) {
+  const reads: string[] = [];
+  const base = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}`;
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(input);
+    if (u === `${base}/workers/scripts/cryptophys-deployment-orchestrator/deployments`) return Response.json({ success: true, result: { deployments: [{ created_on: "2026-11-15T00:00:00Z", versions: [{ version_id: TT_VERSION, percentage: 100 }] }] } });
+    if (u === `${base}/workers/scripts/cryptophys-deployment-orchestrator/versions/${TT_VERSION}`) return Response.json({ success: true, result: { id: TT_VERSION, resources: { bindings: [{ type: "d1", name: "DB", id: TT_DB }] } } });
+    if (u === `${base}/d1/database/${TT_DB}/time_travel/bookmark`) { reads.push(u); return Response.json({ success: true, result: { bookmark: TT_BOOKMARK } }); }
+    return inner(input, init);
+  }) as typeof fetch;
+  return { fetcher, reads };
+}
+
 // ---------------------------------------------------------------- tests
 test("BG-1. force_redeploy_unit is owner-run: AI drafts never carry it, agents and service tokens never write it, the plan is one unit at one full commit", async () => {
   assert.ok((RECOVERY_STEP_ACTIONS as readonly string[]).includes("force_redeploy_unit"));
@@ -442,9 +459,17 @@ test("BG-5. a destructive pending migration is refused unless the owner-approved
     assert.deepEqual([q.dispatched, q.executor, q.migrations], [true, BREAK_GLASS_EXECUTOR, ["0991_break_glass_drop.sql"]]);
     assert.deepEqual(events(db, "deployment.break_glass_queued")[0].payload.destructive_migrations, ["0991_break_glass_drop.sql"]);
     const cf = fakeCloudflare([...CONTROL_PLANE.services]);
-    assert.deepEqual(await runNativeExecutors(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+    // Gate 2026-11-15: a named destructive migration runs only after D1's Time Travel bookmark is read and recorded.
+    const tt = timeTravel(cf.fetcher);
+    assert.deepEqual(await runNativeExecutors(env as never, nextSafeMinute(Date.now() + 1_000), tt.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
     assert.equal(ledger(db).at(-1), "0991_break_glass_drop.sql");
     assert.equal(tableExists(db, "break_glass_tmp"), false);
+    assert.equal(tt.reads.length, 1, "one bookmark read");
+    const recorded = events(db, "deployment.restore_point_recorded");
+    assert.deepEqual(recorded.map((e) => [e.payload.bookmark, e.payload.destructive_migrations]), [[TT_BOOKMARK, ["0991_break_glass_drop.sql"]]]);
+    const types = events(db, "deployment.").map((e) => e.type);
+    assert.ok(types.indexOf("deployment.restore_point_recorded") < types.indexOf("deployment.native_migration_applied"), "the bookmark is recorded before the migration");
+    assert.equal(JSON.parse(requests(db).find((r) => r.status === "succeeded")!.details_json).restore_point.bookmark, TT_BOOKMARK);
     // The normal native deploy still never applies it.
     const file = (await readManifest(b, NEW))!.migration_files!.find((f) => f.file === "0991_break_glass_drop.sql")!;
     assert.deepEqual(await readMigration(b, NEW, file), { reason: "destructive_migration" });

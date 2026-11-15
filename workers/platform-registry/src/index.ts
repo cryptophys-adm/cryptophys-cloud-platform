@@ -127,8 +127,9 @@ export async function recordNativeDeploy(env: Env, requestId: string): Promise<{
   if (!row) throw new Error("deploy_request_not_found");
   let details: { executor?: unknown } = {};
   try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
-  // Hardening (d): an owner-approved break-glass deploy (native:break-glass) records its commit the same way.
-  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass") throw new Error("not_a_native_deploy");
+  // Hardening (d): an owner-approved break-glass deploy (native:break-glass) records its commit the same way, and so
+  // does an owner-approved destructive migration deploy (native:destructive-deploy, gate 2026-11-15).
+  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass" && details.executor !== "native:destructive-deploy") throw new Error("not_a_native_deploy");
   if (row.status !== "running") throw new Error("deploy_not_running");
   const age = Date.now() - Date.parse(row.created_at);
   if (!(age >= 0 && age <= 3_600_000)) throw new Error("deploy_request_expired");

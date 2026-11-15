@@ -17,7 +17,9 @@
 //     Control Plane has been deployed.
 // The deploy itself is the native deploy's: a signed request the cron runs at a SAFE minute under a one-time claim,
 // migrations first (forward-only), then each Worker captured, uploaded, checked, deployed, verified live through the
-// Drift Detector and recorded; any failure restores every changed Worker. This file is a guard path (break_glass).
+// Drift Detector and recorded; any failure restores every changed Worker. A named destructive migration runs only after
+// D1's Time Travel bookmark is read and recorded (gate 2026-11-15, d1-restore-point.ts); a failure reports it. This file
+// is a guard path (break_glass).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
@@ -25,8 +27,9 @@ import { approvedBreakGlassPlan } from "../../control-plane-shared/src/break-gla
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
 import {
   appliedMigrations, MIGRATING_UNIT, nativeDeployEligible, readManifest, readMigration,
-  type BundleReader, type PlannedMigration, type PlannedService, type VersionReader,
+  type BundleReader, type PlannedMigration, type PlannedService, type RestorePoint, type VersionReader,
 } from "./native-deploy.ts";
+import { restoreCommand } from "../../control-plane-shared/src/destructive-deploy.ts";
 
 export const BREAK_GLASS_EXECUTOR = "native:break-glass";
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -146,6 +149,8 @@ export const BREAK_GLASS_NOTICE_MS = 24 * 3_600_000;
 export async function reportBreakGlass(agents: AgentRpcBinding | undefined, r: {
   request_id: string; plan_id: string; unit: string; commit_sha: string; outcome: "succeeded" | "failed" | "refused";
   reason?: string | null; restored?: boolean; migrations_applied?: string[]; migration_failed?: string | null; restore_point_at?: string | null; steps?: string[];
+  /** Gate 2026-11-15: the D1 Time Travel bookmark recorded before a named destructive migration (never restored here). */
+  restore_point?: RestorePoint | null;
 }) {
   const tag = r.commit_sha.slice(0, 12);
   const ok = r.outcome === "succeeded";
@@ -162,6 +167,7 @@ export async function reportBreakGlass(agents: AgentRpcBinding | undefined, r: {
       request_id: r.request_id, plan_id: r.plan_id, unit: r.unit, commit_sha: r.commit_sha, outcome: r.outcome,
       reason: r.reason ?? null, restored: r.restored ?? null, migrations_applied: r.migrations_applied ?? [], migration_failed: r.migration_failed ?? null,
       d1_restore_point_at: r.restore_point_at ?? null, steps: (r.steps ?? []).slice(0, 40),
+      ...(r.restore_point ? { d1_restore_point: r.restore_point, d1_restore_command: restoreCommand(r.restore_point.bookmark) } : {}),
     },
   });
 }
