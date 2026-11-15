@@ -62,6 +62,7 @@ The organism informs the owner and asks for clicks. It cannot be asked questions
 2. Directives are always confirmed by the owner first. This may be relaxed later through the autonomy dial.
 3. Corrections in Nexus are recorded as high-weight learning.
 4. H0 and H1 start after the deploy-pipeline hardening (a)–(f) is done.
+5. The Console Policy page's "Evaluate" panel is handled in H0 and H1, not separately (owner 2026-11-15: "oke, lanjutkan, masukan dalam plan Human Ai Interaction & Collaboration"; confirmed in the platform session). See "Policy page" under Phases.
 
 ## Guards (unchanged constitution)
 
@@ -83,6 +84,16 @@ The organism informs the owner and asks for clicks. It cannot be asked questions
 | H5 | Collaborators and roles | Shared work with other humans |
 
 The Nexus part of H3 (corrections on posts and decisions) is built in `cryptophys-adm/xauusd-ai-trading-assistant` by its own session.
+
+### Policy page (owner 2026-11-15)
+
+The "Evaluate" form on the Console's Policy page sends a real evaluation, so each manual test records a `policy_decisions` row and pollutes "decisions over time" and "failed checks". It is folded into the phases above. The Policy Engine's decision logic and guards do not change.
+
+- **H0 (inbox and cockpit cleanup):**
+  - the "Evaluate" form is removed;
+  - each denial in "checks that denied" and each decision row opens a read-only detail: agent, action, resource, the failed check and its evidence;
+  - evaluations that did not come from an agent (manual tests recorded before the form was removed) are left out of the stats.
+- **H1 ("Ask the organism"):** a non-recording policy dry-run tool for the conversational agent. It answers "would X be allowed?" with the checks and their results, writes nothing to `policy_decisions`, and is audited only as a conversation turn.
 
 ## Consequences
 
