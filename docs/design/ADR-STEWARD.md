@@ -1,6 +1,6 @@
 # Design: the ADR Steward agent and the Vision page's ADR panel
 
-- **Status:** design only (2026-11-16). Nothing here is built. The owner reviews this design before any code is written.
+- **Status:** design (2026-11-16), reviewed by the owner: the open questions are answered in §10 and the build may start in the order of §11. Nothing here is built yet.
 - **Owner request (2026-11-16, confirmed "ya steward"):** "buatkan Agent monitoring ADR yang akan selalu dinamis update progress, detail, penjelasan, dan selalu diupdate di panel Vision sebagai panel ADR (sebutkan singkatannya)" (build an agent that monitors the ADRs, always updates their progress, detail and explanation, and shows them on the Vision page as an ADR panel, with the abbreviation spelled out).
 - **Panel title (owner):** "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)".
 - **Reads with:** ADR-0007 (AI Worker OS: agents, capabilities, syscalls), ADR-0009 (consensus, the owner's click), ADR-0012 and `docs/GITHUB-CUTOVER.md` (the cut-over gates), ADR-0013 (DNA and census), ADR-0015 (documents, push to the senses), ADR-0016 (Telos: the Vision page, the self-model), ADR-0017 (the "Needs you" inbox, "Ask the organism"), `docs/SSOT.md`.
@@ -726,6 +726,11 @@ The full manifest extends §2.4 with:
 10. **Q10. Place the Steward in ADR-0019 P0, and track ADR-0019 as "planned" until it is drafted?** Recommended: **yes**. It is the organism's knowledge of its own plans, and it is the first thing P0 needs to measure itself.
 11. **Q11. Include the xauusd RFCs later through the same manifest?** Recommended: **later, after the platform panel has run a week**. Prove the predicates on the platform first. The xauusd evidence needs its own read-only source.
 12. **Q12. Drift findings as `platform_digest` warnings, never critical, and not sent to Telegram?** Recommended: **yes**. A documentation lag must never raise the consensus brake or wake you up.
+
+**Owner answers (2026-11-16, "ya semua, sesuai rekomendasimu").** Every recommendation above is accepted:
+- Q1 to Q10 and Q12 are yes.
+- Q11 is later: the xauusd RFCs come in after the platform panel has run for a week.
+- The build may start in the order of §11. Step 3 registers the agent and touches two guard paths, `capabilities.ts` and `workers/ai-kernel/organism.json`, so it still needs the owner's click through `merge_owner_change`. Step 1 does too, because the manifests of 0009, 0012 and 0014 are guard paths (Q2).
 
 ## 11. Implementation order
 
