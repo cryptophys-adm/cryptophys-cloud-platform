@@ -4,7 +4,7 @@ import { baseEnv, call, migratedDb, req } from "./harness.ts";
 import { REQUIRED_MIGRATION, schemaReady } from "../src/readiness.ts";
 import { isRetiredService } from "../src/retired.ts";
 import registry from "../../platform-registry/src/index.ts";
-import drift, { observe, targets } from "../../drift-detector/src/index.ts";
+import drift, { externalRpcTargets, externalTargets, observe, targets } from "../../drift-detector/src/index.ts";
 
 function healthy(tag: string | null) {
   return { health: async () => ({ status: "ok", version: tag ? { id: "v", tag } : null }) };
@@ -34,6 +34,7 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
     EXT_XAUUSD_NEXUS: http(() => new Response("<html>", { status: 200 })),
     EXT_AETHER: http(() => Response.json({ status: "ok" })),
     EXT_XAUUSD_OMEGA: http(() => Response.json({ status: "ok" })),
+    EXT_CRYPTOPHYS_CTA: { health: async () => ({ ok: true, service: "cryptophys-cta", publish: "off" }) },
     ...extra,
   } as any;
 }
@@ -250,3 +251,37 @@ test("TP-042: the Drift Detector is not ready without its EXT_XAUUSD_OMEGA bindi
   assert.equal((await call(drift, { ...env, EXT_XAUUSD_OMEGA: undefined }, req("GET", "/ready"))).status, 503);
 });
 
+
+test("CTA: cryptophys-cta is probed over EXT_CRYPTOPHYS_CTA (CtaHealth.health()), health-managed; the binding is declared and needed for /ready", async () => {
+  const { readFileSync } = await import("node:fs");
+  const toml = readFileSync(new URL("../../drift-detector/wrangler.toml", import.meta.url), "utf8");
+  assert.match(toml, /binding = "EXT_CRYPTOPHYS_CTA"\nservice = "cryptophys-cta"\nentrypoint = "CtaHealth"\n/);
+  const db = migratedDb();
+  const env = driftTestEnv(db);
+  assert.equal(targets(env as never)["cryptophys-cta"], undefined, "cta is external, not a platform HealthRpc target");
+  assert.equal(externalTargets(env as never)["cryptophys-cta"], undefined, "CtaHealth has no fetch handler: never probed over HTTP");
+  assert.equal(externalRpcTargets(env as never)["cryptophys-cta"], env.EXT_CRYPTOPHYS_CTA);
+  assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
+  assert.equal((await call(drift, { ...env, EXT_CRYPTOPHYS_CTA: undefined }, req("GET", "/ready"))).status, 503);
+  // Not in the registry (no migration registers it yet): nothing is probed or recorded for it.
+  let calls = 0;
+  const counted = { health: async () => { calls++; return { ok: true, service: "cryptophys-cta" }; } };
+  const before: any = await observe(driftTestEnv(db, { EXT_CRYPTOPHYS_CTA: counted }), "test", "test");
+  assert.equal(before.services.some((s: any) => s.service_id === "cryptophys-cta"), false);
+  assert.equal(calls, 0);
+  // Once a registry row exists: healthy when health() answers ok for this service; anything else drifts.
+  db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, metadata_json, created_at, updated_at) VALUES ('cryptophys-cta', 'Cryptophys CTA', 'production', 'registered', '{}', '2026-11-16T12:00:00.000Z', '2026-11-16T12:00:00.000Z')").run();
+  const ok: any = await observe(driftTestEnv(db, { EXT_CRYPTOPHYS_CTA: counted }), "test", "test");
+  const cta = ok.services.find((s: any) => s.service_id === "cryptophys-cta");
+  assert.deepEqual([cta.drifted, cta.managed, cta.status, cta.probe.healthy, cta.probe.version_tag, calls], [false, false, "healthy", true, null, 1]);
+  for (const [binding, error] of [
+    [{ health: async () => ({ ok: false, service: "cryptophys-cta", error: "desk" }) }, "health_check_failed"],
+    [{ health: async () => ({ ok: true, service: "cryptophys-aether" }) }, "health_check_failed"],
+    [{ health: async () => ({ status: "ok" }) }, "health_check_failed"],
+    [{ health: async () => { throw new Error("Worker has no entrypoint CtaHealth"); } }, "rpc_failed"],
+  ] as const) {
+    const down: any = await observe(driftTestEnv(db, { EXT_CRYPTOPHYS_CTA: binding }), "test", "test");
+    const s = down.services.find((x: any) => x.service_id === "cryptophys-cta");
+    assert.deepEqual([s.drifted, s.status, s.probe.error], [true, "unavailable", error]);
+  }
+});

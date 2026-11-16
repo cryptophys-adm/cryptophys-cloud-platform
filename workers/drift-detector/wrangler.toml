@@ -116,6 +116,16 @@ service = "cryptophys-aether"
 binding = "EXT_XAUUSD_OMEGA"
 service = "xauusd-omega"
 
+# cryptophys-cta, the content studio (owner 2026-11-15/16: an external organ of the platform, deployed from
+# cryptophys-adm/cryptophys-cta by its own workflow, live since 2026-11-16). Its DNA declares drift
+# { via: "rpc", binding: "EXT_CRYPTOPHYS_CTA" }: the probe calls CtaHealth.health() (read-only; it answers
+# { ok, service, publish, counts }), not /health over fetch, because a named entrypoint without a fetch
+# handler cannot serve one. Health-managed only, like the xauusd Workers and Aether.
+[[services]]
+binding = "EXT_CRYPTOPHYS_CTA"
+service = "cryptophys-cta"
+entrypoint = "CtaHealth"
+
 # No shared secrets: /v1 is authorized by the verified Cloudflare Access identity. The
 # deploy workflow sets OPERATOR_IDENTITIES from the GitHub production Environment.
 
