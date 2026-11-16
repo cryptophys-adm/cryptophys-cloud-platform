@@ -4,7 +4,8 @@
 //
 // It converges the one Access application `cryptophys-cloud-platform` to the workflow's definition:
 //   - destinations: every platform Worker (destination type `worker`, by its script tag), the public hostnames and the
-//     public paths, exactly the workflow's PLATFORM_WORKERS / PUBLIC_HOSTNAMES / PUBLIC_PATHS (a test keeps them equal);
+//     public paths, exactly the workflow's PLATFORM_WORKERS / PUBLIC_HOSTNAMES / PUBLIC_PATHS (a test keeps them equal),
+//     plus the NATIVE_ONLY_PATHS, which the workflow does not list (2026-11-16, see there);
 //   - policies: `ci-service-token` (Service Auth), `platform-operators` (allow: the operator emails plus the Access group
 //     cryptophys-nexus-accounts) and `external-agents` (Service Auth for the tokens named cryptophys-agent-*);
 //   - the allowed identity providers (Google, Microsoft Entra ID or OIDC, one-time PIN) and the session settings.
@@ -26,14 +27,28 @@
 const API = "https://api.cloudflare.com/client/v4";
 
 export const ACCESS_APP_NAME = "cryptophys-cloud-platform";
-/** The workflow's PLATFORM_WORKERS, PUBLIC_HOSTNAMES and PUBLIC_PATHS (test NA1 keeps them equal). */
+/**
+ * The workflow's PLATFORM_WORKERS, PUBLIC_HOSTNAMES and PUBLIC_PATHS (test NA1 keeps them equal), PUBLIC_PATHS plus
+ * NATIVE_ONLY_PATHS.
+ */
 export const PLATFORM_WORKERS = [
   "cryptophys-platform-api", "cryptophys-deployment-orchestrator", "cryptophys-platform-registry",
   "cryptophys-policy-engine", "cryptophys-drift-detector", "cryptophys-audit-ledger", "cryptophys-recovery-manager",
   "cryptophys-ai-kernel", "cryptophys-console", "cryptophys-forge",
 ] as const;
 export const PUBLIC_HOSTNAMES = ["nexus.cryptophys.work"] as const;
-export const PUBLIC_PATHS = ["ai.cryptophys.work/api/*"] as const;
+/**
+ * Paths only this definition holds (2026-11-16, owner-approved plan of 2026-11-15/16: cryptophys-cta is an external
+ * organ of the platform). The cta Worker (cryptophys-adm/cryptophys-cta, live since 2026-11-16 at cta.cryptophys.work)
+ * checks the Access JWT of this application (its ACCESS_AUD is this application's AUD, the one the Access login of
+ * nexus.cryptophys.work and ai.cryptophys.work/api/* names) on its studio pages and API, so they join this application
+ * under the same policies; the rest of the host (its public pages, /api/public/*, /media/*, /health) stays public.
+ * Agents never change .github/workflows/*, so provision-access.yml does not list them: test NA1 requires the workflow's
+ * PUBLIC_PATHS to be exactly PUBLIC_PATHS less these. A provision-access.yml run would drop them again (the studio then
+ * fails closed: the Worker refuses a request without a valid JWT); the next hourly check proposes them back.
+ */
+export const NATIVE_ONLY_PATHS = ["cta.cryptophys.work/studio*", "cta.cryptophys.work/api/studio/*"] as const;
+export const PUBLIC_PATHS = ["ai.cryptophys.work/api/*", ...NATIVE_ONLY_PATHS] as const;
 export const NEXUS_GROUP = "cryptophys-nexus-accounts";
 const AGENT_TOKEN_PREFIX = "cryptophys-agent-";
 const IDP_TYPES = new Set(["google", "azureAD", "oidc", "onetimepin"]);
