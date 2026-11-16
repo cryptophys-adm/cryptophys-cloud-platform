@@ -9,7 +9,7 @@ import { baseEnv, call, migratedDb, req } from "./harness.ts";
 import { isRetiredService, notRetiredSql, RETIRED_AT_KEY } from "../src/retired.ts";
 import { unitForService } from "../src/deploy-units.ts";
 import { serviceName } from "../src/plain.ts";
-import drift, { externalTargets, observe, targets } from "../../drift-detector/src/index.ts";
+import drift, { externalRpcTargets, externalTargets, observe, targets } from "../../drift-detector/src/index.ts";
 import { observe as kernelObserve } from "../../ai-kernel/src/syscall.ts";
 import { unhandledProblems } from "../../ai-kernel/src/owner-inbox.ts";
 import { compare } from "../../forge/src/census.ts";
@@ -32,6 +32,7 @@ function driftEnv(db: ReturnType<typeof migratedDb>, probes: string[]) {
     SVC_SIGNAL_ENGINE: healthy("signal-engine"), SVC_HOME: healthy("home"),
     EXT_XAUUSD_AI: ok("x-ai"), EXT_XAUUSD_NEWS: ok("x-news"), EXT_XAUUSD_PULL_ADAPTER: ok("x-pull"), EXT_XAUUSD_NEXUS: ok("x-nexus"),
     EXT_AETHER: ok("aether"), EXT_XAUUSD_OMEGA: ok("omega"),
+    EXT_CRYPTOPHYS_CTA: { health: async () => { probes.push("cta"); return { ok: true, service: "cryptophys-cta" }; } },
   } as any;
 }
 
@@ -127,7 +128,7 @@ test("R64-5. the census and the DNA: neither is declared, deployed or observed, 
   for (const id of RETIRED) {
     assert.equal(genome.has(id), false, `${id} has no DNA`);
     assert.equal(unitForService(id), null, `${id} has no deploy unit`);
-    assert.equal(id in targets({} as never) || id in externalTargets({} as never), false, `${id} has no drift target`);
+    assert.equal(id in targets({} as never) || id in externalTargets({} as never) || id in externalRpcTargets({} as never), false, `${id} has no drift target`);
     assert.equal(existsSync(new URL(`workers/${id.replace(/^cryptophys-/, "")}`, ROOT)), false, `${id} has no source`);
   }
   assert.deepEqual([serviceName("cryptophys-home"), serviceName("cryptophys-signal-engine")].every((n) => n.length > 0), true, "historical rows still read as words");

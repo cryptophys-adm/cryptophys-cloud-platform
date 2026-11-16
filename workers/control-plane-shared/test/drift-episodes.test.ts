@@ -27,6 +27,7 @@ function setup() {
     },
     SVC_DEPLOYMENT_ORCHESTRATOR: healthy(() => orchestratorTag),
     EXT_XAUUSD_AI: ok, EXT_XAUUSD_NEWS: ok, EXT_XAUUSD_PULL_ADAPTER: ok, EXT_XAUUSD_NEXUS: ok, EXT_AETHER: ok, EXT_XAUUSD_OMEGA: ok,
+    EXT_CRYPTOPHYS_CTA: { health: async () => ({ ok: true, service: "cryptophys-cta", publish: "off" }) },
   };
   for (const name of ["SVC_PLATFORM_API", "SVC_PLATFORM_REGISTRY", "SVC_POLICY_ENGINE", "SVC_AUDIT_LEDGER", "SVC_RECOVERY_MANAGER", "SVC_AI_KERNEL", "SVC_CONSOLE", "SVC_HOME", "SVC_FORGE"]) env[name] = healthy(() => TAG);
   db.raw.exec(`UPDATE service_registry SET desired_version = '${TAG}' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-aether', 'cryptophys-signal-engine')`);
