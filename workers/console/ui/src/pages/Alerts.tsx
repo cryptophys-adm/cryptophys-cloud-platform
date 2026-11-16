@@ -20,6 +20,8 @@ const TOPIC_TEXT: Record<string, string> = {
   organism: "Organism changes (normally Console only)",
   build_minutes: "Build minutes at 80% (normally Console only)",
   dependencies: "High dependency advisories (normally Console only)",
+  // Owner 2026-11-16: the xauusd Worker's EA heartbeat and terminal-health messages, relayed by the AI Kernel.
+  ea_heartbeat: "XAUUSD EA heartbeat (relayed from the xauusd Worker)",
 };
 
 function TopicPicker({ topics, value, onChange, disabled }: { topics: any[]; value: string[]; onChange: (v: string[]) => void; disabled?: boolean }) {
@@ -52,7 +54,8 @@ function ChannelCard({ c, topics, reload }: { c: any; topics: any[]; reload: () 
         {" "}· changed {ago(c.updated_at)} by <span className="mono">{c.updated_by}</span>
       </div>
       <div className="text-[11px] text-slate-400">Sends: {c.topics.length ? c.topics.map((t: string) => TOPIC_TEXT[t] ?? t).join(" · ") : "nothing"}</div>
-      {editing && <TopicPicker topics={topics} value={editing} onChange={setEditing} />}
+      {/* A relayed topic never goes back through the xauusd bot it came from (the kernel refuses it there). */}
+      {editing && <TopicPicker topics={isDefault ? topics.filter((t) => !t.relay) : topics} value={editing} onChange={setEditing} />}
       {who.approver ? (
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn !py-1" onClick={() => act({ route: "kernel.alert_update", params: c.channel_id, body: { enabled: !c.enabled }, title: `${c.enabled ? "Disable" : "Enable"} ${c.name}`, done: c.enabled ? "Disabled." : "Enabled.", after: reload })}>
@@ -107,7 +110,7 @@ export default function Alerts() {
     <div className="space-y-4">
       <Panel title="Telegram alerts" icon={<BellRing className="h-3.5 w-3.5 text-cyan-300" />} right={<Badge tone="slate">{channels.filter((c) => c.enabled).length} enabled</Badge>}>
         <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
-          Where the platform's owner alerts go. A message is sent when an alert opens, changes or is resolved; a failed send is retried at most three times, on that channel only. Changes here take effect at the next run, without a deploy.
+          Where the platform's owner alerts go. A message is sent when an alert opens, changes or is resolved; a failed send is retried at most three times, on that channel only. Changes here take effect at the next run, without a deploy. The XAUUSD EA heartbeat topic is different: each message the xauusd Worker hands to the AI Kernel is sent once, to the channels that list it (at most 20 an hour), and never through the xauusd bot.
         </p>
         {loading && !data ? <Skeleton rows={4} /> : error && !data ? <Empty>{error}</Empty> : data?.available === false ? (
           <Empty>The alert channels table is not there yet: the AI Kernel's next deploy applies migration 0056.</Empty>
