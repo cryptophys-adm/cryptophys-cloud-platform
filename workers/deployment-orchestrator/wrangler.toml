@@ -1,6 +1,10 @@
 name = "cryptophys-deployment-orchestrator"
 main = "src/worker.ts"
 compatibility_date = "2026-11-01"
+# Gate 4 (owner 2026-11-15): the native deploy's smoke tests fetch other Workers' workers.dev hostnames through
+# Cloudflare Access (native-smoke.ts). A Worker-to-Worker fetch on the same account is refused (error 1042) unless
+# global fetch() routes "as if made on the public Internet". The Orchestrator fetches no hostname of its own zones.
+compatibility_flags = ["global_fetch_strictly_public"]
 workers_dev = true
 routes = [{ pattern = "deploy-orchestrator.cryptophys.work", custom_domain = true }]
 

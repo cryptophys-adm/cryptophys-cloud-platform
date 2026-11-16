@@ -47,6 +47,15 @@
 // it). Removals and destructive migrations are refused with a reason naming them, unless the owner-approved
 // break-glass plan names them in `destructive_topology` (opts.destructiveTopology; recovery-deploy.ts): then they are
 // applied, each one audited first, the irreversible ones (a deleted Durable Object class, a deleted Workflow) saying so.
+//
+// Gate 4 part A (owner 2026-11-15) adds two checks from the deploy workflows, in their own modules:
+//   - deploy-vars.ts: the deploy-time `--var` values, kept from the active version, checked before the upload
+//     (present, well formed, consistent; a value no platform source holds refuses the deploy) and after it (the
+//     new version binds exactly the kept text), when `deployVars` is given;
+//   - native-smoke.ts: the workflows' smoke tests through Cloudflare Access with a service token, after each
+//     Worker's live check (before its script settings and topology) and after the whole unit (after every
+//     Worker's topology, before the desired version), when `smoke` is given; a failed probe restores the applied
+//     topology, the script settings and every changed Worker, like a failed live check.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -61,6 +70,9 @@ import {
   assetsConfigFromToml, configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings,
   type AssetsConfig, type ConfigPlan, type PlanStep,
 } from "./config-diff.ts";
+import { deployVarsConsistent, keptDeployVars, verifyDeployVars, type DeployVarReference } from "./deploy-vars.ts";
+import type { SmokeHooks } from "./native-smoke.ts";
+import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
 import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
 import {
   applyTopologyStep, deployWithDoMigration, DO_IRREVERSIBLE, planTopology, restoreTopologyStep, topologyDiff, topologyStepLabel, type TopologyPlan, type TopologyStep,
@@ -481,7 +493,7 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
  * Without a reader that can list the routes, it keeps the G2b answer, `assets`.
  */
 export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader,
-  opts: { migrations?: "plan" | "skip"; destructiveTopology?: readonly string[] } = {}): Promise<Eligibility> {
+  opts: { migrations?: "plan" | "skip"; destructiveTopology?: readonly string[]; deployVars?: DeployVarReference } = {}): Promise<Eligibility> {
   const allowed = opts.destructiveTopology ?? [];
   if (!env.BUNDLES) return { eligible: false, reason: "not_configured" };
   if (!HEX40.test(targetSha)) return { eligible: false, reason: "invalid_commit_sha" };
@@ -553,6 +565,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       planned.push({ service, worker, running_tag: tag.slice(0, 12), ...(assets ? { assets } : {}) });
     }
     // Pass 2 (G2c-2): only now Cloudflare is read, for the Workers that need a plan.
+    const records = new Map<string, VersionRecord>();
     for (const p of toPlan) {
       const { service } = p;
       if (!cf) return { eligible: false, reason: p.was.config_sha256 === planned[p.index].worker.config_sha256 ? "limits" : "config_changed", service };
@@ -561,6 +574,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       if (active.length !== 1 || active[0].percentage !== 100) return { eligible: false, reason: "active_deployment_split", service };
       let record: VersionRecord;
       try { record = await cf.version(service, active[0].version_id); } catch { return { eligible: false, reason: "active_bindings_unreadable", service }; }
+      records.set(service, record);
       const r = planWorkerConfig(p.runningToml, p.targetToml, record.resources?.bindings, allowed);
       if ("reason" in r) return { eligible: false, reason: r.reason, service };
       // Gate 4 part B: routes, Durable Object migrations and Workflows against the live state (no read when unchanged).
@@ -571,6 +585,26 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
         ...(t.plan.changes.length ? { topology: t.plan.changes } : {}),
         ...(t.plan.destructive.length ? { destructive: t.plan.destructive } : {}),
       } };
+    }
+    // Gate 4: the deploy-time --var values each Worker's new version must carry, kept from its active version (read
+    // only). A value no platform source holds keeps the unit on its workflow (deploy-vars.ts).
+    if (opts.deployVars) {
+      if (!cf) return { eligible: false, reason: "deploy_vars_unreadable" };
+      const kept: Record<string, string>[] = [];
+      for (const p of planned) {
+        let record = records.get(p.service);
+        if (!record) {
+          let active: DeploymentVersions;
+          try { active = await cf.active(p.service); } catch { return { eligible: false, reason: "active_deployment_unreadable", service: p.service }; }
+          if (active.length !== 1 || active[0].percentage !== 100) return { eligible: false, reason: "active_deployment_split", service: p.service };
+          try { record = await cf.version(p.service, active[0].version_id); } catch { return { eligible: false, reason: "active_bindings_unreadable", service: p.service }; }
+        }
+        const k = keptDeployVars(unit.unit, p.service, record.resources?.bindings, opts.deployVars);
+        if ("reason" in k) return { eligible: false, reason: k.reason, service: p.service };
+        kept.push(k.vars);
+      }
+      const inconsistent = deployVarsConsistent(kept);
+      if (inconsistent) return { eligible: false, reason: inconsistent };
     }
     // G2c-2 step 6: the zone routes the workflow attaches with its zone token, verified read only.
     for (const p of planned) {
@@ -622,6 +656,13 @@ export interface DeployRun {
   destructive_topology_applied?: string[];
   /** Gate 4 part B: what this run did that no restore can give back (a Durable Object class change, a deleted Workflow). */
   irreversible?: string[];
+  /** Gate 4: per Worker, the deploy-time `--var` names kept from the active version and verified (never the values). */
+  deploy_vars?: Record<string, string[]>;
+  /**
+   * Gate 4: the workflows' smoke tests through Access. `skipped` (with the reason) while the Orchestrator holds no
+   * service token; `failed` names the probe; a failure restores like a failed live check.
+   */
+  smoke?: { status: "passed" | "failed" | "skipped"; reason?: string; probe?: string; probes: number };
 }
 
 /** Every key of `want` is in `got` with an equal value (objects compared recursively, arrays exactly). */
@@ -700,7 +741,10 @@ export async function executeNativeDeploy(
   cf: CloudflareWorkers,
   env: { DRIFT: DriftProbeBinding; REGISTRY: RegistryRollbackBinding; BUNDLES: BundleReader; DB?: D1Database },
   requestId: string, commit: string, plan: PlannedService[],
-  opts: { delayMs?: number; migrations?: PlannedMigration[]; destructive?: readonly string[]; destructiveTopology?: readonly string[] } = {},
+  opts: {
+    delayMs?: number; migrations?: PlannedMigration[]; destructive?: readonly string[]; destructiveTopology?: readonly string[];
+    deployVars?: DeployVarReference; smoke?: SmokeHooks;
+  } = {},
 ): Promise<DeployRun> {
   const tag = commit.slice(0, 12);
   const steps: string[] = [];
@@ -728,8 +772,26 @@ export async function executeNativeDeploy(
   let migrating: string | null = null;
   let restorePoint: string | undefined;
   let current = "";
+  // Gate 4: the kept deploy-time values per Worker, and the smoke tests' record.
+  const keptVars: Record<string, Record<string, string>> = {};
+  const unitName = plan.length ? unitForService(plan[0].service)?.unit ?? "" : "";
+  let smoke: DeployRun["smoke"] = opts.smoke?.skipped ? { status: "skipped", reason: opts.smoke.skipped, probes: 0 } : undefined;
+  const smokeRan: string[] = [];
+  const runSmoke = async (r: Awaited<ReturnType<SmokeHooks["afterUnit"]>>) => {
+    smokeRan.push(...r.probes);
+    if (!r.ok) {
+      smoke = { status: "failed", reason: r.reason, probe: r.probe, probes: smokeRan.length };
+      throw new Error(`smoke_failed: ${r.probe}: ${r.reason}`);
+    }
+    smoke = { status: "passed", probes: smokeRan.length };
+  };
+  const gate4 = () => ({
+    ...(Object.keys(keptVars).length ? { deploy_vars: Object.fromEntries(Object.entries(keptVars).map(([k, v]) => [k, Object.keys(v)])) } : {}),
+    ...(smoke ? { smoke } : {}),
+  });
   try {
     if (!HEX40.test(commit) || !plan.length) throw new Error("invalid_plan");
+    if ((opts.deployVars || opts.smoke) && !unitName) throw new Error("invalid_plan");
     if (migrations.length) {
       if (!env.DB) throw new Error("migration_db_unavailable");
       restorePoint = new Date().toISOString();
@@ -765,12 +827,14 @@ export async function executeNativeDeploy(
       let configPlan: ConfigPlan | null = null;
       let topo: TopologyPlan | null = null;
       let active: { names: string[]; digest: string } | null = null;
+      let capturedRecord: VersionRecord | null = null;
       if (config) {
         const run = await readConfig(env.BUNDLES, config.running_commit, config.running);
         if ("reason" in run) throw new Error(run.reason);
         const tgt = await readConfig(env.BUNDLES, commit, worker);
         if ("reason" in tgt) throw new Error(tgt.reason);
         const record = await cf.version(service, captured[0].version_id);
+        capturedRecord = record;
         const r = planWorkerConfig(run.toml, tgt.toml, record.resources?.bindings, opts.destructiveTopology ?? []);
         if ("reason" in r) throw new Error(`config_plan_refused: ${r.reason}`);
         configPlan = r.plan;
@@ -782,6 +846,16 @@ export async function executeNativeDeploy(
         if (t.plan.changes.length) steps.push(`${service}:topology_planned`);
       } else {
         active = await cf.versionBindingSet(service, captured[0].version_id);
+      }
+      // Gate 4: the deploy-time --var values, from the version just captured, before anything is uploaded.
+      if (opts.deployVars) {
+        const record = capturedRecord ?? await cf.version(service, captured[0].version_id);
+        const k = keptDeployVars(unitName, service, record.resources?.bindings, opts.deployVars);
+        if ("reason" in k) throw new Error(`deploy_vars_refused: ${k.reason}`);
+        const inconsistent = deployVarsConsistent([...Object.values(keptVars), k.vars]);
+        if (inconsistent) throw new Error(`deploy_vars_refused: ${inconsistent}`);
+        keptVars[service] = k.vars;
+        steps.push(`${service}:vars_kept`);
       }
       // G2c-2 step 6: a Worker with static assets. The route again (read only), the stored build again (hashes,
       // index.html), then the assets, before the version that uses them.
@@ -858,12 +932,23 @@ export async function executeNativeDeploy(
         const v = verifyVersionSettings(configPlan.metadata, uploaded);
         if (!v.ok) throw new Error(`version_settings_differ: ${v.reason}`);
         steps.push(`${service}:settings_match`);
+        if (keptVars[service]) {
+          const d = verifyDeployVars(keptVars[service], uploaded.resources?.bindings);
+          if (!d.ok) throw new Error(`deploy_vars_differ: ${d.reason}`);
+          steps.push(`${service}:vars_verified`);
+        }
       } else {
         // keep_bindings copies from the script's latest version, which need not be the active one. The guard is
         // this comparison: the new version must bind exactly what production binds now, or traffic never moves.
         const uploaded = await readUploaded(() => cf.versionBindingSet(service, versionId), opts.delayMs);
         if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
         steps.push(`${service}:bindings_match`);
+        if (keptVars[service]) {
+          const record = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
+          const d = verifyDeployVars(keptVars[service], record.resources?.bindings);
+          if (!d.ok) throw new Error(`deploy_vars_differ: ${d.reason}`);
+          steps.push(`${service}:vars_verified`);
+        }
       }
       if (!topo?.migration) {
         // Recorded before the POST: an ambiguous failure of the deploy call is restored as well.
@@ -879,6 +964,12 @@ export async function executeNativeDeploy(
       }
       if (!live) throw new Error("not_live_at_tag");
       steps.push(`${service}:verified`);
+      // Gate 4: the workflow's checks of this Worker through Access (verify-worker-live.sh --require-access), before
+      // new schedules reach it. A failure restores like a failed live check.
+      if (opts.smoke && !opts.smoke.skipped) {
+        await runSmoke(await opts.smoke.afterService(unitName, service, tag));
+        steps.push(`${service}:smoke_passed`);
+      }
       // G2c-2: crons fire against the active deployment, so new schedules reach only verified new code.
       for (const step of configPlan?.steps ?? []) {
         settings.push({ service, step });
@@ -902,6 +993,11 @@ export async function executeNativeDeploy(
       }
     }
     current = "";
+    // Gate 4: the unit's own smoke step from its workflow, after every Worker is live, before the desired version.
+    if (opts.smoke && !opts.smoke.skipped) {
+      await runSmoke(await opts.smoke.afterUnit(unitName, tag));
+      steps.push("unit:smoke_passed");
+    }
     if (!env.REGISTRY.recordNativeDeploy) throw new Error("registry_native_deploy_unavailable");
     await env.REGISTRY.recordNativeDeploy(requestId);
     steps.push("desired_recorded");
@@ -913,6 +1009,7 @@ export async function executeNativeDeploy(
       ...(doMigrations.length ? { do_migrations: doMigrations } : {}),
       ...(destructiveApplied.length ? { destructive_topology_applied: [...new Set(destructiveApplied)] } : {}),
       ...(irreversible.length ? { irreversible } : {}),
+      ...gate4(),
     };
   } catch (err) {
     const reason = String((err as Error)?.message ?? err).slice(0, 200);
@@ -948,6 +1045,7 @@ export async function executeNativeDeploy(
       ...(doMigrations.length ? { do_migrations: doMigrations } : {}),
       ...(destructiveApplied.length ? { destructive_topology_applied: [...new Set(destructiveApplied)] } : {}),
       ...(irreversible.length ? { irreversible } : {}),
+      ...gate4(),
       ...(migrating ? { migration_failed: migrating } : {}),
     };
   }

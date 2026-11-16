@@ -117,7 +117,8 @@ test("CD3. an unchanged config keeps every active binding verbatim, the deploy-t
   assert.equal(plan.bindings.length, active.length - 2);
   assert.ok(Object.values(plan.sources).every((s) => s === "active"));
   assert.deepEqual(plan.bindings.find((b) => b.name === "ACCESS_AUD"), { type: "plain_text", name: "ACCESS_AUD", text: "aud-tag" });
-  assert.deepEqual(plan.metadata, { compatibility_date: "2026-11-01", compatibility_flags: [] });
+  // Gate 4 (2026-11-15): the Orchestrator's config sets global_fetch_strictly_public for the smoke tests.
+  assert.deepEqual(plan.metadata, { compatibility_date: "2026-11-01", compatibility_flags: ["global_fetch_strictly_public"] });
   // A Durable Object binding is sent without its namespace_id, which the API assigns.
   assert.ok(!("namespace_id" in uploadBindings(plan).find((b) => b.name === "DEPLOYMENT_LOCK")!));
   assert.deepEqual(verifyPlannedBindings(plan, uploadedFrom(plan)), { ok: true });
