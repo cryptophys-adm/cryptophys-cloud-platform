@@ -112,6 +112,9 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"],
   ["registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"],
   ["registry.accounts_sync", "registry", "POST", "/v1/accounts/sync-login", true, "SYNC"],
+  // Owner 2026-11-16: the deploy-time identity lists' source (Users page); the write is an owner's, with a typed phrase.
+  ["registry.identities", "registry", "GET", "/v1/identities", false, null],
+  ["registry.identities_update", "registry", "POST", "/v1/identities", true, "IDENTITIES"],
   ["policy.decisions", "policy", "GET", "/v1/decisions", false, null],
   ["policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null],
   ["policy.evaluate", "policy", "POST", "/v1/evaluate", false, null],
@@ -128,11 +131,12 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 68 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 70 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
   // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
-  assert.equal(UI_ROUTES.length, 68);
+  // + registry.identities and registry.identities_update (owner 2026-11-16).
+  assert.equal(UI_ROUTES.length, 70);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -141,7 +145,7 @@ test("1. route table: exactly the 68 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 68);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 70);
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
   assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
   assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
@@ -154,9 +158,9 @@ test("1. route table: exactly the 68 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the nineteen approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation; since 2026-11-13 the acknowledgement of a critical report and the alert channels; the registry writes left on 2026-11-15)", () => {
+test("2. approver flags: exactly the twenty approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation; since 2026-11-13 the acknowledgement of a critical report and the alert channels; the registry writes left on 2026-11-15; since 2026-11-16 the identity lists)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync"].sort());
+  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.identities_update"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -238,7 +242,8 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy row, orchestrator POST /v1/deployments (owner 2026-11-14).
   // - the two registry PUT rows, a service record and a desired version (owner 2026-11-15).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 66);
+  // + the registry's GET and POST /v1/identities (owner 2026-11-16).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 68);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
@@ -369,5 +374,6 @@ test("15. owner 2026-11-15: the registry edit routes are gone; the Console refus
   assert.equal((await run(env, creq("GET", "/api/registry/v1/services/cryptophys-platform-api", { jwt: OPERATOR_JWT }))).status, 200);
   assert.equal(registry.calls.length, 2);
   assert.equal((await run(env, creq("GET", "/api/drift/v1/drift/cryptophys-platform-api", { jwt: OPERATOR_JWT }))).status, 200);
-  assert.ok(UI_ROUTES.every((r) => r.service !== "registry" || r.method === "GET" || r.id.startsWith("registry.account")), "only account routes write to the Registry");
+  // Owner 2026-11-16: the owner's identity lists are the one other Registry write (an owner's, with a typed phrase).
+  assert.ok(UI_ROUTES.every((r) => r.service !== "registry" || r.method === "GET" || r.id.startsWith("registry.account") || r.id === "registry.identities_update"), "only account routes and the identity lists write to the Registry");
 });
