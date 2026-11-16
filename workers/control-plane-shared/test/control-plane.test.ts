@@ -327,11 +327,14 @@ test("drift detector compares registry desired versions with live versions over 
     EXT_XAUUSD_NEXUS: http((path) => path === "/" ? new Response("<html>", { status: 200 }) : new Response("no", { status: 404 })),
     EXT_AETHER: http((path) => path === "/health" ? Response.json({ status: "ok", service: "cryptophys-aether" }) : new Response("no", { status: 404 })),
     EXT_XAUUSD_OMEGA: http((path) => path === "/health" ? Response.json({ status: "ok", service: "xauusd-omega" }) : new Response("no", { status: 404 })),
+    // cryptophys-cta: CtaHealth RPC (health() only), not registered by any migration yet.
+    EXT_CRYPTOPHYS_CTA: { health: async () => ({ ok: true, service: "cryptophys-cta", publish: "off" }) },
   };
   assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
   assert.equal((await call(drift, { ...env, SVC_POLICY_ENGINE: undefined }, req("GET", "/ready"))).status, 503);
   assert.equal((await call(drift, { ...env, EXT_XAUUSD_NEXUS: undefined }, req("GET", "/ready"))).status, 503);
   assert.equal((await call(drift, { ...env, EXT_XAUUSD_OMEGA: undefined }, req("GET", "/ready"))).status, 503);
+  assert.equal((await call(drift, { ...env, EXT_CRYPTOPHYS_CTA: undefined }, req("GET", "/ready"))).status, 503);
   // Platform Workers only: cryptophys-aether is external (Workers Builds) and health-managed, like the xauusd Workers.
   db.raw.exec("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-recovery-manager', 'cryptophys-aether')");
 
