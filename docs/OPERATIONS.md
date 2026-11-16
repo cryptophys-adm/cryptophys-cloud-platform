@@ -99,7 +99,7 @@ Two changes close this (cut-over gate, owner 2026-11-15, "1 setuju"):
 **Signs.** The Owner page lists "deploy executor blocked" (`executor_deploy_failed`): the Orchestrator's own last native deploy of its unit failed in the last 24 hours. Or the same `deploy_commit` of a unit fails again with the same reason, the fix for that reason is merged on main, and the fix is in `workers/deployment-orchestrator/` (or in what it imports) while the Orchestrator is not yet on that commit.
 
 **Way out (owner).**
-1. Acknowledge the critical report on the Owner page once production is checked (each failed native deploy restores the Workers it changed; the Drift Detector's tags show what runs).
+1. Acknowledge the critical report on the Owner page once production is checked (each failed native deploy restores the Workers it changed; the Drift Detector's tags show what runs); a Worker whose restore failed is named in the report's `not_restored`, with the reason in its `<worker>:restore_failed:<reason>` step, and may still run the new version: roll it back to its captured tag first ("Last resort", step 2).
 2. Run the rescue deploy of the Orchestrator at main's head (below). The planner then continues with the remaining units through the fixed Orchestrator, on its own.
 3. Only if the rescue deploy is not configured or refuses: until cut-over step 6, run `deploy-deployment-orchestrator.yml` (`confirm_production` = `DEPLOY`, `commit_sha` = main's full 40-character head, no trailing space) and, if the blocked unit is the Control Plane, `deploy-control-plane.yml` with the same inputs. Two dispatches of the same workflow queue behind each other (one concurrency group per unit).
 
