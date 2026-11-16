@@ -39,10 +39,12 @@ function driftTestEnv(db: any, extra: Record<string, unknown> = {}) {
   } as any;
 }
 
-test("1. Migration: service_registry has 18 rows (15 + Aether from 0027 + Forge from 0030 + Omega from 0042), console registered, home kept but disabled (0055), schemaReady is true", async () => {
+test("1. Migration: service_registry has 19 rows (15 + Aether from 0027 + Forge from 0030 + Omega from 0042 + cta from 0074), console registered, home kept but disabled (0055), schemaReady is true", async () => {
   const db = migratedDb();
   const rows = db.raw.prepare("SELECT * FROM service_registry ORDER BY service_id").all() as any[];
-  assert.equal(rows.length, 18);
+  assert.equal(rows.length, 19);
+  const ctaRow = rows.find((r) => r.service_id === "cryptophys-cta");
+  assert.deepEqual([ctaRow?.status, ctaRow?.environment, ctaRow?.endpoint, ctaRow?.desired_version, ctaRow?.observed_version], ["registered", "production", "https://cta.cryptophys.work", null, null]);
 
   const omegaRow = rows.find((r) => r.service_id === "xauusd-omega");
   assert.ok(omegaRow);
@@ -263,14 +265,15 @@ test("CTA: cryptophys-cta is probed over EXT_CRYPTOPHYS_CTA (CtaHealth.health())
   assert.equal(externalRpcTargets(env as never)["cryptophys-cta"], env.EXT_CRYPTOPHYS_CTA);
   assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
   assert.equal((await call(drift, { ...env, EXT_CRYPTOPHYS_CTA: undefined }, req("GET", "/ready"))).status, 503);
-  // Not in the registry (no migration registers it yet): nothing is probed or recorded for it.
+  // Without a registry row (as before migration 0074): nothing is probed or recorded for it.
   let calls = 0;
   const counted = { health: async () => { calls++; return { ok: true, service: "cryptophys-cta" }; } };
+  db.raw.prepare("DELETE FROM service_registry WHERE service_id = 'cryptophys-cta'").run();
   const before: any = await observe(driftTestEnv(db, { EXT_CRYPTOPHYS_CTA: counted }), "test", "test");
   assert.equal(before.services.some((s: any) => s.service_id === "cryptophys-cta"), false);
   assert.equal(calls, 0);
-  // Once a registry row exists: healthy when health() answers ok for this service; anything else drifts.
-  db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, metadata_json, created_at, updated_at) VALUES ('cryptophys-cta', 'Cryptophys CTA', 'production', 'registered', '{}', '2026-11-16T12:00:00.000Z', '2026-11-16T12:00:00.000Z')").run();
+  // Once the registry row exists (0074, applied again here): healthy when health() answers ok for this service; anything else drifts.
+  db.raw.exec(readFileSync(new URL("../../control-plane-migrations/0074_register_cta.sql", import.meta.url), "utf8"));
   const ok: any = await observe(driftTestEnv(db, { EXT_CRYPTOPHYS_CTA: counted }), "test", "test");
   const cta = ok.services.find((s: any) => s.service_id === "cryptophys-cta");
   assert.deepEqual([cta.drifted, cta.managed, cta.status, cta.probe.healthy, cta.probe.version_tag, calls], [false, false, "healthy", true, null, 1]);

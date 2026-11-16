@@ -30,7 +30,7 @@ function setup() {
     EXT_CRYPTOPHYS_CTA: { health: async () => ({ ok: true, service: "cryptophys-cta", publish: "off" }) },
   };
   for (const name of ["SVC_PLATFORM_API", "SVC_PLATFORM_REGISTRY", "SVC_POLICY_ENGINE", "SVC_AUDIT_LEDGER", "SVC_RECOVERY_MANAGER", "SVC_AI_KERNEL", "SVC_CONSOLE", "SVC_HOME", "SVC_FORGE"]) env[name] = healthy(() => TAG);
-  db.raw.exec(`UPDATE service_registry SET desired_version = '${TAG}' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-aether', 'cryptophys-signal-engine')`);
+  db.raw.exec(`UPDATE service_registry SET desired_version = '${TAG}' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-aether', 'cryptophys-cta', 'cryptophys-signal-engine')`);
   db.raw.exec("UPDATE service_registry SET status = 'disabled' WHERE service_id = 'cryptophys-signal-engine'");
   return { db, env, reports, setTag: (t: string | null) => { orchestratorTag = t; } };
 }

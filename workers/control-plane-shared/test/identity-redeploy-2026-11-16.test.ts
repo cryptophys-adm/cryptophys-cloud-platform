@@ -588,7 +588,7 @@ test("IR-9. break-glass and rescue are unchanged; the docs say how an identity c
   const section = ops.slice(ops.indexOf("Changing an operator or approver email"));
   assert.match(section.slice(0, 4000), /redeploy/i);
   assert.match(section.slice(0, 4000), /identity_vars/);
-  assert.match(read("docs/SSOT.md"), /Last reviewed: 2026-11-16 \([^)]*redeploy for identities/);
+  assert.match(read("docs/SSOT.md"), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*redeploy for identities/m);
 });
 
 // ================================================================= 10-14. owner 2026-11-16 ("sesuai rekomendasimu"): retries, the CI token, the label

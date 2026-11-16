@@ -838,3 +838,40 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER)\b", pi_code) a
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", pi_sql, re.I), "0073 is not destructive"
 pi_db.close()
 print("PASS: 0073 platform identities (new table, no row, one row 'access', source seed/owner, revision >= 1, rows kept)")
+# Migration 0074 (2026-11-16): register cryptophys-cta (repository cryptophys-adm/cryptophys-cta, origin cta), live at
+# https://cta.cryptophys.work. Additive: one new service_registry row, status 'registered', health-managed (desired and
+# observed version NULL, like Aether); no agent is registered (register_agent stays the census/consensus path). Every
+# earlier table and row is kept, and applying it again changes nothing.
+ct_db = sqlite3.connect(":memory:")
+ct_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0074_":
+        ct_db.executescript(migration.read_text(encoding="utf-8"))
+def ct_snapshot():
+    return {r[0]: ct_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in ct_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+ct_before = ct_snapshot()
+assert ct_db.execute("SELECT COUNT(*) FROM service_registry WHERE service_id = 'cryptophys-cta'").fetchone()[0] == 0
+ct_sql = (ROOT / "0074_register_cta.sql").read_text(encoding="utf-8")
+ct_db.executescript(ct_sql)
+ct_after = ct_snapshot()
+assert set(ct_after) == set(ct_before), "0074 creates and drops no table"
+for table, rows in ct_before.items():
+    if table != "service_registry":
+        assert ct_after[table] == rows, f"0074 keeps every row of {table}"
+ct_rows = {r[0]: r for r in ct_after["service_registry"]}
+assert {k: v for k, v in ct_rows.items() if k != "cryptophys-cta"} == {r[0]: r for r in ct_before["service_registry"]}, "0074 keeps every other service row"
+ct_row = ct_db.execute(
+    "SELECT display_name, endpoint, desired_version, observed_version, environment, status, metadata_json FROM service_registry WHERE service_id = 'cryptophys-cta'"
+).fetchone()
+assert ct_row[:6] == ("Cryptophys CTA · content studio", "https://cta.cryptophys.work", None, None, "production", "registered"), ct_row
+ct_meta = json.loads(ct_row[6])
+assert ct_meta["repository"] == "cryptophys-adm/cryptophys-cta" and ct_meta["origin"] == "cta" and ct_meta["owner"] == "cryptophys-adm", ct_meta
+assert "retired_at" not in ct_meta and "health_path" not in ct_meta, "active, and probed over RPC, not HTTP"
+assert ct_db.execute("SELECT COUNT(*) FROM agents WHERE host_worker = 'cryptophys-cta'").fetchone()[0] == 0, "0074 registers no agent"
+ct_db.executescript(ct_sql)
+assert ct_snapshot() == ct_after, "0074 applied again changes nothing"
+ct_code = "\n".join(line.split("--", 1)[0] for line in ct_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", ct_code) and ct_code.count("INSERT OR IGNORE INTO SERVICE_REGISTRY") == 1 and ct_code.count("INSERT") == 1, "0074 only inserts the one row"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", ct_sql, re.I), "0074 is not destructive"
+ct_db.close()
+print("PASS: 0074 register cryptophys-cta (additive, row present and active, versions unset, no agent, rows kept)")
