@@ -1231,7 +1231,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
 
     executed++;
     let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; restore_point?: RestorePoint; settings_applied?: string[]; changed?: boolean; production_changed?: boolean;
-      topology_applied?: string[]; do_migrations?: string[]; destructive_topology_applied?: string[]; irreversible?: string[] };
+      topology_applied?: string[]; do_migrations?: string[]; destructive_topology_applied?: string[]; irreversible?: string[]; not_restored?: string[] };
     if (isDeploy) {
       deploysRun++;
       // Gate 4 part A: the deploy-time values and the smoke tests through Access, on the planned path (routine and
@@ -1290,6 +1290,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
           ? "Deploy of " + String(details.unit) + " at " + r.requested_version.slice(0, 12) + " failed"
           : "Rollback of " + serviceName(r.service_id) + " to " + r.requested_version + " failed",
         body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}),
+          // 2026-11-16: the changed Workers a failed restore left on the new version (their restore_failed steps say why).
+          ...(run.not_restored?.length ? { not_restored: run.not_restored } : {}),
           // G2c-2: script settings (schedules, observability) applied before the failure; restored with the Workers.
           ...(run.settings_applied?.length ? { settings_applied: run.settings_applied } : {}),
           // Gate 4 part B: custom domains and Workflows applied before the failure (undone first), and Durable Object

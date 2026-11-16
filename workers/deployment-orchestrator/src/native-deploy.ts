@@ -645,6 +645,8 @@ export interface DeployRun {
   service?: string;
   /** Every captured deployment that was changed is active again (true when nothing was changed). */
   restored?: boolean;
+  /** 2026-11-16: the changed Workers whose captured deployment could not be made active again (each has a restore_failed step). */
+  not_restored?: string[];
   /** Whether production was changed (a deployment, a deploy call, or a D1 migration) before the failure. */
   production_changed?: boolean;
   /** service -> uploaded version id. */
@@ -751,16 +753,23 @@ async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof
  * cryptophys-platform-registry succeeded, the read of that version answered cloudflare_api_404_100146, and the
  * deploy restored the two services already moved). Only a 404 is read again, at most UPLOADED_READ_ATTEMPTS times;
  * every other answer, and a 404 that persists, fails the deploy as before. Nothing is deployed before this read.
+ * 2026-11-16 (6f3b831, cryptophys-ai-kernel): four reads 2 s apart were not enough, so the reads back off
+ * (UPLOADED_READ_DELAYS_MS, 63 s at most for one read). A run shares UPLOADED_READ_BUDGET_MS of these waits across
+ * all its reads, so a deploy of six Workers stays well inside the 15-minute wall time of its cron invocation.
  */
-export const UPLOADED_READ_ATTEMPTS = 4;
-export const UPLOADED_READ_DELAY_MS = 2_000;
-export async function readUploaded<T>(read: () => Promise<T>, delayMs?: number): Promise<T> {
+export const UPLOADED_READ_DELAYS_MS = [2_000, 3_000, 5_000, 8_000, 10_000, 15_000, 20_000] as const;
+export const UPLOADED_READ_ATTEMPTS = UPLOADED_READ_DELAYS_MS.length + 1;
+export const UPLOADED_READ_BUDGET_MS = 126_000;
+export async function readUploaded<T>(read: () => Promise<T>, delayMs?: number, budget: { waitedMs: number } = { waitedMs: 0 }): Promise<T> {
   for (let i = 1; ; i++) {
     try {
       return await read();
     } catch (err) {
       if (i >= UPLOADED_READ_ATTEMPTS || !/^cloudflare_api_404(_|$)/.test(String((err as Error)?.message ?? err))) throw err;
-      await sleep(delayMs ?? UPLOADED_READ_DELAY_MS);
+      const wait = UPLOADED_READ_DELAYS_MS[i - 1];
+      if (budget.waitedMs + wait > UPLOADED_READ_BUDGET_MS) throw err;
+      budget.waitedMs += wait;
+      await sleep(delayMs ?? wait);
     }
   }
 }
@@ -798,6 +807,8 @@ export async function executeNativeDeploy(
   // Gate 4 part B: topology steps, recorded (restore: true) right before their first write.
   const topoApplied: { service: string; step: TopologyStep; restore: boolean }[] = [];
   const doMigrations: string[] = [];
+  // 2026-11-16: the waits of every read-after-upload of this run together (readUploaded).
+  const readBudget = { waitedMs: 0 };
   const destructiveApplied: string[] = [];
   const irreversible: string[] = [];
   /** Gate 4 part B: a destructive item is audited before it is applied; without the audit it is not applied. */
@@ -980,7 +991,7 @@ export async function executeNativeDeploy(
       versions[service] = versionId;
       if (configPlan) {
         // G2c-2: the new version must bind exactly the plan and run with its settings, or traffic never moves.
-        const uploaded = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
+        const uploaded = await readUploaded(() => cf.version(service, versionId), opts.delayMs, readBudget);
         const b = verifyPlannedBindings(configPlan, uploaded.resources?.bindings);
         if (!b.ok) throw new Error(`planned_bindings_differ: ${b.reason}${b.binding ? ` (${b.binding})` : ""}`);
         steps.push(`${service}:bindings_match`);
@@ -995,11 +1006,11 @@ export async function executeNativeDeploy(
       } else {
         // keep_bindings copies from the script's latest version, which need not be the active one. The guard is
         // this comparison: the new version must bind exactly what production binds now, or traffic never moves.
-        const uploaded = await readUploaded(() => cf.versionBindingSet(service, versionId), opts.delayMs);
+        const uploaded = await readUploaded(() => cf.versionBindingSet(service, versionId), opts.delayMs, readBudget);
         if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
         steps.push(`${service}:bindings_match`);
         if (keptVars[service]) {
-          const record = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
+          const record = await readUploaded(() => cf.version(service, versionId), opts.delayMs, readBudget);
           const d = verifyDeployVars(keptVars[service], record.resources?.bindings);
           if (!d.ok) throw new Error(`deploy_vars_differ: ${d.reason}`);
           steps.push(`${service}:vars_verified`);
@@ -1069,11 +1080,12 @@ export async function executeNativeDeploy(
     };
   } catch (err) {
     const reason = String((err as Error)?.message ?? err).slice(0, 200);
+    const why = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 100);
     let restored = true;
     // Gate 4 part B: the topology steps first (newest first), only those that wrote something.
     for (const { service, step, restore } of [...topoApplied].reverse()) {
       if (!restore) continue;
-      try { steps.push(`${service}:${await restoreTopologyStep(cf.topology(), service, step, { delayMs: opts.delayMs })}`); } catch { restored = false; }
+      try { steps.push(`${service}:${await restoreTopologyStep(cf.topology(), service, step, { delayMs: opts.delayMs })}`); } catch (e) { restored = false; steps.push(`${service}:${topologyStepLabel(step)}_restore_failed:${why(e)}`); }
     }
     // G2c-2: the script settings first, newest first (each one's restore body is the running config's value),
     // then the deployments, so the old code never runs under the new schedules.
@@ -1081,18 +1093,21 @@ export async function executeNativeDeploy(
       try {
         await applyScriptSetting(cf, service, step, step.restore);
         steps.push(`${service}:${step.kind}_restored`);
-      } catch { restored = false; }
+      } catch (e) { restored = false; steps.push(`${service}:${step.kind}_restore_failed:${why(e)}`); }
     }
+    // 2026-11-16: every changed Worker is tried, newest change first; each failure is a step with its reason and the
+    // Worker is named in `not_restored` (it may still run the new version), so the report says what production runs.
+    const notRestored: string[] = [];
     for (const { service, captured } of [...changed].reverse()) {
       try {
         const now = await cf.active(service);
         if (!sameDeployment(now, captured)) await cf.deploy(service, captured, `deploy ${requestId} failed; restoring`);
-        if (!sameDeployment(await cf.active(service), captured)) restored = false;
-        else steps.push(`${service}:restored`);
-      } catch { restored = false; }
+        if (!sameDeployment(await cf.active(service), captured)) throw new Error("active_not_captured");
+        steps.push(`${service}:restored`);
+      } catch (e) { restored = false; notRestored.push(service); steps.push(`${service}:restore_failed:${why(e)}`); }
     }
     return {
-      ok: false, reason, ...(current ? { service: current } : {}), restored,
+      ok: false, reason, ...(current ? { service: current } : {}), restored, ...(notRestored.length ? { not_restored: notRestored } : {}),
       production_changed: changed.length > 0 || applied.length > 0 || settings.length > 0 || topoApplied.some((x) => x.restore), versions, steps,
       ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
       ...(bookmark ? { restore_point: bookmark } : {}),
