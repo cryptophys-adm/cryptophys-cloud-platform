@@ -127,11 +127,12 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     const perHour = await readPolicyParameter(db, "target-actions-per-hour");
     checks.push(check("target_rate_limit", (sameTarget?.n ?? 0) < perHour, `at most ${perHour} executed action(s) per action and target per hour`));
     const platform = await db.prepare(
-      `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
+      `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','deploy_destructive_migration','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
     ).bind(day).first<{ n: number }>();
     // Council-adjustable inside hard bounds (control-plane-shared/src/policy-params.ts, owner 2026-11-10).
     const daily = await readPolicyParameter(db, "daily-deploy-limit");
-    checks.push(check("platform_daily_limit", !["deploy_commit", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < daily,
+    // Gate 2026-11-15: an owner-clicked destructive deploy is a deploy too: it counts and is counted.
+    checks.push(check("platform_daily_limit", !["deploy_commit", "deploy_destructive_migration", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < daily,
       `at most ${daily} deploys or rollbacks per day across the platform`));
   } else {
     checks.push(check("known_action", false, `action must be one of ${ACTIONS.join(", ")}`));

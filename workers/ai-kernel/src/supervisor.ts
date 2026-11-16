@@ -23,6 +23,7 @@ import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "..
 import { SCHEDULED_IDLE_REASON, idleWindowMs, isIdle } from "../../control-plane-shared/src/agent-idle.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
+import { DESTRUCTIVE_DEPLOY_ACTION, DESTRUCTIVE_DEPLOY_UNIT, destructiveChanges } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { observerCycle } from "./observer-watch.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
@@ -504,7 +505,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
       const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
       const daily = await env.DB.prepare(
-        `SELECT COUNT(*) AS n, MIN(decided_at) AS oldest FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
+        `SELECT COUNT(*) AS n, MIN(decided_at) AS oldest FROM consensus_proposals WHERE action IN ('deploy_commit','deploy_destructive_migration','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
       ).bind(dayAgo).first<{ n: number; oldest: string | null }>();
       const dailyLimit = await readPolicyParameter(env.DB, "daily-deploy-limit");
       if ((daily?.n ?? 0) >= dailyLimit && pending.units.length > 0) {
@@ -540,6 +541,36 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           continue;
         }
         if (!pending.main_sha) break;
+        // Cut-over gate (owner 2026-11-15, "1 setuju"): a Control Plane deploy whose pending D1 migrations include
+        // destructive ones is the owner's click, never a routine deploy_commit. One critical proposal per commit, naming
+        // each destructive file and its sha256; re-proposed only after a policy veto (an hour later), after the owner
+        // window lapsed, or after a rejection that only the brake caused. Unreadable: the routine proposal as before (the
+        // routine native deploy refuses every destructive file).
+        if (u.unit === DESTRUCTIVE_DEPLOY_UNIT && env.DEPLOY.destructiveMigrations) {
+          const d = await env.DEPLOY.destructiveMigrations(pending.main_sha).catch(() => null);
+          if (d && !d.ok) report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: `destructive migrations unreadable: ${String(d.reason).slice(0, 80)}; the routine deploy refuses any` });
+          if (d?.ok && d.migrations.length) {
+            const files = d.migrations.map((m) => ({ file: m.file, sha256: m.sha256 }));
+            const again = await env.DB.prepare(
+              `SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND json_extract(params_json, '$.commit_sha') = ?
+                 AND (status NOT IN ('shadow_blocked', 'expired') OR created_at >= ?)
+                 AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
+            ).bind(DESTRUCTIVE_DEPLOY_ACTION, u.target, pending.main_sha, hourAgo, brakeOff ? 1 : 0).first();
+            if (again) {
+              report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: `main ${pending.main_sha.slice(0, 12)} has destructive migrations (${files.map((f) => f.file).join(", ")}); it waits for the owner's decision` });
+              continue;
+            }
+            const params: JsonObject = { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, destructive_migrations: files, reason: u.reason.slice(0, 200) };
+            // The Owner page lists params.changes; it is left out only when the proposal would exceed its size bound.
+            const withChanges: JsonObject = { ...params, changes: destructiveChanges(files) };
+            const r = await proposeConsensus({ action: DESTRUCTIVE_DEPLOY_ACTION, target: u.target, params: JSON.stringify(withChanges).length <= 1900 ? withChanges : params });
+            if (!r) break;
+            proposed += 1;
+            report.actions.push(r);
+            report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome, why: `destructive migrations need the owner: ${files.map((f) => f.file).join(", ")}`.slice(0, 300) });
+            continue;
+          }
+        }
         // Once per unit and commit, except that a proposal the Policy Engine vetoed (shadow_blocked,
         // e.g. a rate limit) is retried after an hour; otherwise a commit blocked once by the hourly
         // limit would never deploy (2026-11-07: #187 stayed undeployed after a target_rate_limit veto).

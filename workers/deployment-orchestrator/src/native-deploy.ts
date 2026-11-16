@@ -20,6 +20,9 @@
 //     binding, one file per D1 batch with the row `wrangler d1 migrations apply` writes to `d1_migrations`.
 //     The ledger must list exactly the running version's files first. Migrations are forward-only: a failure
 //     stops before any Worker deploys and fails the request with a critical report for the owner.
+//     Gate 2026-11-15: a destructive migration is applied only when an owner-approved request names it
+//     (deploy_destructive_migration, or a break-glass plan), and only after D1's Time Travel bookmark is read and
+//     recorded (`restorePoint`, d1-restore-point.ts); a bookmark that cannot be read stops before any change.
 //   - Multi-module Workers: every extra module the Forge stored (WebAssembly, text, data, ES modules), uploaded
 //     as its own multipart part under the name the bundle imports it by.
 //
@@ -61,6 +64,7 @@ import {
   assetsConfigFromToml, configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings,
   type AssetsConfig, type ConfigPlan, type PlanStep,
 } from "./config-diff.ts";
+import { RESTORE_POINT_EVENT, restoreCommand } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
 import {
   applyTopologyStep, deployWithDoMigration, DO_IRREVERSIBLE, planTopology, restoreTopologyStep, topologyDiff, topologyStepLabel, type TopologyPlan, type TopologyStep,
@@ -216,7 +220,7 @@ export interface PlannedAssets {
 }
 export interface PlannedService { service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig; assets?: PlannedAssets }
 /** A migration the deploy applies before its Workers, in this order. */
-export interface PlannedMigration { file: string; sha256: string }
+export interface PlannedMigration { file: string; sha256: string; destructive?: boolean }
 export type Eligibility =
   | { eligible: true; commit: string; services: PlannedService[]; migrations: PlannedMigration[] }
   | { eligible: false; reason: string; service?: string; file?: string };
@@ -430,7 +434,7 @@ export async function readMigration(bucket: BundleReader, commit: string, m: Pla
  * manifest's files (or already the target's: nothing to apply). Manifests without migration_files (G2b and
  * older) keep the G2b answer, new_migration.
  */
-async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, target: Manifest, running: Manifest, service: string):
+async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, target: Manifest, running: Manifest, service: string, named: readonly string[] = []):
   Promise<{ migrations: PlannedMigration[] } | { reason: string; service?: string; file?: string }> {
   const targetList = target.migrations!;
   const runningList = running.migrations!;
@@ -455,11 +459,18 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
   if (!ledger) return { reason: "d1_migrations_unreadable", service };
   if (sameList(ledger, targetList)) return { migrations: [] };
   if (!sameList(ledger, runningList)) return { reason: "d1_migrations_mismatch", service };
+  const out: PlannedMigration[] = [];
   for (const f of fresh) {
-    const r = await readMigration(env.BUNDLES!, target.commit, f);
+    // Gate 2026-11-15: only a file the owner-approved deploy_destructive_migration names may be destructive; any other
+    // destructive file keeps the routine refusal (destructive_migration). Routine deploys name none.
+    const r = await readMigration(env.BUNDLES!, target.commit, f, named.includes(f.file));
     if ("reason" in r) return { reason: r.reason, service, file: f.file };
+    out.push(r.destructive ? { file: f.file, sha256: f.sha256, destructive: true } : { file: f.file, sha256: f.sha256 });
   }
-  return { migrations: fresh.map((f) => ({ file: f.file, sha256: f.sha256 })) };
+  // A named file that is not one of these pending destructive migrations: the approval no longer matches main and D1.
+  const stale = named.find((n) => !out.some((m) => m.file === n && m.destructive));
+  if (stale) return { reason: "named_migration_not_pending_destructive", service, file: stale };
+  return { migrations: out };
 }
 
 /**
@@ -481,7 +492,7 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
  * Without a reader that can list the routes, it keeps the G2b answer, `assets`.
  */
 export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader,
-  opts: { migrations?: "plan" | "skip"; destructiveTopology?: readonly string[] } = {}): Promise<Eligibility> {
+  opts: { migrations?: "plan" | "skip"; destructive?: readonly string[]; destructiveTopology?: readonly string[] } = {}): Promise<Eligibility> {
   const allowed = opts.destructiveTopology ?? [];
   if (!env.BUNDLES) return { eligible: false, reason: "not_configured" };
   if (!HEX40.test(targetSha)) return { eligible: false, reason: "invalid_commit_sha" };
@@ -518,7 +529,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       if (opts.migrations !== "skip") {
         if (!now.migrations) return { eligible: false, reason: "migrations_unknown", service };
         if (migrationsFrom === null) {
-          const plan = await migrationPlan(env, unit, target, now, service);
+          const plan = await migrationPlan(env, unit, target, now, service, opts.destructive ?? []);
           if ("reason" in plan) return { eligible: false, ...plan };
           migrations = plan.migrations;
           migrationsFrom = now.migrations;
@@ -603,6 +614,11 @@ export interface DeployRun {
   migration_failed?: string;
   /** G2c-1: when migrating started, for a D1 Time Travel restore by the owner. */
   restore_point_at?: string;
+  /**
+   * Gate 2026-11-15: the D1 Time Travel bookmark read and recorded before the first destructive migration (only when
+   * the deploy applies one). The owner restores to it; the executor never does.
+   */
+  restore_point?: RestorePoint;
   /** G2c-2: the script settings applied after a live check, `<service>:<kind>`, in order (restored on failure). */
   settings_applied?: string[];
   /**
@@ -662,6 +678,9 @@ export async function applyMigration(db: D1Database, bucket: BundleReader, commi
   return r.statements.length;
 }
 
+/** Gate 2026-11-15: a D1 Time Travel bookmark of the control-plane database, read through the Cloudflare API. */
+export interface RestorePoint { bookmark: string; database_id: string; read_at: string }
+
 async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof appendAuditEvent>[1]): Promise<boolean> {
   if (!db) return false;
   try { await appendAuditEvent(db, event); return true; } catch { return false; }
@@ -696,11 +715,28 @@ export async function readUploaded<T>(read: () => Promise<T>, delayMs?: number):
   }
 }
 
+/**
+ * Gate 2026-11-15: store the bookmark before any migration runs. Both writes must succeed (not best effort): the
+ * request's details (`restore_point`, while it runs) and the audit event deployment.restore_point_recorded.
+ */
+async function recordRestorePoint(db: D1Database, requestId: string, commit: string, rp: RestorePoint, files: string[]): Promise<void> {
+  const r = await db.prepare("UPDATE deployment_requests SET details_json = json_set(details_json, '$.restore_point', json(?)), updated_at = ? WHERE request_id = ? AND status = 'running'")
+    .bind(JSON.stringify(rp), new Date().toISOString(), requestId).run();
+  if ((r.meta?.changes ?? 0) !== 1) throw new Error("restore_point_unrecorded: request not running");
+  await appendAuditEvent(db, {
+    event_type: RESTORE_POINT_EVENT, actor: "agent:deployment-orchestrator", subject: "cryptophys-control-plane", outcome: "recorded",
+    payload: { request_id: requestId, commit_sha: commit, bookmark: rp.bookmark, database_id: rp.database_id, read_at: rp.read_at, destructive_migrations: files, restore: restoreCommand(rp.bookmark) },
+  });
+}
+
 export async function executeNativeDeploy(
   cf: CloudflareWorkers,
   env: { DRIFT: DriftProbeBinding; REGISTRY: RegistryRollbackBinding; BUNDLES: BundleReader; DB?: D1Database },
   requestId: string, commit: string, plan: PlannedService[],
-  opts: { delayMs?: number; migrations?: PlannedMigration[]; destructive?: readonly string[]; destructiveTopology?: readonly string[] } = {},
+  opts: {
+    delayMs?: number; migrations?: PlannedMigration[]; destructive?: readonly string[];
+    destructiveTopology?: readonly string[]; restorePoint?: () => Promise<RestorePoint>;
+  } = {},
 ): Promise<DeployRun> {
   const tag = commit.slice(0, 12);
   const steps: string[] = [];
@@ -727,11 +763,24 @@ export async function executeNativeDeploy(
   const migrations = opts.migrations ?? [];
   let migrating: string | null = null;
   let restorePoint: string | undefined;
+  let bookmark: RestorePoint | undefined;
   let current = "";
   try {
     if (!HEX40.test(commit) || !plan.length) throw new Error("invalid_plan");
     if (migrations.length) {
       if (!env.DB) throw new Error("migration_db_unavailable");
+      // Gate 2026-11-15: before a destructive migration (only one the owner's approval names), D1's Time Travel
+      // bookmark is read and recorded, in the request's details and in the audit chain. Without it nothing changes.
+      if (migrations.some((m) => opts.destructive?.includes(m.file))) {
+        if (!opts.restorePoint) throw new Error("restore_point_unavailable: no bookmark reader");
+        try {
+          bookmark = await opts.restorePoint();
+        } catch (err) {
+          throw new Error(`restore_point_unavailable: ${String((err as Error)?.message ?? err).slice(0, 160)}`);
+        }
+        await recordRestorePoint(env.DB, requestId, commit, bookmark, migrations.filter((m) => opts.destructive!.includes(m.file)).map((m) => m.file));
+        steps.push("d1:restore_point_recorded");
+      }
       restorePoint = new Date().toISOString();
       for (const m of migrations) {
         migrating = m.file;
@@ -907,6 +956,7 @@ export async function executeNativeDeploy(
     steps.push("desired_recorded");
     return {
       ok: true, versions, steps, ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
+      ...(bookmark ? { restore_point: bookmark } : {}),
       ...(settings.length ? { settings_applied: settings.map((x) => `${x.service}:${x.step.kind}`) } : {}),
       ...(Object.keys(assetsRun).length ? { assets: assetsRun } : {}),
       ...(topoApplied.length ? { topology_applied: topoApplied.map((x) => `${x.service}:${topologyStepLabel(x.step)}`) } : {}),
@@ -942,6 +992,7 @@ export async function executeNativeDeploy(
       ok: false, reason, ...(current ? { service: current } : {}), restored,
       production_changed: changed.length > 0 || applied.length > 0 || settings.length > 0 || topoApplied.some((x) => x.restore), versions, steps,
       ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
+      ...(bookmark ? { restore_point: bookmark } : {}),
       ...(settings.length ? { settings_applied: settings.map((x) => `${x.service}:${x.step.kind}`) } : {}),
       ...(Object.keys(assetsRun).length ? { assets: assetsRun } : {}),
       ...(topoApplied.length ? { topology_applied: topoApplied.map((x) => `${x.service}:${topologyStepLabel(x.step)}`) } : {}),
