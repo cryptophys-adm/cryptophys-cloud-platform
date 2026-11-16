@@ -164,7 +164,8 @@ test("registry exposes the seeded inventory; a service record is no longer writt
   const db = migratedDb();
   const env = { ...baseEnv("cryptophys-platform-registry", db), APPROVER_IDENTITIES: APPROVER_EMAIL };
   const list = await call(registry, env, req("GET", "/v1/services"));
-  assert.equal(list.body.services.length, 18); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042)
+  assert.equal(list.body.services.length, 19); // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042) + cryptophys-cta (0074)
+  assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-cta").metadata.repository, "cryptophys-adm/cryptophys-cta");
   assert.equal(list.body.services.find((s: any) => s.service_id === "cryptophys-audit-ledger").metadata.owner, "cryptophys-adm");
 
   // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): PUT /v1/services/{id} is gone. Records come from the DNA, the
@@ -327,7 +328,7 @@ test("drift detector compares registry desired versions with live versions over 
     EXT_XAUUSD_NEXUS: http((path) => path === "/" ? new Response("<html>", { status: 200 }) : new Response("no", { status: 404 })),
     EXT_AETHER: http((path) => path === "/health" ? Response.json({ status: "ok", service: "cryptophys-aether" }) : new Response("no", { status: 404 })),
     EXT_XAUUSD_OMEGA: http((path) => path === "/health" ? Response.json({ status: "ok", service: "xauusd-omega" }) : new Response("no", { status: 404 })),
-    // cryptophys-cta: CtaHealth RPC (health() only), not registered by any migration yet.
+    // cryptophys-cta: CtaHealth RPC (health() only), registered by 0074.
     EXT_CRYPTOPHYS_CTA: { health: async () => ({ ok: true, service: "cryptophys-cta", publish: "off" }) },
   };
   assert.equal((await call(drift, env, req("GET", "/ready"))).body.status, "ready");
@@ -335,8 +336,9 @@ test("drift detector compares registry desired versions with live versions over 
   assert.equal((await call(drift, { ...env, EXT_XAUUSD_NEXUS: undefined }, req("GET", "/ready"))).status, 503);
   assert.equal((await call(drift, { ...env, EXT_XAUUSD_OMEGA: undefined }, req("GET", "/ready"))).status, 503);
   assert.equal((await call(drift, { ...env, EXT_CRYPTOPHYS_CTA: undefined }, req("GET", "/ready"))).status, 503);
-  // Platform Workers only: cryptophys-aether is external (Workers Builds) and health-managed, like the xauusd Workers.
-  db.raw.exec("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-recovery-manager', 'cryptophys-aether')");
+  // Platform Workers only: cryptophys-aether and cryptophys-cta are external (deployed from their own repositories) and
+  // health-managed, like the xauusd Workers.
+  db.raw.exec("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id LIKE 'cryptophys-%' AND service_id NOT IN ('cryptophys-recovery-manager', 'cryptophys-aether', 'cryptophys-cta')");
 
   const report = await call(drift, env, req("POST", "/v1/observe", { actor: "operator" }));
   const by = Object.fromEntries(report.body.services.map((s: any) => [s.service_id, s]));
@@ -363,14 +365,15 @@ test("drift detector compares registry desired versions with live versions over 
   assert.equal(by["xauusd-nexus-dashboard"].status, "healthy", "the dashboard is probed at its registered health_path /");
   assert.deepEqual([by["cryptophys-aether"].drifted, by["cryptophys-aether"].managed, by["cryptophys-aether"].status], [false, false, "healthy"], "Aether (0028) is probed at /health over EXT_AETHER, health-managed only");
   assert.deepEqual([by["xauusd-omega"].drifted, by["xauusd-omega"].managed, by["xauusd-omega"].status], [false, false, "healthy"], "Omega (0042) is probed at /health over EXT_XAUUSD_OMEGA, health-managed only");
+  assert.deepEqual([by["cryptophys-cta"].drifted, by["cryptophys-cta"].managed, by["cryptophys-cta"].status, by["cryptophys-cta"].reasons], [false, false, "healthy", ["desired_version_unset"]], "cta (0074) is probed over EXT_CRYPTOPHYS_CTA, health-managed only");
   assert.ok(probed.includes("/") && probed.filter((p) => p === "/health").length === 5, "four xauusd Workers and Aether are probed at /health");
   assert.equal(report.body.drifted, 6);
 
   const row = db.raw.prepare("SELECT observed_version, status FROM service_registry WHERE service_id = 'cryptophys-deployment-orchestrator'").get() as any;
   assert.deepEqual([row.observed_version, row.status], ["bbbbbbbbbbbb", "degraded"]);
   const latest = await call(drift, env, req("GET", "/v1/drift"));
-  // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042), less the two retired by 0064.
-  assert.equal(latest.body.services.length, 16);
+  // 15 + cryptophys-aether (0027/0028) + cryptophys-forge (0030) + xauusd-omega (0042) + cryptophys-cta (0074), less the two retired by 0064.
+  assert.equal(latest.body.services.length, 17);
   assert.equal(latest.body.services.some((s: any) => s.service_id === "cryptophys-home" || s.service_id === "cryptophys-signal-engine"), false);
   const history = await call(drift, env, req("GET", "/v1/drift/cryptophys-platform-api"));
   assert.equal(history.body.observations.length, 1);

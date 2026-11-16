@@ -557,7 +557,8 @@ test("IL-16. the docs say where the identity lists come from and how the owner c
   assert.match(ops, /IDENTITIES/);
   assert.match(ops, /platform_identities/);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /2026-11-16 \(the deploy-time identity lists get a native source, D1 `platform_identities`/);
+  // The 2026-11-16 entry of the "Last reviewed" line (newer segments are prepended within it, as the other entries' tests allow).
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*the deploy-time identity lists get a native source, D1 `platform_identities`/);
   assert.match(read("workers/deployment-orchestrator/src/deploy-vars.ts"), /vars_from_identity_table/);
 });
 
