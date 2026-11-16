@@ -774,3 +774,33 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", lh_code) and lh_
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", lh_sql, re.I), "0071 is not destructive"
 lh_db.close()
 print("PASS: 0071 linear-history guard (additive column, CHECK main_not_first_parent, rows kept)")
+# Migration 0072 (ADR-0012 gate 8, owner 2026-11-15): the daily verify of a stored git bundle. Additive: three nullable
+# columns on forge_git_backups (verified_at, verify_status in ('verified', 'failed'), verify_details) and an index;
+# every existing row is kept and reads NULL (not verified yet).
+gv_db = sqlite3.connect(":memory:")
+gv_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0072_":
+        gv_db.executescript(migration.read_text(encoding="utf-8"))
+gv_db.execute(
+    """INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, objects, refs)
+       VALUES ('gb-ok', ?, '2026-11-15', 't0', 'ok', 'git-backups/platform/x.bundle', ?, 10, 1, 1)""",
+    ("a" * 40, "b" * 64),
+)
+gv_before = gv_db.execute("SELECT * FROM forge_git_backups").fetchall()
+gv_sql = (ROOT / "0072_forge_git_backup_verify.sql").read_text(encoding="utf-8")
+gv_db.executescript(gv_sql)
+cols = [r[1] for r in gv_db.execute("PRAGMA table_info(forge_git_backups)")]
+assert cols[-3:] == ["verified_at", "verify_status", "verify_details"], cols
+assert [r[:-3] for r in gv_db.execute("SELECT * FROM forge_git_backups").fetchall()] == gv_before, "0072 keeps every row"
+assert gv_db.execute("SELECT verified_at, verify_status, verify_details FROM forge_git_backups").fetchone() == (None, None, None)
+for ok in ("verified", "failed"):
+    gv_db.execute("UPDATE forge_git_backups SET verified_at = 't1', verify_status = ?, verify_details = '{}' WHERE run_id = 'gb-ok'", (ok,))
+for bad in ("ok", "pending", ""):
+    expect_integrity_error(f"0072 verify_status {bad!r}", lambda bad=bad: gv_db.execute("UPDATE forge_git_backups SET verify_status = ? WHERE run_id = 'gb-ok'", (bad,)))
+assert "idx_forge_git_backups_verified" in {row[1] for row in gv_db.execute("PRAGMA index_list(forge_git_backups)")}
+gv_code = "\n".join(line.split("--", 1)[0] for line in gv_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", gv_code) and gv_code.count("ALTER TABLE FORGE_GIT_BACKUPS ADD COLUMN") == 3, "0072 only adds the columns"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", gv_sql, re.I), "0072 is not destructive"
+gv_db.close()
+print("PASS: 0072 git backup verify (additive columns, CHECK verified/failed, rows kept)")
