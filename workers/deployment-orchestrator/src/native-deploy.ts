@@ -54,7 +54,10 @@
 // Gate 4 part A (owner 2026-11-15) adds two checks from the deploy workflows, in their own modules:
 //   - deploy-vars.ts: the deploy-time `--var` values, kept from the active version, checked before the upload
 //     (present, well formed, consistent; a value no platform source holds refuses the deploy) and after it (the
-//     new version binds exactly the kept text), when `deployVars` is given;
+//     new version binds exactly the kept text), when `deployVars` is given. Owner 2026-11-16: the identity lists come
+//     from D1 `platform_identities` once an owner saved it; a changed value is written as the version's `plain_text`
+//     binding (code only: every plain-text binding sent, the rest kept; a plan: the planned binding's text) and the
+//     binding check expects exactly the active set with that text replaced;
 //   - native-smoke.ts: the workflows' smoke tests through Cloudflare Access with a service token, after each
 //     Worker's live check (before its script settings and topology) and after the whole unit (after every
 //     Worker's topology, before the desired version), when `smoke` is given; a failed probe restores the applied
@@ -66,14 +69,16 @@ import {
   D1_MIGRATION_INSERT, D1_MIGRATIONS_TABLE, destructiveMigration, splitSqlStatements, unsupportedStatement,
 } from "../../control-plane-shared/src/migration-rules.ts";
 import {
-  CloudflareWorkers, MODULE_NAME, MODULE_TYPES, nativeRollbackConfigured, sameDeployment, sleep, VERIFY_ATTEMPTS, VERIFY_DELAY_MS,
+  bindingSetOf, CloudflareWorkers, MODULE_NAME, MODULE_TYPES, nativeRollbackConfigured, sameDeployment, sleep, VERIFY_ATTEMPTS, VERIFY_DELAY_MS,
   type DeploymentVersions, type DriftProbeBinding, type ExtraModule, type ModuleType, type NativeRollbackEnv, type RegistryRollbackBinding, type VersionMetadata, type VersionRecord,
 } from "./native-rollback.ts";
 import {
   assetsConfigFromToml, configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings,
   type AssetsConfig, type ConfigPlan, type PlanStep,
 } from "./config-diff.ts";
-import { deployVarsConsistent, keptDeployVars, verifyDeployVars, type DeployVarReference } from "./deploy-vars.ts";
+import {
+  deployVarsConsistent, keptDeployVars, plainTextBindings, verifyDeployVars, withDeployVarText, withPlannedDeployVars, type DeployVarReference,
+} from "./deploy-vars.ts";
 import type { SmokeHooks } from "./native-smoke.ts";
 import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
 import { ORCHESTRATOR_UNIT, executorFirstVerdict } from "../../control-plane-shared/src/executor-first.ts";
@@ -683,6 +688,8 @@ export interface DeployRun {
   irreversible?: string[];
   /** Gate 4: per Worker, the deploy-time `--var` names kept from the active version and verified (never the values). */
   deploy_vars?: Record<string, string[]>;
+  /** Owner 2026-11-16: per Worker, the names whose value the identity table changed (written and verified; never the values). */
+  deploy_vars_changed?: Record<string, string[]>;
   /**
    * Gate 4: the workflows' smoke tests through Access. `skipped` (with the reason) while the Orchestrator holds no
    * service token; `failed` names the probe; a failure restores like a failed live check.
@@ -817,6 +824,7 @@ export async function executeNativeDeploy(
   let current = "";
   // Gate 4: the kept deploy-time values per Worker, and the smoke tests' record.
   const keptVars: Record<string, Record<string, string>> = {};
+  const changedVars: Record<string, string[]> = {};
   const unitName = plan.length ? unitForService(plan[0].service)?.unit ?? "" : "";
   let smoke: DeployRun["smoke"] = opts.smoke?.skipped ? { status: "skipped", reason: opts.smoke.skipped, probes: 0 } : undefined;
   const smokeRan: string[] = [];
@@ -830,6 +838,7 @@ export async function executeNativeDeploy(
   };
   const gate4 = () => ({
     ...(Object.keys(keptVars).length ? { deploy_vars: Object.fromEntries(Object.entries(keptVars).map(([k, v]) => [k, Object.keys(v)])) } : {}),
+    ...(Object.keys(changedVars).length ? { deploy_vars_changed: changedVars } : {}),
     ...(smoke ? { smoke } : {}),
   });
   try {
@@ -903,6 +912,8 @@ export async function executeNativeDeploy(
         active = await cf.versionBindingSet(service, captured[0].version_id);
       }
       // Gate 4: the deploy-time --var values, from the version just captured, before anything is uploaded.
+      // Owner 2026-11-16: the identity lists from the identity table once an owner saved it; a changed one is written.
+      let plainText: VersionMetadata["plain_text"];
       if (opts.deployVars) {
         const record = capturedRecord ?? await cf.version(service, captured[0].version_id);
         const k = keptDeployVars(unitName, service, record.resources?.bindings, opts.deployVars);
@@ -911,6 +922,20 @@ export async function executeNativeDeploy(
         if (inconsistent) throw new Error(`deploy_vars_refused: ${inconsistent}`);
         keptVars[service] = k.vars;
         steps.push(`${service}:vars_kept`);
+        if (k.identities === "identity_table") steps.push(`${service}:vars_from_identity_table`);
+        if (k.identities === "identity_source_invalid") steps.push(`${service}:identity_source_invalid`);
+        if (k.changed?.length) {
+          if (configPlan) {
+            configPlan = withPlannedDeployVars(configPlan, k.vars, k.changed);
+          } else {
+            // Code only: the new version must bind exactly the active set with the changed text, nothing else.
+            const replaced = withDeployVarText(record.resources?.bindings, k.vars, k.changed);
+            plainText = plainTextBindings(replaced);
+            active = await bindingSetOf(replaced);
+          }
+          changedVars[service] = [...k.changed];
+          for (const name of k.changed) steps.push(`${service}:vars_changed:${name}`);
+        }
       }
       // G2c-2 step 6: a Worker with static assets. The route again (read only), the stored build again (hashes,
       // index.html), then the assets, before the version that uses them.
@@ -955,6 +980,7 @@ export async function executeNativeDeploy(
           main_module: worker.main_module, compatibility_date: worker.compatibility_date!, compatibility_flags: worker.compatibility_flags,
           tag, message: `native deploy commit ${commit}`,
           ...(assetsPart ? { assets: assetsPart } : {}),
+          ...(plainText ? { plain_text: plainText } : {}),
         };
       let versionId: string;
       if (topo?.migration) {
@@ -1010,6 +1036,14 @@ export async function executeNativeDeploy(
         changed.push({ service, captured });
         await cf.deploy(service, [{ version_id: versionId, percentage: 100 }], `deploy ${tag}, ${requestId}`);
         steps.push(`${service}:deployed`);
+      }
+      // Owner 2026-11-16: a value written from the identity table is audited by name (never the value) once it is live.
+      if (changedVars[service]) {
+        const src = opts.deployVars?.IDENTITIES;
+        await auditQuietly(env.DB, {
+          event_type: "deployment.identity_vars_written", actor: "agent:deployment-orchestrator", subject: service, outcome: "deployed",
+          payload: { request_id: requestId, commit_sha: commit, service, version_id: versionId, names: changedVars[service], identity_revision: src && "revision" in src ? src.revision : null },
+        });
       }
       let live = false;
       for (let i = 0; i < VERIFY_ATTEMPTS && !live; i++) {

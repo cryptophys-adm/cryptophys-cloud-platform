@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Ban, KeyRound, RefreshCw, ShieldCheck, UserPlus, Users as UsersIcon } from "lucide-react";
+import { Ban, Fingerprint, KeyRound, RefreshCw, Save, ShieldCheck, UserPlus, Users as UsersIcon } from "lucide-react";
 import { Badge, Empty, Field, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -48,6 +48,93 @@ function SyncBanner({ state, onSync, owner }: { state?: any; onSync: () => void;
                 : <span>Access group sync status is unknown. Run Sync sign-in to verify membership.</span>}
       {owner && <button type="button" className="btn ml-auto" onClick={onSync}><RefreshCw className="h-3.5 w-3.5" />Sync sign-in</button>}
     </div>
+  );
+}
+
+const SOURCE_TEXT: Record<string, string> = {
+  owner: "saved by an owner",
+  seed: "copied from the deployed lists",
+  absent: "no list saved",
+  invalid: "not a valid list",
+  unreadable: "could not be read",
+};
+
+/**
+ * Owner 2026-11-16 (migration 0073): the emails behind OPERATOR_IDENTITIES and APPROVER_IDENTITIES, the lists every
+ * Worker is deployed with (ACCESS_ALLOWED_EMAILS before the GitHub cut-over). Shown to everyone who opens this page
+ * (emails, not secrets); an owner edits them with the typed phrase IDENTITIES. Every value comes from GET /v1/identities.
+ */
+function IdentityLists({ owner, actor }: { owner: boolean; actor: string }) {
+  const { act, notify } = useSession();
+  const { data, loading, error, refresh } = usePoll(() => call("registry.identities"), 120_000);
+  const [draft, setDraft] = useState<string | null>(null);
+  const source = data?.source ?? null;
+  const status: string = typeof source?.status === "string" ? source.status : "";
+  const emails: string[] = Array.isArray(source?.approver_emails) ? source.approver_emails : [];
+  const revision: number | null = typeof source?.revision === "number" ? source.revision : null;
+  const max: number | null = typeof data?.limits?.max_emails === "number" ? data.limits.max_emails : null;
+  const history: any[] = Array.isArray(data?.history) ? data.history : [];
+  const parsed = (draft ?? "").split(/[\s,]+/).map((e) => e.trim().toLowerCase()).filter(Boolean);
+  const unique = [...new Set(parsed)];
+  const save = () => {
+    if (!unique.length) { notify("err", "Enter at least one email address."); return; }
+    if (!unique.every((e) => /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(e))) { notify("err", "Every entry must be a valid email address."); return; }
+    if (max !== null && unique.length > max) { notify("err", `At most ${max} email addresses.`); return; }
+    if (!unique.includes(actor)) { notify("err", "Your own email stays in the list."); return; }
+    act({
+      route: "registry.identities_update", body: { emails: unique, revision, confirm: "IDENTITIES" }, title: "Change the operator and approver emails",
+      lines: [
+        `${unique.length} email(s): ${unique.join(", ")}.`,
+        "They become the operators (after the CI service token) and the approvers of every Worker, with each unit's next native deploy.",
+        "Recorded in the audit chain under your identity.",
+      ],
+      done: "Identity lists saved. Each unit's next native deploy applies them.", after: () => { setDraft(null); void refresh(); },
+    });
+  };
+  return (
+    <Panel title="Operator and approver emails" icon={<Fingerprint className="h-3.5 w-3.5 text-fuchsia-300" />}
+      right={status ? <Badge tone={status === "owner" ? "purple" : status === "invalid" || status === "unreadable" ? "red" : "slate"}>{SOURCE_TEXT[status] ?? status}</Badge> : undefined}>
+      <p className="mb-3 text-[12px] leading-relaxed text-slate-400">
+        The configured identities every Worker is deployed with: the operators are the CI service token, then these emails; the approvers (owners) are these emails.
+      </p>
+      {loading && !data ? <Skeleton rows={2} /> : error ? <Empty>Could not load the identity lists: {String(error)}</Empty> : (<>
+        {typeof data?.in_effect?.detail === "string" && (
+          <div role={status === "invalid" ? "alert" : "status"} className={`mb-3 rounded-xl border px-3 py-2 text-[12px] ${status === "invalid" || status === "unreadable" ? "border-rose-400/30 bg-rose-400/5 text-rose-200" : "border-slate-400/20 bg-slate-400/5 text-slate-300"}`}>
+            {data.in_effect.detail}
+          </div>
+        )}
+        {emails.length ? (
+          <ul className="mb-2 flex min-w-0 flex-wrap gap-1.5">{emails.map((e) => (
+            <li key={e} className="mono max-w-full break-all rounded-md border border-fuchsia-400/25 bg-fuchsia-400/10 px-2 py-0.5 text-[11px] text-fuchsia-100">{e}</li>
+          ))}</ul>
+        ) : <Empty>No list saved{status === "invalid" ? " that is valid" : ""}.</Empty>}
+        <p className="text-[11px] text-slate-500">
+          {revision !== null ? <>revision {revision}{source?.updated_by ? <> · by {source.updated_by}</> : null}{source?.updated_at ? <> · {ago(source.updated_at)}</> : null}</> : "—"}
+        </p>
+        {history.length > 0 && (
+          <details className="mt-2 text-[11px] text-slate-400">
+            <summary className="cursor-pointer">Changes ({history.length})</summary>
+            <ul className="mt-1 space-y-1">{history.map((h, i) => (
+              <li key={i} className="break-all">{h.event_type === "identity_source.seeded" ? "seeded" : "changed"} by {h.actor} · {ago(h.created_at)}{Array.isArray(h.emails) ? <>: <span className="mono">{h.emails.join(", ")}</span></> : null}</li>
+            ))}</ul>
+          </details>
+        )}
+        {owner ? (draft === null
+          ? <button type="button" className="btn mt-3" onClick={() => setDraft(emails.join("\n"))}><Fingerprint className="h-3.5 w-3.5" />Edit emails</button>
+          : (
+            <div className="mt-3">
+              <Field label={`Emails, one per line or comma-separated${max !== null ? ` (up to ${max})` : ""}`}>
+                <textarea className="field mono min-h-[96px]" aria-label="Operator and approver emails" autoComplete="off" spellCheck={false} value={draft} onChange={(e) => setDraft(e.target.value)} />
+              </Field>
+              <p className="mt-1 text-[11px] text-slate-400">Lower case, duplicates removed, your own email kept. {unique.length} address(es).</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" className="btn btn-approve" onClick={save}><Save className="h-3.5 w-3.5" />Save…</button>
+                <button type="button" className="btn" onClick={() => setDraft(null)}>Cancel</button>
+              </div>
+            </div>
+          )) : <p className="mt-2 text-[11px] text-slate-500">Only an owner changes these emails.</p>}
+      </>)}
+    </Panel>
   );
 }
 
@@ -127,6 +214,8 @@ export default function Users() {
             ]} />
         </>)}
       </Panel>
+
+      <IdentityLists owner={owner} actor={who.actor} />
 
       {owner ? (
         <Panel title="Add a user" icon={<UserPlus className="h-3.5 w-3.5 text-emerald-300" />}>
