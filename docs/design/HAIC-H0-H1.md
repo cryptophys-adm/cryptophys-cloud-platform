@@ -386,6 +386,24 @@ proposed ──start──▶ convening ─▶ positions ─▶ rebuttals ─▶
 - Nexus hands its decision to the platform as a `reports.publish` call (`kind: xauusd_digest`, `body.schema: "council_decision.v1"`, `severity: info`) through the existing `AgentRpc` binding (`docs/XAUUSD-INTEGRATION.md` §1–§2). The kernel lists it as an inbox item.
 - That call is still bound by the 4-reports-per-hour limit per agent.
 
+**Return path to Nexus (pull, decided in this design 2026-11-16)**
+- Cerebrum never calls into the xauusd Workers. Calls always go from the external organ to the platform, so no new binding and no SSOT §2 change are needed.
+- The xauusd AI Worker pulls Nexus-side decisions over its existing AgentRpc binding. It uses a new read-only capability, `council.decisions.read`:
+  - Request: `{cursor}`.
+  - Response: `{decisions: [council.decision.v1], next_cursor}`.
+  - It returns only decisions with `side = "nexus"` whose session the caller's origin opened, oldest first, at most 20 per call.
+  - The cursor is the decision's `chosen_at` plus `session_id`.
+  - xauusd polls on its own schedule.
+- The decision record stays the platform's and is audited as `council.option_chosen`. xauusd acknowledges by publishing `council.proposal_drafted` through `reports.publish`, and the kernel marks the decision `handed_off`. A decision not acknowledged within 24 h becomes an owner inbox item.
+- **The capability is a ceiling change.**
+  - `EXTERNAL_CEILING` (`control-plane-shared/src/organism.ts`) holds only `signals.observe`, `reports.publish`, `memory.recall` and `memory.remember`.
+  - Granting `council.decisions.read` therefore needs an origin-specific ceiling for `xauusd`, built like `AETHER_CEILING`, naming only the xauusd agent that pulls.
+  - It is a guard-path change and needs the owner's click. It stays tier 1 and read-only.
+  - The general external ceiling is not widened.
+- Pulling a decision starts nothing on its own. A shadow arm in xauusd still needs xauusd's own shadow path. Promotion is the owner's click in Cerebrum (Q6, Q8).
+
+**Telegram source for council notices.** Cerebrum's owner-attention notice is the single source: the inbox item plus its deep link. The xauusd bot sends no council notices, which avoids duplicates, since picks happen only in Cerebrum.
+
 **Audit event names (both sides)**
 - `council.proposed`, `council.started`, `council.convened`;
 - `council.position_posted`, `council.rebuttal_posted`, `council.claim_unverified`;
