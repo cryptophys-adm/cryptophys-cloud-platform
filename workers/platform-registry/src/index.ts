@@ -10,6 +10,8 @@ import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authenticate, isOwner, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
+import { ORCHESTRATOR_SERVICE, RESCUE_EXECUTOR } from "../../control-plane-shared/src/executor-first.ts";
+import { approvedBreakGlassPlan } from "../../control-plane-shared/src/break-glass.ts";
 import { disableAccount, listAccounts, resyncLogin, upsertAccount, whoAmI, type AccountsEnv } from "./accounts.ts";
 
 export type Env = AccountsEnv & { AGENTS?: AgentRpcBinding };
@@ -125,11 +127,23 @@ export async function recordNativeDeploy(env: Env, requestId: string): Promise<{
   const row = await env.DB.prepare("SELECT service_id, requested_version, status, details_json, created_at FROM deployment_requests WHERE request_id = ?")
     .bind(requestId).first<{ service_id: string; requested_version: string; status: string; details_json: string; created_at: string }>();
   if (!row) throw new Error("deploy_request_not_found");
-  let details: { executor?: unknown } = {};
+  let details: { executor?: unknown; plan_id?: unknown } = {};
   try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
   // Hardening (d): an owner-approved break-glass deploy (native:break-glass) records its commit the same way.
-  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass") throw new Error("not_a_native_deploy");
+  // Cut-over gate 2026-11-15: so does the Recovery Manager's rescue deploy, for the Orchestrator's Worker only, and only
+  // for the executing, person-approved break-glass plan of that Worker at that commit (checked here, in this Worker).
+  const rescue = details.executor === RESCUE_EXECUTOR;
+  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass" && !rescue) throw new Error("not_a_native_deploy");
   if (row.status !== "running") throw new Error("deploy_not_running");
+  if (rescue) {
+    if (row.service_id !== ORCHESTRATOR_SERVICE) throw new Error("rescue_not_the_orchestrator");
+    const planId = typeof details.plan_id === "string" ? details.plan_id : "";
+    const plan = await env.DB.prepare("SELECT service_id, status, plan_version, created_by, approved_by, steps_json FROM recovery_plans WHERE plan_id = ?").bind(planId)
+      .first<{ service_id: string; status: string; plan_version: string; created_by: string | null; approved_by: string | null; steps_json: string | null }>();
+    if (!plan || plan.status !== "executing" || plan.service_id !== ORCHESTRATOR_SERVICE || plan.plan_version !== row.requested_version || !approvedBreakGlassPlan(plan).ok) {
+      throw new Error("rescue_plan_invalid");
+    }
+  }
   const age = Date.now() - Date.parse(row.created_at);
   if (!(age >= 0 && age <= 3_600_000)) throw new Error("deploy_request_expired");
   if (!/^[0-9a-f]{40}$/.test(row.requested_version)) throw new Error("invalid_version");

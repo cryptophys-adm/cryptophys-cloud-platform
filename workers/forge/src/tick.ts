@@ -15,6 +15,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
 import { planTick } from "./deploy-plan.ts";
+import type { BundleTextReader } from "../../control-plane-shared/src/executor-first.ts";
 import { censusTick, type ExternalDnaReader } from "./census.ts";
 import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
 import { crBuildsTick } from "./cr-builds.ts";
@@ -72,12 +73,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
       await appendAuditEvent(env.DB, { event_type: "forge.tick_failed", actor: "system:forge-checks", subject: name, outcome: "failed", payload: { error } }).catch(() => undefined);
     }
   };
-  if (env.ARTIFACTS) {
-    await step("deploy_plan", async () => {
-      const repo = await env.ARTIFACTS!.get(repoName);
-      try { return await planTick(env.DB, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
-    });
-  }
+  // Gate 2026-11-15 (executor first): the planner reads main's bundles, which only the R2 binding's get reads.
+  const bundleReader = typeof (env.BUNDLES as { get?: unknown } | undefined)?.get === "function" ? env.BUNDLES as unknown as BundleTextReader : undefined;
+  const deployPlan = async () => {
+    const repo = await env.ARTIFACTS!.get(repoName);
+    try { return await planTick(env.DB, repo, nowMs(), bundleReader); } finally { repo[Symbol.dispose]?.(); }
+  };
+  if (env.ARTIFACTS) await step("deploy_plan", deployPlan);
   if (env.ARTIFACTS) {
     // ADR-0013 phase 2: the organism census of main's head (cheap: a few tree and blob reads), with the
     // external organs' DNA read over RPC (owner 2026-11-12).
@@ -117,6 +119,8 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   // requests are checked after it in the same tick, unless the main check used the tick's budget; then next tick.
   const started = nowMs();
   await step("main_checks", () => checksTick(env, repoName, deps, nowMs));
+  // A plan that waited for main's bundles (executor first) is planned again as soon as the main check stored them.
+  if (env.ARTIFACTS && (steps.deploy_plan as { waiting?: boolean } | undefined)?.waiting) await step("deploy_plan_after_checks", deployPlan);
   const main = steps.main_checks as { outcome?: string } | undefined;
   if (main?.outcome === "checked" && nowMs() - started > CHECK_BUDGET_MS) { steps.change_checks = { outcome: "deferred" }; return steps; }
   await step("change_checks", async () => {

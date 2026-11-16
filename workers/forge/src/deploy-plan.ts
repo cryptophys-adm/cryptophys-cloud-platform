@@ -20,6 +20,16 @@
 //      skip. The ordering rules are unchanged: the Control Plane first and alone while a migration is pending,
 //      then the orchestrator alone. `new_migration_control_plane_unavailable` now comes only from a Control Plane
 //      that cannot be deployed at all (unregistered, disabled, or no valid desired version in the registry).
+//
+// Cut-over gate, 2026-11-15 (owner, "1 setuju"): executor first. On that day the Control Plane deploy failed three
+// times on a bug of the orchestrator, which executes it, and the planner kept the orchestrator's fix behind it because
+// a migration was pending. Now, when the orchestrator unit is pending and so is a migration, the plan reads main's
+// bundles (control-plane-shared/src/executor-first.ts): when no pending migration names anything the orchestrator's
+// bundled code reads, the orchestrator goes first, alone; when one does, or the evidence is not readable, the order is
+// as before (Control Plane first) and the skip `executor_first_not_proven:<reason>` says why. Main's bundles are
+// stored by its checks, which run after the plan in the same tick: until they exist, the plan plans nothing
+// (`executor_first_bundle_pending`) and is planned again once they do (planTick), so no deploy is proposed in the
+// wrong order meanwhile. Nothing can deploy a main whose checks have not passed in any case.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { DEPLOY_UNITS, MIGRATIONS_DIR, orderPending, recordPlanSide, registryFingerprint, unitChanged, unitRegistryState, type PlannedUnit, type Skip } from "../../control-plane-shared/src/deploy-units.ts";
 import { D1_MIGRATIONS_TABLE } from "../../control-plane-shared/src/migration-rules.ts";
@@ -27,6 +37,7 @@ import { migrationsOf } from "./bundles.ts";
 import { changedPaths } from "./changes.ts";
 import type { ArtifactsReader } from "./checks.ts";
 import { parentsOf } from "./merge.ts";
+import { EXECUTOR_FIRST_BUNDLE_PENDING, ORCHESTRATOR_UNIT, executorFirstVerdict, type BundleTextReader } from "../../control-plane-shared/src/executor-first.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
 export const DEPLOY_PARITY_TARGET = 10;
@@ -110,7 +121,7 @@ export async function pendingMigrations(db: D1Database, repo: Pick<ArtifactsRead
   return applied ? files.filter((f) => !applied.has(f)) : null;
 }
 
-export async function forgePlan(db: D1Database, repo: ArtifactsReader, mainSha: string): Promise<{ units: PlannedUnit[]; skipped: Skip[] }> {
+export async function forgePlan(db: D1Database, repo: ArtifactsReader, mainSha: string, bundles?: BundleTextReader): Promise<{ units: PlannedUnit[]; skipped: Skip[] }> {
   const tag = mainSha.slice(0, 12);
   const pending: PlannedUnit[] = [];
   const skipped: Skip[] = [];
@@ -140,19 +151,39 @@ export async function forgePlan(db: D1Database, repo: ArtifactsReader, mainSha: 
     // deploys even when its own paths are unchanged since its version.
     else if (newMigration && unit.unit === "control-plane") plan(unit, `main ${tag} has a migration D1 has not applied`);
   }
-  return orderPending(pending, newMigration, skipped);
+  // Executor first (gate 2026-11-15): only with the pending files known and main's bundles bound (otherwise the order
+  // is the one before the gate, with no note).
+  let executorFirst = false;
+  if (newMigration && unapplied && bundles && pending.some((u) => u.unit === ORCHESTRATOR_UNIT)) {
+    const verdict = await executorFirstVerdict(bundles, mainSha, unapplied);
+    if (verdict.state === "bundle_pending") {
+      return { units: [], skipped: [...skipped, ...pending.map((u) => ({ unit: u.unit, reason: EXECUTOR_FIRST_BUNDLE_PENDING }))] };
+    }
+    if (verdict.state === "independent") executorFirst = true;
+    else skipped.push({ unit: ORCHESTRATOR_UNIT, reason: `executor_first_not_proven:${verdict.reason}${verdict.file ? `:${verdict.file}` : ""}`.slice(0, 160) });
+  }
+  return orderPending(pending, newMigration, skipped, executorFirst);
 }
 
-/** One tick: record the Forge's plan for main's head, once per registry fingerprint. */
-export async function planTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now()): Promise<{ outcome: "recorded" | "up_to_date" | "no_main"; main_sha?: string; units?: string[] }> {
+/** A recorded plan that waited for main's bundles (executor first): it is planned again. */
+const waitedForBundles = (skippedJson: string | null) => (list(skippedJson) ?? []).some((s) => s?.reason === EXECUTOR_FIRST_BUNDLE_PENDING);
+
+/**
+ * One tick: record the Forge's plan for main's head, once per registry fingerprint. A plan that waited for main's
+ * bundles (`waiting`) is planned again by the next call; the tick calls it again right after main's checks.
+ */
+export async function planTick(db: D1Database, repo: ArtifactsReader, nowMs = Date.now(), bundles?: BundleTextReader):
+  Promise<{ outcome: "recorded" | "up_to_date" | "no_main"; main_sha?: string; units?: string[]; waiting?: boolean }> {
   const head = hashOf((await repo.log({ ref: "main", limit: 1 }))[0] ?? {});
   if (!head) return { outcome: "no_main" };
   const fingerprint = await registryFingerprint(db);
-  const have = await db.prepare("SELECT forge_units FROM forge_deploy_plans WHERE main_sha = ? AND fingerprint = ?").bind(head, fingerprint).first<{ forge_units: string | null }>();
-  if (have?.forge_units) return { outcome: "up_to_date", main_sha: head };
-  const plan = await forgePlan(db, repo, head);
+  const have = await db.prepare("SELECT forge_units, forge_skipped FROM forge_deploy_plans WHERE main_sha = ? AND fingerprint = ?").bind(head, fingerprint)
+    .first<{ forge_units: string | null; forge_skipped: string | null }>();
+  if (have?.forge_units && !waitedForBundles(have.forge_skipped)) return { outcome: "up_to_date", main_sha: head };
+  const plan = await forgePlan(db, repo, head, bundles);
   await recordPlanSide(db, "forge", head, fingerprint, plan, nowMs);
-  return { outcome: "recorded", main_sha: head, units: plan.units.map((u) => u.unit) };
+  const waiting = plan.skipped.some((s) => s.reason === EXECUTOR_FIRST_BUNDLE_PENDING);
+  return { outcome: "recorded", main_sha: head, units: plan.units.map((u) => u.unit), ...(waiting ? { waiting } : {}) };
 }
 
 interface PlanRow { main_sha: string; forge_units: string | null; forge_skipped: string | null; forge_at: string | null; github_units: string | null; github_skipped: string | null; github_at: string | null; agrees: number | null }

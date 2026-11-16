@@ -127,6 +127,22 @@ Each step is reversible until step 7.
   the path it repairs. The way out is an owner-run workflow deploy (the orchestrator first, then the Control Plane).
 - **Gate addition:** steps 6–7 also wait until a fix to the deploy executor itself can reach production without the executor
   (an executor-first planner rule, or a named runbook path in OPERATIONS), proven once.
+  - **Status: built, proof pending** (owner 2026-11-15, "1 setuju"; change request from branch `gate-executor-first`, a guard
+    path, so `merge_owner_change`). Two parts:
+    - *executor first*: when main changes the orchestrator unit, both planners (the shared `orderPending` and the Forge's
+      `forgePlan`) deploy it first and alone, also while a D1 migration is pending, when no pending migration names a
+      table, column or index the Orchestrator's bundled code at main mentions (`control-plane-shared/src/executor-first.ts`;
+      the Orchestrator's own native deploy accepts the same evidence). Otherwise, or when the evidence is unreadable, the
+      Control Plane goes first as before, with the skip `executor_first_not_proven:<reason>`. The Orchestrator's readiness
+      needs no migration after 0029, so the 2026-11-07 reason for "Control Plane first" (every readiness required the
+      newest migration) no longer applies to it;
+    - *rescue deploy*: an owner-approved break-glass plan for `cryptophys-deployment-orchestrator` is deployed by the
+      Recovery Manager itself (`control-plane-shared/src/executor-rescue.ts`), never by the Orchestrator, with the new
+      owner-set secret `CF_ORCHESTRATOR_DEPLOY_TOKEN` (Workers Scripts Edit) and `CF_ACCOUNT_ID` on
+      `cryptophys-recovery-manager`. The Owner page item `executor_deploy_failed` asks for it when the Orchestrator's own
+      last deploy of its unit failed.
+  - **Met once** the proof drill in OPERATIONS ("Rescue deploy of the Deployment Orchestrator") has succeeded live: record
+    the plan id, the request id and the time here.
 
 ## Rollback of the cut-over
 
