@@ -29,6 +29,7 @@ import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowl
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
 import { resolvedLaterSql } from "./syscall.ts";
 import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
+import { latestGitBackupVerify } from "../../control-plane-shared/src/git-backup.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -56,7 +57,7 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified";
 export interface ProductionProblem {
   code: ProblemCode;
   /** What the problem is about: a service id, a plan id, an advisory id or a month. */
@@ -208,6 +209,10 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     open (control-plane-shared/src/deploy-stall.ts). The subject is the episode (deploy_stall:<last executed
  *     deploy_commit>), so the owner gets one message when it opens and one when a deploy ends it, not one per run or
  *     per new main commit. The Observer's report of it is a warning: a critical one would hold the brake.
+ *  9. git_backup_unverified (gate 8, owner 2026-11-15): the newest daily verify of a stored git bundle
+ *     (forge/src/bundle-verify.ts, migration 0072) failed: the off-Artifacts copy of the repository is unusable or
+ *     is not the one recorded. One item per bundle (subject: its run id); it closes when a later verify succeeds.
+ *     A backup that is only stale stays on the Console (owner 2026-11-13); this is not a stale backup.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -310,5 +315,18 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     if (st.active && subject) stalls = [{ code: "deploys_stalled", subject, detail: stallDetail(st.verdict), since: st.verdict.stall_since ?? st.open[0]?.created_at ?? null, link: "#/pipelines" }];
   } catch { stalls = []; }
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls];
+  let backups: ProductionProblem[] = [];
+  try {
+    const v = await latestGitBackupVerify(db);
+    if (v && v.verify_status === "failed") {
+      const reason = typeof v.details?.reason === "string" ? v.details.reason : "unknown";
+      backups = [{
+        code: "git_backup_unverified", subject: v.run_id,
+        detail: `Git backup ${v.r2_key ?? v.run_id} (main ${v.main_sha.slice(0, 12)}) failed git bundle verify at ${v.verified_at}: ${reason}; the off-Artifacts copy of the repository may be unusable`.slice(0, 600),
+        since: v.verified_at, link: "#/code",
+      }];
+    }
+  } catch { backups = []; }
+
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...backups];
 }
