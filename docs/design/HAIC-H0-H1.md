@@ -263,7 +263,7 @@ Each event is written with `appendAuditEvent` (`control-plane-shared/src/audit.t
 
 - **What a council is.** A bounded, evidence-bound deliberation on one topic. It ends in ranked options. It is never an action.
 - **Triggers:**
-  - **The owner** opens a council from `#/councils` (Cerebrum) or from Nexus (xauusd), naming a topic and a question. Example: "Key Level entry strategy often hits SL or SL+".
+  - **The owner** opens a council from `#/councils` (Cerebrum) or from Nexus (xauusd: its own "Call for Councils" navigator page, not the Omega page; owner 2026-11-16), naming a topic and a question. Example: "Key Level entry strategy often hits SL or SL+".
   - **Agents** may *propose* a council when there is evidence for one:
     - an Observer anomaly or finding cluster (`observer_findings`);
     - a KPI regression in `trading_organ_health.v1` (|z| ≥ 3, or a hit-rate status change);
@@ -301,7 +301,7 @@ Each event is written with `appendAuditEvent` (`control-plane-shared/src/audit.t
 
 ### 4.4 Outcome and handoff
 
-- **The owner picks** one option, or dismisses the council, in Cerebrum. ADR-0017 keeps approvals and confirmations there. Nexus may show and discuss the options (Q6).
+- **The owner picks** one option, or dismisses the council, in Cerebrum. ADR-0017 keeps approvals and confirmations there. Nexus may show and discuss the options (Q6). On Nexus, councils live only on that "Call for Councils" page, which also holds the owner's Nexus council on/off switch; picks and the promote click are deep links to Cerebrum.
 - **The pick becomes a typed proposal draft** (H2 `typed_proposal.v1`) and an inbox item to confirm. H2 performs the full translation. Until H2 is built, a confirmed draft maps to an existing path:
   - `set_policy_parameter` or another consensus action;
   - a repository task;
