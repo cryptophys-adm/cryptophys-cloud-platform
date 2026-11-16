@@ -422,7 +422,7 @@ test("BV10. migration 0072 is additive (three nullable columns, a CHECK on verif
   const cutover = read("docs/GITHUB-CUTOVER.md");
   assert.match(cutover, /[Mm]et once the first scheduled verify succeeds live/);
   assert.match(cutover, /git_backup_verify/);
-  assert.match(read("docs/SSOT.md"), /Last reviewed: 2026-11-15 \([^\n]*git_backup_verify/);
+  assert.match(read("docs/SSOT.md"), /Last reviewed: (?:[^\n]*\); )?2026-11-15 \([^\n]*git_backup_verify/, "the 2026-11-15 entry (newer entries come first)");
   assert.match(read("workers/console/ui/src/components/GitBackup.tsx"), /b\?\.verify/);
 });
 

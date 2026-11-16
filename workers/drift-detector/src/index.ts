@@ -23,6 +23,14 @@ export interface FetchBinding {
   fetch(input: Request | string, init?: RequestInit): Promise<Response>;
 }
 
+/**
+ * RPC health entrypoint of an externally deployed Worker that has no HTTP probe on its binding (cryptophys-cta's
+ * CtaHealth): health() answers `{ ok, service, ... }`, never a version.
+ */
+export interface ExternalHealthRpcBinding {
+  health(): Promise<{ ok?: unknown; service?: unknown } | null | undefined>;
+}
+
 export interface Env extends BaseEnv {
   /** AI Kernel AgentRpc (ADR-0007 §1.1), pinned to host_worker = cryptophys-drift-detector. */
   AGENTS?: AgentRpcBinding;
@@ -37,6 +45,8 @@ export interface Env extends BaseEnv {
   EXT_XAUUSD_NEXUS: FetchBinding;
   EXT_AETHER: FetchBinding;
   EXT_XAUUSD_OMEGA: FetchBinding;
+  /** cryptophys-cta (deployed from cryptophys-adm/cryptophys-cta): CtaHealth RPC, health() only. */
+  EXT_CRYPTOPHYS_CTA: ExternalHealthRpcBinding;
   SVC_PLATFORM_API: HealthRpcBinding;
   SVC_DEPLOYMENT_ORCHESTRATOR: HealthRpcBinding;
   SVC_PLATFORM_REGISTRY: HealthRpcBinding;
@@ -78,6 +88,13 @@ export function externalTargets(env: Env): Record<string, FetchBinding | undefin
   };
 }
 
+/** Externally deployed Workers observed over an RPC health entrypoint (their DNA's drift { via: "rpc" }). */
+export function externalRpcTargets(env: Env): Record<string, ExternalHealthRpcBinding | undefined> {
+  return {
+    "cryptophys-cta": env.EXT_CRYPTOPHYS_CTA,
+  };
+}
+
 interface Probe { reachable: boolean; healthy: boolean; version_tag: string | null; error: string | null }
 
 async function withTimeout<T>(work: Promise<T>): Promise<T> {
@@ -107,6 +124,20 @@ async function probeHttp(binding: FetchBinding, path: string): Promise<Probe> {
     return { reachable: true, healthy, version_tag: null, error: healthy ? null : res.ok ? "health_check_failed" : `http_${res.status}` };
   } catch (err) {
     return { reachable: false, healthy: false, version_tag: null, error: String((err as Error)?.message) === "timeout" ? "timeout" : "fetch_failed" };
+  }
+}
+
+/**
+ * RPC health of an external Worker: healthy only when health() answers `ok: true` and names this service. The
+ * version is not observable, so external services are health-managed only.
+ */
+async function probeExternalRpc(binding: ExternalHealthRpcBinding, serviceId: string): Promise<Probe> {
+  try {
+    const body = await withTimeout(binding.health());
+    const healthy = body?.ok === true && body?.service === serviceId;
+    return { reachable: true, healthy, version_tag: null, error: healthy ? null : "health_check_failed" };
+  } catch (err) {
+    return { reachable: false, healthy: false, version_tag: null, error: String((err as Error)?.message) === "timeout" ? "timeout" : "rpc_failed" };
   }
 }
 
@@ -189,6 +220,7 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
   const latest = await latestRows(env);
   const map = targets(env);
   const external = externalTargets(env);
+  const externalRpc = externalRpcTargets(env);
   const services: ServiceDrift[] = [];
   const previousRunAt = new Map<string, string>();
   for (const row of rows.results) {
@@ -214,6 +246,8 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
       p = await probe(map[row.service_id]!);
     } else if (external[row.service_id]) {
       p = await probeHttp(external[row.service_id]!, healthPath(row));
+    } else if (externalRpc[row.service_id]) {
+      p = await probeExternalRpc(externalRpc[row.service_id]!, row.service_id);
     } else {
       p = { reachable: false, healthy: false, version_tag: null, error: "no_observation_binding" };
     }
@@ -346,7 +380,7 @@ export default {
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/health" || path === "/healthz") return healthResponse(env);
       if (path === "/ready" || path === "/readyz") {
-        const bindings = [...Object.values(targets(env)), ...Object.values(externalTargets(env))].every(Boolean);
+        const bindings = [...Object.values(targets(env)), ...Object.values(externalTargets(env)), ...Object.values(externalRpcTargets(env))].every(Boolean);
         return readinessResponse(env, { observation_bindings: bindings });
       }
       if (path === "/") {
