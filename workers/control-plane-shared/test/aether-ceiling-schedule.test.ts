@@ -196,6 +196,45 @@ test("AC6. EXTERNAL_ORIGINS includes Aether over EXT_ORGANISM_AETHER, bound in t
   assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_XAUUSD: { dna }, EXT_ORGANISM_AETHER: { dna } } as never).map((r) => r.origin.origin), ["xauusd", "aether"]);
 });
 
+test("AC-CTA2. bound, cryptophys-cta is never an undeclared Worker: unread, it is an unknown origin; read, its organ is declared", async () => {
+  const { knownOrganism, compareInventory } = await import("../src/observer-inventory.ts");
+  const CTA = EXTERNAL_ORIGINS.find((o) => o.origin === "cta")!;
+  const SERVICES = Object.fromEntries(EXTERNAL_ORIGINS.map((o) => [o.origin, o.services]));
+  // What the Observer says of cryptophys-cta when it is live with traffic (the other Workers are left out of this list).
+  const live = (known: any) => compareInventory({
+    known, lists: { scripts: { status: "ok", items: [{ id: "cryptophys-cta", name: "cryptophys-cta" }] } },
+    traffic7d: new Map([["cryptophys-cta", 40]]), senses_cover_7d: false, day: "2026-11-16",
+  }).filter((f) => f.worker === "cryptophys-cta").map((f) => `${f.metric} ${f.worker}`);
+  // Unread (timeout, or no OrganismDna yet): a finding, and the Observer leaves cryptophys-cta alone.
+  const db1 = migratedDb();
+  await censusTick(db1 as never, repoWith(realDna()), Date.now(), [{ origin: CTA, dna: () => Promise.reject(new Error("timeout")) }]);
+  const census = (await latestCensusRow({ DB: db1 } as never))!;
+  assert.deepEqual(census.findings.map((f) => `${f.kind} ${f.subject}`), ["external_dna_unavailable cta"]);
+  const unread = (await knownOrganism(db1 as never, SERVICES))!;
+  assert.deepEqual([unread.declared.has("cryptophys-cta"), unread.unknown_origins.has("cryptophys-cta")], [false, true]);
+  assert.deepEqual(live(unread), []);
+  // Read: its organ joins the DNA union with origin cta. The organ as the deployed cryptophys-cta serves it (2026-11-16):
+  // two agents within the general ceiling, drift over EXT_CRYPTOPHYS_CTA, no unit, Access or rollback entry.
+  const db2 = migratedDb();
+  const agent = (id: string, display_name: string) => ({ id, display_name, capabilities: ["signals.observe", "reports.publish"], tier_max: 1, voter: false });
+  const organ = {
+    $schema_version: 1, service: "cryptophys-cta", display_name: "Cryptophys CTA · content studio", kind: "portal", deploy_unit: null, access: false, rollback: false,
+    drift: { via: "rpc", binding: "EXT_CRYPTOPHYS_CTA" }, agents: [agent("cta-editor", "CTA Editor"), agent("cta-guardian", "CTA Content Guardian")], engines: [],
+  };
+  await censusTick(db2 as never, repoWith(realDna()), Date.now(), [{ origin: CTA, dna: async () => ({ schema: "cta-organism.v1", organs: [organ], deploy: { unit: "cryptophys-cta" } }) }]);
+  const c2 = (await latestCensusRow({ DB: db2 } as never))!;
+  assert.equal(c2.genome.find((o) => o.service === "cryptophys-cta")?.origin, "cta", JSON.stringify(c2.findings));
+  assert.deepEqual(c2.findings.filter((f) => f.kind.startsWith("external_")), [], "nothing refused: both agents are within the general ceiling");
+  assert.equal(c2.genome.find((o) => o.service === "cryptophys-cta")?.agents.length, 2);
+  const read2 = (await knownOrganism(db2 as never, SERVICES))!;
+  assert.deepEqual([read2.declared.has("cryptophys-cta"), read2.unknown_origins.has("cryptophys-cta")], [true, false]);
+  assert.deepEqual(live(read2), []);
+  // Unbound (main before 2026-11-16): the census never names cta, so the live Worker read as undeclared.
+  const db3 = migratedDb();
+  await censusTick(db3 as never, repoWith(realDna()), Date.now(), []);
+  assert.deepEqual(live((await knownOrganism(db3 as never, SERVICES))!), ["undeclared_worker cryptophys-cta"]);
+});
+
 test("AC7. Aether's DNA unreachable is a finding: the census completes, and no Aether agent reads as undeclared", async () => {
   const db = migratedDb();
   const readers: ExternalDnaReader[] = [{ origin: AETHER, dna: () => Promise.reject(new Error("Worker cryptophys-aether has no entrypoint OrganismDna")) }];
@@ -334,13 +373,19 @@ test("AC-G. the external capability ceilings (organism.ts) are a guard path: rai
   assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), null);
 });
 
-test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling; unbound, the Forge does not read it", () => {
+test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling, bound in the Forge like Aether's; unbound, it is not read", () => {
   const CTA = EXTERNAL_ORIGINS.find((o) => o.origin === "cta")!;
   assert.deepEqual({ ...CTA }, { origin: "cta", schema: "cta-organism.v1", binding: "EXT_ORGANISM_CTA", services: ["cryptophys-cta"] });
   const c = externalCeilingFor(CTA, "cta-editor");
   assert.deepEqual([c.tier_max, [...c.capabilities], c.proposals], [EXTERNAL_CEILING.tier_max, [...EXTERNAL_CEILING.capabilities], []]);
   for (const cap of ["signals.observe", "reports.publish"]) assert.ok(EXTERNAL_CEILING.capabilities.includes(cap), `${cap} is within the general ceiling`);
   const dna = async () => ({});
-  assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_AETHER: { dna } } as never).map((r) => r.origin.origin), ["aether"], "no EXT_ORGANISM_CTA binding yet: cta is not read");
+  assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_AETHER: { dna } } as never).map((r) => r.origin.origin), ["aether"], "without the EXT_ORGANISM_CTA binding, cta is not read");
   assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_CTA: { dna } } as never).map((r) => r.origin.origin), ["cta"]);
+  // 2026-11-16: cryptophys-cta is live, so the Forge binds it (no props: OrganismDna has one read-only method, dna()).
+  const toml = read("workers/forge/wrangler.toml");
+  assert.match(toml, /binding = "EXT_ORGANISM_CTA"\nservice = "cryptophys-cta"\nentrypoint = "OrganismDna"\n/);
+  const forgeBindings = [...toml.matchAll(/^binding = "(EXT_ORGANISM_[A-Z_]+)"$/gm)].map((m) => m[1]);
+  assert.deepEqual(forgeBindings, EXTERNAL_ORIGINS.map((o) => o.binding), "the Forge binds every external origin, in EXTERNAL_ORIGINS order");
+  assert.deepEqual(externalReaders({ DB: {}, EXT_ORGANISM_XAUUSD: { dna }, EXT_ORGANISM_AETHER: { dna }, EXT_ORGANISM_CTA: { dna } } as never).map((r) => r.origin.origin), ["xauusd", "aether", "cta"]);
 });
