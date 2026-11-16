@@ -87,6 +87,10 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"),
   r("registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"),
   r("registry.accounts_sync", "registry", "POST", "/v1/accounts/sync-login", true, "SYNC"),
+  // Owner 2026-11-16 (migration 0073): the deploy-time identity lists' source on the Users page. The server checks the
+  // owner (APPROVER_IDENTITIES, a person), the phrase and the revision; every change is an audit event.
+  r("registry.identities", "registry", "GET", "/v1/identities", false, null),
+  r("registry.identities_update", "registry", "POST", "/v1/identities", true, "IDENTITIES"),
   r("policy.decisions", "policy", "GET", "/v1/decisions", false, null),
   r("policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null),
   r("policy.evaluate", "policy", "POST", "/v1/evaluate", false, null),

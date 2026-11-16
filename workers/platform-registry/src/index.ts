@@ -13,6 +13,7 @@ import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
 import { ORCHESTRATOR_SERVICE, RESCUE_EXECUTOR } from "../../control-plane-shared/src/executor-first.ts";
 import { approvedBreakGlassPlan } from "../../control-plane-shared/src/break-glass.ts";
 import { disableAccount, listAccounts, resyncLogin, upsertAccount, whoAmI, type AccountsEnv } from "./accounts.ts";
+import { getIdentities, saveIdentities } from "./identities.ts";
 
 export type Env = AccountsEnv & { AGENTS?: AgentRpcBinding };
 
@@ -208,6 +209,7 @@ export default {
           "PUT /v1/services/{service_id}/desired-version (approver, or the deploy workflows' service token)",
           "GET /v1/accounts/me (any Access identity)", "GET /v1/accounts", "POST /v1/accounts (owner, GRANT)",
           "POST /v1/accounts/{email}/disable (owner, REVOKE)", "POST /v1/accounts/sync-login (owner, SYNC)",
+          "GET /v1/identities", "POST /v1/identities (owner, IDENTITIES)",
         ]);
       }
     }
@@ -233,6 +235,26 @@ export default {
         return errorResponse(404, "not_found");
       } catch (err) {
         console.error(JSON.stringify({ event: "accounts_error", message: String((err as Error)?.message ?? err).slice(0, 200) }));
+        return errorResponse(500, "internal_error");
+      }
+    }
+    // Owner 2026-11-16 (migration 0073): the deploy-time identity lists' source. Reads like the accounts list; the write
+    // needs an owner (checked inside, before the body is read).
+    if (path === "/v1/identities") {
+      const auth = await authenticate(request, env);
+      if (!auth.ok) return auth.response;
+      try {
+        if (request.method === "GET") {
+          if (!isOwner(auth.identity, env)) {
+            const reader = await requireOperator(request, env);
+            if (!reader.ok) return reader.response;
+          }
+          return await getIdentities(env);
+        }
+        if (request.method === "POST") return await saveIdentities(request, env, auth.identity);
+        return errorResponse(405, "method_not_allowed");
+      } catch (err) {
+        console.error(JSON.stringify({ event: "identities_error", message: String((err as Error)?.message ?? err).slice(0, 200) }));
         return errorResponse(500, "internal_error");
       }
     }
