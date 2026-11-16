@@ -125,12 +125,21 @@ export async function createChannel(env: AlertEnv, actor: string, body: Record<s
 }
 
 /** Change a channel: enabled, topics, name, chat id or (write-only) the bot token. The default keeps its bot. */
-export async function updateChannel(env: AlertEnv, actor: string, id: string, body: Record<string, unknown>, allowedTopics: readonly string[]): Promise<AlertChannel> {
+/**
+ * `notOnDefault`: topics the default channel may not list. The relay topics (report-relay.ts) carry messages that the
+ * xauusd Worker hands to the kernel instead of sending them with its own bot, so they never go back through that bot.
+ */
+export async function updateChannel(env: AlertEnv, actor: string, id: string, body: Record<string, unknown>, allowedTopics: readonly string[], notOnDefault: readonly string[] = []): Promise<AlertChannel> {
   const c = await getChannel(env.DB, id);
   const next = { name: c.name, chat: c.chat_id, topics: c.topics, enabled: c.enabled, hint: c.token_hint };
   const changed: string[] = [];
   if (body.name !== undefined) { next.name = validName(body.name); changed.push("name"); }
-  if (body.topics !== undefined) { next.topics = validTopics(body.topics, allowedTopics); changed.push("topics"); }
+  if (body.topics !== undefined) {
+    next.topics = validTopics(body.topics, allowedTopics);
+    const refused = c.kind === "telegram_default" ? next.topics.find((t) => notOnDefault.includes(t)) : undefined;
+    if (refused) throw new AlertChannelError(400, "invalid_topics", `${refused} is relayed from the xauusd Worker and cannot go back through its own bot; choose another channel`);
+    changed.push("topics");
+  }
   if (body.enabled !== undefined) {
     if (typeof body.enabled !== "boolean") throw new AlertChannelError(400, "invalid_enabled", "true or false");
     next.enabled = body.enabled; changed.push("enabled");
@@ -166,6 +175,8 @@ export interface AlertMessage { change: string; title: string; lines: string[]; 
 
 /** The message text sent through a channel's own bot (plain text; no markup to escape). */
 export function messageText(m: AlertMessage): string {
+  // A relayed report (report-relay.ts, owner 2026-11-16): its sanitized text as it is, then an optional summary line.
+  if (m.change === "relay") return [m.title, ...m.lines.slice(0, 3)].join("\n").slice(0, 3900);
   const head = m.change === "closed" ? `Resolved: ${m.title}` : m.change === "test" ? m.title : `${m.title}.`;
   return [head, ...m.lines.slice(0, 20).map((l) => `- ${l}`), "", `Console: ${m.link}`].join("\n").slice(0, 3900);
 }
