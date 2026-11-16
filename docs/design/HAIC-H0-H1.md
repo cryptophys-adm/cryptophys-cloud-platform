@@ -503,7 +503,7 @@ ADR-0019 is not drafted. A search of this repository, the xauusd repository and 
 - Q3: the agents' kill switch does not stop the chat; `kernel_controls.conversation_enabled` does.
 - Q4: 90 days in DO SQLite, then R2; the audit chain holds hashes only.
 - Q5: yes, a daily digest at 08:00 WIB (01:00 UTC), sent only when the inbox is not empty.
-- Q6: Cerebrum only.
+- Q6: Cerebrum only. One later owner exception, also 2026-11-16: arming and disarming an xauusd strategy is one click directly in Nexus (owner-only Access identity, CSRF, audit), recorded as ADR-0020; council picks and promotions stay in Cerebrum.
 - Q7: build the minimal push hub now, for H1.5.
 - Q8: 14 days and 30 directional outcomes.
 - Q9: an agent-raised council is an inbox item that the owner starts.
