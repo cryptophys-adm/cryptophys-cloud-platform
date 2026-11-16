@@ -600,6 +600,11 @@ test("OB19. config: the Observer runs in the Platform API at :27/:57, off every 
 
 test("OB20. GET /v1/observer is operator-only and read-only; the cron runs senses at :27 and the inventory at both minutes", async () => {
   const db = migratedDb();
+  // The view reads the last 48 hours of the real clock, so the cron runs at the previous hour's :27 and :57 (a fixed
+  // 2026-11-14 date stopped passing on 2026-11-16 ~11:00 UTC).
+  const hourStart = Math.floor(Date.now() / 3_600_000) * 3_600_000 - 3_600_000;
+  const AT27 = hourStart + 27 * 60_000;
+  const AT57 = hourStart + 57 * 60_000;
   const { default: api, runObserver } = await import("../../platform-api/src/index.ts");
   const env: any = { ...baseEnv("cryptophys-platform-api", db), PLATFORM_NAME: "cryptophys-cloud-platform", PLATFORM_ENVIRONMENT: "production", DB: db };
   assert.equal((await call(api, env, req("GET", "/v1/observer", undefined, OUTSIDER_JWT))).status, 403);
@@ -610,19 +615,19 @@ test("OB20. GET /v1/observer is operator-only and read-only; the cron runs sense
   assert.equal((await call(api, env, req("POST", "/v1/observer"))).status, 405);
   // Unconfigured cron: nothing is called.
   const idle = fakeCf();
-  const r0 = await runObserver(env, Date.parse("2026-11-14T11:27:00.000Z"), idle.fetcher);
+  const r0 = await runObserver(env, AT27, idle.fetcher);
   assert.deepEqual([(r0.senses as any).outcome, (r0.inventory as any).outcome], ["not_configured", "not_configured"]);
   assert.deepEqual(idle.calls, []);
   // Configured: :27 senses and publishes one advisory warning report as agent platform-api; :57 only the inventory.
   const published: any[] = [];
   const live: any = { ...env, ...OBS_ENV, AGENTS: { syscall: async (agent: string, cap: string, input: any) => { published.push({ agent, cap, input }); return { outcome: "succeeded" }; } } };
   const cf = fakeCf();
-  const r1 = await runObserver(live, Date.parse("2026-11-14T11:27:00.000Z"), cf.fetcher);
+  const r1 = await runObserver(live, AT27, cf.fetcher);
   assert.equal((r1.senses as any).outcome, "recorded");
   assert.equal(published.length, 1);
   assert.deepEqual([published[0].agent, published[0].cap, published[0].input.kind, published[0].input.severity], ["platform-api", "reports.publish", "platform_digest", "warning"], "advisory: a warning, never critical (never the brake)");
   const cf57 = fakeCf();
-  const r2 = await runObserver(live, Date.parse("2026-11-14T11:57:00.000Z"), cf57.fetcher);
+  const r2 = await runObserver(live, AT57, cf57.fetcher);
   assert.equal(r2.senses, undefined);
   assert.ok(!cf57.calls.some((c) => c.startsWith("graphql")), "no GraphQL call at :57");
   const view = await call(api, live, req("GET", "/v1/observer"));

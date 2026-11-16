@@ -48,7 +48,10 @@ function bucket() {
   };
   return b;
 }
-const toml = (name: string, extra = "") => `name = "${name}"\nmain = "src/worker.ts"\ncompatibility_date = "2026-11-01"\ncompatibility_flags = ["nodejs_compat"]\n${extra}`;
+// 2026-11-16: the AGENTS service binding the fake's active versions carry is declared, as in every platform Worker's
+// wrangler.toml (an undeclared service binding now refuses the deploy: binding-props-2026-11-16.test.ts).
+const AGENTS_TOML = '[[services]]\nbinding = "AGENTS"\nservice = "cryptophys-ai-kernel"\nentrypoint = "AgentRpc"\nprops = { host_worker = "x" }\n';
+const toml = (name: string, extra = "") => `name = "${name}"\nmain = "src/worker.ts"\ncompatibility_date = "2026-11-01"\ncompatibility_flags = ["nodejs_compat"]\n${extra}\n${AGENTS_TOML}`;
 const moduleText = (name: string, commit: string) => `export default { fetch() { return new Response("${name} ${commit.slice(0, 12)}"); } };`;
 type Tweak = { toml?: string; external?: string[]; omit?: boolean };
 async function bundlesFor(b: ReturnType<typeof bucket>, commit: string, tweaks: Record<string, Tweak> = {}, migrations: string[] | null = MIGRATIONS) {

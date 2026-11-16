@@ -62,7 +62,7 @@ function fakeCf(bindings: (svc: string) => Array<Record<string, unknown>>, opts:
     async version(s: string, v: string) { calls.push(`version ${s}`); const b = script(s).versions.get(v); if (!b) throw new Error("cloudflare_api_404_10007"); return { id: v, resources: { bindings: structuredClone(b) } }; },
     async versionBindingSet(s: string, v: string) {
       const b = script(s).versions.get(v)!;
-      return { names: b.map((x) => `${x.type}:${x.name}`).sort(), digest: digest(b) };
+      return { names: b.map((x) => `${x.type}:${x.name}`).sort(), digest: digest(b), records: structuredClone(b) as Array<{ type: string; name: string }> };
     },
     async uploadVersion(s: string) {
       calls.push(`upload ${s}`);
@@ -88,9 +88,12 @@ async function plannedFor(services: string[]): Promise<{ plan: PlannedService[];
   for (const service of services) {
     const text = `export default { fetch() { return new Response(${JSON.stringify(service)}); } };`;
     modules.set(`bundles/${NEW}/${service}.mjs`, text);
+    // 2026-11-16: the stored wrangler.toml, whose declared service bindings the executor compares (none here).
+    const config = `name = "${service}"\nmain = "src/worker.ts"\ncompatibility_date = "2026-11-01"\n`;
+    modules.set(`bundles/${NEW}/config/${service}.toml`, config);
     const worker: BundleWorker = {
       name: service, module: `${service}.mjs`, main_module: `${service}.mjs`, sha256: await sha256(text), bytes: new TextEncoder().encode(text).length,
-      config_sha256: "c".repeat(64), compatibility_date: "2026-11-01", compatibility_flags: [], single_module: true, assets: false, external: [], limits: false, modules: null, config: null,
+      config_sha256: await sha256(config), compatibility_date: "2026-11-01", compatibility_flags: [], single_module: true, assets: false, external: [], limits: false, modules: null, config: `config/${service}.toml`,
     };
     plan.push({ service, worker, running_tag: OLD.slice(0, 12) });
   }
