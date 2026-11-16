@@ -9,6 +9,8 @@ import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy
 import { DOCTRINE_ACTIONS, doctrineProblem } from "./doctrine.ts";
 import { EXTERNAL_ORIGINS, externalCeilingViolations } from "./organism.ts";
 import type { ChangeEvidence } from "./merge-path.ts";
+import { DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployParams } from "./destructive-deploy.ts";
+import { unitForService } from "./deploy-units.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -19,6 +21,10 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   redeploy_desired_version: { class: "routine", target: "service", description: "Redeploy the registry desired version of a Worker" },
   rollback_worker_version: { class: "routine", target: "service", description: "Roll a Worker back to a version recorded as healthy" },
   deploy_commit: { class: "routine", target: "service", description: "Deploy a CI-green commit from main" },
+  // Cut-over gate (owner 2026-11-15, "1 setuju"): a Control Plane deploy whose pending D1 migrations include destructive
+  // ones (DESTRUCTIVE_SQL) is never routine. The params name the commit and each destructive file with its sha256; after
+  // the owner's click the native deploy records a D1 Time Travel bookmark first, then applies exactly those files.
+  deploy_destructive_migration: { class: "critical", target: "service", description: "Deploy a CI-green commit of main whose D1 migrations drop, delete or rewrite data: the named files only, after a Time Travel bookmark is recorded; one owner approval click" },
   set_desired_version: { class: "routine", target: "service", description: "Record a desired version in the Platform Registry" },
   registry_disable_service: { class: "routine", target: "service", description: "Mark a service disabled in the registry" },
   registry_enable_service: { class: "routine", target: "service", description: "Mark a disabled service registered again" },
@@ -69,6 +75,19 @@ export function mergeVote(p: Proposal, e: Evidence): { vote: Vote["vote"]; reaso
   const want = p.action === "merge_change" ? "would_merge" : "needs_owner";
   if (c.verdict !== want) return { vote: "reject", reason: `the Forge's verdict is ${c.verdict}, not ${want}` };
   return { vote: "approve", reason: p.action === "merge_change" ? "every check passed and only routine paths change" : "every check passed; it touches a guard path, so the owner decides" };
+}
+
+/**
+ * Every voter's rule for deploy_destructive_migration (owner 2026-11-15): malformed params, or a target outside the
+ * Control Plane unit, are rejected by every seat; otherwise null and the voter's domain rule applies as for
+ * deploy_commit. The Orchestrator re-checks all of it against main and D1 (deployDestructiveForConsensus).
+ */
+export function destructiveDeployVote(p: Proposal): { vote: Vote["vote"]; reason: string } | null {
+  if (p.action !== DESTRUCTIVE_DEPLOY_ACTION) return null;
+  const d = destructiveDeployParams(p.params);
+  if ("problem" in d) return { vote: "reject", reason: d.problem };
+  if (unitForService(p.target)?.unit !== d.unit) return { vote: "reject", reason: `${p.target} is not a Worker of the ${d.unit} unit` };
+  return null;
 }
 
 /**
@@ -217,6 +236,8 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   if (registration) return v(registration.vote, registration.reason);
   const merge = mergeVote(p, e);
   if (merge) return v(merge.vote, merge.reason);
+  const destructive = destructiveDeployVote(p);
+  if (destructive) return v(destructive.vote, destructive.reason);
   const svc = e.services[p.target];
   const reg = e.registry[p.target];
   const version = String(p.params.version ?? "");
@@ -235,7 +256,7 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
         if (!svc) return v("reject", "no drift observation for the target");
         return svc.drifted ? v("approve", `target drifted${svc.persistent ? " persistently" : ""}`) : v("reject", "target is in sync; nothing to remediate");
       }
-      if (p.action === "deploy_commit") {
+      if (p.action === "deploy_commit" || p.action === DESTRUCTIVE_DEPLOY_ACTION) {
         const persistent = Object.values(e.services).filter((s) => s.persistent && s.service_id !== p.target);
         return persistent.length ? v("reject", `other services drift persistently: ${persistent.map((s) => s.service_id).join(", ")}`) : v("approve", "platform is stable");
       }
@@ -250,6 +271,7 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
       return v("approve", "no executing recovery plan on the target");
     case "deployment-orchestrator":
       if (p.action === "deploy_commit") return COMMIT.test(String(p.params.commit_sha ?? "")) ? v("approve", "commit is a full SHA") : v("reject", "commit_sha must be a full 40-hex SHA");
+      if (p.action === DESTRUCTIVE_DEPLOY_ACTION) return v("approve", "full commit and named destructive files; a Time Travel bookmark is recorded before they apply, and the owner decides");
       if (p.action === "redeploy_desired_version") return reg?.desired_version ? v("approve", `desired version ${reg.desired_version} is recorded`) : v("reject", "no desired version recorded");
       if (p.action === "rollback_worker_version") return HEX_VERSION.test(version) ? v("approve", "rollback version is a recorded tag") : v("reject", "rollback version must be a 7-40 hex tag");
       return v("approve", "no deployment objection");

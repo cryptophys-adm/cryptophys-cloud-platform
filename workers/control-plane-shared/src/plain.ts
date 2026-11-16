@@ -99,6 +99,7 @@ export function explainReason(reason: string | null | undefined): string {
 
 const ACTION_TEXT: Record<string, string> = {
   deploy_commit: "deploy the latest code to",
+  deploy_destructive_migration: "apply destructive database migrations (after a restore point) and deploy the latest code to",
   rollback_worker_version: "roll back",
   redeploy_desired_version: "redeploy the expected version of",
   observe_drift: "check for drift on",

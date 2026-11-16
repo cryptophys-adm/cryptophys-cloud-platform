@@ -34,7 +34,7 @@
 
 Durable state lives only in D1 `cryptophys-control-plane` (owner `cryptophys-adm`).
 
-- Backup: D1 Time Travel provides continuous point-in-time recovery within its 30-day window; every control-plane deploy records a bookmark before migrating.
+- Backup: D1 Time Travel provides continuous point-in-time recovery within its 30-day window. `deploy-control-plane.yml` logs a bookmark before it migrates; the native deploy records one before any destructive migration (`deployment.restore_point_recorded`, "Destructive D1 migrations" below).
 - RPO: minutes (Time Travel granularity). RTO: under 30 minutes (restore + redeploy through the workflow).
 - Restore verification: after any restore, run `GET /v1/verify` on the Audit Ledger and a drift observation, and record the restore as a new audit event.
 - Recovery plans for each service are stored in the Recovery Manager and need a second person to approve.
@@ -76,7 +76,7 @@ Re-check them before you act; commands and limits change.
 
 **3. Restore the control-plane database (D1 Time Travel).** This is critical and destructive, and only the owner decides it (`docs/SSOT.md`, "Backups"). It overwrites `cryptophys-control-plane` in place for every service, so everything written after the restore point is gone from the live database: audit events, consensus, reports and registry changes. In-flight queries fail.
 - **Window.** The account is on Workers Paid, so the window is 30 days (7 on Free).
-- **Where to restore to.** A Control Plane deploy through `deploy-control-plane.yml` logs a pre-migration bookmark ("Pre-migration D1 bookmark" in its run summary); the native path does not. For any other point in time: `npx wrangler d1 time-travel info cryptophys-control-plane --timestamp=<RFC3339 or unix>`.
+- **Where to restore to.** A Control Plane deploy through `deploy-control-plane.yml` logs a pre-migration bookmark ("Pre-migration D1 bookmark" in its run summary). A native deploy that applies a destructive migration (an owner-approved `deploy_destructive_migration`, or a break-glass plan naming the file) records the bookmark first: the audit event `deployment.restore_point_recorded` and `details_json.restore_point` of its `deployment_requests` row ("Destructive D1 migrations" below). An additive native migration records only `restore_point_at`, a time. For any other point in time: `npx wrangler d1 time-travel info cryptophys-control-plane --timestamp=<RFC3339 or unix>`.
 - **Restore.** `npx wrangler d1 time-travel restore cryptophys-control-plane --bookmark=<bookmark>` (or `--timestamp=...`).
 - **Undo.** The restore prints the bookmark from before it, which undoes it. Write it down first.
 - **Migrations.** `d1_migrations` goes back with the data, so after a restore to before a migration, roll the Control Plane Workers back to versions from before that migration too: their readiness requires every migration they were built with (`REQUIRED_MIGRATIONS`). Then let the next Control Plane deploy apply the migrations again.
@@ -190,6 +190,54 @@ Every named item is audited before it is applied (`deployment.destructive_topolo
 Zone routes cannot be named. Creating or removing a Workers route on a zone needs Zone → Workers Routes → Edit, which `CF_DEPLOY_TOKEN` does not hold by the owner's decision of 2026-11-06 (ADR-0010). That is a settings decision, not a code gap: a new zone route deploys natively once it is attached (the script list reports it); otherwise `zone_route_needs_zone_token:<pattern>`, `zone_route_removal_owner_run:<pattern>` or `route_change_needs_zone_token:<pattern>`. Attaching or detaching one stays the owner's own act with a zone token in the dashboard, or a later owner decision to grant the permission.
 
 **Refusals** (audited as `deployment.break_glass_refused`, nothing changed): the commit is not main's head or not ready, a destructive migration not named, a named file that is not a pending destructive migration, a destructive topology change not named, a named topology item not in main's change, a D1 migration main does not have, pending migrations on a unit other than the Control Plane (deploy the Control Plane first), the deploy lock held or another deploy of the unit under way, the native deploy not configured (there is no GitHub fallback), or a Worker the native deploy cannot plan (its reason is recorded). Write a new plan once the cause is fixed; a plan deploys at most once.
+
+## Destructive D1 migrations (`deploy_destructive_migration`, cut-over gate, owner 2026-11-15)
+
+A migration the Forge marks destructive drops, deletes or rewrites data (`DESTRUCTIVE_SQL`: `DROP`, `DELETE FROM`, `UPDATE … SET`, `ALTER TABLE … RENAME/DROP`). A routine `deploy_commit` never applies one: the native deploy refuses it (`destructive_migration`). Before the gate, such a deploy fell back to `deploy-control-plane.yml`, as 0069 did on 2026-11-15. Now it has a native path with the owner's click, and it needs no workflow after cut-over step 6.
+
+**What the agents do.**
+- When main's pending migrations for the Control Plane include destructive ones, the Supervisor proposes `deploy_destructive_migration` (critical) instead of `deploy_commit`. "Pending" means main has the file and D1's ledger `d1_migrations` does not.
+- The params name the commit and each destructive file with its sha256.
+- The council votes: every seat rejects malformed params, a target outside the Control Plane, or an open critical report (the brake).
+- The Policy Engine checks it as a deploy (the daily deploy limit counts it).
+- In mode `deploy` or `critical` it waits for the owner (`pending_owner`, 24 hours). The Supervisor proposes it once per commit. It proposes again only after a policy veto (an hour later), after the 24-hour window lapsed, or after a rejection caused only by the brake.
+- Until the owner decides, the Control Plane unit waits. The deploy stall alarm may report it after 2 hours.
+
+**How the owner approves.**
+1. Console → Owner → "Waiting for your approval" shows the item with each file and the first 12 characters of its sha256. The Consensus page's Owner Approval Queue shows the same.
+2. Read the SQL of each named file at that commit (`workers/control-plane-migrations/<file>` on main). The sha256 pins exactly that text: an edited file refuses the deploy (`named_migration_sha256_mismatch`).
+3. Click approve, or reject. Reject when the data loss is not intended. Rejected, the commit does not deploy the Control Plane until a newer main commit is proposed.
+
+**What the click does** (`deployDestructiveForConsensus`, `workers/deployment-orchestrator/src/index.ts`):
+- The Orchestrator re-verifies the proposal: passed, the owner's approval, a fresh Policy Engine allow.
+- The commit must be main's ready head. The Control Plane must be eligible natively with only the named destructive files allowed: a destructive file the approval does not name refuses (`destructive_migration`), and so does a named file that is no longer pending and destructive (`named_migration_not_pending_destructive`).
+- It checks, read only, that the D1 bookmark can be read now.
+- Then it queues one signed request (executor `native:destructive-deploy`, lock `destructive:deploy-control-plane.yml:<sha>`). A refusal changes nothing and is audited as `deployment.destructive_refused`, with the reason; the proposal ends `failed` with the same reason in its outcome.
+
+**At the next SAFE minute**, the request is checked again: main's head, readiness, the plan and each sha256. Then:
+1. **The restore point first.** The Orchestrator reads D1's current Time Travel bookmark: `GET /accounts/{account_id}/d1/database/{database_id}/time_travel/bookmark`. The database is the `DB` binding of the Orchestrator's own running version. It records the bookmark before any migration runs, in two places: `details_json.restore_point` (`bookmark`, `database_id`, `read_at`) of the `deployment_requests` row, and the audit event `deployment.restore_point_recorded`, whose payload also holds the restore command. If the bookmark cannot be read or recorded, the deploy stops before any change.
+2. **Then the migrations**, in order: main's pending files, only the named destructive ones among them, each in its own D1 batch with its `d1_migrations` row.
+3. **Then the Workers**, as in every native deploy: upload, check, deploy, verify live, record the desired version. Any failure restores the changed Workers. Migrations stay (forward-only).
+
+The same bookmark step runs before a destructive migration that a break-glass plan names (`force_redeploy_unit`, above).
+
+**Token permission (owner).** `CF_DEPLOY_TOKEN` on `cryptophys-deployment-orchestrator` needs **Account → D1 → Read** (D1 Edit also works) to read the bookmark. Without it the click is refused with `restore_point_unavailable` (`d1_permission_missing`), and the audit event names the permission. Edit the token where it was created in the dashboard (Account API Tokens, or My Profile → API Tokens): add the permission Account · D1 · Read. The token's value does not change, so the Worker secret stays as it is. The token never restores anything.
+
+**Outcomes.**
+- **Succeeded:** `deployment.destructive_deploy_succeeded`; the bookmark stays in the request row and the audit chain.
+- **Refused at run time** (main moved, a file changed): a warning report; nothing changed.
+- **Failed:** a critical report from `deployment-orchestrator`. Its body holds `d1_restore_point` (bookmark, database, time), `d1_restore_command`, the migrations applied and `action_required`. A bookmark that could not be read is reported as "nothing in production changed", with the permission named. The report holds the consensus brake until it is acknowledged on the Owner page.
+
+**Where the bookmark is**, newest first:
+- `SELECT payload_json FROM audit_events WHERE event_type = 'deployment.restore_point_recorded' ORDER BY rowid DESC LIMIT 5`;
+- `SELECT request_id, status, json_extract(details_json, '$.restore_point') FROM deployment_requests WHERE json_extract(details_json, '$.executor') IN ('native:destructive-deploy', 'native:break-glass') ORDER BY created_at DESC LIMIT 5`;
+- the critical report of a failed deploy.
+
+**How to restore with it (owner only, never automatic).** A restore is critical and destructive: everything written after the bookmark is lost for every service. The Orchestrator never restores D1; the owner decides.
+1. Fixing forward is usually better. A failed deploy restores the Workers; the applied migrations stay.
+2. To restore: pull the brake first (step 0 of "Last resort" above). Then run `npx wrangler d1 time-travel restore cryptophys-control-plane --bookmark=<bookmark>` with your own credentials (D1 Edit). Write down the undo bookmark it prints.
+3. Roll the Control Plane Workers back to versions from before the migration: their readiness requires every migration they were built with.
+4. Record it as `owner.d1_restore` and verify the audit chain (step 4 of "Last resort").
 
 ## Data retention
 
