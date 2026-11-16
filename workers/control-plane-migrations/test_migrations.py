@@ -804,3 +804,37 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", gv_code) and gv_
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", gv_sql, re.I), "0072 is not destructive"
 gv_db.close()
 print("PASS: 0072 git backup verify (additive columns, CHECK verified/failed, rows kept)")
+# Migration 0073 (owner 2026-11-16): the native source of the deploy-time identity lists. Additive: one new table
+# platform_identities with no row (nothing changes on day one), at most the one row id 'access', source 'seed' or
+# 'owner', a revision of at least 1. Every earlier table and row is kept.
+pi_db = sqlite3.connect(":memory:")
+pi_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0073_":
+        pi_db.executescript(migration.read_text(encoding="utf-8"))
+pi_tables_before = {r[0]: pi_db.execute(f"SELECT COUNT(*) FROM \"{r[0]}\"").fetchone()[0] for r in pi_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert "platform_identities" not in pi_tables_before
+pi_sql = (ROOT / "0073_platform_identities.sql").read_text(encoding="utf-8")
+pi_db.executescript(pi_sql)
+pi_tables_after = {r[0]: pi_db.execute(f"SELECT COUNT(*) FROM \"{r[0]}\"").fetchone()[0] for r in pi_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert {k: v for k, v in pi_tables_after.items() if k != "platform_identities"} == pi_tables_before, "0073 keeps every table and row"
+assert pi_tables_after["platform_identities"] == 0, "0073 seeds no row: the deploys carry the active values until a seed or an owner's save"
+assert [r[1] for r in pi_db.execute("PRAGMA table_info(platform_identities)")] == ["id", "operator_emails", "approver_emails", "source", "revision", "updated_by", "updated_at"]
+pi_ok = ("access", "a@example.com,b@example.com", "a@example.com,b@example.com", "seed", 1, "agent:deployment-orchestrator", "t0")
+pi_db.execute("INSERT INTO platform_identities VALUES (?, ?, ?, ?, ?, ?, ?)", pi_ok)
+pi_db.execute("UPDATE platform_identities SET source = 'owner', revision = 2, updated_by = 'a@example.com' WHERE id = 'access'")
+expect_integrity_error("0073 holds one row", lambda: pi_db.execute("INSERT INTO platform_identities VALUES (?, ?, ?, ?, ?, ?, ?)", pi_ok))
+for bad_id in ("other", "", "ACCESS"):
+    expect_integrity_error(f"0073 id {bad_id!r}", lambda b=bad_id: pi_db.execute("INSERT INTO platform_identities VALUES (?, ?, ?, ?, ?, ?, ?)", (b,) + pi_ok[1:]))
+for bad_source in ("agent", "", "OWNER", None):
+    expect_integrity_error(f"0073 source {bad_source!r}", lambda b=bad_source: pi_db.execute("UPDATE platform_identities SET source = ? WHERE id = 'access'", (b,)))
+for bad_revision in (0, -1, None):
+    expect_integrity_error(f"0073 revision {bad_revision!r}", lambda b=bad_revision: pi_db.execute("UPDATE platform_identities SET revision = ? WHERE id = 'access'", (b,)))
+for column in ("operator_emails", "approver_emails"):
+    for bad_list in ("", "a@b.c", "x" * 5201, None):
+        expect_integrity_error(f"0073 {column} {str(bad_list)[:12]!r}", lambda c=column, b=bad_list: pi_db.execute(f"UPDATE platform_identities SET {c} = ? WHERE id = 'access'", (b,)))
+pi_code = "\n".join(line.split("--", 1)[0] for line in pi_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER)\b", pi_code) and pi_code.count("CREATE TABLE") == 1, "0073 only creates the table"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", pi_sql, re.I), "0073 is not destructive"
+pi_db.close()
+print("PASS: 0073 platform identities (new table, no row, one row 'access', source seed/owner, revision >= 1, rows kept)")

@@ -10,6 +10,11 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^workers\/control-plane-shared\/src\/access\.ts$/, "auth_access"],
   [/^\.github\/workflows\/provision-access\.yml$/, "auth_access"],
   [/^\.github\/scripts\/(access-[a-z-]+|resolve-access|find-service-token|find-agent-service-tokens|bootstrap-private-worker)\.sh$/, "auth_access"],
+  // Owner 2026-11-16: the native source of the identity lists replaces access-identities.sh after the cut-over. The rules
+  // of a valid list, its owner-only write and the native deploy that writes the values decide who operates and approves.
+  [/^workers\/control-plane-shared\/src\/identity-source\.ts$/, "auth_access"],
+  [/^workers\/platform-registry\/src\/identities\.ts$/, "auth_access"],
+  [/^workers\/deployment-orchestrator\/src\/deploy-vars\.ts$/, "auth_access"],
   [/^workers\/policy-engine\//, "policy_engine"],
   [/^workers\/control-plane-shared\/src\/consensus-(rules|exec|vote)\.ts$/, "consensus_kill_switch"],
   [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
