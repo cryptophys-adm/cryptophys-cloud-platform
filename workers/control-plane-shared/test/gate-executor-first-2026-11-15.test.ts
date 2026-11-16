@@ -29,6 +29,7 @@ import recovery from "../../recovery-manager/src/index.ts";
 import { runLifecycle } from "../../recovery-manager/src/lifecycle.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { unhandledProblems } from "../../ai-kernel/src/owner-inbox.ts";
+import { rpcSyscall } from "../../ai-kernel/src/agent-rpc.ts";
 
 type Db = ReturnType<typeof migratedDb>;
 const ROOT = new URL("../../../", import.meta.url);
@@ -351,7 +352,7 @@ const nextSafeMinute = (after: number): number => {
   throw new Error("no safe minute");
 };
 /** The Recovery Manager's env with the rescue executor configured. The Orchestrator's DeployRpc fails the test if touched. */
-function recoveryEnv(db: Db, b: Bucket, opts: { probeTag?: string; configured?: boolean } = {}) {
+function recoveryEnv(db: Db, b: Bucket, opts: { probeTag?: string; configured?: boolean; agents?: { syscall(agent: string, cap: string, input: any): Promise<any> } } = {}) {
   const wf = fakeWorkflow();
   const reports: any[] = [];
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
@@ -363,7 +364,7 @@ function recoveryEnv(db: Db, b: Bucket, opts: { probeTag?: string; configured?: 
     RECOVERY_LIFECYCLE: wf.binding,
     POLICY: { evaluate: async (input: Record<string, unknown>) => { const p = parsePolicyRequest(input); if (p instanceof Error) throw p; return decide(policyEnv as never, p); } },
     DEPLOY: deploy,
-    AGENTS: { syscall: async (agent: string, _cap: string, input: any) => {
+    AGENTS: opts.agents ?? { syscall: async (agent: string, _cap: string, input: any) => {
       reports.push({ agent, ...input });
       db.raw.prepare(`INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
         .run(`rpt_${crypto.randomUUID()}`, agent, input.kind, input.severity, input.subject, JSON.stringify(input.body), input.ai_status, new Date().toISOString());
@@ -626,4 +627,65 @@ test("GEF-9. wiring: the rescue path imports nothing of the Orchestrator, mirror
   const ops = read("docs/OPERATIONS.md");
   assert.match(ops, /## Rescue deploy of the Deployment Orchestrator/);
   assert.match(ops, /CF_ORCHESTRATOR_DEPLOY_TOKEN/);
+});
+
+test("GEF-10. a rescue report the kernel does not store is never silent: deployment.rescue_report_failed with the reason, and the step's detail says so (incident 2026-11-16)", async () => {
+  // plan_b94d06cf (2026-11-16 10:17): the rescue succeeded, but the Recovery Manager's AGENTS call never reached the
+  // Policy Engine and nothing recorded why. The kernel's own AgentRpc refusal for a binding without props.host_worker
+  // (agent-rpc.ts resolve) is used here, not a stand-in.
+  const kernelWithoutProps = (db: Db) => ({ syscall: (agent: string, cap: string, input: any) => rpcSyscall({ DB: db } as never, undefined, agent, cap, input) });
+  const stored = (db: Db) => (db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = 'recovery-manager'").get() as any).n;
+
+  // Succeeded: production is changed and recorded as before; the lost warning (the owner's notice) is audited.
+  {
+    const { db, b } = await rescueSetup();
+    const { env, wf } = recoveryEnv(db, b, { agents: kernelWithoutProps(db) });
+    routeFetch(fakeCloudflare());
+    freezeDate(nextSafeMinute(Date.now()));
+    try {
+      const id = await approvedPlan(env);
+      observeInSync(db, ORCHESTRATOR_SERVICE);
+      assert.equal((await fastTimers(() => runLifecycle(env as never, id, id, wf.step(id) as never))).final_status, "completed", "a lost report never fails the deploy");
+      assert.equal(desired(db, ORCHESTRATOR_SERVICE), tag(NEW));
+      assert.equal(stored(db), 0);
+      const row = requests(db).find((r) => JSON.parse(r.details_json).executor === RESCUE_EXECUTOR);
+      const lost = events(db, "deployment.rescue_report_failed");
+      assert.deepEqual(lost.map((e) => e.payload), [{ request_id: row.request_id, plan_id: id, commit_sha: NEW, severity: "warning", alert_key: `break_glass:${row.request_id}`,
+        rescue_outcome: "succeeded", reason: "caller_identity_missing" }]);
+      assert.deepEqual(events(db, "deployment.rescue_").map((e) => e.type), ["deployment.rescue_started", "deployment.rescue_succeeded", "deployment.rescue_report_failed"]);
+      assert.match(pipeline(db, id)[2].detail, /succeeded without the Orchestrator \(request dep_[0-9a-f-]+; its report was not stored \(caller_identity_missing\), audited as deployment\.rescue_report_failed\)$/);
+      assert.equal((await verifyAuditChain(db as never)).valid, true);
+    } finally { restoreDate(); globalThis.fetch = realFetch; }
+  }
+
+  // Failed: the critical report (the consensus brake) is lost too; the audit names its severity and a thrown RPC error.
+  {
+    const { db, b } = await rescueSetup();
+    const { env, wf } = recoveryEnv(db, b, { probeTag: tag(OLD), agents: { syscall: async () => { throw new Error("kernel unreachable"); } } });
+    routeFetch(fakeCloudflare());
+    freezeDate(nextSafeMinute(Date.now()));
+    try {
+      const id = await approvedPlan(env);
+      assert.equal((await fastTimers(() => runLifecycle(env as never, id, id, wf.step(id) as never))).final_status, "failed");
+      assert.equal(stored(db), 0);
+      const lost = events(db, "deployment.rescue_report_failed");
+      assert.deepEqual(lost.map((e) => [e.payload.severity, e.payload.rescue_outcome, e.payload.reason]), [["critical", "failed", "kernel unreachable"]]);
+      assert.match(pipeline(db, id)[2].detail, /failed: not_live_at_tag .*restored; its report was not stored \(kernel unreachable\), audited as deployment\.rescue_report_failed\)$/);
+    } finally { restoreDate(); globalThis.fetch = realFetch; }
+  }
+
+  // A stored report adds nothing: no audit event, the detail as before.
+  {
+    const { db, b } = await rescueSetup();
+    const { env, wf } = recoveryEnv(db, b);
+    routeFetch(fakeCloudflare());
+    freezeDate(nextSafeMinute(Date.now()));
+    try {
+      const id = await approvedPlan(env);
+      observeInSync(db, ORCHESTRATOR_SERVICE);
+      assert.equal((await fastTimers(() => runLifecycle(env as never, id, id, wf.step(id) as never))).final_status, "completed");
+      assert.deepEqual(events(db, "deployment.rescue_report_failed"), []);
+      assert.match(pipeline(db, id)[2].detail, /succeeded without the Orchestrator \(request dep_[0-9a-f-]+\)$/);
+    } finally { restoreDate(); globalThis.fetch = realFetch; }
+  }
 });

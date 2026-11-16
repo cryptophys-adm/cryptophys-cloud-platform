@@ -305,12 +305,20 @@ async function audit(db: D1Database, event: Parameters<typeof appendAuditEvent>[
   try { await appendAuditEvent(db, event); } catch { /* the request row carries the outcome */ }
 }
 
-async function report(env: RescueEnv, r: { request_id: string; plan_id: string; sha: string; ok: boolean; reason?: string; restored?: boolean; steps: string[] }) {
+/**
+ * The rescue's report: the owner's break_glass_deployed notice (warning) or, when it failed, the critical report that
+ * holds routine consensus. Publishing is advisory and never throws (agents.ts), and a kernel refusal before the Policy
+ * Engine (agent-rpc.ts resolve: the binding's props.host_worker) leaves no audit event of its own. So a report that
+ * was not stored is recorded here as deployment.rescue_report_failed with the kernel's reason (incident 2026-11-16:
+ * plan_b94d06cf's report was lost without a trace), and the reason is returned for the step's detail.
+ */
+async function report(env: RescueEnv, r: { request_id: string; plan_id: string; sha: string; ok: boolean; reason?: string; restored?: boolean; steps: string[] }): Promise<string | null> {
   const tag = r.sha.slice(0, 12);
+  const severity = r.ok ? "warning" : "critical";
   const after = r.ok ? "It was verified live and recorded; the Orchestrator was not used."
     : `${r.restored === false ? "The restore of the Orchestrator did not complete: check production now." : "The Orchestrator was restored to the version it ran."} Acknowledge this report on the Owner page to let routine consensus continue.`;
-  await publishAgentReport(env.AGENTS, "recovery-manager", {
-    kind: "platform_digest", severity: r.ok ? "warning" : "critical",
+  const published = await publishAgentReport(env.AGENTS, "recovery-manager", {
+    kind: "platform_digest", severity,
     subject: `Rescue deploy of the Deployment Orchestrator at ${tag} ${r.ok ? "succeeded" : `failed (${r.reason ?? "unknown"})`}`.slice(0, 200),
     body: {
       explanation: `An owner-approved break-glass plan (${r.plan_id}) deployed the Deployment Orchestrator at main ${tag} through the Recovery Manager, without the Orchestrator's own deploy code. ${after}`,
@@ -319,7 +327,14 @@ async function report(env: RescueEnv, r: { request_id: string; plan_id: string; 
       reason: r.reason ?? null, restored: r.restored ?? null, steps: r.steps.slice(0, 20),
     },
   });
+  if (published.ok) return null;
+  await audit(env.DB, { event_type: "deployment.rescue_report_failed", actor: `recovery:${r.plan_id}`, subject: ORCHESTRATOR_SERVICE, outcome: "failed",
+    payload: { request_id: r.request_id, plan_id: r.plan_id, commit_sha: r.sha, severity, alert_key: `break_glass:${r.request_id}`, rescue_outcome: r.ok ? "succeeded" : "failed", reason: published.reason } });
+  return published.reason;
 }
+
+/** The step's detail names a report that was not stored, so the plan page shows it too. */
+const unreported = (reason: string | null) => reason ? `; its report was not stored (${reason.slice(0, 120)}), audited as deployment.rescue_report_failed` : "";
 
 /**
  * The force_redeploy_unit step of an approved break-glass plan for the Orchestrator, run by the Recovery Manager's
@@ -360,7 +375,8 @@ export async function rescueForRecovery(env: RescueEnv, planId: string, decision
       await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'running'")
         .bind(JSON.stringify({ ...details, outcome: { reason: "rescue_interrupted", restored: null } }), new Date(now).toISOString(), prior.request_id).run();
       await audit(env.DB, { event_type: "deployment.rescue_failed", actor, subject: ORCHESTRATOR_SERVICE, outcome: "failed", payload: { request_id: prior.request_id, plan_id: planId, commit_sha: sha, reason: "rescue_interrupted" } });
-      await report(env, { request_id: prior.request_id, plan_id: planId, sha, ok: false, reason: "rescue_interrupted", restored: false, steps: [] });
+      const lost = await report(env, { request_id: prior.request_id, plan_id: planId, sha, ok: false, reason: "rescue_interrupted", restored: false, steps: [] });
+      return { status: "failed", request_id: prior.request_id, detail: `rescue deploy request ${prior.request_id} already ran for this plan; write a new plan${unreported(lost)}` };
     }
     return { status: "failed", request_id: prior.request_id, detail: `rescue deploy request ${prior.request_id} already ran for this plan; write a new plan` };
   }
@@ -390,8 +406,8 @@ export async function rescueForRecovery(env: RescueEnv, planId: string, decision
       new Date().toISOString(), requestId).run();
   await audit(env.DB, { event_type: run.ok ? "deployment.rescue_succeeded" : "deployment.rescue_failed", actor, subject: ORCHESTRATOR_SERVICE, outcome: run.ok ? "succeeded" : "failed",
     payload: { request_id: requestId, executor: RESCUE_EXECUTOR, plan_id: planId, commit_sha: sha, reason: run.reason ?? null, restored: run.restored ?? null, steps: run.steps } });
-  await report(env, { request_id: requestId, plan_id: planId, sha, ok: run.ok, reason: run.reason, restored: run.restored, steps: run.steps });
+  const lost = await report(env, { request_id: requestId, plan_id: planId, sha, ok: run.ok, reason: run.reason, restored: run.restored, steps: run.steps });
   return run.ok
-    ? { status: "succeeded", request_id: requestId, detail: `rescue deploy of the Orchestrator at ${sha.slice(0, 12)} succeeded without the Orchestrator (request ${requestId})` }
-    : { status: "failed", request_id: requestId, detail: `rescue deploy of the Orchestrator at ${sha.slice(0, 12)} failed: ${run.reason ?? "unknown"} (request ${requestId}; ${run.restored === false ? "restore did not complete, check production" : "restored"})` };
+    ? { status: "succeeded", request_id: requestId, detail: `rescue deploy of the Orchestrator at ${sha.slice(0, 12)} succeeded without the Orchestrator (request ${requestId}${unreported(lost)})` }
+    : { status: "failed", request_id: requestId, detail: `rescue deploy of the Orchestrator at ${sha.slice(0, 12)} failed: ${run.reason ?? "unknown"} (request ${requestId}; ${run.restored === false ? "restore did not complete, check production" : "restored"}${unreported(lost)})` };
 }
