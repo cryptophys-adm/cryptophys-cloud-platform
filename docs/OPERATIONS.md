@@ -174,6 +174,8 @@ The xauusd and HUD agents still need the owner to add the same binding in `xauus
 
 **Revocation.** An approver can revoke a principal with `DELETE /v1/agents/{id}/principals/{client_id}`. Deleting the service token in Zero Trust and re-running Provision Access removes it at the edge.
 
+**The cta studio behind Access (2026-11-16).** `native-access.ts` adds two path destinations to the one platform Access application, `cta.cryptophys.work/studio*` and `cta.cryptophys.work/api/studio/*`, under the same three policies; the rest of `cta.cryptophys.work` stays public. The `cryptophys-cta` Worker checks this application's JWT on those paths itself. They reach Cloudflare as a `change_access` proposal (the owner's click), and `provision-access.yml` does not list them (`NATIVE_ONLY_PATHS`): a Provision Access run removes them again, so the studio answers 403 until the owner approves the next hourly `change_access` that adds them back.
+
 ## Retiring a Worker (`retire-worker.yml`)
 
 Deleting a Worker is irreversible and critical (ADR-0009 §1). `retire-worker.yml` (inputs `worker` and `confirm_production: DELETE`, from main, in the production Environment) deletes only a Worker in its `RETIRABLE` list, and only once its source, bindings and deploy, validation and Access entries are gone from main. For a Worker with custom domains it first detaches each one through the Workers Custom Domains API, after checking that every hostname is attached to the expected Worker, and verifies each is gone; then it deletes the Cloudflare Workflow, if any, and the script. Any unexpected status stops the run before the script is deleted. D1 data is never touched; the registry row is kept with status `disabled` by a migration.
