@@ -617,10 +617,16 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
 
   // ADR-0012 G3b: after the cut-over (merge path forge), a change request on platform-work whose every check passed is
   // proposed for merge, one per cycle: merge_change for routine paths, merge_owner_change (the owner's click) when it
-  // touches a guard path. Once per request and head; a policy veto (shadow_blocked) is retried after an hour.
+  // touches a guard path. Once per request and head; a policy veto (shadow_blocked) is retried after an hour, and so is
+  // a proposal the council rejected while a critical report held the brake (evidence critical_reports_24h > 0), once
+  // the brake is off (2026-11-16: four checked requests rejected at 14:52-15:22 during rpt_c71112c0 were never
+  // proposed again after the owner acknowledged it, because the head had not changed).
   // A request the Forge refused is never proposed: not based on main (blocked_reason), or main merged in as the second
   // parent (history_blocked_reason main_not_first_parent, the linear-history guard of 2026-11-14). The Forge's live
   // state is the last word: changeState reports such a head as verdict blocked, which maps to no action below.
+  const mergeBrakeOff = async (db: Parameters<typeof openCriticalReportRows>[0]): Promise<boolean> => {
+    try { return (await openCriticalReportRows(db, Date.now(), 1)).length === 0; } catch { return false; }
+  };
   if (env.FORGE_MERGE && trigger !== "operator" && (await mergePath(env.DB)) === "forge") {
     try {
       const open = (await env.DB.prepare(
@@ -634,8 +640,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         }
         const seen = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action IN ('merge_change', 'merge_owner_change') AND target = ? AND json_extract(params_json, '$.head_sha') = ?
-             AND (status <> 'shadow_blocked' OR created_at >= ?) LIMIT 1`,
-        ).bind(cr.cr_id, cr.head_sha, hourAgo).first();
+             AND (created_at >= ? OR NOT (status = 'shadow_blocked' OR (status = 'rejected' AND ? = 1 AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0))) LIMIT 1`,
+        ).bind(cr.cr_id, cr.head_sha, hourAgo, await mergeBrakeOff(env.DB) ? 1 : 0).first();
         if (seen) continue;
         const state = await env.FORGE_MERGE.changeState(cr.cr_id);
         if (!state || state.head_sha !== cr.head_sha || !state.contains_main) continue;
