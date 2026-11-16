@@ -149,6 +149,34 @@ Each step is reversible until step 7.
   - **Met once** the proof drill in OPERATIONS ("Rescue deploy of the Deployment Orchestrator") has succeeded live: record
     the plan id, the request id and the time here.
 
+### 2026-11-16: binding props lost out of band
+
+- On 2026-11-15, about 22:00–23:30 UTC, out-of-band versions of `cryptophys-recovery-manager` and
+  `cryptophys-deployment-orchestrator` appeared (most likely dashboard secret edits) without the `AGENTS` binding's
+  `props = { host_worker = ... }`. The AI Kernel's `AgentRpc` refused the callers (`caller_identity_missing`), so every
+  Recovery Manager report was lost, the rescue drill's reports at 10:17 on 2026-11-16 included. Every later native deploy
+  kept the loss (keep_bindings and the check against the active version on the code-only path; unchanged bindings kept
+  verbatim by the configuration plan). The GitHub workflow (`wrangler deploy`) restored the props at 10:41.
+- **Gate addition (owner, 2026-11-16):** step 6 also waits until every native path that uploads a version ends with each
+  Worker's service bindings equal to the `[[services]]` of its `wrangler.toml` as the Forge stored it for the commit
+  (binding set, `service`, `entrypoint`, `props`), resending the declared values on a mismatch, and refusing with a report
+  what it cannot apply safely.
+  - **Status: built, not yet run live** (branch `binding-props`; it changes `executor-rescue.ts`, a guard path, so
+    `merge_owner_change`). `control-plane-shared/src/service-bindings.ts` compares; the code-only upload sends the declared
+    service bindings when they differ (the other types kept), the configuration plan plans them from the config
+    (`config-diff.ts` `service_bindings`), the break-glass deploy uses the same executor, and the rescue executor does the
+    same with its own client. The new version is verified to bind exactly the declared values before traffic. Steps
+    `<worker>:service_bindings_restored:<BINDING>`, audit `deployment.binding_drift_detected` and
+    `deployment.binding_drift_repaired`. An undeclared service binding, a name conflict or a missing target refuses before
+    any upload, with a critical report. Native rollback uploads nothing and is exempt. See OPERATIONS, "Binding drift".
+  - Not verified live: whether the versions API returns a service binding's `props`. A record without a `props` key is
+    treated as "props unknown": the declared binding is resent, `<worker>:service_binding_props_unverifiable:<NAME>` is
+    recorded once, no drift audit or report is written, and the new version is accepted without the key; present and
+    different props still fail. The first live run shows which case applies (unverifiable steps on every Worker with
+    props: the API does not return them).
+  - **Met once** a native deploy has restored a drifted binding live (or one has run live with the check and found none),
+    and the AI Kernel accepts the restored Worker's reports again: record the request id and the time here.
+
 ## Rollback of the cut-over
 
 Before step 7, rolling back means re-enabling the workflows and pushing the Forge's `main` back to GitHub.

@@ -48,7 +48,9 @@ const UUID = /^[0-9a-f-]{36}$/;
 
 /**
  * Every binding type the platform's Workers use (wrangler.toml and the deploy workflows' --var). A version
- * uploaded by the Orchestrator keeps all of them from the script's previous version: it never sends a binding.
+ * uploaded by the Orchestrator keeps all of them from the script's previous version: it never sends a binding,
+ * except (2026-11-16) the declared service bindings when the active version does not bind them as declared
+ * (`VersionMetadata.services`; then `service` is not kept).
  */
 export const KEEP_BINDINGS = [
   "plain_text", "secret_text", "secret_key", "d1", "service", "durable_object_namespace", "r2_bucket", "kv_namespace", "ai",
@@ -88,6 +90,13 @@ export interface VersionMetadata {
    * configuration already carries it in `config.bindings`.
    */
   assets?: { keep: true; binding: string | null } | { keep?: false; jwt: string; config: AssetsConfig; binding: string | null };
+  /**
+   * 2026-11-16 (binding props lost out of band): a code-only upload whose active version does not bind the service
+   * bindings its wrangler.toml declares. These are sent as declared and `service` is no longer a kept type, so the
+   * new version binds exactly the declared service bindings; every other type is kept as before. Only without
+   * `config` (a planned configuration already carries its service bindings).
+   */
+  services?: Array<{ type: "service"; name: string; service: string; entrypoint?: string; environment?: string; props?: Record<string, unknown> }>;
 }
 
 /** ADR-0012 G2c-2: a version as `GET …/scripts/{name}/versions/{id}` returns it (the API's `result`). */
@@ -210,6 +219,8 @@ export class CloudflareWorkers {
     }
     const config = metadata.config;
     if (config && (!Array.isArray(config.bindings) || !config.keep_bindings.every((t) => t === "secret_text" || t === "secret_key"))) throw new Error("invalid_config_upload");
+    const services = metadata.services;
+    if (services && (config || !Array.isArray(services) || !services.every((b) => b?.type === "service" && typeof b.name === "string" && typeof b.service === "string"))) throw new Error("invalid_services_upload");
     // G2c-2 step 6: exactly one of keep_assets and a completion token, never both, never an empty token.
     const assets = metadata.assets;
     let assetsFields: Record<string, unknown> = {};
@@ -234,7 +245,10 @@ export class CloudflareWorkers {
       // (and, for a Worker with static assets, sends its assets binding, which is not a kept type).
       ...(config
         ? { bindings: config.bindings, keep_bindings: [...config.keep_bindings], ...(config.limits ? { limits: config.limits } : {}), ...(config.placement ? { placement: config.placement } : {}) }
-        : { ...(assetsBinding.length ? { bindings: assetsBinding } : {}), keep_bindings: [...KEEP_BINDINGS] }),
+        : services
+          // 2026-11-16: the declared service bindings sent, every other platform type kept.
+          ? { bindings: [...assetsBinding, ...services], keep_bindings: KEEP_BINDINGS.filter((t) => t !== "service") }
+          : { ...(assetsBinding.length ? { bindings: assetsBinding } : {}), keep_bindings: [...KEEP_BINDINGS] }),
       ...assetsFields,
       ...scriptFields,
       annotations: { "workers/tag": metadata.tag, "workers/message": metadata.message.slice(0, 100) },
@@ -250,7 +264,7 @@ export class CloudflareWorkers {
    * API returns it (secret values are never returned, so for a secret this covers its type and name). Two
    * versions bind the same resources only when both are equal. Unreadable or empty fails closed.
    */
-  async versionBindingSet(script: string, versionId: string): Promise<{ names: string[]; digest: string }> {
+  async versionBindingSet(script: string, versionId: string): Promise<{ names: string[]; digest: string; records: Array<{ type: string; name: string; [field: string]: unknown }> }> {
     const r = await this.version(script, versionId) as VersionRecord & { bindings?: unknown };
     const list = Array.isArray(r?.resources?.bindings) ? r.resources!.bindings as unknown[] : Array.isArray(r?.bindings) ? r.bindings as unknown[] : null;
     if (!list) throw new Error("version_bindings_unreadable");
@@ -259,7 +273,21 @@ export class CloudflareWorkers {
     const names = records.map((b) => `${b.type}:${b.name}`).sort();
     const canonical = records.map((b) => canonicalJson(b)).sort().join("\n");
     const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
-    return { names, digest: [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("") };
+    // 2026-11-16: the records themselves, so the service bindings can be compared with the declared ones.
+    return { names, digest: [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join(""), records: records as Array<{ type: string; name: string }> };
+  }
+
+  /**
+   * 2026-11-16: the names of every script of the account (`GET /accounts/{a}/workers/scripts`, the list scriptRoutes
+   * reads), to check that a service binding about to be restored points at a Worker that exists. Throws when the list
+   * cannot be read.
+   */
+  async scriptIds(): Promise<string[]> {
+    const r = await this.call<unknown>("");
+    if (!Array.isArray(r)) throw new Error("script_list_unreadable");
+    const ids = r.map((x) => (x as { id?: unknown })?.id);
+    if (!ids.every((id): id is string => typeof id === "string")) throw new Error("script_list_unreadable");
+    return ids;
   }
 
   /**

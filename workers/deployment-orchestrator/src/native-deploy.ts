@@ -59,6 +59,25 @@
 //     Worker's live check (before its script settings and topology) and after the whole unit (after every
 //     Worker's topology, before the desired version), when `smoke` is given; a failed probe restores the applied
 //     topology, the script settings and every changed Worker, like a failed live check.
+//
+// 2026-11-16 (binding props lost out of band, owner-approved): every Worker's service bindings end equal to the ones
+// its wrangler.toml declares, as the Forge stored it for the target commit (control-plane-shared/src/service-bindings.ts).
+// On 2026-11-15 a version made out of band (a dashboard secret edit) dropped the AGENTS binding's `props`, and every
+// native deploy after it kept the loss, because both paths copied the active version's records. Now, right before the
+// upload, the active version's service bindings are compared with the declared ones (names, service, entrypoint,
+// props): a code-only upload whose active version differs sends the declared service bindings (and keeps every other
+// type), a configuration plan plans them from the config (config-diff.ts `service_bindings`), and the uploaded
+// version must bind exactly the declared values before any traffic moves. Each restored binding is a step
+// `<worker>:service_bindings_restored:<NAME>` and an audit event (deployment.binding_drift_detected before the upload,
+// deployment.binding_drift_repaired once the Worker is verified live). An active service binding the config does not
+// declare (`service_binding_undeclared:<NAME>`), a declared name bound as another type, or a restored binding whose
+// target script the account does not list (`service_binding_target_missing:<NAME>`) refuses the deploy before
+// anything is uploaded; the failure is reported like any failed native deploy. Dropping a binding is the owner's.
+// Props unknown: an API record with no `props` key for a binding declared with props is not drift by itself (it is not
+// verified live that the versions API returns props). The declared binding is still sent, the step
+// `<worker>:service_binding_props_unverifiable:<NAME>` is recorded once, no drift audit is written, and a new version
+// whose record has no `props` key is accepted. If the new version's record carries the declared props, the active
+// version's missing key was a real loss and is reported as restored (step, binding_drift, repaired audit).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -79,6 +98,10 @@ import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
 import { ORCHESTRATOR_UNIT, executorFirstVerdict } from "../../control-plane-shared/src/executor-first.ts";
 import { RESTORE_POINT_EVENT, restoreCommand } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
+import {
+  BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindingsFromToml, nonServiceBindingSet, restoredStep, serviceBindingDrift,
+  serviceDriftRefusal, unverifiableStep, verifyServiceBindings, type BindingDrift, type ServiceBinding,
+} from "../../control-plane-shared/src/service-bindings.ts";
 import {
   applyTopologyStep, deployWithDoMigration, DO_IRREVERSIBLE, planTopology, restoreTopologyStep, topologyDiff, topologyStepLabel, type TopologyPlan, type TopologyStep,
 } from "./topology.ts";
@@ -688,6 +711,12 @@ export interface DeployRun {
    * service token; `failed` names the probe; a failure restores like a failed live check.
    */
   smoke?: { status: "passed" | "failed" | "skipped"; reason?: string; probe?: string; probes: number };
+  /**
+   * 2026-11-16: per Worker whose active version did not bind its declared service bindings, the bindings resent
+   * (`restored`, names and what differed), the undeclared ones that refused the deploy, and whether the Worker was
+   * verified live with the declared values (`repaired`). Names only.
+   */
+  binding_drift?: Record<string, { restored: BindingDrift[]; undeclared: string[]; repaired: boolean; refused?: string }>;
 }
 
 /** Every key of `want` is in `got` with an equal value (objects compared recursively, arrays exactly). */
@@ -817,6 +846,42 @@ export async function executeNativeDeploy(
   let current = "";
   // Gate 4: the kept deploy-time values per Worker, and the smoke tests' record.
   const keptVars: Record<string, Record<string, string>> = {};
+  // 2026-11-16: the service-binding drift found per Worker (names only).
+  const bindingDrift: NonNullable<DeployRun["binding_drift"]> = {};
+  /** The declared service bindings each Worker's new version must bind, from the target commit's stored config. */
+  const declaredFor = new Map<string, ServiceBinding[]>();
+  /** Per Worker, the declared bindings whose active record had no `props` key (props unknown). */
+  const unknownProps = new Map<string, string[]>();
+  const markUnverifiable = (service: string, names: readonly string[]) => {
+    for (const n of names) { const st = unverifiableStep(service, n); if (!steps.includes(st)) steps.push(st); }
+  };
+  /** After the upload check: still unknown is named once; shown on the new version means the active had lost them. */
+  const propsAfterUpload = (service: string, stillUnknown: readonly string[]) => {
+    markUnverifiable(service, stillUnknown);
+    const proven = (unknownProps.get(service) ?? []).filter((n) => !stillUnknown.includes(n) && !bindingDrift[service]?.restored.some((d) => d.name === n));
+    if (!proven.length) return;
+    const entry = bindingDrift[service] ??= { restored: [], undeclared: [], repaired: false };
+    for (const n of proven) entry.restored.push({ name: n, kinds: ["props"], retarget: false });
+  };
+  /** A drift's targets must be Workers of the account; the list is read once, only when a binding is retargeted. */
+  let scriptIds: string[] | null = null;
+  const checkDrift = async (service: string, restore: BindingDrift[], undeclared: string[], conflicts: string[] = []) => {
+    if (!restore.length && !undeclared.length && !conflicts.length) return;
+    let refused = serviceDriftRefusal({ undeclared, conflicts });
+    if (!refused) {
+      for (const d of restore.filter((x) => x.retarget)) {
+        const target = String((declaredFor.get(service) ?? []).find((b) => b.name === d.name)?.service ?? "");
+        try { scriptIds ??= await cf.scriptIds(); } catch { refused = `service_binding_target_unverifiable:${d.name}`; break; }
+        if (!scriptIds.includes(target)) { refused = `service_binding_target_missing:${d.name}`; break; }
+      }
+    }
+    bindingDrift[service] = { restored: restore, undeclared, repaired: false, ...(refused ? { refused } : {}) };
+    await auditQuietly(env.DB, {
+      event_type: BINDING_DRIFT_DETECTED_EVENT, actor: "agent:deployment-orchestrator", subject: service, outcome: refused ? "refused" : "repairing",
+      payload: { request_id: requestId, commit_sha: commit, service, restore: restore.map((d) => ({ name: d.name, kinds: d.kinds })), undeclared, conflicts, ...(refused ? { reason: refused } : {}) },
+    });
+    if (refused) throw new Error(refused);
+  };
   const unitName = plan.length ? unitForService(plan[0].service)?.unit ?? "" : "";
   let smoke: DeployRun["smoke"] = opts.smoke?.skipped ? { status: "skipped", reason: opts.smoke.skipped, probes: 0 } : undefined;
   const smokeRan: string[] = [];
@@ -831,6 +896,7 @@ export async function executeNativeDeploy(
   const gate4 = () => ({
     ...(Object.keys(keptVars).length ? { deploy_vars: Object.fromEntries(Object.entries(keptVars).map(([k, v]) => [k, Object.keys(v)])) } : {}),
     ...(smoke ? { smoke } : {}),
+    ...(Object.keys(bindingDrift).length ? { binding_drift: bindingDrift } : {}),
   });
   try {
     if (!HEX40.test(commit) || !plan.length) throw new Error("invalid_plan");
@@ -881,7 +947,7 @@ export async function executeNativeDeploy(
       // have changed since the request was queued). Code only (G2b): the active binding set, for the digest check.
       let configPlan: ConfigPlan | null = null;
       let topo: TopologyPlan | null = null;
-      let active: { names: string[]; digest: string } | null = null;
+      let active: { names: string[]; digest: string; restore: boolean; rest: { names: string[]; digest: string } | null } | null = null;
       let capturedRecord: VersionRecord | null = null;
       if (config) {
         const run = await readConfig(env.BUNDLES, config.running_commit, config.running);
@@ -894,13 +960,35 @@ export async function executeNativeDeploy(
         if ("reason" in r) throw new Error(`config_plan_refused: ${r.reason}`);
         configPlan = r.plan;
         steps.push(`${service}:planned`);
+        // 2026-11-16: the plan's service bindings are the target config's; any it had to restore, or would drop, is checked here.
+        const declared = declaredServiceBindingsFromToml(tgt.toml);
+        if ("reason" in declared) throw new Error(`service_bindings_unreadable: ${declared.reason}`);
+        declaredFor.set(service, declared.bindings);
+        await checkDrift(service, configPlan.service_bindings.restored, configPlan.service_bindings.undeclared);
+        unknownProps.set(service, configPlan.service_bindings.unverifiable);
+        markUnverifiable(service, configPlan.service_bindings.unverifiable);
         // Gate 4 part B: the topology again, against what Cloudflare reports now.
         const t = await planTopology(cf, service, run.toml, tgt.toml, { assets: worker.assets, allowed: opts.destructiveTopology ?? [] });
         if ("reason" in t) throw new Error(`topology_refused: ${t.reason}`);
         topo = t.plan;
         if (t.plan.changes.length) steps.push(`${service}:topology_planned`);
       } else {
-        active = await cf.versionBindingSet(service, captured[0].version_id);
+        const set = await cf.versionBindingSet(service, captured[0].version_id);
+        // 2026-11-16: the declared service bindings of the target commit's stored config (code only: the running
+        // commit's config is the same text). Without it the result cannot be verified: fail closed.
+        const tgt = await readConfig(env.BUNDLES, commit, worker);
+        if ("reason" in tgt) throw new Error(`service_bindings_unverifiable: ${tgt.reason}`);
+        const declared = declaredServiceBindingsFromToml(tgt.toml);
+        if ("reason" in declared) throw new Error(`service_bindings_unreadable: ${declared.reason}`);
+        declaredFor.set(service, declared.bindings);
+        const drift = serviceBindingDrift(declared.bindings, set.records);
+        if (!drift) throw new Error("version_bindings_unreadable");
+        await checkDrift(service, drift.restore, drift.undeclared, drift.conflicts);
+        unknownProps.set(service, drift.unverifiable);
+        markUnverifiable(service, drift.unverifiable);
+        // Sent as declared on a drift, and also when props are unknown (harmless; it repairs a loss the API may not show).
+        const send = drift.restore.length > 0 || drift.unverifiable.length > 0;
+        active = { names: set.names, digest: set.digest, restore: send, rest: send ? await nonServiceBindingSet(set.records) : null };
       }
       // Gate 4: the deploy-time --var values, from the version just captured, before anything is uploaded.
       if (opts.deployVars) {
@@ -955,6 +1043,8 @@ export async function executeNativeDeploy(
           main_module: worker.main_module, compatibility_date: worker.compatibility_date!, compatibility_flags: worker.compatibility_flags,
           tag, message: `native deploy commit ${commit}`,
           ...(assetsPart ? { assets: assetsPart } : {}),
+          // 2026-11-16: the active version does not bind the declared service bindings: send them as declared.
+          ...(active?.restore ? { services: declaredFor.get(service)! } : {}),
         };
       let versionId: string;
       if (topo?.migration) {
@@ -983,7 +1073,11 @@ export async function executeNativeDeploy(
         const uploaded = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
         const b = verifyPlannedBindings(configPlan, uploaded.resources?.bindings);
         if (!b.ok) throw new Error(`planned_bindings_differ: ${b.reason}${b.binding ? ` (${b.binding})` : ""}`);
+        const sb = verifyServiceBindings(declaredFor.get(service) ?? [], uploaded.resources?.bindings);
+        if (!sb.ok) throw new Error(`service_bindings_differ: ${sb.reason}${sb.binding ? ` (${sb.binding})` : ""}`);
         steps.push(`${service}:bindings_match`);
+        propsAfterUpload(service, sb.unverifiable);
+        for (const d of bindingDrift[service]?.restored ?? []) steps.push(restoredStep(service, d.name));
         const v = verifyVersionSettings(configPlan.metadata, uploaded);
         if (!v.ok) throw new Error(`version_settings_differ: ${v.reason}`);
         steps.push(`${service}:settings_match`);
@@ -996,8 +1090,17 @@ export async function executeNativeDeploy(
         // keep_bindings copies from the script's latest version, which need not be the active one. The guard is
         // this comparison: the new version must bind exactly what production binds now, or traffic never moves.
         const uploaded = await readUploaded(() => cf.versionBindingSet(service, versionId), opts.delayMs);
-        if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
+        if (active!.rest) {
+          // 2026-11-16: the declared service bindings were sent. Every other binding must be what production binds now,
+          // and the service bindings exactly the declared ones, props included.
+          const rest = await nonServiceBindingSet(uploaded.records ?? []);
+          if (!sameList(rest.names, active!.rest.names) || rest.digest !== active!.rest.digest) throw new Error("bindings_differ");
+        } else if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
+        const sb = verifyServiceBindings(declaredFor.get(service)!, uploaded.records);
+        if (!sb.ok) throw new Error(`service_bindings_differ: ${sb.reason}${sb.binding ? ` (${sb.binding})` : ""}`);
         steps.push(`${service}:bindings_match`);
+        propsAfterUpload(service, sb.unverifiable);
+        for (const d of bindingDrift[service]?.restored ?? []) steps.push(restoredStep(service, d.name));
         if (keptVars[service]) {
           const record = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
           const d = verifyDeployVars(keptVars[service], record.resources?.bindings);
@@ -1019,6 +1122,13 @@ export async function executeNativeDeploy(
       }
       if (!live) throw new Error("not_live_at_tag");
       steps.push(`${service}:verified`);
+      if (bindingDrift[service]?.restored.length) {
+        bindingDrift[service].repaired = true;
+        await auditQuietly(env.DB, {
+          event_type: BINDING_DRIFT_REPAIRED_EVENT, actor: "agent:deployment-orchestrator", subject: service, outcome: "repaired",
+          payload: { request_id: requestId, commit_sha: commit, service, version_id: versionId, bindings: bindingDrift[service].restored.map((d) => d.name), restored: bindingDrift[service].restored.map((d) => ({ name: d.name, kinds: d.kinds })) },
+        });
+      }
       // Gate 4: the workflow's checks of this Worker through Access (verify-worker-live.sh --require-access), before
       // new schedules reach it. A failure restores like a failed live check.
       if (opts.smoke && !opts.smoke.skipped) {
