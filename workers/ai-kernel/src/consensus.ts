@@ -317,12 +317,14 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  *  - retire_agent (owner 2026-11-11, ADR-0013 §3): the kernel deletes an agent no row refers to, or
  *    suspends it as retired; kernel agents, council seats and exempt hosts are refused;
  *  - change_access (ADR-0012 G6 gate 9, owner 2026-11-13): the Deployment Orchestrator applies exactly the Access
- *    plan whose digest the proposal carries (native-access.ts), with the owner's CF_ACCESS_TOKEN.
+ *    plan whose digest the proposal carries (native-access.ts), with the owner's CF_ACCESS_TOKEN;
+ *  - deploy_destructive_migration (cut-over gate, owner 2026-11-15): the Deployment Orchestrator records D1's Time
+ *    Travel bookmark, then applies exactly the named destructive migrations and deploys the Control Plane natively.
  * Restoring D1, rotating secrets and turning agents back on stay manual:
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", "deploy_destructive_migration", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -344,6 +346,11 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "change_access") {
     if (!env.DEPLOY?.accessForConsensus) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.accessForConsensus(proposalId, decisionId, String(p.params.digest ?? ""));
+  }
+  if (p.action === "deploy_destructive_migration") {
+    // Gate 2026-11-15: the Orchestrator re-verifies, reads D1's Time Travel bookmark and queues the named files only.
+    if (!env.DEPLOY?.deployDestructiveForConsensus) throw new Error("deploy_binding_missing");
+    return await env.DEPLOY.deployDestructiveForConsensus(proposalId, decisionId, p.target, p.params);
   }
   if (p.action === "merge_owner_change") {
     if (!env.FORGE_MERGE) throw new Error("forge_merge_binding_missing");

@@ -129,11 +129,12 @@ export async function recordNativeDeploy(env: Env, requestId: string): Promise<{
   if (!row) throw new Error("deploy_request_not_found");
   let details: { executor?: unknown; plan_id?: unknown } = {};
   try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
-  // Hardening (d): an owner-approved break-glass deploy (native:break-glass) records its commit the same way.
+  // Hardening (d): an owner-approved break-glass deploy (native:break-glass) records its commit the same way, and so
+  // does an owner-approved destructive migration deploy (native:destructive-deploy, gate 2026-11-15).
   // Cut-over gate 2026-11-15: so does the Recovery Manager's rescue deploy, for the Orchestrator's Worker only, and only
   // for the executing, person-approved break-glass plan of that Worker at that commit (checked here, in this Worker).
   const rescue = details.executor === RESCUE_EXECUTOR;
-  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass" && !rescue) throw new Error("not_a_native_deploy");
+  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass" && details.executor !== "native:destructive-deploy" && !rescue) throw new Error("not_a_native_deploy");
   if (row.status !== "running") throw new Error("deploy_not_running");
   if (rescue) {
     if (row.service_id !== ORCHESTRATOR_SERVICE) throw new Error("rescue_not_the_orchestrator");
