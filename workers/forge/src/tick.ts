@@ -37,6 +37,8 @@ export interface TickEnv {
   EXT_ORGANISM_XAUUSD?: { dna(): Promise<unknown> };
   /** Owner 2026-11-14: Aether's DNA (cryptophys-aether OrganismDna, dna() only), held to Aether's ceiling. */
   EXT_ORGANISM_AETHER?: { dna(): Promise<unknown> };
+  /** Owner 2026-11-15/16: cryptophys-cta's DNA (OrganismDna, dna() only), held to the general external ceiling. */
+  EXT_ORGANISM_CTA?: { dna(): Promise<unknown> };
 }
 
 /**
