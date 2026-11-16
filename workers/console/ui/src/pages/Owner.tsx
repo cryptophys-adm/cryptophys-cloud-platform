@@ -48,6 +48,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   build_minutes_exhausted: "build minutes used up",
   break_glass_deployed: "break-glass deploy",
   deploys_stalled: "deploys stalled",
+  executor_deploy_failed: "deploy executor blocked",
 };
 
 /** One production problem no agent is handling: what, since when, and the page with the evidence. */
