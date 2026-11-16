@@ -30,7 +30,7 @@ import { AGENT_ID } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { OwnerDecisionError, agreementReport, getProposal, listProposals, ownerDecide, setConsensusMode } from "./consensus.ts";
 import { KnowledgeDecisionError, decideKnowledge, getKnowledge, listKnowledge } from "./knowledge.ts";
-import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, TOPICS, channelOf, collectNotices, emailConfigured, reconcileNotices } from "./owner-notices.ts";
+import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, TOPICS, channelOf, collectNotices, emailConfigured, reconcileNotices, reconcileOwnerAttentionNow } from "./owner-notices.ts";
 import { ownerInbox } from "./owner-inbox.ts";
 import { metabolismView } from "./metabolism-view.ts";
 import { meshView } from "./mesh-view.ts";
@@ -301,9 +301,10 @@ export default {
   },
 
   async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
-    ctx.waitUntil(env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID)).cycle("scheduled").then(() => undefined, (err) => {
+    const cycle = env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID)).cycle("scheduled").then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "supervisor_cycle_failed", message: String((err as Error)?.message ?? err) }));
-    }));
+    });
+    ctx.waitUntil(cycle);
     const minute = new Date(event.scheduledTime).getUTCMinutes();
     if (minute === 22 && env.SIGNAL_ANALYST) {
       ctx.waitUntil(env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID)).cycle("scheduled").then(() => undefined, (err) => {
@@ -316,11 +317,18 @@ export default {
       }));
     }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
+    let fullPass: Promise<void> = Promise.resolve();
     if (minute === 22 || minute === 52) {
-      ctx.waitUntil(reconcileNotices({ ...env, ALERT_VAULT: alertVaultOf(env) }, event.scheduledTime).then(() => undefined, (err) => {
+      ctx.waitUntil(fullPass = reconcileNotices({ ...env, ALERT_VAULT: alertVaultOf(env) }, event.scheduledTime).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "owner_notices_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
+    // Owner 2026-11-16: a proposal the cycle put in pending_owner (or a draft plan, a pending knowledge proposal) is
+    // notified in this tick, once the cycle and this tick's :22/:52 pass have both settled (never concurrently with
+    // either); nothing new waiting sends nothing (owner-notices.ts reconcileOwnerAttentionNow).
+    ctx.waitUntil(Promise.all([cycle, fullPass]).then(() => reconcileOwnerAttentionNow({ ...env, ALERT_VAULT: alertVaultOf(env) })).then(() => undefined, (err) => {
+      console.error(JSON.stringify({ service: SERVICE, event: "owner_attention_now_failed", message: String((err as Error)?.message ?? err) }));
+    }));
     const d = new Date(event.scheduledTime);
     if (d.getUTCHours() === 3 && minute === 7) {
       ctx.waitUntil(pruneSyscallConsumptions(env as any, event.scheduledTime).then(() => undefined, (err) => {

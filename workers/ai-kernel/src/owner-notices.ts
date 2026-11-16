@@ -20,6 +20,9 @@
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
 // needs no table of its own. The Console shows the live notices at GET /v1/notices.
+// Owner 2026-11-16: after every Supervisor cycle (:07, :22, :37, :52) owner_attention alone is also reconciled when an
+// item newer than its last notice event waits (reconcileOwnerAttentionNow), so an approval request reaches the owner
+// in the same tick instead of up to 30 minutes later.
 //
 // The owner channel (owner 2026-11-13: "Batasi User/Owner hanya untuk critical dan permintaan approval only"):
 // only OWNER_CHANNEL_TOPICS, the approvals (owner_attention), the open critical reports (critical_reports) and the
@@ -257,9 +260,16 @@ async function productionUnhandled(db: D1Database, now: number): Promise<Notice>
   };
 }
 
-/** The live notices, for the Console and for reconcileNotices. Read-only. */
-export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now), await productionUnhandled(db, now)];
+const COLLECTORS: Record<Topic, (db: D1Database, now: number) => Promise<Notice>> = {
+  owner_attention: (db) => ownerAttention(db), drift, critical_reports: criticalReports, organism: (db) => organism(db),
+  build_minutes: buildMinutes, dependencies, production_unhandled: productionUnhandled,
+};
+
+/** The live notices, for the Console and for reconcileNotices, in TOPICS order (only `topics`, when given). Read-only. */
+export async function collectNotices(db: D1Database, now = Date.now(), topics: readonly Topic[] = TOPICS): Promise<Notice[]> {
+  const out: Notice[] = [];
+  for (const t of TOPICS) if (topics.includes(t)) out.push(await COLLECTORS[t](db, now));
+  return out;
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));
@@ -363,10 +373,14 @@ async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean;
   };
 }
 
-/** Open, update or close each topic's notice (idempotent; at most one event per topic per run). */
-export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promise<{ topic: Topic; change: string; delivery?: string }[]> {
+/**
+ * Open, update or close each topic's notice (idempotent; at most one event per topic per run). `topics` limits the
+ * run to those topics (owner 2026-11-16: the owner_attention pass right after a Supervisor cycle); the others keep
+ * their :22/:52 cadence.
+ */
+export async function reconcileNotices(env: NoticeEnv, now = Date.now(), opts: { topics?: readonly Topic[] } = {}): Promise<{ topic: Topic; change: string; delivery?: string }[]> {
   const out: { topic: Topic; change: string; delivery?: string }[] = [];
-  for (const n of await collectNotices(env.DB, now)) {
+  for (const n of await collectNotices(env.DB, now, opts.topics)) {
     const last = await lastState(env.DB, n.topic);
     const change = n.active && !last.open ? "opened" : n.active && last.fingerprint !== n.fingerprint ? "changed" : !n.active && last.open ? "closed" : null;
     if (!change) {
@@ -397,4 +411,32 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
     out.push({ topic: n.topic, change, delivery });
   }
   return out;
+}
+
+/**
+ * Owner 2026-11-16 (cns_dea7a710 was created 7 s after the 10:52:46 notice pass and approved before any notice opened):
+ * whether something waits for the owner (a consensus proposal in pending_owner, a draft recovery plan, a pending
+ * knowledge proposal: owner-inbox.ts pendingApprovals, the owner_attention items) that is newer than the topic's last
+ * notice event, i.e. not yet in any notice the owner received. Read-only; false when nothing new waits.
+ */
+export async function ownerAttentionHasNewItems(db: D1Database): Promise<boolean> {
+  const { recovery_plans: plans, consensus: critical, knowledge } = await pendingApprovals(db);
+  const created = [...plans, ...critical, ...knowledge].map((i) => Date.parse(i.created_at)).filter(Number.isFinite);
+  if (!created.length) return false;
+  const last = await db.prepare("SELECT created_at FROM audit_events WHERE event_type IN ('owner.notice_opened','owner.notice_changed','owner.notice_closed','owner.notice_delivery_retry') AND subject = 'owner_attention' ORDER BY rowid DESC LIMIT 1")
+    .first<{ created_at: string }>();
+  const lastAt = last ? Date.parse(last.created_at) : Number.NEGATIVE_INFINITY;
+  return created.some((t) => t > lastAt);
+}
+
+/**
+ * Owner 2026-11-16: the owner_attention notice right after a Supervisor cycle, not up to 30 minutes later. Runs the
+ * ordinary reconcile for owner_attention alone (same fingerprint dedup, MAX_DELIVERY_RETRIES, channels and closing),
+ * and only when an item newer than the last notice event waits; otherwise it sends nothing and records nothing.
+ * The kernel's scheduled handler calls it after the cycle and after that tick's :22/:52 pass have settled, so two
+ * passes never race on the topic.
+ */
+export async function reconcileOwnerAttentionNow(env: NoticeEnv, now = Date.now()): Promise<{ topic: Topic; change: string; delivery?: string } | null> {
+  if (!(await ownerAttentionHasNewItems(env.DB))) return null;
+  return (await reconcileNotices(env, now, { topics: ["owner_attention"] }))[0] ?? null;
 }
