@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
 import { tickWith, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps } from "../../forge/src/checks.ts";
+import { forgeReady } from "../src/forge-gate.ts";
 import { BUNDLE_PREFIX, BUNDLE_RETENTION_DAYS, manifestEntry, migrationsOf, pruneBundles, storeBundles, type BundleBucket } from "../../forge/src/bundles.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -99,6 +100,35 @@ test("G2a-2. a passed, clean commit of main is stored; a failed one, or a change
   const cb = bucket();
   await tickWith({ DB: crDb as never, ARTIFACTS: { get: async () => repoWith(FILES) }, BUNDLES: cb }, "platform", deps("pass"), () => Date.now(), async () => SHA, "change");
   assert.equal(cb.objects.size, 0, "a change request is not a deploy candidate");
+});
+
+test("G2a-2b. the run of main is recorded only after its bundles are stored: until then the deploy gate says pending (2026-11-16, 4001de2 fell back to the workflow on no_bundle)", async () => {
+  const db = migratedDb();
+  const b = bucket();
+  const seen: { status: string; reason: string }[] = [];
+  const put = b.put.bind(b);
+  b.put = async (k, v, o) => {
+    const g = await forgeReady(db as never, SHA);
+    seen.push({ status: String(g.status), reason: g.reason });
+    return put(k, v, o);
+  };
+  const env = { DB: db as never, ARTIFACTS: { get: async () => repoWith(FILES) }, BUNDLES: b };
+  const r = await tickWith(env, "platform", deps("pass"), () => Date.now(), async () => SHA, "main");
+  assert.equal((r as { status: string }).status, "passed");
+  assert.ok(seen.length >= 2, "the module and the manifest were written");
+  assert.deepEqual([...new Set(seen.map((x) => `${x.status}:${x.reason}`))], ["running:forge_checks_pending"], "while bundles are stored the commit is not deployable");
+  assert.equal((db as any).raw.prepare("SELECT status FROM forge_check_runs WHERE commit_sha = ?").get(SHA).status, "passed");
+  assert.ok(b.objects.has(`${BUNDLE_PREFIX}${SHA}/manifest.json`), "and once it is recorded, the bundles are there");
+  // A main run takes over a passed change-request row of the same commit (the merge fast-forwards main to it):
+  // that row is 'running' again until the bundles are stored, not 'passed' from the change run.
+  const db2 = migratedDb();
+  await tickWith({ DB: db2 as never, ARTIFACTS: { get: async () => repoWith(FILES) }, BUNDLES: bucket() }, "platform", deps("pass"), () => Date.now(), async () => SHA, "change");
+  assert.equal((db2 as any).raw.prepare("SELECT status, source FROM forge_check_runs WHERE commit_sha = ?").get(SHA).source, "change");
+  const b2 = bucket(); const seen2: string[] = []; const put2 = b2.put.bind(b2);
+  b2.put = async (k, v, o) => { seen2.push((await forgeReady(db2 as never, SHA)).reason); return put2(k, v, o); };
+  await tickWith({ DB: db2 as never, ARTIFACTS: { get: async () => repoWith(FILES) }, BUNDLES: b2 }, "platform", deps("pass"), () => Date.now(), async () => SHA, "main");
+  assert.ok(seen2.length >= 2 && seen2.every((x) => x === "forge_checks_pending"), seen2.join(","));
+  assert.match(read("workers/forge/src/checks.ts"), /forge\.bundles_failed[\s\S]*?\n      \}\n      await record\(env\.DB, run, nowMs\(\)\);/, "record follows the bundle store");
 });
 
 test("G2a-3. bundles older than the retention are deleted; the manifest is written last; wiring", async () => {

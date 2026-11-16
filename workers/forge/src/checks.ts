@@ -252,9 +252,11 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
       // ADR-0012 G2a: a commit of main keeps the Worker modules its check bundled, for the deploy.
       const built: BuiltModule[] | undefined = source === "main" && env.BUNDLES ? [] : undefined;
       const run = await checkCommit(repo, commit, deps, nowMs, undefined, built);
-      await record(env.DB, run, nowMs());
       status = run.status;
       counts = { pass: run.pass, fail: run.fail };
+      // The run is recorded after its bundles are stored (2026-11-16): a passed row of main is the deploy gate
+      // (forgeReady), and the deploy of 4001de2 decided between the two writes found no bundle and fell back to
+      // the GitHub workflow (no_bundle). Until the row is written it stays 'running': forge_checks_pending.
       if (built && env.BUNDLES && run.status === "passed" && run.guard_status === "clean") {
         try {
           // G2b: the commit's D1 migrations, from the snapshot this check ran on.
@@ -269,6 +271,7 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
           await appendAuditEvent(env.DB, { event_type: "forge.bundles_failed", actor: "system:forge-checks", subject: commit, outcome: "failed", payload: { error: String((e as Error)?.message ?? e).slice(0, 200) } }).catch(() => undefined);
         }
       }
+      await record(env.DB, run, nowMs());
     } catch (e) {
       status = "error";
       await record(env.DB, { commit, status: "error", error: String((e as Error)?.message ?? e).slice(0, 300), duration_ms: nowMs() - started }, nowMs());
