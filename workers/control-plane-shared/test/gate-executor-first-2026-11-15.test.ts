@@ -483,7 +483,7 @@ test("GEF-5. break-glass of the Orchestrator's Worker: the Recovery Manager depl
 });
 
 test("GEF-6. the rescue deploy restores the captured deployment on failure, and changes nothing before traffic would move", async () => {
-  const choice = { ok: true as const, module: `${ORCHESTRATOR_SERVICE}.mjs`, text: "export default {};", compatibility_date: "2026-11-01", compatibility_flags: [], running_tag: tag(OLD), pending_migrations: [] };
+  const choice = { ok: true as const, module: `${ORCHESTRATOR_SERVICE}.mjs`, text: "export default {};", compatibility_date: "2026-11-01", compatibility_flags: [], running_tag: tag(OLD), pending_migrations: [], services: [] };
   const recorded: string[] = [];
   const registry = { recordNativeDeploy: async (id: string) => { recorded.push(id); return {}; } };
   const noSleep = async () => undefined;
