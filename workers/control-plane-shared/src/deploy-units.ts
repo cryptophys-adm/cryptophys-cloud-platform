@@ -39,6 +39,9 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
 
 export const isMigration = (f: string) => f.startsWith(MIGRATIONS_DIR) && f.endsWith(".sql");
 
+/** Appended to the orchestrator's reason when it is planned before a pending migration (executor first). */
+export const EXECUTOR_FIRST_NOTE = "executor first: the pending migrations name nothing the orchestrator reads";
+
 export interface PlannedUnit { unit: string; workflow: string; target: string; reason: string }
 export interface Skip { unit: string; reason: string }
 
@@ -56,13 +59,26 @@ export async function unitRegistryState(db: D1Database, unit: DeployUnit, tag: s
 
 /**
  * The ordering rules over the pending units:
- * - a new D1 migration is applied only by the Control Plane deploy, and every Worker's readiness
- *   requires the newest migration: deploy the Control Plane first, alone (2026-11-07, migration 0026);
+ * - executor first (cut-over gate of 2026-11-15): the Deployment Orchestrator executes every native deploy, so a
+ *   change to it goes before any other unit; a fix to the executor must never wait behind a deploy that the
+ *   unfixed executor runs. Without a pending migration this always held. With one, it holds only when the
+ *   planner proved from main's bundles that the pending migrations name nothing the orchestrator's code at main
+ *   reads (`executorFirst`, control-plane-shared/src/executor-first.ts). The orchestrator applies no migration
+ *   and its readiness needs none of them (readiness.ts REQUIRED_MIGRATIONS ends at 0029);
+ * - otherwise a new D1 migration is applied only by the Control Plane deploy: deploy the Control Plane first,
+ *   alone (2026-11-07, migration 0026, when every Worker's readiness required the newest migration);
  * - DeployRpc must exist before the AI Kernel is redeployed with its new service binding: never
  *   propose the Control Plane (or another unit) in the same cycle as the orchestrator.
  */
-export function orderPending(pending: PlannedUnit[], newMigration: boolean, skippedIn: Skip[]): { units: PlannedUnit[]; skipped: Skip[] } {
+export function orderPending(pending: PlannedUnit[], newMigration: boolean, skippedIn: Skip[], executorFirst = false): { units: PlannedUnit[]; skipped: Skip[] } {
   const skipped = [...skippedIn];
+  const orchestrator = pending.find((u) => u.unit === "deployment-orchestrator");
+  const orchestratorAlone = (beforeMigration: boolean) => {
+    for (const u of pending) if (u.unit !== "deployment-orchestrator") skipped.push({ unit: u.unit, reason: "deployment_orchestrator_must_complete_first" });
+    const reason = beforeMigration ? `${orchestrator!.reason}; ${EXECUTOR_FIRST_NOTE}`.slice(0, 200) : orchestrator!.reason;
+    return { units: [{ ...orchestrator!, reason }], skipped };
+  };
+  if (orchestrator && newMigration && executorFirst) return orchestratorAlone(true);
   const controlPlane = pending.find((u) => u.unit === "control-plane");
   if (newMigration) {
     if (controlPlane) {
@@ -79,11 +95,7 @@ export function orderPending(pending: PlannedUnit[], newMigration: boolean, skip
       return { units: [], skipped };
     }
   }
-  const orchestrator = pending.find((u) => u.unit === "deployment-orchestrator");
-  if (orchestrator) {
-    for (const u of pending) if (u.unit !== "deployment-orchestrator") skipped.push({ unit: u.unit, reason: "deployment_orchestrator_must_complete_first" });
-    return { units: [orchestrator], skipped };
-  }
+  if (orchestrator) return orchestratorAlone(false);
   return { units: [...pending], skipped };
 }
 

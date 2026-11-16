@@ -49,6 +49,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   break_glass_deployed: "break-glass deploy",
   deploys_stalled: "deploys stalled",
   git_backup_unverified: "git backup failed verify",
+  executor_deploy_failed: "deploy executor blocked",
 };
 
 /** One production problem no agent is handling: what, since when, and the page with the evidence. */
