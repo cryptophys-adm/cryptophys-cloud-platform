@@ -12,7 +12,7 @@ import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-pl
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 import type { DeployVarReference } from "./deploy-vars.ts";
 import { SmokeRunner, smokeToken } from "./native-smoke.ts";
-import { appliedMigrations, executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, readManifest, readMigration, type BundleReader, type PlannedMigration, type PlannedService, type RestorePoint } from "./native-deploy.ts";
+import { appliedMigrations, executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, readManifest, readMigration, type BundleReader, type DeployRun, type PlannedMigration, type PlannedService, type RestorePoint } from "./native-deploy.ts";
 import { readD1RestorePoint } from "./d1-restore-point.ts";
 import { D1_BOOKMARK_PERMISSION, DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployParams, restoreCommand, type NamedDestructive } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { MAX_NAMED_DESTRUCTIVE } from "../../control-plane-shared/src/break-glass.ts";
@@ -1231,7 +1231,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
 
     executed++;
     let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; restore_point?: RestorePoint; settings_applied?: string[]; changed?: boolean; production_changed?: boolean;
-      topology_applied?: string[]; do_migrations?: string[]; destructive_topology_applied?: string[]; irreversible?: string[] };
+      topology_applied?: string[]; do_migrations?: string[]; destructive_topology_applied?: string[]; irreversible?: string[]; binding_drift?: DeployRun["binding_drift"] };
     if (isDeploy) {
       deploysRun++;
       // Gate 4 part A: the deploy-time values and the smoke tests through Access, on the planned path (routine and
@@ -1292,6 +1292,14 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         body: { request_id: r.request_id, reason: run.reason ?? null, restored: run.restored ?? false, steps: run.steps, ...(isDeploy ? { service: run.service ?? null } : {}),
           // G2c-2: script settings (schedules, observability) applied before the failure; restored with the Workers.
           ...(run.settings_applied?.length ? { settings_applied: run.settings_applied } : {}),
+          // 2026-11-16: service bindings the active version did not bind as wrangler.toml declares (names only), and why
+          // the deploy refused to repair them (an undeclared binding, a missing target): the owner's to resolve.
+          ...(run.binding_drift ? {
+            binding_drift: Object.fromEntries(Object.entries(run.binding_drift).map(([svc, d]) => [svc, { restored: d.restored.map((x) => x.name), undeclared: d.undeclared, repaired: d.repaired, refused: d.refused ?? null }])),
+            ...(Object.values(run.binding_drift).some((d) => d.refused) ? {
+              binding_action_required: "A Worker's active version binds a service binding its wrangler.toml does not declare (or one whose target is not a Worker of the account). The native deploy does not drop or retarget it. Declare it in wrangler.toml through a change request, or remove it (owner), then deploy again.",
+            } : {}),
+          } : {}),
           // Gate 4 part B: custom domains and Workflows applied before the failure (undone first), and Durable Object
           // migrations, which Cloudflare does not roll back across.
           ...(run.topology_applied?.length ? { topology_applied: run.topology_applied } : {}),
