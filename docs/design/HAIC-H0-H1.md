@@ -1,9 +1,9 @@
 # Design: HAIC H0 ("Needs you"), H1 ("Ask the organism") and H1.5 (Call for Councils)
 
-- **Status:** design only; nothing here is built. The owner confirmed the direction on 2026-11-16 ("setuju desain HAIC untuk awal", then "ya").
+- **Status:** design only; nothing here is built. Open questions answered by the owner on 2026-11-16 (§7.2). The owner confirmed the direction on 2026-11-16 ("setuju desain HAIC untuk awal", then "ya").
 - **Implements:** ADR-0017 (Human–AI collaboration) phases H0 and H1, its Policy page subsection and Decision 5, and a new owner-requested step, H1.5 "Call for Councils".
 - **Reads with:** ADR-0009 (consensus, the owner's click), ADR-0011 (roles), ADR-0014 / ADR-0015 (evolution loop; organs as cells, the push hub), ADR-0016 (Telos: self-model, Strategist, experience ledger §5), `docs/SSOT.md` ("Owner notices", "Human–AI collaboration", "The Observer") and `docs/XAUUSD-INTEGRATION.md`.
-- **Start gate:** ADR-0017 Decision 4. H0 and H1 start once the deploy-pipeline hardening (a)–(f) is done. The work runs alongside the cut-over gates (`docs/GITHUB-CUTOVER.md`) at lower priority.
+- **Start gate:** ADR-0017 Decision 4. H0 and H1 start once the deploy-pipeline hardening (a)–(f) is done; the owner confirmed it done on 2026-11-16 (§7.2 Q10). The work runs alongside the cut-over gates (`docs/GITHUB-CUTOVER.md`) at lower priority.
 
 Every "exists" claim below names a file. A claim that something is new says so.
 
@@ -478,6 +478,19 @@ ADR-0019 is not drafted. A search of this repository, the xauusd repository and 
 9. **Q9.** Agent-raised councils: proposed as an inbox item that the owner starts (recommended), or started automatically?
 10. **Q10.** Is the deploy-pipeline hardening (a)–(f) complete? It gates H0 and H1 (ADR-0017 Decision 4); the repository does not record (a)–(f) as done.
 11. **Q11.** Is the ADR-0019 P2/P4 assumption in §6 right?
+
+**Owner answers (2026-11-16, "ya semua, sesuai rekomendasimu").** Every recommended default above is accepted:
+- Q1: owners only in H1.
+- Q2: the chat has its own budget, 40 turns a day, counted apart from the 75 AI requests a day.
+- Q3: the agents' kill switch does not stop the chat; `kernel_controls.conversation_enabled` does.
+- Q4: 90 days in DO SQLite, then R2; the audit chain holds hashes only.
+- Q5: yes, a daily digest at 08:00 WIB (01:00 UTC), sent only when the inbox is not empty.
+- Q6: Cerebrum only.
+- Q7: build the minimal push hub now, for H1.5.
+- Q8: 14 days and 30 directional outcomes.
+- Q9: an agent-raised council is an inbox item that the owner starts.
+- Q10: the hardening (a)–(f) counts as done. All six are built, and (f) ran live in the rescue drill of 2026-11-16. The H0/H1 start gate is met.
+- Q11: the ADR-0019 P2/P4 mapping in §6 is right.
 
 ### 7.3 Implementation order (in parallel with the cut-over gates, at lower priority)
 
