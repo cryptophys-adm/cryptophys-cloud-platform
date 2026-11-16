@@ -21,14 +21,17 @@ const NOT_FOUND = "cloudflare_api_404_100146";
 const hex = async (text: string) =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))].map((b) => b.toString(16).padStart(2, "0")).join("");
 const moduleText = (name: string) => `export default { fetch() { return new Response("${name} ${TAG}"); } };`;
+// The wrangler.toml the Forge stores beside each module: the native deploy compares its declared service bindings with
+// the active version's (binding-props-2026-11-16.test.ts). These Workers bind only DB, so none is declared.
+const configText = (name: string) => `name = "${name}"\nmain = "src/worker.ts"\ncompatibility_date = "2026-11-01"\n`;
 
 async function planFor(): Promise<PlannedService[]> {
   const plan: PlannedService[] = [];
   for (const name of SERVICES) {
     const text = moduleText(name);
     const worker: BundleWorker = {
-      name, module: `${name}.mjs`, main_module: `${name}.mjs`, sha256: await hex(text), bytes: new TextEncoder().encode(text).length, config_sha256: "c".repeat(64),
-      compatibility_date: "2026-11-01", compatibility_flags: [], single_module: true, assets: false, external: [], limits: false, modules: null, config: null,
+      name, module: `${name}.mjs`, main_module: `${name}.mjs`, sha256: await hex(text), bytes: new TextEncoder().encode(text).length, config_sha256: await hex(configText(name)),
+      compatibility_date: "2026-11-01", compatibility_flags: [], single_module: true, assets: false, external: [], limits: false, modules: null, config: `config/${name}.toml`,
     };
     plan.push({ service: name, worker, running_tag: OLD_TAG });
   }
@@ -53,7 +56,7 @@ function fakeCloudflare(o: { notFound?: (service: string, read: number) => boole
         reads.set(s, n);
         if (o.notFound?.(s, n)) throw new Error(NOT_FOUND);
       }
-      return { names: ["d1:DB"], digest: "d" };
+      return { names: ["d1:DB"], digest: "d", records: [{ type: "d1", name: "DB", id: "db-uuid" }] };
     },
     async uploadVersion(s: string, _module: string, _text: string, metadata: { tag: string }) { const id = uuid(); tags.set(id, metadata.tag); void s; return id; },
     async deploy(s: string, versions: { version_id: string; percentage: number }[], message: string) {
@@ -68,7 +71,12 @@ function fakeCloudflare(o: { notFound?: (service: string, read: number) => boole
     DRIFT: { probeService: async (s: string) => ({ reachable: true, healthy: true, version_tag: tags.get(active.get(s)![0].version_id)!, error: null }) },
     REGISTRY: { recordRollback: async () => undefined, recordNativeDeploy: async () => undefined },
     BUNDLES: {
-      async get(key: string) { const name = SERVICES.find((s) => key === `bundles/${COMMIT}/${s}.mjs`); return name ? { text: async () => moduleText(name) } : null; },
+      async get(key: string) {
+        const name = SERVICES.find((s) => key === `bundles/${COMMIT}/${s}.mjs`);
+        if (name) return { text: async () => moduleText(name) };
+        const cfg = SERVICES.find((s) => key === `bundles/${COMMIT}/config/${s}.toml`);
+        return cfg ? { text: async () => configText(cfg) } : null;
+      },
       async list() { return { objects: [], truncated: false }; },
     },
   };
