@@ -74,9 +74,10 @@ function activeBindings(unit: string, service: string, override: Record<string, 
 /**
  * A version upload as Cloudflare builds it: the sent bindings, plus the previous version's bindings of every type in
  * keep_bindings that no sent binding names. `ignorePlainText` drops what the upload sent (a Cloudflare that kept the old
- * text), so the verification before traffic must catch it.
+ * text), so the verification before traffic must catch it; `ignoreServices` likewise for the declared service bindings
+ * (a Cloudflare that kept the active version's).
  */
-function fakeCf(bindings: (svc: string) => Array<Record<string, unknown>>, opts: { ignorePlainText?: boolean } = {}) {
+function fakeCf(bindings: (svc: string) => Array<Record<string, unknown>>, opts: { ignorePlainText?: boolean; ignoreServices?: boolean } = {}) {
   let n = 0;
   const id = () => `${String(++n).padStart(8, "0")}-0000-4000-8000-000000000000`;
   const scripts = new Map<string, { active: { version_id: string; percentage: number }[]; versions: Map<string, Array<Record<string, unknown>>>; latest: string }>();
@@ -96,8 +97,13 @@ function fakeCf(bindings: (svc: string) => Array<Record<string, unknown>>, opts:
       uploads.push(structuredClone(metadata));
       const sc = script(s);
       const prev = sc.versions.get(sc.latest)!;
-      const sent = (metadata.config?.bindings ?? (opts.ignorePlainText ? [] : metadata.plain_text) ?? []) as Array<Record<string, unknown>>;
-      const keep: readonly string[] = metadata.config ? metadata.config.keep_bindings : metadata.plain_text && !opts.ignorePlainText ? KEEP_BINDINGS.filter((t) => t !== "plain_text") : KEEP_BINDINGS;
+      // 2026-11-16: a code-only upload may also send the declared service bindings (then `service` is not kept).
+      const plain = opts.ignorePlainText ? undefined : metadata.plain_text;
+      const services = opts.ignoreServices ? undefined : metadata.services;
+      const sent = (metadata.config?.bindings ?? [...(services ?? []), ...(plain ?? [])]) as Array<Record<string, unknown>>;
+      const keep: readonly string[] = metadata.config
+        ? metadata.config.keep_bindings
+        : KEEP_BINDINGS.filter((t) => !(plain && t === "plain_text") && !(services && t === "service"));
       const next = [...prev.filter((b) => keep.includes(String(b.type)) && !sent.some((x) => x.name === b.name)), ...structuredClone(sent)];
       const v = id();
       sc.versions.set(v, next);
@@ -117,15 +123,19 @@ async function sha256(text: string) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-async function plannedFor(services: string[]) {
+async function plannedFor(services: string[], extraToml = "") {
   const modules = new Map<string, string>();
   const plan: PlannedService[] = [];
   for (const service of services) {
     const text = `export default { fetch() { return new Response(${JSON.stringify(service)}); } };`;
     modules.set(`bundles/${NEW}/${service}.mjs`, text);
+    // 2026-11-16 (binding props): the stored wrangler.toml, whose declared service bindings the executor compares
+    // with the active version's (none unless `extraToml` declares some).
+    const config = `name = "${service}"\nmain = "src/worker.ts"\ncompatibility_date = "2026-11-01"\n${extraToml}`;
+    modules.set(`bundles/${NEW}/config/${service}.toml`, config);
     const worker: BundleWorker = {
       name: service, module: `${service}.mjs`, main_module: `${service}.mjs`, sha256: await sha256(text), bytes: new TextEncoder().encode(text).length,
-      config_sha256: "c".repeat(64), compatibility_date: "2026-11-01", compatibility_flags: [], single_module: true, assets: false, external: [], limits: false, modules: null, config: null,
+      config_sha256: await sha256(config), compatibility_date: "2026-11-01", compatibility_flags: [], single_module: true, assets: false, external: [], limits: false, modules: null, config: `config/${service}.toml`,
     };
     plan.push({ service, worker, running_tag: OLD.slice(0, 12) });
   }
@@ -547,4 +557,68 @@ test("IL-16. the docs say where the identity lists come from and how the owner c
   const ssot = read("docs/SSOT.md");
   assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /2026-11-16 \(the deploy-time identity lists get a native source, D1 `platform_identities`/);
   assert.match(read("workers/deployment-orchestrator/src/deploy-vars.ts"), /vars_from_identity_table/);
+});
+
+// ================================================================= 7. together with the binding-props repair (main, 2026-11-16)
+test("IL-17. one code-only upload restores a stripped AGENTS props and writes a changed identity list: both sent, every other binding kept, both verified before traffic", async () => {
+  const agentsToml = '[[services]]\nbinding = "AGENTS"\nservice = "cryptophys-ai-kernel"\nentrypoint = "AgentRpc"\nprops = { host_worker = "HOST" }\n';
+  // Each Worker's stored wrangler.toml declares AGENTS with its own host_worker (the TOML text is per Worker).
+  const { plan, bundles } = await plannedFor(UNIT, agentsToml);
+  for (const p of plan) {
+    const key = `bundles/${NEW}/config/${p.service}.toml`;
+    const text = (await (await bundles.get(key))!.text()).replace('"HOST"', JSON.stringify(p.service));
+    const orig = bundles.get.bind(bundles);
+    bundles.get = async (k: string) => k === key ? { text: async () => text } : orig(k);
+    p.worker.config_sha256 = await sha256(text);
+  }
+  // Production as the out-of-band version left it: AGENTS without its props (the API's record, environment included).
+  const agentsActive = (s: string, props?: Record<string, unknown>) =>
+    ({ type: "service", name: "AGENTS", service: "cryptophys-ai-kernel", entrypoint: "AgentRpc", environment: "production", ...(props ? { props } : {}) });
+  const active = (s: string) => [...activeBindings("control-plane", s), agentsActive(s)];
+  const db = migratedDb();
+  const cf = fakeCf(active);
+  const run = await executeNativeDeploy(cf as never, deployEnv(bundles, db) as never, "req-il17", NEW, plan, { delayMs: 0, deployVars: { ...REF, IDENTITIES: owned() } });
+  assert.equal(run.ok, true, run.reason);
+  UNIT.forEach((s, n) => {
+    const i = (x: string) => run.steps.indexOf(`${s}:${x}`);
+    assert.ok(i("vars_changed:OPERATOR_IDENTITIES") < i("uploaded") && i("uploaded") < i("bindings_match"), run.steps.join(" "));
+    assert.ok(i("bindings_match") < i("service_bindings_restored:AGENTS") && i("service_bindings_restored:AGENTS") < i("vars_verified") && i("vars_verified") < i("deployed"), run.steps.join(" "));
+    // The one upload sent both: the declared AGENTS (props included) and every plain-text value, the changed one with its new text.
+    const up = cf.uploads[n];
+    assert.deepEqual(up.services, [{ type: "service", name: "AGENTS", service: "cryptophys-ai-kernel", entrypoint: "AgentRpc", props: { host_worker: s } }]);
+    assert.equal(up.plain_text!.find((b) => b.name === "OPERATOR_IDENTITIES")!.text, `${CLIENT},owner@example.com,new.operator@example.com`);
+    assert.equal(up.plain_text!.find((b) => b.name === "SERVICE_NAME")!.text, s);
+    assert.equal(up.config, undefined, "code only");
+    // Production now: the declared props, the new list, the other values unchanged, every other binding kept.
+    const sc = cf.script(s);
+    const live = sc.versions.get(sc.active[0].version_id)!;
+    assert.deepEqual(live.find((b) => b.name === "AGENTS")!.props, { host_worker: s });
+    assert.equal(liveText(cf, s, "OPERATOR_IDENTITIES"), `${CLIENT},owner@example.com,new.operator@example.com`);
+    assert.equal(liveText(cf, s, "SERVICE_NAME"), s);
+    assert.equal(liveText(cf, s, "ACCESS_AUD"), AUD);
+    assert.deepEqual(live.filter((b) => b.type !== "service" && b.type !== "plain_text").map((b) => `${b.type}:${b.name}`).sort(),
+      ["d1:DB", "secret_text:CF_DEPLOY_TOKEN", "version_metadata:CF_VERSION_METADATA"]);
+  });
+  assert.deepEqual(run.deploy_vars_changed, { "cryptophys-policy-engine": ["OPERATOR_IDENTITIES"], "cryptophys-platform-registry": ["OPERATOR_IDENTITIES", "APPROVER_IDENTITIES"] });
+  assert.deepEqual(run.binding_drift, Object.fromEntries(UNIT.map((s) => [s, { restored: [{ name: "AGENTS", kinds: ["props"], retarget: false }], undeclared: [], repaired: true }])));
+  const events = (db.raw.prepare("SELECT event_type, subject FROM audit_events WHERE event_type IN ('deployment.identity_vars_written', 'deployment.binding_drift_repaired') ORDER BY rowid").all() as Array<{ event_type: string; subject: string }>)
+    .map((e) => `${e.event_type} ${e.subject}`);
+  for (const s of UNIT) for (const e of ["deployment.identity_vars_written", "deployment.binding_drift_repaired"]) assert.ok(events.includes(`${e} ${s}`), events.join(", "));
+
+  // Each check still holds when both are sent: a new version that kept the old text, or the active version's service
+  // binding (here props that differ), never takes traffic.
+  const wrongProps = (s: string) => [...activeBindings("control-plane", s), agentsActive(s, { host_worker: "cryptophys-ai-kernel" })];
+  for (const [opts, reason] of [
+    [{ ignorePlainText: true }, /^(bindings_differ|deploy_vars_differ: deploy_var_differs:OPERATOR_IDENTITIES)$/],
+    [{ ignoreServices: true }, /^service_bindings_differ: service_binding_props_differs \(AGENTS\)$/],
+  ] as const) {
+    const bad = fakeCf(wrongProps, opts);
+    const r = await executeNativeDeploy(bad as never, deployEnv(bundles) as never, "req-il17b", NEW, plan, { delayMs: 0, deployVars: { ...REF, IDENTITIES: owned() } });
+    assert.equal(r.ok, false, JSON.stringify(opts));
+    assert.match(r.reason!, reason);
+    assert.ok(bad.uploads[0].services && bad.uploads[0].plain_text, "both were sent");
+    assert.ok(!bad.calls.some((c) => c.startsWith("deploy ")), "no deploy call");
+    assert.equal(r.production_changed, false);
+    assert.equal(liveText(bad, UNIT[0], "OPERATOR_IDENTITIES"), OPS, "production still runs the old list");
+  }
 });
