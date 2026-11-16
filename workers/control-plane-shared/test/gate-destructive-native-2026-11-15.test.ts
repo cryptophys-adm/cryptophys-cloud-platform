@@ -477,7 +477,8 @@ test("GD-8. wiring: DeployRpc, the kernel binding, the Console's click, the book
   assert.match(ops, /deployment\.restore_point_recorded/);
   assert.match(ops, /D1 → Read/);
   assert.match(read("docs/GITHUB-CUTOVER.md"), /deploy_destructive_migration/);
-  assert.match(read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: 2026-11-15 ("))!, /deploy_destructive_migration/);
+  // The 2026-11-15 entry of the Last reviewed line (a newer day's entry may come first, e.g. 2026-11-16).
+  assert.match(read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!, /2026-11-15 \([^\n]*deploy_destructive_migration/);
   // The rules every seat applies stay with the owner (guard paths).
   assert.equal(criticalPathReason("workers/control-plane-shared/src/consensus-rules.ts"), "consensus_kill_switch");
 });

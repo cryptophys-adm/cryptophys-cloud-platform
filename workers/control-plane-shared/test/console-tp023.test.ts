@@ -265,15 +265,16 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   //   kembangkan Human Ai Interaction & Collaboration").
   // - the registry's PUT /v1/services/{id} and PUT /v1/services/{id}/desired-version (owner 2026-11-15, "tombol Edit
   //   tidak berfungsi": the Infrastructure page is read only).
-  assert.equal(keys.length, 66);
+  // + the registry's GET and POST /v1/identities (owner 2026-11-16: the deploy-time identity lists on the Users page).
+  assert.equal(keys.length, 68);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test"].map((p) => `kernel POST ${p}`),
     "kernel DELETE /v1/agents/{id}/principals/{id}", "kernel DELETE /v1/alerts/{id}",
     ...["/v1/plans", "/v1/plans/{id}"].map((p) => `recovery GET ${p}`),
     ...["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/disable"].map((p) => `recovery POST ${p}`),
-    ...["/v1/services", "/v1/services/{id}", "/v1/accounts"].map((p) => `registry GET ${p}`),
-    ...["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable"].map((p) => `registry POST ${p}`),
+    ...["/v1/services", "/v1/services/{id}", "/v1/accounts", "/v1/identities"].map((p) => `registry GET ${p}`),
+    ...["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable", "/v1/identities"].map((p) => `registry POST ${p}`),
     ...["/v1/decisions", "/v1/decisions/{id}"].map((p) => `policy GET ${p}`),
     "policy POST /v1/evaluate",
     ...["/v1/drift", "/v1/drift/{id}"].map((p) => `drift GET ${p}`),
