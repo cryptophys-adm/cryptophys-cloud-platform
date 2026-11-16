@@ -6,6 +6,7 @@
  *    recorded in agent_actions and the audit chain whatever the outcome.
  * The kernel fails closed: no policy answer, no action.
  */
+import type { IdentityDrift } from "../../control-plane-shared/src/identity-redeploy.ts";
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
@@ -44,6 +45,8 @@ export interface DeployRpcBinding {
   /** Gate 2026-11-15: the destructive D1 migrations a commit would apply (read only), and an owner-approved deploy of them. */
   destructiveMigrations?(commitSha: string): Promise<{ ok: true; commit_sha: string; migrations: Array<{ file: string; sha256: string }> } | { ok: false; reason: string; file?: string }>;
   deployDestructiveForConsensus?(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
+  /** Owner 2026-11-16: the units whose Workers carry another identity value than the owner-saved row (read only). */
+  identityDrift?(): Promise<IdentityDrift>;
 }
 
 export interface SyscallEnv extends BaseEnv {

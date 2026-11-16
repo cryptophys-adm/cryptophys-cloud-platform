@@ -260,7 +260,14 @@ export interface PlannedAssets {
   binding: string | null;
   config: AssetsConfig;
 }
-export interface PlannedService { service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig; assets?: PlannedAssets }
+export interface PlannedService {
+  service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig; assets?: PlannedAssets;
+  /**
+   * Owner 2026-11-16 (identity redeploy): the identity variables whose expected text (from the owner-saved identity
+   * table) differs from the active version's, read at eligibility; names only. The executor reads them again.
+   */
+  deploy_vars_changed?: string[];
+}
 /** A migration the deploy applies before its Workers, in this order. */
 export interface PlannedMigration { file: string; sha256: string; destructive?: boolean }
 export type Eligibility =
@@ -640,7 +647,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
     if (opts.deployVars) {
       if (!cf) return { eligible: false, reason: "deploy_vars_unreadable" };
       const kept: Record<string, string>[] = [];
-      for (const p of planned) {
+      for (const [i, p] of planned.entries()) {
         let record = records.get(p.service);
         if (!record) {
           let active: DeploymentVersions;
@@ -651,6 +658,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
         const k = keptDeployVars(unit.unit, p.service, record.resources?.bindings, opts.deployVars);
         if ("reason" in k) return { eligible: false, reason: k.reason, service: p.service };
         kept.push(k.vars);
+        if (k.changed?.length) planned[i] = { ...p, deploy_vars_changed: [...k.changed] };
       }
       const inconsistent = deployVarsConsistent(kept);
       if (inconsistent) return { eligible: false, reason: inconsistent };

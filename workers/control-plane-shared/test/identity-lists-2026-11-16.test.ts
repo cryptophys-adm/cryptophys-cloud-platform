@@ -541,7 +541,9 @@ test("IL-15. the Orchestrator reads the table into gate 4's reference (only once
   const g = await gate4Deploy(env as never);
   assert.equal(g.deployVars?.IDENTITIES?.status, "owner");
   const src = read("workers/deployment-orchestrator/src/index.ts");
-  assert.equal((src.match(/await gate4Deploy\(env\)/g) ?? []).length, 5, "the four eligibility checks and the executor");
+  // Owner 2026-11-16 (identity redeploy): three more reads of the table, each right before its check: the drift read for
+  // the Supervisor, the check when an identity redeploy is queued, and the executor's check before it runs.
+  assert.equal((src.match(/await gate4Deploy\(env\)/g) ?? []).length, 8, "the four eligibility checks, the executor and the identity redeploy's three checks");
   assert.match(src, /isBreakGlass \? \{ destructive: named \} : \{ \.\.\.\(await gate4Deploy\(env\)\)/, "the break-glass deploy keeps its own rules (carried verbatim)");
   assert.match(src, /if \(minute === 10 \|\| minute === 40\) ctx\.waitUntil\(seedIdentities\(env\)/);
 });

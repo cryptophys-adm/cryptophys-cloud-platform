@@ -72,10 +72,15 @@ const skips = (v: string | null): Skip[] => list(v).flatMap((s) => {
   return typeof o?.unit === "string" && typeof o?.reason === "string" ? [{ unit: o.unit.slice(0, 60), reason: o.reason.slice(0, 120) }] : [];
 });
 
+/**
+ * The last executed deploy of main. A redeploy for identities (owner 2026-11-16, identity-redeploy.ts: params.redeploy)
+ * runs a unit's running commit again and deploys nothing of main, so it neither ends nor starts a stall episode.
+ */
 async function lastExecutedDeploy(db: D1Database): Promise<LastDeploy | null> {
   const r = await db.prepare(
     `SELECT proposal_id, target, json_extract(params_json, '$.unit') AS unit, json_extract(params_json, '$.commit_sha') AS commit_sha, decided_at
-     FROM consensus_proposals WHERE action = 'deploy_commit' AND status = 'executed' ORDER BY decided_at DESC, rowid DESC LIMIT 1`,
+     FROM consensus_proposals WHERE action = 'deploy_commit' AND status = 'executed'
+       AND json_extract(params_json, '$.redeploy') IS NULL ORDER BY decided_at DESC, rowid DESC LIMIT 1`,
   ).first<{ proposal_id: string; target: string; unit: string | null; commit_sha: string | null; decided_at: string }>();
   return r ? { proposal_id: r.proposal_id, target: r.target, unit: r.unit ?? null, commit_sha: r.commit_sha ?? null, executed_at: r.decided_at } : null;
 }

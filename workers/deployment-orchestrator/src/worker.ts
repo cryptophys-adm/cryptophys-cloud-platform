@@ -2,7 +2,7 @@
 // Runtime entry point: the Access-gated HTTP handler, the DeploymentLock Durable Object,
 // and the RPC health entrypoint used by the Drift Detector.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployDestructiveForConsensus, deployForConsensus, deployForRecovery, destructiveMigrationsPending, forceDeployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
+import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployDestructiveForConsensus, deployForConsensus, deployForRecovery, destructiveMigrationsPending, forceDeployForRecovery, identityDrift, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import { resolveSecrets } from "../../control-plane-shared/src/secrets.ts";
@@ -43,6 +43,10 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   /** Gate 2026-11-15: an owner-approved deploy_destructive_migration (Time Travel bookmark first, named files only). */
   async deployDestructiveForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>) {
     return deployDestructiveForConsensus(await resolved(this.env), proposalId, decisionId, target, params);
+  }
+  /** Owner 2026-11-16: the units whose Workers carry another identity value than the owner-saved row, read only (for the Supervisor). */
+  async identityDrift() {
+    return identityDrift(await resolved(this.env));
   }
   /** ADR-0012 G6 gate 9: the Access plan, read only (for the Supervisor). */
   async accessPlan() {

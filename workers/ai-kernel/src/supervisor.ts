@@ -25,6 +25,7 @@ import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
 import { DESTRUCTIVE_DEPLOY_ACTION, DESTRUCTIVE_DEPLOY_UNIT, destructiveChanges } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { observerCycle } from "./observer-watch.ts";
+import { proposeIdentityRedeploys } from "./identity-redeploy.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -610,6 +611,12 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         report.actions.push(r);
         report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome });
       }
+      // Owner 2026-11-16 ("1. Ya"): a unit whose Workers carry another identity value than the owner-saved list is
+      // redeployed at its running commit, once per identity revision, within the same limits (identity-redeploy.ts).
+      proposed += await proposeIdentityRedeploys(env, {
+        pendingUnits: pending.units.map((u) => u.unit), capacity: MAX_DEPLOY_PROPOSALS_PER_CYCLE - proposed,
+        dailyFull: (daily?.n ?? 0) >= dailyLimit, brakeOff, ran, now: Date.now(), propose: proposeConsensus, findings: report.findings, actions: report.actions,
+      });
     } catch (err) {
       report.findings.push({ kind: "deploy", action: "none", why: `pending deploys unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }

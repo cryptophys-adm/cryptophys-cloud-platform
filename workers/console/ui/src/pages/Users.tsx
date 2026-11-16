@@ -86,9 +86,10 @@ function IdentityLists({ owner, actor }: { owner: boolean; actor: string }) {
       lines: [
         `${unique.length} email(s): ${unique.join(", ")}.`,
         "They become the operators (after the CI service token) and the approvers of every Worker, with each unit's next native deploy.",
+        "A unit whose Workers carry other lists is then redeployed at the commit it runs (a consensus deploy, within the deploy limits), so no unrelated deploy is needed.",
         "Recorded in the audit chain under your identity.",
       ],
-      done: "Identity lists saved. Each unit's next native deploy applies them.", after: () => { setDraft(null); void refresh(); },
+      done: "Identity lists saved. Each unit whose Workers differ is redeployed at its running commit; its native deploy applies them.", after: () => { setDraft(null); void refresh(); },
     });
   };
   return (
