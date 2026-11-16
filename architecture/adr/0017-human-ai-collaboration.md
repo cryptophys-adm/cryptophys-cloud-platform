@@ -71,6 +71,7 @@ The organism informs the owner and asks for clicks. It cannot be asked questions
 - **External content is data.** News, web pages, repository text and agent outputs are treated as data, never as instructions. This is the defence against prompt injection.
 - **No secrets** are accepted in chat, and secrets are never shown.
 - **Unchanged:** consensus, the brake, rollback, the kill switches, guard paths, and the constitution.
+- **Amendment 2026-11-16 (owner; ADR-0020):** arming and disarming an xauusd strategy is one click on the Nexus "Strategy Agents" page (owner-only Access identity, CSRF check, audit record), with no confirm step in Cerebrum. This exception to "Approvals" covers arm and disarm only; council picks, promotions and every other approval stay in Cerebrum.
 
 ## Phases
 
