@@ -174,6 +174,14 @@ Each step is reversible until step 7.
     recorded once, no drift audit or report is written, and the new version is accepted without the key; present and
     different props still fail. The first live run shows which case applies (unverifiable steps on every Worker with
     props: the API does not return them).
+  - Owner additions (2026-11-16, "sesuai rekomendasimu"), built, not yet run live: a break-glass plan may name
+    `service_binding_removal:<worker>:<BINDING>` in `destructive_topology` to drop an undeclared service binding (pending
+    only while the active version binds it undeclared, otherwise `named_topology_not_pending`; audited before, verified
+    gone, listed in the owner notice); the routine refusal `service_binding_undeclared:<NAME>` names that item. The rescue
+    deploy applies the same item for the Orchestrator (and no other topology item), and its client may now also read the
+    account's script list (`GET /accounts/{id}/workers/scripts`, read only; every other address is refused), so a missing
+    or retargeted binding is restored when the target exists and refused as `service_binding_target_missing` when it does
+    not. `CF_ORCHESTRATOR_DEPLOY_TOKEN` (Workers Scripts Edit, account-wide) covers the list; no token change.
   - **Met once** a native deploy has restored a drifted binding live (or one has run live with the check and found none),
     and the AI Kernel accepts the restored Worker's reports again: record the request id and the time here.
 

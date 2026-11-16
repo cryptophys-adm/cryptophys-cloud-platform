@@ -18,8 +18,10 @@
 //     differ: a declared binding missing, its service, entrypoint or props different (deep-equal JSON), or an active
 //     service binding the config does not declare (`undeclared`), or a declared name bound as another type;
 //   - `serviceDriftRefusal`: what may not be repaired by resending: an undeclared service binding
-//     (`service_binding_undeclared:<NAME>`; dropping it is the owner's decision, not a routine deploy's) and a name
-//     bound as another type (`service_binding_name_conflict:<NAME>`);
+//     (`service_binding_undeclared:<NAME>`; dropping it is the owner's decision, not a routine deploy's: the refusal
+//     names the break-glass item `service_binding_removal:<worker>:<NAME>` that drops it) and a name bound as another
+//     type (`service_binding_name_conflict:<NAME>`). `splitUndeclared` separates the ones a break-glass plan names;
+//     those are dropped (the upload sends only the declared service bindings) and verified gone;
 //   - `verifyServiceBindings`: after the upload, the new version binds exactly the declared service bindings, props
 //     included (the API may add `environment: "production"`, nothing else).
 // Props unknown (coordinator follow-up, 2026-11-16): it is not verified live that `GET .../versions/{id}` returns a
@@ -177,10 +179,27 @@ export function serviceBindingDrift(declared: readonly ServiceBinding[], activeB
   return { restore, undeclared, conflicts: conflicts.sort(), unverifiable: unverifiable.sort() };
 }
 
-/** What a routine deploy may not repair by resending the declared bindings, or null. */
-export function serviceDriftRefusal(drift: Pick<ServiceBindingDrift, "undeclared"> & Partial<Pick<ServiceBindingDrift, "conflicts">>): string | null {
+/** The break-glass `destructive_topology` item that drops an undeclared service binding (break-glass.ts TOPOLOGY_ITEM). */
+export const removalItem = (worker: string, binding: string) => `service_binding_removal:${worker}:${binding}`;
+/** The outcome step of a binding a break-glass plan dropped. */
+export const removedStep = (worker: string, binding: string) => `${worker}:service_binding_removed:${binding}`;
+
+/** The undeclared bindings of `worker` a break-glass plan names (`remove`), and the rest, which still refuse. */
+export function splitUndeclared(worker: string, undeclared: readonly string[], named: readonly string[] = []): { remove: string[]; refuse: string[] } {
+  const remove = undeclared.filter((n) => named.includes(removalItem(worker, n)));
+  return { remove, refuse: undeclared.filter((n) => !remove.includes(n)) };
+}
+
+/**
+ * What a routine deploy may not repair by resending the declared bindings, or null. With `worker`, an undeclared
+ * binding's refusal names the break-glass item that would drop it.
+ */
+export function serviceDriftRefusal(drift: Pick<ServiceBindingDrift, "undeclared"> & Partial<Pick<ServiceBindingDrift, "conflicts">>, worker?: string): string | null {
   if (drift.conflicts?.length) return `service_binding_name_conflict:${drift.conflicts.join(",")}`;
-  if (drift.undeclared.length) return `service_binding_undeclared:${drift.undeclared.join(",")}`;
+  if (drift.undeclared.length) {
+    const items = worker ? ` (declare it in wrangler.toml, or name ${drift.undeclared.map((n) => removalItem(worker, n)).join(", ")} in a break-glass plan's destructive_topology)` : "";
+    return `service_binding_undeclared:${drift.undeclared.join(",")}${items}`;
+  }
   return null;
 }
 
