@@ -32,6 +32,7 @@ import { OwnerDecisionError, agreementReport, getProposal, listProposals, ownerD
 import { KnowledgeDecisionError, decideKnowledge, getKnowledge, listKnowledge } from "./knowledge.ts";
 import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, TOPICS, channelOf, collectNotices, emailConfigured, reconcileNotices, reconcileOwnerAttentionNow } from "./owner-notices.ts";
 import { ownerInbox } from "./owner-inbox.ts";
+import { CHANNEL_TOPICS, RELAY_TOPICS, relayReports } from "./report-relay.ts";
 import { metabolismView } from "./metabolism-view.ts";
 import { meshView } from "./mesh-view.ts";
 import { visionView } from "./vision-view.ts";
@@ -193,7 +194,11 @@ export default {
             const channels = await listChannels(env.DB);
             return json({
               channels: channels ?? [], available: channels !== null, vault: Boolean(alertEnv.ALERT_VAULT),
-              topics: TOPICS.map((t) => ({ topic: t, owner_channel: channelOf(t) === "owner" })),
+              topics: [
+                ...TOPICS.map((t) => ({ topic: t, owner_channel: channelOf(t) === "owner", relay: false })),
+                // Owner 2026-11-16: relayed xauusd messages (report-relay.ts); never on the default (xauusd) channel.
+                ...RELAY_TOPICS.map((t) => ({ topic: t, owner_channel: false, relay: true })),
+              ],
               email: emailConfigured(env) ? "configured" : "off",
             });
           }
@@ -201,13 +206,13 @@ export default {
           if (!id && request.method === "POST") {
             const body = await readJsonObject(request);
             if (!body.ok) return body.response;
-            return json({ channel: await createChannel(alertEnv, operator.actor, body.value, TOPICS) }, 201);
+            return json({ channel: await createChannel(alertEnv, operator.actor, body.value, CHANNEL_TOPICS) }, 201);
           }
           if (id && test && request.method === "POST") return json(await testChannel(alertEnv, operator.actor, id, OWNER_PANEL_URL));
           if (id && !test && request.method === "POST") {
             const body = await readJsonObject(request);
             if (!body.ok) return body.response;
-            return json({ channel: await updateChannel(alertEnv, operator.actor, id, body.value, TOPICS) });
+            return json({ channel: await updateChannel(alertEnv, operator.actor, id, body.value, CHANNEL_TOPICS, RELAY_TOPICS) });
           }
           if (id && !test && request.method === "DELETE") return json(await deleteChannel(alertEnv, operator.actor, id));
           return errorResponse(405, "method_not_allowed");
@@ -328,6 +333,11 @@ export default {
     // either); nothing new waiting sends nothing (owner-notices.ts reconcileOwnerAttentionNow).
     ctx.waitUntil(Promise.all([cycle, fullPass]).then(() => reconcileOwnerAttentionNow({ ...env, ALERT_VAULT: alertVaultOf(env) })).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "owner_attention_now_failed", message: String((err as Error)?.message ?? err) }));
+    }));
+    // Owner 2026-11-16 ("pakai cara 2 lewat kernel"): relay the xauusd Worker's EA heartbeat reports to the alert
+    // channels that list ea_heartbeat, at every tick (report-relay.ts).
+    ctx.waitUntil(relayReports({ DB: env.DB, ALERT_VAULT: alertVaultOf(env), OWNER_TELEGRAM: env.OWNER_TELEGRAM }, event.scheduledTime).then(() => undefined, (err) => {
+      console.error(JSON.stringify({ service: SERVICE, event: "report_relay_failed", message: String((err as Error)?.message ?? err) }));
     }));
     const d = new Date(event.scheduledTime);
     if (d.getUTCHours() === 3 && minute === 7) {
