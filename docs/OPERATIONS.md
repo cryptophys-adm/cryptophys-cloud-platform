@@ -273,6 +273,23 @@ The same bookmark step runs before a destructive migration that a break-glass pl
 3. Roll the Control Plane Workers back to versions from before the migration: their readiness requires every migration they were built with.
 4. Record it as `owner.d1_restore` and verify the audit chain (step 4 of "Last resort").
 
+## Changing an operator or approver email (identity lists, owner 2026-11-16)
+
+The configured identities are two deploy-time values on every platform Worker: `OPERATOR_IDENTITIES` (the CI service token's Client ID, then the emails; `DEPLOY_ALLOWED_IDENTITIES` on the Orchestrator is the same list) and `APPROVER_IDENTITIES` (the emails, the owners). Before the GitHub cut-over the deploy workflows build them from the GitHub variable `ACCESS_ALLOWED_EMAILS` (`access-identities.sh`). After it, that variable is gone and the emails live in D1 `platform_identities` (migration 0073). Operators and approvers are still one list, as with `ACCESS_ALLOWED_EMAILS`.
+
+**Day one.** Nothing changes. With no row, every native deploy carries each Worker's active values exactly as before. At the first minute :10 or :40 after migration 0073 is applied, the Orchestrator copies its own active lists into the table once, as a `seed` row (audit `identity_source.seeded`), but only when they are exactly `access-identities.sh`'s output. A seed is for display: the deploys keep carrying the active values until an owner saves the list.
+
+**How the owner changes an email.**
+1. Console → Users → "Operator and approver emails" shows the list, its revision, who saved it and its changes. Operators see it read only.
+2. As an owner (a person in `APPROVER_IDENTITIES`; an approver account, an operator, a service token or an agent cannot), click "Edit emails", change the list (one per line or comma-separated: lower case, duplicates dropped, at most 20, your own email kept), Save…, and type `IDENTITIES`.
+3. The Platform Registry writes the row and its audit event `identity_source.changed` (actor: you; the previous and the new list) in one D1 batch (`POST /v1/identities`). A form older than the row is refused (`revision_conflict`): reload and try again. A list of one email is saved with `access-identities.sh`'s warning: a recovery plan that owner authors can never be approved.
+4. The change reaches each unit with its next native deploy. The deploy builds `<CI Client ID>,<emails>` (the Client ID of the Orchestrator's `CF_ACCESS_CLIENT_ID`) and the emails, checks them like every deploy-time value (format, Client ID first, equal across the unit), writes the ones that differ as `plain_text` bindings and verifies them on the new version before any traffic moves. The outcome's steps name them (`<worker>:vars_from_identity_table`, `<worker>:vars_changed:<NAME>`, never a value), `deploy_vars_changed` lists them, and the audit event `deployment.identity_vars_written` records the names and the revision. A unit with no new commit keeps its old lists until its next deploy.
+5. A new person also needs Access to let them in: after the Control Plane unit deployed the change, click Users → Sync sign-in (the Nexus sign-in group follows the Registry's `APPROVER_IDENTITIES` and the accounts).
+
+**A rotated CI service token.** Once the row is owner-saved, the operator lists follow the Client ID the Orchestrator holds: set the new `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` on the Orchestrator, and each unit's next native deploy writes the new Client ID first. Without an owner-saved row a rotated token still refuses the native deploy (`deploy_var_mismatch:OPERATOR_IDENTITIES`): save the list once (the same emails are enough).
+
+**When the row is not valid.** A row the Console would not have written (edited in D1 by hand: an invalid or duplicate email, an empty list, the two lists different) is never deployed. Every native deploy carries the active values (step `<worker>:identity_source_invalid`), and the Owner page lists `identity_source_invalid` with the reason. Save a valid list on the Users page; the item then closes. A break-glass deploy and the rescue deploy always carry the active values.
+
 ## Data retention
 
 Drift observations are pruned daily at 03:00 UTC by the Drift Detector: rows older than 90 days are deleted, but the 2 newest observations per service are always kept. Agent syscall consumptions are pruned daily at 03:07 UTC by the AI Kernel: rows older than 7 days are deleted. Audit events, policy decisions, agent reports, recovery plans, deployment requests, registry rows and crypto history tables are never deleted. Owner decision, 2026-11-05.

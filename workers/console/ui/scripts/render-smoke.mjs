@@ -19,6 +19,13 @@ const MOCK = {
       { email: "trader@example.com", kind: "user", privilege: null, status: "disabled", note: null, created_by: "owner@example.com", created_at: "2026-11-07T09:00:00Z", updated_by: "owner@example.com", updated_at: "2026-11-07T09:05:00Z" },
     ],
   },
+  // Owner 2026-11-16: the deploy-time identity lists' source (Users page).
+  "/api/registry/v1/identities": { schema: "identity-source.v1", migrated: true,
+    source: { status: "owner", operator_emails: ["owner@example.com", "second.owner.with.a.long.address@example-company.co.id"], approver_emails: ["owner@example.com", "second.owner.with.a.long.address@example-company.co.id"], revision: 3, updated_by: "owner@example.com", updated_at: "2026-11-16T09:00:00Z" },
+    in_effect: { uses: "identity_table", detail: "Each unit's next native deploy writes these lists (the CI service token's Client ID first in the operator list)." },
+    running_here: { approver_emails: ["owner@example.com"] }, limits: { max_emails: 20 },
+    history: [{ event_type: "identity_source.changed", actor: "owner@example.com", created_at: "2026-11-16T09:00:00Z", revision: 3, emails: ["owner@example.com", "second.owner.with.a.long.address@example-company.co.id"] },
+      { event_type: "identity_source.seeded", actor: "agent:deployment-orchestrator", created_at: "2026-11-16T03:10:00Z", revision: 1, emails: ["owner@example.com"] }] },
   "/api/kernel/v1/consensus": { mode: "shadow", stats_24h: {}, proposals: [] },
   "/api/forge/v1/forge/status": { configured: true, source: "https://github.com/cryptophys-adm/cryptophys-cloud-platform", repo: { name: "platform", default_branch: "main", last_push_at: null }, head: { sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" } },
   "/api/forge/v1/forge/checks": { parity: { target: 20, consecutive: 1, compared: 2, disagreements: ["8588e21c0ffee0000000000000000000000000000"] }, checks: [
@@ -378,6 +385,31 @@ for (const width of [390, 1440]) {
   }
   await page.close();
 }
+// Owner 2026-11-16: the Users page's identity lists, with the edit button for an owner, read only for an operator, and
+// an invalid row shown as such (nothing deployed from it).
+const IDENTITY_CHECKS = [
+  { name: "owner", override: {}, want: ["Operator and approver emails", "saved by an owner", "second.owner.with.a.long.address@example-company.co.id", "revision 3", "Edit emails", "Each unit's next native deploy writes these lists"], not: ["Only an owner changes these emails."] },
+  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Operator and approver emails", "owner@example.com", "Only an owner changes these emails."], not: ["Edit emails"] },
+  { name: "invalid", override: { "/api/registry/v1/identities": { schema: "identity-source.v1", migrated: true, source: { status: "invalid", reason: "identity_lists_differ", revision: 4, updated_by: "owner@example.com", updated_at: "2026-11-16T09:00:00Z" },
+    in_effect: { uses: "active_version", detail: "Not a valid list (identity_lists_differ): nothing is deployed from it; each Worker keeps its deployed values." }, running_here: { approver_emails: [] }, limits: { max_emails: 20 }, history: [] } },
+    want: ["not a valid list", "nothing is deployed from it", "No list saved that is valid"], not: ["saved by an owner"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of IDENTITY_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px users/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}#/users`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px #/users (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px #/users (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/users (${check.name}): horizontal scroll of ${overflow}px`);
+    await page.close();
+  }
+}
+OVERRIDE = {};
 // The Owner page: both sections with their actions for an approver, read-only for an operator, and the empty state.
 const OWNER_CHECKS = [
   { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "kernel or Drift Detector", "recovery failed", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
@@ -467,4 +499,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Users page identity lists (owner, operator, invalid), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
