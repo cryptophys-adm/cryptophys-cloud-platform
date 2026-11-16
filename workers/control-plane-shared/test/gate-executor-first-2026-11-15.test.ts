@@ -7,10 +7,9 @@
 //      and the orchestrator's own executor agree);
 //   2. the rescue executor: an owner-approved break-glass plan for the Orchestrator's Worker is deployed by the
 //      Recovery Manager itself, with its own credential and its own small Cloudflare client, never by the Orchestrator.
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { build } from "esbuild";
 import { APPROVER_EMAIL, APPROVER_JWT, OPERATOR_EMAIL, OPERATOR_JWT, accessCertsResponse, baseEnv, call, fakeWorkflow, isAccessCerts, migratedDb, req } from "./harness.ts";
 import { DEPLOY_UNITS, EXECUTOR_FIRST_NOTE, orderPending, unitForService, type PlannedUnit } from "../src/deploy-units.ts";
 import { EXECUTOR_FIRST_BUNDLE_PENDING, ORCHESTRATOR_SERVICE, executorFirstVerdict, identifiersUsed, migrationIdentifiers } from "../src/executor-first.ts";
@@ -38,6 +37,33 @@ const ACCOUNT = "a".repeat(32);
 const OLD = "0a".repeat(20);
 const NEW = "1b".repeat(20);
 const tag = (s: string) => s.slice(0, 12);
+// The clock frozen at one instant, as node:test's mock.timers does for Date (the Forge's node:test shim has no mock):
+// Date.now() and new Date() read it, every other use of Date is unchanged.
+const RealDate = Date;
+function freezeDate(ms: number): void {
+  class Frozen extends RealDate {
+    constructor(...a: unknown[]) { if (a.length === 0) super(ms); else super(...(a as [string])); }
+    static override now(): number { return ms; }
+  }
+  globalThis.Date = Frozen as DateConstructor;
+}
+function restoreDate(): void { globalThis.Date = RealDate; }
+/** The text of a file and of every repository file it reaches through relative imports (node:, cloudflare: and packages excluded). */
+function sourceGraph(entry: string): string {
+  const seen = new Set<string>(); const parts: string[] = []; const queue = [entry];
+  while (queue.length) {
+    const file = queue.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const src = read(file); parts.push(src);
+    for (const m of src.matchAll(/(?:^|[\s;])(?:import|export)\b[^;'"]*?\bfrom\s*["'](\.{1,2}\/[^"']+)["']|\bimport\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g)) {
+      const spec = m[1] ?? m[2];
+      const next = new URL(spec, new URL(file, ROOT)).pathname.slice(ROOT.pathname.length);
+      if (!seen.has(next)) queue.push(next);
+    }
+  }
+  return parts.join("\n");
+}
 const ORCH = unitForService(ORCHESTRATOR_SERVICE)!;
 const enc = new TextEncoder();
 const realFetch = globalThis.fetch;
@@ -165,12 +191,28 @@ test("GEF-2. the real orchestrator: its readiness needs no migration after 0029,
   const orchestrator = read("workers/deployment-orchestrator/src/index.ts");
   assert.match(orchestrator, /database_schema: Boolean\(env\.DB\) && await schemaReady\(env as never\),/, "readiness passes no extra migrations");
   assert.doesNotMatch(orchestrator, /schemaReady\(env[^)]*,\s*\[/);
-  const out = await build({ entryPoints: [new URL("workers/deployment-orchestrator/src/worker.ts", ROOT).pathname], bundle: true, format: "esm", write: false, external: ["cloudflare:workers"], platform: "neutral", logLevel: "silent" });
+  const ids = (f: string) => migrationIdentifiers(REPO_SQL[f])!;
+  // Everywhere, the Forge run included (it has no packages, so no esbuild): the Worker's source graph, every file its
+  // entry point reaches through relative imports. A superset of the bundle, so "reads nothing" here is at least as
+  // strict as on the bundle; it also sees code the bundle drops (index.ts imports ai-engine.ts for boundedString only,
+  // and ai-engine.ts writes ai_usage.learning_requests, 0070).
+  const graph = sourceGraph("workers/deployment-orchestrator/src/worker.ts");
+  assert.ok(graph.length > 100_000, "the whole Worker, shared imports included");
+  assert.deepEqual(identifiersUsed(graph, ids("0071_forge_linear_history_guard.sql")), []);
+  assert.deepEqual(identifiersUsed(graph, ids("0070_learning_dedup_observe.sql")), ["learning_requests"], "the source graph is conservative");
+  assert.deepEqual(identifiersUsed(graph, ids("0069_infra_budget_parameter.sql")), ["policy_parameters"], "a dependency is seen");
+  assert.ok(identifiersUsed(graph, ["deployment_requests", "forge_check_runs", "d1_migrations"]).length === 3, "the tables it does read are seen");
+  // Where esbuild is installed (a checkout with node_modules): the bundle itself, as the planner reads it from main's
+  // bundles. The specifier is not a literal so the Forge's snapshot bundler leaves the import to run time.
+  const pkg = "esbuild";
+  const esbuild = await import(pkg).catch(() => null) as null | { build: (o: object) => Promise<{ outputFiles: { text: string }[] }> };
+  if (!esbuild) return;
+  const out = await esbuild.build({ entryPoints: [new URL("workers/deployment-orchestrator/src/worker.ts", ROOT).pathname], bundle: true, format: "esm", write: false, external: ["cloudflare:workers"], platform: "neutral", logLevel: "silent" });
   const text = out.outputFiles[0].text;
   assert.ok(text.length > 100_000, "the whole Worker, shared imports included");
-  assert.deepEqual(identifiersUsed(text, migrationIdentifiers(REPO_SQL["0071_forge_linear_history_guard.sql"])!), []);
-  assert.deepEqual(identifiersUsed(text, migrationIdentifiers(REPO_SQL["0070_learning_dedup_observe.sql"])!), []);
-  assert.deepEqual(identifiersUsed(text, migrationIdentifiers(REPO_SQL["0069_infra_budget_parameter.sql"])!), ["policy_parameters"], "a dependency is seen");
+  assert.deepEqual(identifiersUsed(text, ids("0071_forge_linear_history_guard.sql")), []);
+  assert.deepEqual(identifiersUsed(text, ids("0070_learning_dedup_observe.sql")), [], "the bundle drops what it does not use");
+  assert.deepEqual(identifiersUsed(text, ids("0069_infra_budget_parameter.sql")), ["policy_parameters"], "a dependency is seen");
   assert.ok(identifiersUsed(text, ["deployment_requests", "forge_check_runs", "d1_migrations"]).length === 3, "the tables it does read are seen");
 });
 
@@ -390,7 +432,7 @@ test("GEF-5. break-glass of the Orchestrator's Worker: the Recovery Manager depl
   const { env, wf, reports, orchestratorUsed } = recoveryEnv(db, b);
   const cf = fakeCloudflare({ uploadedReads404: 2 });
   routeFetch(cf);
-  mock.timers.enable({ apis: ["Date"], now: nextSafeMinute(Date.now()) });
+  freezeDate(nextSafeMinute(Date.now()));
   try {
     const id = await approvedPlan(env);
     observeInSync(db, ORCHESTRATOR_SERVICE);
@@ -436,7 +478,7 @@ test("GEF-5. break-glass of the Orchestrator's Worker: the Recovery Manager depl
     assert.deepEqual([replay.status, (replay as any).request_id], ["succeeded", rows[0].request_id]);
     assert.equal(cf.uploads.length, 1);
     assert.equal((await rescueForRecovery(env as never, id, "dec_00000000-0000-4000-8000-000000000000")).status, "failed", "another decision id is refused");
-  } finally { mock.timers.reset(); globalThis.fetch = realFetch; }
+  } finally { restoreDate(); globalThis.fetch = realFetch; }
 });
 
 test("GEF-6. the rescue deploy restores the captured deployment on failure, and changes nothing before traffic would move", async () => {
@@ -469,7 +511,7 @@ test("GEF-6. the rescue deploy restores the captured deployment on failure, and 
   const { env, wf, reports, orchestratorUsed } = recoveryEnv(db, b, { probeTag: tag(OLD) });
   const live = fakeCloudflare();
   routeFetch(live);
-  mock.timers.enable({ apis: ["Date"], now: nextSafeMinute(Date.now()) });
+  freezeDate(nextSafeMinute(Date.now()));
   try {
     const id = await approvedPlan(env);
     // The live check retries with pauses; they fire at once here.
@@ -482,7 +524,7 @@ test("GEF-6. the rescue deploy restores the captured deployment on failure, and 
     assert.deepEqual(reports.filter((r) => r.body?.rescue).map((r) => r.severity), ["critical"]);
     assert.ok(events(db, "deployment.rescue_failed").length === 1);
     assert.deepEqual(orchestratorUsed, []);
-  } finally { mock.timers.reset(); globalThis.fetch = realFetch; }
+  } finally { restoreDate(); globalThis.fetch = realFetch; }
 });
 
 test("GEF-7. refusals change nothing: not configured, a destructive migration named, not main's head, a configuration change, a migration the Orchestrator reads, another deploy under way", async () => {
@@ -522,14 +564,14 @@ test("GEF-7. refusals change nothing: not configured, a destructive migration na
   const { env, wf } = recoveryEnv(db, b);
   const cf = fakeCloudflare();
   routeFetch(cf);
-  mock.timers.enable({ apis: ["Date"], now: nextSafeMinute(Date.now()) });
+  freezeDate(nextSafeMinute(Date.now()));
   try {
     const id = await approvedPlan(env, ORCHESTRATOR_SERVICE, { destructive_migrations: ["0991_some_drop.sql"] });
     assert.equal((await runLifecycle(env as never, id, id, wf.step(id) as never)).final_status, "failed");
     assert.equal(pipeline(db, id)[2].detail, "rescue deploy refused: orchestrator_applies_no_migrations; nothing in production changed");
     assert.deepEqual([cf.uploads.length, cf.deployments.length], [0, 0]);
     assert.equal(events(db, "deployment.rescue_refused").length, 1);
-  } finally { mock.timers.reset(); globalThis.fetch = realFetch; }
+  } finally { restoreDate(); globalThis.fetch = realFetch; }
 });
 
 test("GEF-8. outside a deploy minute nothing is read or written; the Registry records a rescue only for the Orchestrator's executing break-glass plan", async () => {
