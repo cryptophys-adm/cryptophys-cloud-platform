@@ -20,7 +20,7 @@
 //      deployed is harmless.
 // Pure functions only: no I/O, no Cloudflare call. Wiring into native-deploy.ts is a later step (§5l).
 import { parseToml, type TomlTable, type TomlValue } from "../../control-plane-shared/src/toml.ts";
-import { serviceBindingDiff, type BindingDrift, type ServiceBinding } from "../../control-plane-shared/src/service-bindings.ts";
+import { propsUnknown, serviceBindingDiff, type BindingDrift, type ServiceBinding } from "../../control-plane-shared/src/service-bindings.ts";
 
 // ---------------------------------------------------------------------------------------------------------
 // 1. TOML subset (control-plane-shared/src/toml.ts since 2026-11-16; re-exported for this module's callers)
@@ -280,8 +280,10 @@ export interface ConfigPlan {
    * config declares, for a reason the toml diff does not explain. `restored` are planned from the config (sent as
    * declared, `<worker>:service_bindings_restored:<NAME>`); `undeclared` are active service bindings neither config
    * declares: they are NOT in `bindings`, and the executor refuses the plan (`serviceDriftRefusal`) rather than drop them.
+   * `unverifiable` are declared bindings with props whose active record has no `props` key (service-bindings.ts
+   * `propsUnknown`): planned from the config (the props are sent), not reported as drift by themselves.
    */
-  service_bindings: { restored: BindingDrift[]; undeclared: string[] };
+  service_bindings: { restored: BindingDrift[]; undeclared: string[]; unverifiable: string[] };
 }
 export interface Ineligible { eligible: false; reason: string }
 export type ConfigPlanResult = ConfigPlan | Ineligible;
@@ -473,6 +475,7 @@ export function planConfigChange(runningToml: string, targetToml: string, active
   // An active service binding neither config declares is reported as undeclared and left out of the plan; the
   // executor refuses such a plan. A service binding the diff removes is removed, whatever the active record holds.
   const restored: BindingDrift[] = [];
+  const unverifiable: string[] = [];
   const undeclared: string[] = [];
   for (const [k, t] of tgtMap) {
     if (t.type !== "service") continue;
@@ -483,12 +486,17 @@ export function planConfigChange(runningToml: string, targetToml: string, active
     const declared = resolved.record;
     // The same comparison as every other path (service-bindings.ts): the API's `environment` and an empty `props` are no difference.
     const matches = (want: BindingRecord, got: BindingRecord | undefined) => serviceBindingDiff(want as unknown as ServiceBinding, got).length === 0;
-    const keep = a !== undefined && matches(declared, a);
+    // Props unknown (no `props` key on the active record): never kept verbatim, so the declared props are sent.
+    const unknown = propsUnknown(declared as unknown as ServiceBinding, a);
+    if (unknown) unverifiable.push(t.name);
+    const keep = a !== undefined && matches(declared, a) && !unknown;
     planned.set(k, keep ? a! : declared);
     sources[k] = keep ? "active" : "config";
     if (r && !same(r, t)) changes.changed.push(k);
     else if (!r) changes.added.push(k);
     if (keep) continue;
+    // Only the props are unknown: resent, but not drift by itself.
+    if (unknown && matches(declared, a)) continue;
     let explained = !r && !a;
     if (r && !same(r, t) && a) {
       const was = resolve(r, r, a);
@@ -514,7 +522,7 @@ export function planConfigChange(runningToml: string, targetToml: string, active
   for (const list of [changes.added, changes.removed, changes.changed]) list.sort();
   return {
     eligible: true, bindings, sources, secrets, keep_bindings: [...SECRET_TYPES], metadata, steps, changes,
-    service_bindings: { restored: restored.sort((a, b) => a.name.localeCompare(b.name)), undeclared: undeclared.sort() },
+    service_bindings: { restored: restored.sort((a, b) => a.name.localeCompare(b.name)), undeclared: undeclared.sort(), unverifiable: unverifiable.sort() },
   };
 }
 
@@ -553,7 +561,11 @@ export function verifyPlannedBindings(plan: Pick<ConfigPlan, "bindings" | "sourc
   for (const [k, p] of want) {
     const got = plain.find((b) => keyOf(b) === k);
     if (!got) return { ok: false, reason: "missing_binding", binding: k };
-    const ok = plan.sources[k] === "active" ? same(p, got) : recordMatches(p, got);
+    // A service binding built from config: the shared comparison (a record without a `props` key is accepted as props
+    // unknown; the executor names it, service-bindings.ts verifyServiceBindings).
+    const ok = plan.sources[k] === "active" ? same(p, got)
+      : p.type === "service" ? serviceBindingDiff(p as unknown as ServiceBinding, got).length === 0
+      : recordMatches(p, got);
     if (!ok) return { ok: false, reason: "binding_differs", binding: k };
   }
   return { ok: true };

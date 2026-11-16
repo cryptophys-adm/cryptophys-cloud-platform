@@ -169,6 +169,11 @@ Each step is reversible until step 7.
     `<worker>:service_bindings_restored:<BINDING>`, audit `deployment.binding_drift_detected` and
     `deployment.binding_drift_repaired`. An undeclared service binding, a name conflict or a missing target refuses before
     any upload, with a critical report. Native rollback uploads nothing and is exempt. See OPERATIONS, "Binding drift".
+  - Not verified live: whether the versions API returns a service binding's `props`. A record without a `props` key is
+    treated as "props unknown": the declared binding is resent, `<worker>:service_binding_props_unverifiable:<NAME>` is
+    recorded once, no drift audit or report is written, and the new version is accepted without the key; present and
+    different props still fail. The first live run shows which case applies (unverifiable steps on every Worker with
+    props: the API does not return them).
   - **Met once** a native deploy has restored a drifted binding live (or one has run live with the check and found none),
     and the AI Kernel accepts the restored Worker's reports again: record the request id and the time here.
 

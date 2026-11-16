@@ -6,6 +6,10 @@
 // (keep_bindings, the digest against the active version, the plan keeping unchanged records verbatim).
 // Every path that uploads a version is covered: code only, configuration plan, break-glass and the rescue executor.
 // Native rollback uploads nothing (it redeploys a version production ran), so it is exempt; BP11 shows that.
+// Props unknown: it is not verified live that the versions API returns `props`. A record with no `props` key is
+// therefore never drift by itself: the declared binding is still resent, the step
+// `<worker>:service_binding_props_unverifiable:<NAME>` is recorded and no drift audit is written; a new version showing
+// the declared props proves the loss (restored). BP12 runs every path against an API that omits `props` everywhere.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -19,7 +23,7 @@ import { bindingsFromToml, parseToml, planConfigChange, type BindingRecord, type
 import { breakGlassChoice } from "../../deployment-orchestrator/src/recovery-deploy.ts";
 import { recordNativeDeploy, recordRollback } from "../../platform-registry/src/index.ts";
 import {
-  BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindings, declaredServiceBindingsFromToml, serviceBindingDrift, serviceDriftRefusal,
+  BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindings, unverifiableStep, declaredServiceBindingsFromToml, serviceBindingDrift, serviceDriftRefusal,
   verifyServiceBindings, type ServiceBinding,
 } from "../src/service-bindings.ts";
 import { RESCUE_KEEP_BINDINGS, RescueCloudflare, executeRescueDeploy, rescueChoice } from "../src/executor-rescue.ts";
@@ -54,6 +58,7 @@ function deployedFrom(toml: string): BindingRecord[] {
   }), { type: "secret_text", name: "CF_ACCESS_CLIENT_SECRET" }];
 }
 const stripProps = (bindings: BindingRecord[], name = "AGENTS") => bindings.map((b) => b.name === name ? Object.fromEntries(Object.entries(b).filter(([k]) => k !== "props")) as BindingRecord : b);
+const stripAll = (bindings: BindingRecord[]) => bindings.map((b) => b.type === "service" ? Object.fromEntries(Object.entries(b).filter(([k]) => k !== "props")) as BindingRecord : b);
 const withField = (bindings: BindingRecord[], name: string, field: Record<string, unknown>) => bindings.map((b) => b.name === name ? { ...b, ...field } : b);
 
 // ---------------------------------------------------------------- the Forge's bundles (R2)
@@ -93,7 +98,7 @@ interface Upload { script: string; metadata: any }
  * binding's `environment`) plus the records of the kept types from the script's LATEST version, as Cloudflare does.
  * `afterUpload` may change what the new version binds (a broken upload). `listed` are the account's script names.
  */
-function fakeCloudflare(active: Record<string, BindingRecord[]>, opts: { listed?: string[]; afterUpload?: (svc: string, b: BindingRecord[]) => BindingRecord[]; onlyScript?: string; token?: string } = {}) {
+function fakeCloudflare(active: Record<string, BindingRecord[]>, opts: { listed?: string[]; afterUpload?: (svc: string, b: BindingRecord[]) => BindingRecord[]; onlyScript?: string; token?: string; omitProps?: boolean } = {}) {
   let n = 0;
   const uuid = () => `${String(++n).padStart(8, "0")}-0000-4000-8000-000000000000`;
   const scripts = new Map<string, { active: Array<{ version_id: string; percentage: number }>; versions: Map<string, Version>; first: string }>();
@@ -142,7 +147,9 @@ function fakeCloudflare(active: Record<string, BindingRecord[]>, opts: { listed?
     const vm = /^versions\/([0-9a-f-]{36})$/.exec(rest);
     if (vm && method === "GET") {
       const v = s!.versions.get(vm[1]);
-      return v ? Response.json({ success: true, result: { id: vm[1], resources: { bindings: structuredClone(v.bindings), script_runtime: v.runtime } } })
+      // omitProps: an API that never returns a service binding's props (what it stores is unchanged).
+      const shown = !v ? [] : opts.omitProps ? stripAll(v.bindings) : v.bindings;
+      return v ? Response.json({ success: true, result: { id: vm[1], resources: { bindings: structuredClone(shown), script_runtime: v.runtime } } })
         : Response.json({ success: false, errors: [{ code: 10007 }] }, { status: 404 });
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -244,22 +251,27 @@ test("BP1. the declared service bindings: every workers/*/wrangler.toml reads th
 test("BP2. the comparison: missing, service, entrypoint and props (deep-equal), undeclared and name conflicts; the API's environment is not a difference", () => {
   const declared = (declaredServiceBindingsFromToml(RM_TOML) as { bindings: ServiceBinding[] }).bindings;
   const good = deployedFrom(RM_TOML);
-  assert.deepEqual(serviceBindingDrift(declared, good), { restore: [], undeclared: [], conflicts: [] }, "as wrangler deployed it");
-  assert.deepEqual(serviceBindingDrift(declared, stripProps(good))!.restore, [{ name: "AGENTS", kinds: ["props"], retarget: false }], "the incident");
+  assert.deepEqual(serviceBindingDrift(declared, good), { restore: [], undeclared: [], conflicts: [], unverifiable: [] }, "as wrangler deployed it");
+  // No `props` key at all: unknown, not drift (the API may simply not return props); `{}` is present and differs.
+  assert.deepEqual(serviceBindingDrift(declared, stripProps(good)), { restore: [], undeclared: [], conflicts: [], unverifiable: ["AGENTS"] }, "the incident, as an API without props shows it");
+  assert.deepEqual(serviceBindingDrift(declared, withField(good, "AGENTS", { props: {} }))!.restore, [{ name: "AGENTS", kinds: ["props"], retarget: false }]);
+  assert.deepEqual(serviceBindingDrift(declared, withField(stripProps(good), "AGENTS", { entrypoint: "HealthRpc" })), { restore: [{ name: "AGENTS", kinds: ["entrypoint"], retarget: false }], undeclared: [], conflicts: [], unverifiable: ["AGENTS"] });
   assert.deepEqual(serviceBindingDrift(declared, withField(good, "AGENTS", { props: { host_worker: "cryptophys-ai-kernel" } }))!.restore, [{ name: "AGENTS", kinds: ["props"], retarget: false }]);
   assert.deepEqual(serviceBindingDrift(declared, withField(good, "AGENTS", { props: { host_worker: RM, extra: 1 } }))!.restore[0].kinds, ["props"], "props compare deep, not by key");
   assert.deepEqual(serviceBindingDrift(declared, withField(good, "AGENTS", { entrypoint: "HealthRpc" }))!.restore, [{ name: "AGENTS", kinds: ["entrypoint"], retarget: false }]);
   assert.deepEqual(serviceBindingDrift(declared, withField(good, "AGENTS", { service: "cryptophys-forge" }))!.restore, [{ name: "AGENTS", kinds: ["service"], retarget: true }]);
   assert.deepEqual(serviceBindingDrift(declared, good.filter((b) => b.name !== "AGENTS"))!.restore, [{ name: "AGENTS", kinds: ["missing"], retarget: true }]);
   const extra = [...good, { type: "service", name: "EXTRA", service: "cryptophys-forge", environment: "production" }];
-  assert.deepEqual(serviceBindingDrift(declared, extra), { restore: [], undeclared: ["EXTRA"], conflicts: [] });
+  assert.deepEqual(serviceBindingDrift(declared, extra), { restore: [], undeclared: ["EXTRA"], conflicts: [], unverifiable: [] });
   assert.equal(serviceDriftRefusal(serviceBindingDrift(declared, extra)!), "service_binding_undeclared:EXTRA");
   const conflict = [...good.filter((b) => b.name !== "AGENTS"), { type: "plain_text", name: "AGENTS", text: "x" }];
   assert.equal(serviceDriftRefusal(serviceBindingDrift(declared, conflict)!), "service_binding_name_conflict:AGENTS");
   assert.equal(serviceBindingDrift(declared, "nope"), null, "unreadable fails closed");
   // After the upload: exactly the declared values, props included.
-  assert.deepEqual(verifyServiceBindings(declared, good), { ok: true });
-  assert.deepEqual(verifyServiceBindings(declared, stripProps(good)), { ok: false, reason: "service_binding_props_differs", binding: "AGENTS" });
+  assert.deepEqual(verifyServiceBindings(declared, good), { ok: true, unverifiable: [] });
+  assert.deepEqual(verifyServiceBindings(declared, stripProps(good)), { ok: true, unverifiable: ["AGENTS"] }, "no props key: accepted, named");
+  assert.deepEqual(verifyServiceBindings(declared, withField(good, "AGENTS", { props: { host_worker: "x" } })), { ok: false, reason: "service_binding_props_differs", binding: "AGENTS" });
+  assert.deepEqual(verifyServiceBindings(declared, withField(stripProps(good), "AGENTS", { entrypoint: "HealthRpc" })), { ok: false, reason: "service_binding_entrypoint_differs", binding: "AGENTS" });
   assert.deepEqual(verifyServiceBindings(declared, extra), { ok: false, reason: "service_binding_unexpected", binding: "EXTRA" });
   assert.deepEqual(verifyServiceBindings(declared, withField(good, "AGENTS", { environment: "staging" })), { ok: false, reason: "service_binding_environment_differs", binding: "AGENTS" });
 });
@@ -294,12 +306,16 @@ test("BP3. the incident, code only: the AGENTS props stripped out of band are se
     assert.equal(row.status, "succeeded");
     const outcome = JSON.parse(row.details_json).outcome;
     assert.ok(outcome.steps.includes(`${RM}:service_bindings_restored:AGENTS`), outcome.steps.join(" "));
+    // The active record had no props key (unknown); the new version shows the declared props, which proves the loss.
+    assert.equal(outcome.steps.filter((x: string) => x === unverifiableStep(RM, "AGENTS")).length, 1);
+    assert.ok(outcome.steps.indexOf(unverifiableStep(RM, "AGENTS")) < outcome.steps.indexOf(`${RM}:service_bindings_restored:AGENTS`));
     assert.ok(outcome.steps.indexOf(`${RM}:bindings_match`) < outcome.steps.indexOf(`${RM}:deployed`), "verified before traffic moves");
     assert.equal(outcome.steps.filter((x: string) => x.includes("service_bindings_restored")).length, 1, "only the drifted binding");
     assert.deepEqual(outcome.binding_drift, { [RM]: { restored: [{ name: "AGENTS", kinds: ["props"], retarget: false }], undeclared: [], repaired: true } });
-    // Visible: detected before the upload, repaired once the Worker is live; names only.
+    // Visible: no "detected" event before the upload (props unknown alone), repaired once the loss is proven and the
+    // Worker is live; names only.
     const detected = events(db, BINDING_DRIFT_DETECTED_EVENT);
-    assert.deepEqual(detected.map((x) => [x.subject, x.outcome, x.payload.restore]), [[RM, "repairing", [{ name: "AGENTS", kinds: ["props"] }]]]);
+    assert.deepEqual(detected, []);
     const repaired = events(db, BINDING_DRIFT_REPAIRED_EVENT);
     assert.deepEqual(repaired.map((x) => [x.subject, x.outcome, x.payload.bindings]), [[RM, "repaired", ["AGENTS"]]]);
     assert.ok(!JSON.stringify([...detected, ...repaired]).includes("host_worker"), "no binding value in the audit chain");
@@ -336,11 +352,13 @@ test("BP5. a configuration plan: an unchanged binding whose active record lost i
   assert.equal(plan.eligible, true, JSON.stringify(plan));
   assert.equal(plan.sources["service:AGENTS"], "config");
   assert.deepEqual(plan.bindings.find((x) => x.name === "AGENTS"), { type: "service", name: "AGENTS", service: "cryptophys-ai-kernel", entrypoint: "AgentRpc", props: { host_worker: RM } });
-  assert.deepEqual(plan.service_bindings, { restored: [{ name: "AGENTS", kinds: ["props"], retarget: false }], undeclared: [] });
+  assert.deepEqual(plan.service_bindings, { restored: [], undeclared: [], unverifiable: ["AGENTS"] }, "no props key: unknown, resent");
+  const differs = planConfigChange(RM_TOML, RM_TOML, withField(deployedFrom(RM_TOML), "AGENTS", { props: { host_worker: "cryptophys-ai-kernel" } })) as ConfigPlan;
+  assert.deepEqual([differs.sources["service:AGENTS"], differs.service_bindings], ["config", { restored: [{ name: "AGENTS", kinds: ["props"], retarget: false }], undeclared: [], unverifiable: [] }]);
   // As deployed: kept verbatim, as before; nothing restored.
   const same = planConfigChange(RM_TOML, RM_TOML, deployedFrom(RM_TOML)) as ConfigPlan;
   assert.equal(same.sources["service:AGENTS"], "active");
-  assert.deepEqual(same.service_bindings, { restored: [], undeclared: [] });
+  assert.deepEqual(same.service_bindings, { restored: [], undeclared: [], unverifiable: [] });
   // An API that echoes `props: {}` for a binding declared without props is no drift (kept verbatim, nothing resent).
   const orch = read("workers/deployment-orchestrator/wrangler.toml");
   const echoed = planConfigChange(orch, orch, withField(deployedFrom(orch), "DRIFT", { props: {} })) as ConfigPlan;
@@ -350,7 +368,8 @@ test("BP5. a configuration plan: an unchanged binding whose active record lost i
   const change = planConfigChange(RM_TOML, retargeted, deployedFrom(RM_TOML)) as ConfigPlan;
   assert.deepEqual([change.changes.changed, change.service_bindings.restored], [["service:AGENTS"], []]);
   // ...and both when it did not (before: active_differs_from_config, so the deploy stayed on GitHub).
-  assert.deepEqual((planConfigChange(RM_TOML, retargeted, active) as ConfigPlan).service_bindings.restored.map((d) => d.name), ["AGENTS"]);
+  const wrong = withField(deployedFrom(RM_TOML), "AGENTS", { props: { host_worker: "cryptophys-ai-kernel" } });
+  assert.deepEqual((planConfigChange(RM_TOML, retargeted, wrong) as ConfigPlan).service_bindings.restored.map((d) => d.name), ["AGENTS"]);
 
   // End to end through the executor: a [vars] change makes the Recovery Manager a configuration plan.
   const target = RM_TOML.replace('AI_DAILY_REQUEST_LIMIT = "80"', 'AI_DAILY_REQUEST_LIMIT = "70"');
@@ -427,9 +446,9 @@ test("BP7. a restored binding must point at a Worker of the account; an upload t
   cf = fakeCloudflare(production(stripProps), { listed: [] });
   assert.equal((await deployDirect(s.db, s.b, cf)).run.ok, true);
   assert.equal(cf.calls.filter((c) => c === "GET scripts").length, 0);
-  // The API answering with the props dropped again: stopped before the deploy call.
+  // The API answering with other props than the declared ones: stopped before the deploy call.
   s = await scenario();
-  cf = fakeCloudflare(production(stripProps), { afterUpload: (svc, x) => svc === RM ? stripProps(x) : x });
+  cf = fakeCloudflare(production(stripProps), { afterUpload: (svc, x) => svc === RM ? withField(x, "AGENTS", { props: { host_worker: "cryptophys-ai-kernel" } }) : x });
   ({ run } = await deployDirect(s.db, s.b, cf));
   assert.deepEqual([run.ok, run.reason], [false, "service_bindings_differ: service_binding_props_differs (AGENTS)"]);
   assert.ok(!cf.deployments.some((d) => d.script === RM));
@@ -471,7 +490,7 @@ test("BP9. rescue: the Orchestrator's stripped AGENTS props are sent again by th
   assert.deepEqual(cf.uploads[0].metadata.bindings, ORCH_DECLARED);
   assert.deepEqual(cf.uploads[0].metadata.keep_bindings, RESCUE_KEEP_BINDINGS.filter((t) => t !== "service"));
   assert.deepEqual(agents(cf.activeBindings(ORCHESTRATOR_SERVICE))!.props, { host_worker: ORCHESTRATOR_SERVICE });
-  assert.deepEqual(run.steps, ["captured", "uploaded", "bindings_match", `${ORCHESTRATOR_SERVICE}:service_bindings_restored:AGENTS`, "deployed", "verified", "desired_recorded"]);
+  assert.deepEqual(run.steps, ["captured", unverifiableStep(ORCHESTRATOR_SERVICE, "AGENTS"), "uploaded", "bindings_match", `${ORCHESTRATOR_SERVICE}:service_bindings_restored:AGENTS`, "deployed", "verified", "desired_recorded"]);
   assert.deepEqual(run.binding_drift, { restored: [{ name: "AGENTS", kinds: ["props"], retarget: false }], undeclared: [], repaired: true });
   // Nothing to repair: the unchanged upload (every type kept, no binding sent).
   const clean = fakeCloudflare({ [ORCHESTRATOR_SERVICE]: deployedFrom(ORCH_TOML) }, { onlyScript: ORCHESTRATOR_SERVICE, token: "rescue-token" });
@@ -526,4 +545,102 @@ test("BP11. exempt: native rollback uploads no version (it redeploys one product
   assert.equal(fake.uploads.length, 0, "no version upload on the rollback path");
   assert.ok(!fake.calls.some((c) => c.startsWith("POST") && c.endsWith(" versions")));
   assert.doesNotMatch(read("workers/deployment-orchestrator/src/native-rollback.ts").slice(read("workers/deployment-orchestrator/src/native-rollback.ts").indexOf("export async function executeRollback")), /uploadVersion/);
+});
+
+test("BP12. an API that never returns props: every path succeeds, resends the declared props, writes no drift audit or report, and names them unverifiable once", async () => {
+  const declaredOf = (toml: string) => (declaredServiceBindingsFromToml(toml) as { bindings: ServiceBinding[] }).bindings;
+  const noDrift = (db: Db) => assert.deepEqual([events(db, BINDING_DRIFT_DETECTED_EVENT).length, events(db, BINDING_DRIFT_REPAIRED_EVENT).length], [0, 0], "no drift audit");
+
+  // Code only, end to end (queued, run): production is as wrangler deployed it; the API only hides the props.
+  {
+    const { db, b } = await scenario();
+    const { env, reports } = nativeEnv(db, b);
+    noGitHub();
+    try {
+      const { proposal, decision } = passedProposal(db, "cryptophys-policy-engine");
+      assert.equal((await deployForConsensus(env as never, proposal, decision, "cryptophys-policy-engine", { commit_sha: NEW })).executor, "native:deploy");
+      const cf = fakeCloudflare(production(), { omitProps: true });
+      assert.deepEqual(await runNativeExecutors(env as never, nextSafeMinute(Date.now() + 1_000), cf.fetcher, { delayMs: 0 }), { executed: 1, succeeded: 1 });
+      const outcome = JSON.parse((db.raw.prepare("SELECT status, details_json FROM deployment_requests").get() as any).details_json).outcome;
+      for (const svc of CONTROL_PLANE.services) {
+        const up = cf.uploads.find((u) => u.script === svc)!;
+        assert.deepEqual(up.metadata.bindings, declaredOf(tomlFor(svc)), `${svc}: the declared bindings are resent`);
+        assert.deepEqual(up.metadata.keep_bindings, KEEP_BINDINGS.filter((t) => t !== "service"));
+        assert.equal(outcome.steps.filter((x: string) => x === unverifiableStep(svc, "AGENTS")).length, 1, `${svc}: named once`);
+        assert.ok(!outcome.steps.includes(`${svc}:service_bindings_restored:AGENTS`), `${svc}: not reported as restored`);
+        assert.deepEqual(agents(cf.activeBindings(svc))!.props, { host_worker: svc === RM ? RM : svc }, `${svc}: what Cloudflare stores carries the props`);
+        assert.equal(cf.tagOf(svc), TAG);
+      }
+      assert.equal(outcome.binding_drift, undefined);
+      noDrift(db);
+      assert.equal(reports.length, 0, "no critical report");
+    } finally { globalThis.fetch = realFetch; }
+  }
+
+  // A real loss the API does not show is still repaired (resent), without a drift alarm.
+  {
+    const { db, b } = await scenario();
+    const cf = fakeCloudflare(production(stripProps), { omitProps: true });
+    const { run } = await deployDirect(db, b, cf);
+    assert.equal(run.ok, true, run.reason);
+    assert.deepEqual(agents(cf.activeBindings(RM))!.props, { host_worker: RM });
+    assert.equal(run.binding_drift, undefined);
+    noDrift(db);
+  }
+
+  // Configuration plan: the [vars] change makes the Recovery Manager a plan; its AGENTS is planned from the config.
+  {
+    const target = RM_TOML.replace('AI_DAILY_REQUEST_LIMIT = "80"', 'AI_DAILY_REQUEST_LIMIT = "70"');
+    const { db, b } = await scenario({ [RM]: target });
+    const cf = fakeCloudflare(production(), { omitProps: true });
+    const { plan, run } = await deployDirect(db, b, cf);
+    assert.ok(plan.find((p) => p.service === RM)?.config);
+    assert.equal(run.ok, true, run.reason);
+    const up = cf.uploads.find((u) => u.script === RM)!;
+    assert.deepEqual(up.metadata.bindings.find((x: BindingRecord) => x.name === "AGENTS")?.props, { host_worker: RM });
+    assert.equal(run.steps.filter((x) => x === unverifiableStep(RM, "AGENTS")).length, 1);
+    assert.equal(run.binding_drift, undefined);
+    noDrift(db);
+  }
+
+  // Break-glass: the same plan and executor.
+  {
+    const { db, b } = await scenario();
+    const cf = fakeCloudflare(production(), { omitProps: true });
+    const workers = new CloudflareWorkers("deploy-token", ACCOUNT, cf.fetcher);
+    const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, [], workers);
+    assert.equal(choice.ok, true, JSON.stringify(choice));
+    const env = { DRIFT: { probeService: async () => ({ reachable: true, healthy: true, version_tag: TAG, error: null }) }, REGISTRY: { recordRollback: async () => ({ desired_version: "" }), recordNativeDeploy: async () => ({ desired_version: TAG, services: [] }) }, BUNDLES: b, DB: db as never };
+    const run = await executeNativeDeploy(workers, env, "dep_bg12", NEW, (choice as { services: PlannedService[] }).services, { delayMs: 0, migrations: [], destructive: [], destructiveTopology: [] });
+    assert.equal(run.ok, true, run.reason);
+    assert.ok(run.steps.includes(unverifiableStep(RM, "AGENTS")));
+    assert.equal(run.binding_drift, undefined);
+    noDrift(db);
+  }
+
+  // Rescue: its own client, the same rules.
+  {
+    const cf = fakeCloudflare({ [ORCHESTRATOR_SERVICE]: deployedFrom(ORCH_TOML) }, { onlyScript: ORCHESTRATOR_SERVICE, token: "rescue-token", omitProps: true });
+    const run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_r12", NEW, rescueChoiceFor(), { sleep: async () => undefined });
+    assert.equal(run.ok, true, run.reason);
+    assert.deepEqual(cf.uploads[0].metadata.bindings, ORCH_DECLARED);
+    assert.deepEqual(run.steps, ["captured", unverifiableStep(ORCHESTRATOR_SERVICE, "AGENTS"), "uploaded", "bindings_match", "deployed", "verified", "desired_recorded"]);
+    assert.equal(run.binding_drift, undefined);
+  }
+
+  // Still refused without props: a different entrypoint the new version keeps, and props present but wrong.
+  {
+    const { db, b } = await scenario();
+    const cf = fakeCloudflare(production(), { omitProps: true, afterUpload: (svc, x) => svc === RM ? withField(x, "AGENTS", { entrypoint: "HealthRpc" }) : x });
+    const { run } = await deployDirect(db, b, cf);
+    assert.deepEqual([run.ok, run.reason], [false, "service_bindings_differ: service_binding_entrypoint_differs (AGENTS)"]);
+    assert.ok(!cf.deployments.some((d) => d.script === RM));
+  }
+  {
+    // Rescue: the active record has no props key (resent), and the new version shows other props: refused before deploy.
+    const cf = fakeCloudflare({ [ORCHESTRATOR_SERVICE]: stripProps(deployedFrom(ORCH_TOML)) }, { onlyScript: ORCHESTRATOR_SERVICE, token: "rescue-token",
+      afterUpload: (_svc, x) => withField(x, "AGENTS", { props: { host_worker: "cryptophys-ai-kernel" } }) });
+    const run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_r13", NEW, rescueChoiceFor(), { sleep: async () => undefined });
+    assert.deepEqual([run.ok, run.reason, cf.deployments.length], [false, "service_bindings_differ: service_binding_props_differs (AGENTS)", 0]);
+  }
 });

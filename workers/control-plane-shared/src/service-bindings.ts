@@ -22,6 +22,14 @@
 //     bound as another type (`service_binding_name_conflict:<NAME>`);
 //   - `verifyServiceBindings`: after the upload, the new version binds exactly the declared service bindings, props
 //     included (the API may add `environment: "production"`, nothing else).
+// Props unknown (coordinator follow-up, 2026-11-16): it is not verified live that `GET .../versions/{id}` returns a
+// service binding's `props`. A record with NO `props` key at all (not `{}`) for a binding declared with non-empty props
+// is therefore "props unknown" (`propsUnknown`), never drift by itself: the declared binding is still sent again on the
+// upload (harmless, and it repairs a real loss), no drift audit is written for it alone, and the deploy records
+// `<worker>:service_binding_props_unverifiable:<NAME>` once. After the upload, a record without a `props` key is
+// accepted the same way. A `props` key that is present and differs still fails, as do service and entrypoint. When the
+// new version's record does carry the declared props, the API evidently returns them, so the active version's missing
+// key was a real loss: it is then reported as restored (step and audit) like any other drift.
 // Names only ever leave this module in steps, audit events and reports; a service binding has no secret value anyway.
 
 import { parseToml, type TomlTable } from "./toml.ts";
@@ -50,6 +58,8 @@ export interface ServiceBindingDrift {
   undeclared: string[];
   /** Declared names the active version binds as another type. */
   conflicts: string[];
+  /** Declared bindings with non-empty props whose active record has no `props` key: resent, not drift by themselves. */
+  unverifiable: string[];
 }
 
 /** The audit events of a drift (deployment-orchestrator and recovery-manager). */
@@ -57,6 +67,8 @@ export const BINDING_DRIFT_DETECTED_EVENT = "deployment.binding_drift_detected";
 export const BINDING_DRIFT_REPAIRED_EVENT = "deployment.binding_drift_repaired";
 /** The outcome step of one restored binding: `<worker>:service_bindings_restored:<BINDING>` (names only). */
 export const restoredStep = (worker: string, binding: string) => `${worker}:service_bindings_restored:${binding}`;
+/** The step of a binding whose props the API record does not show: `<worker>:service_binding_props_unverifiable:<BINDING>`. */
+export const unverifiableStep = (worker: string, binding: string) => `${worker}:service_binding_props_unverifiable:${binding}`;
 
 const BINDING_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
@@ -117,7 +129,17 @@ export function readBindingRecords(list: unknown): ApiBinding[] | null {
   return list as ApiBinding[];
 }
 
-/** The fields of `actual` that differ from the declared binding (empty: it is the declared binding). */
+/** A service record with no `props` key at all, for a binding declared with non-empty props: its props are unknown. */
+export function propsUnknown(declared: Pick<ServiceBinding, "props">, actual: ApiBinding | undefined): boolean {
+  if (!actual || actual.type !== "service") return false;
+  if (Object.prototype.hasOwnProperty.call(actual, "props") && actual.props !== undefined) return false;
+  return isTable(declared.props) && Object.keys(declared.props).length > 0;
+}
+
+/**
+ * The fields of `actual` that differ from the declared binding (empty: it is the declared binding). Props that are
+ * unknown (`propsUnknown`) are not a difference here; callers that must resend them check `propsUnknown` themselves.
+ */
 export function serviceBindingDiff(declared: ServiceBinding, actual: ApiBinding | undefined): DriftKind[] {
   if (!actual || actual.type !== "service") return ["missing"];
   const kinds: DriftKind[] = [];
@@ -125,7 +147,7 @@ export function serviceBindingDiff(declared: ServiceBinding, actual: ApiBinding 
   if (!same(actual.entrypoint, declared.entrypoint)) kinds.push("entrypoint");
   // Props absent and props `{}` pass the same (empty) object to the target's ctx.props.
   const props = (p: unknown) => (isTable(p) && Object.keys(p).length === 0 ? undefined : p);
-  if (!same(props(actual.props), props(declared.props))) kinds.push("props");
+  if (!propsUnknown(declared, actual) && !same(props(actual.props), props(declared.props))) kinds.push("props");
   // The API adds `environment: "production"` to a binding sent without one.
   if (declared.environment !== undefined ? actual.environment !== declared.environment : actual.environment !== undefined && actual.environment !== "production") kinds.push("environment");
   for (const k of Object.keys(actual)) if (!["type", "name", "service", "entrypoint", "props", "environment"].includes(k)) { kinds.push("fields"); break; }
@@ -141,16 +163,18 @@ export function serviceBindingDrift(declared: readonly ServiceBinding[], activeB
   if (!active) return null;
   const restore: BindingDrift[] = [];
   const conflicts: string[] = [];
+  const unverifiable: string[] = [];
   for (const d of declared) {
     const sameName = active.filter((b) => b.name === d.name);
     if (sameName.some((b) => b.type !== "service")) { conflicts.push(d.name); continue; }
     const a = sameName[0];
+    if (propsUnknown(d, a)) unverifiable.push(d.name);
     const kinds = serviceBindingDiff(d, a);
     if (kinds.length) restore.push({ name: d.name, kinds, retarget: kinds.includes("missing") || kinds.includes("service") });
   }
   const names = new Set(declared.map((d) => d.name));
   const undeclared = active.filter((b) => b.type === "service" && !names.has(b.name)).map((b) => b.name).sort();
-  return { restore, undeclared, conflicts: conflicts.sort() };
+  return { restore, undeclared, conflicts: conflicts.sort(), unverifiable: unverifiable.sort() };
 }
 
 /** What a routine deploy may not repair by resending the declared bindings, or null. */
@@ -162,9 +186,10 @@ export function serviceDriftRefusal(drift: Pick<ServiceBindingDrift, "undeclared
 
 /**
  * Whether an uploaded version binds exactly the declared service bindings: the same names, each one's service,
- * entrypoint and props equal (props deep-equal), no other field but the API's `environment: "production"`.
+ * entrypoint and props equal (props deep-equal), no other field but the API's `environment: "production"`. A record
+ * with no `props` key for a binding declared with props is accepted and named in `unverifiable`.
  */
-export function verifyServiceBindings(declared: readonly ServiceBinding[], uploadedBindings: unknown): { ok: true } | { ok: false; reason: string; binding?: string } {
+export function verifyServiceBindings(declared: readonly ServiceBinding[], uploadedBindings: unknown): { ok: true; unverifiable: string[] } | { ok: false; reason: string; binding?: string } {
   const uploaded = readBindingRecords(uploadedBindings);
   if (!uploaded) return { ok: false, reason: "uploaded_bindings_unreadable" };
   const services = uploaded.filter((b) => b.type === "service");
@@ -176,7 +201,8 @@ export function verifyServiceBindings(declared: readonly ServiceBinding[], uploa
     const kinds = serviceBindingDiff(d, got[0]);
     if (kinds.length) return { ok: false, reason: `service_binding_${kinds[0]}_differs`, binding: d.name };
   }
-  return { ok: true };
+  const unverifiable = declared.filter((d) => propsUnknown(d, uploaded.find((b) => b.name === d.name))).map((d) => d.name).sort();
+  return { ok: true, unverifiable };
 }
 
 /** The sorted `type:name` and a digest of every record that is not a service binding (the code-only check). */

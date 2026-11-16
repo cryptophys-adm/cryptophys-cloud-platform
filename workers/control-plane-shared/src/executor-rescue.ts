@@ -39,6 +39,9 @@
  * binding the config does not declare (`service_binding_undeclared:<NAME>`), a declared name bound as another type, and
  * a binding whose target script differs or is missing (`service_binding_target_unverifiable:<NAME>`: this client can
  * address only the Orchestrator's script, so it cannot check that the target exists; the Orchestrator's own deploy can).
+ * Props unknown (service-bindings.ts `propsUnknown`): a record without a `props` key is not drift by itself; the
+ * declared bindings are still sent, `<worker>:service_binding_props_unverifiable:<NAME>` is recorded once, and a new
+ * version whose record has no `props` key is accepted. One that shows the declared props proves the loss: restored.
  *
  * Shared code it depends on, honestly: break-glass.ts (plan rules), forge-gate.ts (`forgeReady`), executor-first.ts,
  * migration-rules.ts (through executor-first), service-bindings.ts and toml.ts (the declared service bindings), audit.ts
@@ -55,7 +58,7 @@ import { forgeReady } from "./forge-gate.ts";
 import { ORCHESTRATOR_SERVICE, ORCHESTRATOR_UNIT, RESCUE_EXECUTOR, executorFirstVerdict, readOrchestratorManifest, readOrchestratorModule, sha256Hex, type BundleTextReader } from "./executor-first.ts";
 import {
   BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindingsFromToml, nonServiceBindingSet, restoredStep, serviceBindingDrift,
-  serviceDriftRefusal, verifyServiceBindings, type ApiBinding, type BindingDrift, type ServiceBinding,
+  serviceDriftRefusal, unverifiableStep, verifyServiceBindings, type ApiBinding, type BindingDrift, type ServiceBinding,
 } from "./service-bindings.ts";
 
 export { RESCUE_EXECUTOR };
@@ -299,7 +302,12 @@ export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<Rescue
       drift = { restored: found.restore, undeclared: found.undeclared, repaired: false, ...(refused ? { refused } : {}) };
       if (refused) throw new Error(refused);
     }
-    const restore = found.restore.length > 0;
+    const unverifiable = (names: readonly string[]) => {
+      for (const n of names) { const st = unverifiableStep(ORCHESTRATOR_SERVICE, n); if (!steps.includes(st)) steps.push(st); }
+    };
+    unverifiable(found.unverifiable);
+    // Sent on a drift, and also when props are unknown (harmless; it repairs a loss the API may not show).
+    const restore = found.restore.length > 0 || found.unverifiable.length > 0;
     versionId = await cf.upload(choice.module, choice.text, {
       compatibility_date: choice.compatibility_date, compatibility_flags: choice.compatibility_flags, tag, message: `rescue deploy commit ${sha}`,
       ...(restore ? { services: choice.services } : {}),
@@ -320,7 +328,13 @@ export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<Rescue
     const sb = verifyServiceBindings(choice.services, uploaded.records);
     if (!sb.ok) throw new Error(`service_bindings_differ: ${sb.reason}${sb.binding ? ` (${sb.binding})` : ""}`);
     steps.push("bindings_match");
-    for (const d of found.restore) steps.push(restoredStep(ORCHESTRATOR_SERVICE, d.name));
+    unverifiable(sb.unverifiable);
+    const proven = found.unverifiable.filter((n) => !sb.unverifiable.includes(n) && !found.restore.some((d) => d.name === n));
+    if (proven.length) {
+      drift ??= { restored: [], undeclared: [], repaired: false };
+      for (const n of proven) drift.restored.push({ name: n, kinds: ["props"], retarget: false });
+    }
+    for (const d of drift?.restored ?? []) steps.push(restoredStep(ORCHESTRATOR_SERVICE, d.name));
     // Recorded before the call: an ambiguous failure of the deploy call is restored as well.
     changed = true;
     await cf.deploy([{ version_id: versionId, percentage: 100 }], `rescue deploy ${tag}, ${requestId}`);
