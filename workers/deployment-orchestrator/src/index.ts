@@ -12,7 +12,10 @@ import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-pl
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 import type { DeployVarReference } from "./deploy-vars.ts";
 import { SmokeRunner, smokeToken } from "./native-smoke.ts";
-import { executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, type BundleReader, type PlannedMigration, type PlannedService } from "./native-deploy.ts";
+import { appliedMigrations, executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, readManifest, readMigration, type BundleReader, type PlannedMigration, type PlannedService, type RestorePoint } from "./native-deploy.ts";
+import { readD1RestorePoint } from "./d1-restore-point.ts";
+import { D1_BOOKMARK_PERMISSION, DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployParams, restoreCommand, type NamedDestructive } from "../../control-plane-shared/src/destructive-deploy.ts";
+import { MAX_NAMED_DESTRUCTIVE } from "../../control-plane-shared/src/break-glass.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
 import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, resolveBreakGlassNotices, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
@@ -509,6 +512,161 @@ async function queueBreakGlassDeploy(env: Env, planId: string, decisionId: strin
   return { dispatched: true, executor: BREAK_GLASS_EXECUTOR, mode: "force", request_id: requestId, unit: unit.unit, commit_sha: sha, migrations: choice.migrations.map((m) => m.file) };
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Cut-over gate (owner 2026-11-15, "1 setuju"): destructive D1 migrations, natively, after the owner's click.
+// ---------------------------------------------------------------------------------------------------------
+
+export const DESTRUCTIVE_DEPLOY_EXECUTOR = "native:destructive-deploy";
+/** One destructive deploy per unit and commit at a time; released when its request ends or nothing was queued. */
+export const destructiveLockName = (unit: DeployUnit, sha: string) => `destructive:${unit.workflow}:${sha}`;
+/** One request per proposal. */
+export const destructiveRequestKey = (unit: DeployUnit, sha: string, proposalId: string) => `${destructiveLockName(unit, sha)}:${proposalId}`;
+
+/** The bookmark reader the executor and the queue's preflight use (d1-restore-point.ts). */
+function restorePointReader(env: Env, cf: CloudflareWorkers, fetcher: typeof fetch = fetch): () => Promise<RestorePoint> {
+  return () => readD1RestorePoint(cf, env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, env.CF_VERSION_METADATA?.id, fetcher);
+}
+
+/**
+ * The planned migrations against the owner's approval: every destructive one must be approved with the same sha256
+ * (the SQL the owner saw), and every approved file must be planned as destructive. Returns the first difference.
+ */
+function namedMismatch(planned: PlannedMigration[], approved: ReadonlyArray<NamedDestructive>): { reason: string; file: string } | null {
+  for (const m of planned.filter((x) => x.destructive)) {
+    const a = approved.find((x) => x.file === m.file);
+    if (!a) return { reason: "destructive_migration_not_named", file: m.file };
+    if (a.sha256 !== m.sha256) return { reason: "named_migration_sha256_mismatch", file: m.file };
+  }
+  const stale = approved.find((a) => !planned.some((m) => m.file === a.file && m.destructive));
+  return stale ? { reason: "named_migration_not_pending_destructive", file: stale.file } : null;
+}
+
+/**
+ * Read only, for the Supervisor: the destructive migrations among those main has and D1 has not applied, each with its
+ * sha256, in file order. The Supervisor proposes deploy_destructive_migration (the owner's click) instead of a routine
+ * deploy_commit when this lists any. Never throws; the routine native deploy refuses every destructive file anyway.
+ */
+export async function destructiveMigrationsPending(env: Pick<Env, "DB" | "BUNDLES">, sha: string):
+  Promise<{ ok: true; commit_sha: string; migrations: NamedDestructive[] } | { ok: false; reason: string; file?: string }> {
+  if (!env.BUNDLES) return { ok: false, reason: "not_configured" };
+  if (!/^[0-9a-f]{40}$/.test(sha)) return { ok: false, reason: "invalid_commit_sha" };
+  try {
+    const manifest = await readManifest(env.BUNDLES, sha);
+    if (!manifest) return { ok: false, reason: "no_bundle" };
+    if (!manifest.migration_files) return { ok: false, reason: "migrations_unknown" };
+    const ledger = await appliedMigrations(env.DB);
+    if (!ledger) return { ok: false, reason: "d1_migrations_unreadable" };
+    const out: NamedDestructive[] = [];
+    for (const f of manifest.migration_files.filter((m) => !ledger.includes(m.file))) {
+      const r = await readMigration(env.BUNDLES, sha, f, true);
+      if ("reason" in r) return { ok: false, reason: r.reason, file: f.file };
+      if (r.destructive) out.push({ file: f.file, sha256: f.sha256 });
+    }
+    if (out.length > MAX_NAMED_DESTRUCTIVE) return { ok: false, reason: "too_many_destructive_migrations" };
+    return { ok: true, commit_sha: sha, migrations: out };
+  } catch {
+    return { ok: false, reason: "bundle_read_failed" };
+  }
+}
+
+/**
+ * Execute an owner-approved deploy_destructive_migration (critical: consensus, a Policy Engine allow, the owner's click,
+ * all re-verified by verifyConsensusExecution). Natively only: the commit is main's ready head, the Control Plane unit
+ * is eligible with exactly the named destructive files allowed (each with the sha256 the owner approved), and D1's
+ * Time Travel bookmark is readable now (CF_DEPLOY_TOKEN's D1 permission). Then one signed request is queued; the
+ * cron reads and records the bookmark again right before the first migration. Refusals change nothing and are audited
+ * (deployment.destructive_refused).
+ */
+export async function deployDestructiveForConsensus(env: Env, proposalId: string, decisionId: string, target: string, params: Record<string, unknown>, fetcher: typeof fetch = fetch): Promise<Record<string, unknown>> {
+  await verifyConsensusExecution(env.DB, proposalId, decisionId, DESTRUCTIVE_DEPLOY_ACTION, target);
+  const d = destructiveDeployParams(params);
+  if ("problem" in d) throw new Error(`invalid_params: ${d.problem}`);
+  const unit = unitForService(target);
+  if (!unit || unit.unit !== d.unit) throw new Error("not_a_control_plane_worker");
+  if (!env.DEPLOYMENT_LOCK || !nativeDeployConfigured(env)) throw new Error("native_deploy_not_configured");
+  const sha = d.commit_sha;
+  const named = d.destructive_migrations.map((m) => m.file);
+  const actor = `consensus:${proposalId}`;
+  const key = destructiveRequestKey(unit, sha, proposalId);
+  const prior = await env.DB.prepare("SELECT request_id FROM deployment_requests WHERE idempotency_key = ? AND requested_by = ? ORDER BY created_at DESC LIMIT 1")
+    .bind(key, actor).first<{ request_id: string }>();
+  if (prior) return { dispatched: false, reason: "already_dispatched", executor: DESTRUCTIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha, request_id: prior.request_id };
+  const refuse = async (reason: string, extra: Record<string, unknown> = {}): Promise<never> => {
+    await appendAuditEvent(env.DB, {
+      event_type: "deployment.destructive_refused", actor, subject: target, outcome: "refused",
+      payload: { proposal_id: proposalId, policy_decision_id: decisionId, unit: unit.unit, commit_sha: sha, destructive_migrations: named, reason, ...extra },
+    });
+    throw new Error(`destructive_deploy_refused: ${reason}`);
+  };
+  try { await forgeDecision(env, sha); } catch (err) { return refuse(String((err as Error)?.message ?? err).slice(0, 120)); }
+  const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
+  const choice = await nativeDeployEligible(env, unit, sha, cf, { ...gate4Eligibility(env), destructive: named });
+  if (!choice.eligible) return refuse(choice.reason, { ...(choice.service ? { service: choice.service } : {}), ...(choice.file ? { file: choice.file } : {}) });
+  const mismatch = namedMismatch(choice.migrations, d.destructive_migrations);
+  if (mismatch) return refuse(mismatch.reason, { file: mismatch.file });
+  // Preflight: the bookmark must be readable before anything is queued (the recorded one is read again at run time).
+  try { await restorePointReader(env, cf, fetcher)(); } catch (err) {
+    return refuse("restore_point_unavailable", { error: String((err as Error)?.message ?? err).slice(0, 200), permission: D1_BOOKMARK_PERMISSION });
+  }
+  const lockName = destructiveLockName(unit, sha);
+  const lockResponse = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(lockName))
+    .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
+  const lock = await lockResponse.json() as { claimed?: boolean };
+  if (!lockResponse.ok || !lock.claimed) return refuse("deploy_lock_held", { lock: lockName });
+  const requestId = "dep_" + crypto.randomUUID();
+  const at = new Date().toISOString();
+  const row: NativeSignedRow = { request_id: requestId, service_id: target, requested_version: sha, requested_by: actor, approval_id: proposalId, idempotency_key: key, created_at: at };
+  try {
+    await insertSignedNativeRequest(env, NATIVE_EXECUTORS[DESTRUCTIVE_DEPLOY_EXECUTOR], row, {
+      executor: DESTRUCTIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: sha, version_tag: sha.slice(0, 12), services: [...unit.services],
+      proposal_id: proposalId, policy_decision_id: decisionId, destructive_migrations: d.destructive_migrations,
+    });
+  } catch (err) {
+    await releaseLock(env, lockName, sha);
+    throw err;
+  }
+  await appendAuditEvent(env.DB, {
+    event_type: "deployment.destructive_deploy_queued", actor, subject: target, outcome: "approved",
+    payload: { request_id: requestId, executor: DESTRUCTIVE_DEPLOY_EXECUTOR, commit_sha: sha, unit: unit.unit, proposal_id: proposalId, policy_decision_id: decisionId,
+      running: choice.services.map((s) => `${s.service}@${s.running_tag}`), migrations: choice.migrations.map((m) => m.file), destructive_migrations: named },
+  });
+  return { dispatched: true, executor: DESTRUCTIVE_DEPLOY_EXECUTOR, request_id: requestId, unit: unit.unit, commit_sha: sha, migrations: choice.migrations.map((m) => m.file), destructive_migrations: named };
+}
+
+/**
+ * The owner hears of a destructive deploy that did not succeed: a refusal at run time (nothing changed) is a warning;
+ * a failure is a critical report (the consensus brake) naming the recorded bookmark and how to restore to it. D1 is
+ * never restored here: a restore overwrites the database for every service and is the owner's decision (OPERATIONS).
+ */
+async function reportDestructive(env: Env, r: NativeSignedRow, details: Record<string, unknown>, run: {
+  ok: false; refused: boolean; reason?: string; restored?: boolean; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point?: RestorePoint; production_changed?: boolean;
+}): Promise<void> {
+  const tag = r.requested_version.slice(0, 12);
+  const rp = run.restore_point ?? null;
+  const noBookmark = /^restore_point_unavailable/.test(run.reason ?? "");
+  const action = run.refused
+    ? "Nothing in production changed. The agents may propose the destructive deploy again for a newer commit."
+    : noBookmark
+      ? `The D1 Time Travel bookmark could not be read, so nothing in production changed. CF_DEPLOY_TOKEN needs ${D1_BOOKMARK_PERMISSION}.`
+      : !run.migrations_applied?.length && !run.migration_failed
+        ? `No D1 migration ran before the failure, so D1 is unchanged.${rp ? ` The bookmark read was ${rp.bookmark}.` : ""}`
+      : rp
+        ? `D1 restore point recorded before the first destructive migration: ${rp.bookmark} (database ${rp.database_id}, read ${rp.read_at}). It was not restored automatically. Fix forward, or the owner restores D1 with: ${restoreCommand(rp.bookmark)} (docs/OPERATIONS.md, step 3 of "Last resort"); then roll the Control Plane Workers back to versions from before the migration.`
+        : "No D1 change was made before the failure.";
+  await publishAgentReport(env.AGENTS, "deployment-orchestrator", {
+    kind: "platform_digest", severity: run.refused ? "warning" : "critical",
+    subject: `Destructive migration deploy of ${String(details.unit)} at ${tag} ${run.refused ? "was refused" : "failed"}`.slice(0, 200),
+    body: {
+      request_id: r.request_id, proposal_id: String(details.proposal_id ?? ""), unit: String(details.unit), commit_sha: r.requested_version,
+      destructive_migrations: Array.isArray(details.destructive_migrations) ? (details.destructive_migrations as NamedDestructive[]).map((m) => m.file) : [],
+      reason: run.reason ?? null, restored: run.restored ?? null, production_changed: run.production_changed ?? false,
+      migrations_applied: run.migrations_applied ?? [], migration_failed: run.migration_failed ?? null,
+      d1_restore_point: rp, d1_restore_command: rp ? restoreCommand(rp.bookmark) : null,
+      action_required: action, steps: run.steps.slice(0, 40),
+    },
+  });
+}
+
 /** Read-only: the newest dispatched run of one deploy (or rollback) workflow on one commit (for pipeline progress). */
 export async function runStatus(env: Env, workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }> {
   if (!(DEPLOY_UNITS.some((u) => u.workflow === workflow) || workflow === ROLLBACK_WORKFLOW) || !/^[0-9a-f]{40}$/.test(commitSha) || !env.GH_ACTIONS_TOKEN) return { found: false };
@@ -632,6 +790,12 @@ const NATIVE_EXECUTORS: Record<string, NativeExecutorSpec> = {
     queuePrefix: "cryptophys.break-glass.queue.v1|", claimPrefix: "cryptophys.break-glass.execution.v1|",
     maxAgeMs: NATIVE_DEPLOY_MAX_AGE_MS, succeededEvent: "deployment.break_glass_succeeded", failedEvent: "deployment.break_glass_failed",
   },
+  // Cut-over gate (owner 2026-11-15): an owner-approved deploy_destructive_migration (destructive D1 migrations, named).
+  [DESTRUCTIVE_DEPLOY_EXECUTOR]: {
+    executor: DESTRUCTIVE_DEPLOY_EXECUTOR, label: "destructive migration deploy", reasonPrefix: "destructive_deploy",
+    queuePrefix: "cryptophys.destructive-deploy.queue.v1|", claimPrefix: "cryptophys.destructive-deploy.execution.v1|",
+    maxAgeMs: NATIVE_DEPLOY_MAX_AGE_MS, succeededEvent: "deployment.destructive_deploy_succeeded", failedEvent: "deployment.destructive_deploy_failed",
+  },
   // ADR-0012 G6 gate 10: an owner-approved retire_worker, without retire-worker.yml.
   [NATIVE_RETIRE_EXECUTOR]: {
     executor: NATIVE_RETIRE_EXECUTOR, label: "native retirement", reasonPrefix: "native_retire",
@@ -645,6 +809,7 @@ function executorSpecOf(details: Record<string, unknown> | null, raw: string): N
   if (named) return named;
   if (raw.includes('"executor":"' + NATIVE_RETIRE_EXECUTOR + '"')) return NATIVE_EXECUTORS[NATIVE_RETIRE_EXECUTOR];
   if (raw.includes('"executor":"' + BREAK_GLASS_EXECUTOR + '"')) return NATIVE_EXECUTORS[BREAK_GLASS_EXECUTOR];
+  if (raw.includes('"executor":"' + DESTRUCTIVE_DEPLOY_EXECUTOR + '"')) return NATIVE_EXECUTORS[DESTRUCTIVE_DEPLOY_EXECUTOR];
   return raw.includes('"executor":"' + NATIVE_DEPLOY_EXECUTOR + '"') ? NATIVE_EXECUTORS[NATIVE_DEPLOY_EXECUTOR] : NATIVE_EXECUTORS[NATIVE_EXECUTOR];
 }
 
@@ -736,8 +901,11 @@ async function failNativeRequest(env: Env, spec: NativeExecutorSpec, row: Native
   await env.DB.prepare("UPDATE deployment_requests SET status = 'failed', details_json = ?, updated_at = ? WHERE request_id = ? AND status IN ('approved', 'running')")
     .bind(JSON.stringify({ ...details, outcome: { reason } }), new Date(now).toISOString(), row.request_id).run();
   // A break-glass deploy's lock is freed when its request ends, so the owner can approve another plan for the commit.
-  const unit = spec.executor === BREAK_GLASS_EXECUTOR ? unitForService(row.service_id) : null;
-  if (unit && /^[0-9a-f]{40}$/.test(row.requested_version)) await releaseLock(env, breakGlassLockName(unit, row.requested_version), row.requested_version);
+  const unit = spec.executor === BREAK_GLASS_EXECUTOR || spec.executor === DESTRUCTIVE_DEPLOY_EXECUTOR ? unitForService(row.service_id) : null;
+  if (unit && /^[0-9a-f]{40}$/.test(row.requested_version)) {
+    // A destructive deploy's lock likewise: a later owner-approved proposal for the commit may run.
+    await releaseLock(env, spec.executor === BREAK_GLASS_EXECUTOR ? breakGlassLockName(unit, row.requested_version) : destructiveLockName(unit, row.requested_version), row.requested_version);
+  }
   await auditQuietly(env, {
     event_type: spec.failedEvent, actor: "agent:deployment-orchestrator", subject: row.service_id, outcome: "failed",
     payload: { request_id: row.request_id, executor: spec.executor, version_tag: String(row.requested_version ?? "").slice(0, 12), reason },
@@ -854,6 +1022,16 @@ function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, detail
         && details.destructive_topology.every((i) => typeof i === "string" && TOPOLOGY_ITEM.test(i))))
       && r.idempotency_key === breakGlassRequestKey(unit, r.requested_version, planId!);
   }
+  if (spec.executor === DESTRUCTIVE_DEPLOY_EXECUTOR) {
+    // Gate 2026-11-15: only an owner-approved consensus proposal, for the Control Plane, naming its destructive files.
+    const d = destructiveDeployParams({ commit_sha: details.commit_sha, unit: details.unit, destructive_migrations: details.destructive_migrations });
+    return fromProposal
+      && !("problem" in d)
+      && unit.unit === d.unit
+      && /^[0-9a-f]{40}$/.test(r.requested_version)
+      && details.commit_sha === r.requested_version
+      && r.idempotency_key === destructiveRequestKey(unit, r.requested_version, proposalId!);
+  }
   if (spec.executor === NATIVE_DEPLOY_EXECUTOR) {
     // G2c-1: a recovery plan's redeploy is keyed like its workflow lock (recovery:<workflow>:<sha>).
     return (fromProposal || fromPlan)
@@ -955,7 +1133,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       continue;
     }
     const isBreakGlass = spec.executor === BREAK_GLASS_EXECUTOR;
-    const isDeploy = spec.executor === NATIVE_DEPLOY_EXECUTOR || isBreakGlass;
+    const isDestructive = spec.executor === DESTRUCTIVE_DEPLOY_EXECUTOR;
+    const isDeploy = spec.executor === NATIVE_DEPLOY_EXECUTOR || isBreakGlass || isDestructive;
     const isRetire = spec.executor === NATIVE_RETIRE_EXECUTOR;
     if (isDeploy || isRetire ? !nativeDeployConfigured(env) : !nativeRollbackConfigured(env)) continue;
     // A deploy uploads and verifies every Worker of a unit; one per run keeps the cron within its time.
@@ -966,7 +1145,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     let plan: PlannedService[] = [];
     let migrations: PlannedMigration[] = [];
     const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN, env.CF_ACCOUNT_ID!, fetcher);
-    const named = isBreakGlass ? (details.destructive_migrations as string[]) : [];
+    const approved = isDestructive ? (details.destructive_migrations as NamedDestructive[]) : [];
+    const named = isBreakGlass ? (details.destructive_migrations as string[]) : approved.map((m) => m.file);
     const namedTopology = isBreakGlass ? ((details.destructive_topology as string[] | undefined) ?? []) : [];
     if (isBreakGlass) {
       // Hardening (d): main's head (from the Forge's checks, not the planner), its readiness, the Workers' plan and
@@ -991,15 +1171,22 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
         if (head.sha !== r.requested_version) refusal = "commit_not_current_main";
         else if (!(await forgeReady(env.DB, r.requested_version)).ready) refusal = "ci_not_green";
         else {
-          const e = await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, gate4Eligibility(env));
-          if (e.eligible) { plan = e.services; migrations = e.migrations; }
-          else refusal = "not_eligible: " + e.reason + (e.service ? " (" + e.service + ")" : "");
+          // Gate 4 part A: the deploy-time values are checked on the planned path (a destructive deploy included).
+          // Gate 2026-11-15: a destructive deploy plans with exactly the owner-approved files allowed, each with its SQL.
+          const e = isDestructive
+            ? await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, { ...gate4Eligibility(env), destructive: named })
+            : await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, gate4Eligibility(env));
+          const changed = e.eligible && isDestructive ? namedMismatch(e.migrations, approved) : null;
+          if (changed) refusal = "not_eligible: " + changed.reason + " (" + changed.file + ")";
+          else if (e.eligible) { plan = e.services; migrations = e.migrations; }
+          else refusal = "not_eligible: " + e.reason + (e.service ? " (" + e.service + ")" : "") + (isDestructive && e.file ? " (" + e.file + ")" : "");
         }
       } catch (err) {
         refusal = "forge_unavailable: " + String((err as Error)?.message ?? err).slice(0, 100);
       }
       if (refusal) {
         await failNativeRequest(env, spec, r, details, refusal, now);
+        if (isDestructive) await reportDestructive(env, r, details, { ok: false, refused: true, reason: refusal, steps: [] });
         continue;
       }
     }
@@ -1043,16 +1230,21 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     }
 
     executed++;
-    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; settings_applied?: string[]; changed?: boolean;
+    let run: { ok: boolean; reason?: string; restored?: boolean; service?: string; steps: string[]; migrations_applied?: string[]; migration_failed?: string; restore_point_at?: string; restore_point?: RestorePoint; settings_applied?: string[]; changed?: boolean; production_changed?: boolean;
       topology_applied?: string[]; do_migrations?: string[]; destructive_topology_applied?: string[]; irreversible?: string[] };
     if (isDeploy) {
       deploysRun++;
-      // Gate 4 part A: the deploy-time values and the smoke tests through Access, on the planned path. The break-glass
-      // deploy (recovery-deploy.ts, the owner's last resort) keeps its own rules unchanged. Gate 4 part B: it also
-      // applies the destructive topology its approved plan names (namedTopology is empty on the planned path).
+      // Gate 4 part A: the deploy-time values and the smoke tests through Access, on the planned path (routine and
+      // owner-approved destructive deploys). The break-glass deploy (recovery-deploy.ts, the owner's last resort) keeps
+      // its own rules unchanged. Gate 4 part B: it also applies the destructive topology its approved plan names
+      // (namedTopology is empty on the planned path). A destructive migration (break-glass named, or an owner-approved
+      // deploy_destructive_migration) runs only after D1's Time Travel bookmark is read and recorded
+      // (executeNativeDeploy); a routine deploy names none.
       run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, {
         ...opts, migrations,
         ...(isBreakGlass ? { destructive: named } : { ...gate4Eligibility(env), ...gate4Smoke(env, fetcher, opts.delayMs) }),
+        ...(isDestructive ? { destructive: named } : {}),
+        ...(isBreakGlass || isDestructive ? { restorePoint: restorePointReader(env, cf, fetcher) } : {}),
         destructiveTopology: namedTopology,
       });
     } else if (isRetire) {
@@ -1063,11 +1255,12 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
     if (run.ok) succeeded++;
     const status = run.ok ? "succeeded" : "failed";
     await env.DB.prepare("UPDATE deployment_requests SET status = ?, details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'running'")
-      .bind(status, JSON.stringify({ ...details, outcome: run }), new Date().toISOString(), r.request_id).run();
+      .bind(status, JSON.stringify({ ...details, ...(run.restore_point ? { restore_point: run.restore_point } : {}), outcome: run }), new Date().toISOString(), r.request_id).run();
     await auditQuietly(env, {
       event_type: run.ok ? spec.succeededEvent : spec.failedEvent, actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
       payload: isDeploy
-        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named, ...(namedTopology.length ? { destructive_topology: namedTopology } : {}) } : {}), ...run }
+        ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named, ...(namedTopology.length ? { destructive_topology: namedTopology } : {}) } : {}),
+          ...(isDestructive ? { proposal_id: String(details.proposal_id), destructive_migrations: named } : {}), ...run }
         : isRetire
           ? { request_id: r.request_id, executor: spec.executor, worker: r.service_id, proposal_id: String(details.proposal_id), ...run }
           : { request_id: r.request_id, executor: spec.executor, version_tag: r.requested_version, ...run },
@@ -1079,9 +1272,13 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       await reportBreakGlass(env.AGENTS, {
         request_id: r.request_id, plan_id: String(details.plan_id), unit: String(details.unit), commit_sha: r.requested_version, outcome: run.ok ? "succeeded" : "failed",
         reason: run.reason ?? null, restored: run.restored, migrations_applied: run.migrations_applied, migration_failed: run.migration_failed ?? null,
-        restore_point_at: run.restore_point_at ?? null, steps: run.steps,
+        restore_point_at: run.restore_point_at ?? null, restore_point: run.restore_point ?? null, steps: run.steps,
         destructive_topology_applied: run.destructive_topology_applied, irreversible: run.irreversible,
       });
+    } else if (isDestructive) {
+      // The lock is freed for a later proposal; a failure is a critical report naming the bookmark (no auto-restore).
+      await releaseLock(env, destructiveLockName(unitForService(r.service_id)!, r.requested_version), r.requested_version);
+      if (!run.ok) await reportDestructive(env, r, details, { ...run, ok: false, refused: false });
     } else if (isRetire) {
       if (!run.ok) {
         await publishRetireReport(env, r, details, { ok: false, reason: run.reason, changed: run.changed === true, steps: run.steps });
@@ -1371,7 +1568,7 @@ export function presentDeploymentRequest(r: Record<string, unknown>) {
   return {
     request_id: r.request_id, service_id: r.service_id, version: r.requested_version, status: r.status,
     requested_by: r.requested_by, origin: deploymentOrigin(r.requested_by as string),
-    workflow: text(d.workflow) ?? (d.executor === NATIVE_DEPLOY_EXECUTOR ? "native deploy" : d.executor === NATIVE_RETIRE_EXECUTOR ? "native retirement" : d.executor ? "native rollback" : null),
+    workflow: text(d.workflow) ?? (d.executor === NATIVE_DEPLOY_EXECUTOR ? "native deploy" : d.executor === DESTRUCTIVE_DEPLOY_EXECUTOR ? "destructive migration deploy" : d.executor === NATIVE_RETIRE_EXECUTOR ? "native retirement" : d.executor ? "native rollback" : null),
     proposal_id: text(d.proposal_id), run_url: runUrl?.startsWith("https://github.com/") ? runUrl : null,
     note: text(outcome.reason) ?? text(outcome.conclusion),
     created_at: r.created_at, updated_at: r.updated_at,

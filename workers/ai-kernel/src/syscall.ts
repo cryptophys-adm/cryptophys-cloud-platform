@@ -41,6 +41,9 @@ export interface DeployRpcBinding {
   /** ADR-0012 G6 gate 9: the Access plan (read only) and an owner-approved change_access. */
   accessPlan?(): Promise<{ configured: boolean; ok: boolean; in_sync?: boolean; digest?: string; changes?: string[]; reason?: string }>;
   accessForConsensus?(proposalId: string, decisionId: string, digest: string): Promise<JsonObject>;
+  /** Gate 2026-11-15: the destructive D1 migrations a commit would apply (read only), and an owner-approved deploy of them. */
+  destructiveMigrations?(commitSha: string): Promise<{ ok: true; commit_sha: string; migrations: Array<{ file: string; sha256: string }> } | { ok: false; reason: string; file?: string }>;
+  deployDestructiveForConsensus?(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
 }
 
 export interface SyscallEnv extends BaseEnv {
