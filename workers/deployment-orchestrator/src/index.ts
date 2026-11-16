@@ -15,8 +15,8 @@ import { SmokeRunner, smokeToken } from "./native-smoke.ts";
 import { readIdentitySource, seedIdentitySource, type SeedOutcome } from "../../control-plane-shared/src/identity-source.ts";
 import { appliedMigrations, executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, readManifest, readMigration, type BundleReader, type DeployRun, type PlannedMigration, type PlannedService, type RestorePoint } from "./native-deploy.ts";
 import { readD1RestorePoint } from "./d1-restore-point.ts";
-import { IDENTITY_REDEPLOY, identityRedeployKey, identityRedeployParams, type IdentityDrift, type IdentityRedeployParams } from "../../control-plane-shared/src/identity-redeploy.ts";
-import { identityDriftOf, identityRedeployChoice } from "./identity-redeploy.ts";
+import { IDENTITY_REDEPLOY, identityAttemptOf, identityRedeployBase, identityRedeployKey, identityRedeployParams, type IdentityDrift, type IdentityRedeployParams } from "../../control-plane-shared/src/identity-redeploy.ts";
+import { identityDriftOf, identityRedeployAttempt, identityRedeployChoice } from "./identity-redeploy.ts";
 import { D1_BOOKMARK_PERMISSION, DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployParams, restoreCommand, type NamedDestructive } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { MAX_NAMED_DESTRUCTIVE } from "../../control-plane-shared/src/break-glass.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
@@ -338,29 +338,40 @@ export async function identityDrift(env: Env, fetcher: typeof fetch = fetch): Pr
  * A passed deploy_commit with `redeploy: "identity_vars"`: the unit again at the commit it runs, so the native deploy
  * writes the owner-saved identity lists. Native only (the GitHub workflow builds the lists from ACCESS_ALLOWED_EMAILS,
  * not from the table). Checked here and again by the executor (identityRedeployChoice): an owner-saved row at exactly
- * this revision, the unit's running commit, the native plan without a migration, and at least one value that differs.
- * One request per unit, commit and revision (its lock and idempotency key name the revision); a refusal is audited.
+ * this revision and CI token, the unit's running commit, the native plan without a migration, and at least one value
+ * that differs. Each attempt has its own lock and idempotency key (revision, token hash, attempt number); a retry is
+ * queued only after a failed and restored attempt, at most IDENTITY_REDEPLOY_RETRIES times (identityRedeployAttempt).
+ * A refusal is audited.
  */
 async function identityRedeployForConsensus(env: Env, proposalId: string, decisionId: string, target: string, unit: DeployUnit, p: IdentityRedeployParams): Promise<Record<string, unknown>> {
   if (p.unit !== unit.unit) throw new Error("identity_redeploy_unit_mismatch");
   if (!nativeDeployConfigured(env) || !env.DEPLOYMENT_LOCK) throw new Error("identity_redeploy_native_only");
   const actor = `consensus:${proposalId}`;
   const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!);
-  const c = await identityRedeployChoice({ DB: env.DB, BUNDLES: env.BUNDLES }, unit, p.commit_sha, p.revision, cf, await gate4Deploy(env));
-  if (!c.ok) {
+  const c = await identityRedeployChoice({ DB: env.DB, BUNDLES: env.BUNDLES }, unit, p.commit_sha, p.revision, p.client, cf, await gate4Deploy(env));
+  let refusal: { reason: string; service?: string } | null = c.ok ? null : { reason: c.reason, ...(c.service ? { service: c.service } : {}) };
+  let attempt = 0;
+  if (c.ok) {
+    const next = await identityRedeployAttempt(env.DB, target, identityRedeployBase(unit.workflow, p.commit_sha, p.revision, p.client));
+    if ("reason" in next) refusal = { reason: next.reason };
+    else attempt = next.attempt;
+  }
+  if (refusal || !c.ok) {
+    const r = refusal ?? { reason: "identity_redeploy_refused" };
     await appendAuditEvent(env.DB, {
       event_type: "deployment.identity_redeploy_refused", actor, subject: target, outcome: "refused",
-      payload: { proposal_id: proposalId, unit: unit.unit, commit_sha: p.commit_sha, identity_revision: p.revision, reason: c.reason, ...(c.service ? { service: c.service } : {}) },
+      payload: { proposal_id: proposalId, unit: unit.unit, commit_sha: p.commit_sha, identity_revision: p.revision, identity_client: p.client, ...r },
     }).catch(() => undefined);
-    throw new Error(c.reason);
+    throw new Error(r.reason);
   }
-  const key = identityRedeployKey(unit.workflow, p.commit_sha, p.revision);
+  const key = identityRedeployKey(unit.workflow, p.commit_sha, p.revision, p.client, attempt);
   const lock = await env.DEPLOYMENT_LOCK.get(env.DEPLOYMENT_LOCK.idFromName(key))
     .fetch("https://lock.internal/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sha: p.commit_sha }) });
   const claimed = await lock.json() as { claimed?: boolean };
-  if (!lock.ok || !claimed.claimed) return { dispatched: false, reason: "already_dispatched", executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: p.commit_sha, identity_revision: p.revision };
+  if (!lock.ok || !claimed.claimed) return { dispatched: false, reason: "already_dispatched", executor: NATIVE_DEPLOY_EXECUTOR, unit: unit.unit, commit_sha: p.commit_sha, identity_revision: p.revision, identity_attempt: attempt };
+  const details = { redeploy: IDENTITY_REDEPLOY, identity_revision: p.revision, identity_client: p.client, identity_attempt: attempt };
   return queueNativeDeploy(env, { proposal_id: proposalId, policy_decision_id: decisionId }, target, unit, p.commit_sha, { eligible: true, services: c.services, migrations: [] }, key, {
-    key, details: { redeploy: IDENTITY_REDEPLOY, identity_revision: p.revision }, audit: { redeploy: IDENTITY_REDEPLOY, identity_revision: p.revision, identity_vars_changed: c.changed },
+    key, details, audit: { ...details, identity_vars_changed: c.changed },
   });
 }
 
@@ -1108,10 +1119,11 @@ function nativeRequestValid(spec: NativeExecutorSpec, r: NativeSignedRow, detail
     // Owner 2026-11-16: an identity redeploy comes only from a consensus proposal, keyed by its revision.
     const identity = identityRedeployParams(details);
     if (identity) {
-      return !("problem" in identity) && fromProposal
+      const attempt = identityAttemptOf(details);
+      return !("problem" in identity) && fromProposal && attempt !== null
         && identity.commit_sha === r.requested_version
         && identity.unit === unit.unit
-        && r.idempotency_key === identityRedeployKey(unit.workflow, r.requested_version, identity.revision);
+        && r.idempotency_key === identityRedeployKey(unit.workflow, r.requested_version, identity.revision, identity.client, attempt);
     }
     // G2c-1: a recovery plan's redeploy is keyed like its workflow lock (recovery:<workflow>:<sha>).
     return (fromProposal || fromPlan)
@@ -1253,7 +1265,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       if ("problem" in identity) refusal = "refused: " + identity.problem;
       else {
         try {
-          const c = await identityRedeployChoice({ DB: env.DB, BUNDLES: env.BUNDLES }, unitForService(r.service_id)!, r.requested_version, identity.revision, cf, await gate4Deploy(env));
+          const c = await identityRedeployChoice({ DB: env.DB, BUNDLES: env.BUNDLES }, unitForService(r.service_id)!, r.requested_version, identity.revision, identity.client, cf, await gate4Deploy(env));
           if (c.ok) plan = c.services;
           else refusal = "refused: " + c.reason + (c.service ? " (" + c.service + ")" : "");
         } catch (err) {
@@ -1360,7 +1372,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       event_type: run.ok ? spec.succeededEvent : spec.failedEvent, actor: "agent:deployment-orchestrator", subject: r.service_id, outcome: status,
       payload: isDeploy
         ? { request_id: r.request_id, executor: spec.executor, commit_sha: r.requested_version, unit: String(details.unit),
-          ...(details.redeploy === IDENTITY_REDEPLOY ? { proposal_id: String(details.proposal_id), redeploy: IDENTITY_REDEPLOY, identity_revision: details.identity_revision } : {}), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named, ...(namedTopology.length ? { destructive_topology: namedTopology } : {}) } : {}),
+          ...(details.redeploy === IDENTITY_REDEPLOY ? { proposal_id: String(details.proposal_id), redeploy: IDENTITY_REDEPLOY, identity_revision: details.identity_revision, identity_client: details.identity_client, identity_attempt: details.identity_attempt } : {}), ...(isBreakGlass ? { plan_id: String(details.plan_id), destructive_migrations: named, ...(namedTopology.length ? { destructive_topology: namedTopology } : {}) } : {}),
           ...(isDestructive ? { proposal_id: String(details.proposal_id), destructive_migrations: named } : {}), ...run }
         : isRetire
           ? { request_id: r.request_id, executor: spec.executor, worker: r.service_id, proposal_id: String(details.proposal_id), ...run }

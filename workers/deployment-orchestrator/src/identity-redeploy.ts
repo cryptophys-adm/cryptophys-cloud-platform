@@ -5,7 +5,9 @@
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { DEPLOY_UNITS, type DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { isIdentityVar } from "../../control-plane-shared/src/identity-source.ts";
-import type { IdentityDrift, IdentityDriftUnit } from "../../control-plane-shared/src/identity-redeploy.ts";
+import {
+  IDENTITY_REDEPLOY_RETRIES, identityClientHash, type IdentityDrift, type IdentityDriftUnit,
+} from "../../control-plane-shared/src/identity-redeploy.ts";
 import { DEPLOY_VARS, type DeployVarReference } from "./deploy-vars.ts";
 import { manifestForTag, nativeDeployEligible, type BundleReader, type PlannedService, type VersionReader } from "./native-deploy.ts";
 
@@ -40,23 +42,50 @@ export type IdentityRedeployChoice =
   | { ok: false; reason: string; service?: string };
 
 /**
+ * The next attempt's number for one identity (unit, commit, revision, CI token), from the requests already queued for it
+ * (their keys start with identityRedeployBase). Refused while an earlier attempt is queued or running
+ * (`identity_redeploy_in_progress`) or after one succeeded (`identity_redeploy_done`), after a failure that did not
+ * restore production or that the executor refused (`identity_redeploy_not_restored`: never retried automatically), and
+ * beyond IDENTITY_REDEPLOY_RETRIES (`identity_redeploy_retries_exhausted`).
+ */
+export async function identityRedeployAttempt(db: D1Database, target: string, base: string): Promise<{ attempt: number } | { reason: string }> {
+  const rows = (await db.prepare(
+    "SELECT status, json_extract(details_json, '$.outcome.restored') AS restored FROM deployment_requests WHERE service_id = ? AND substr(idempotency_key, 1, ?) = ?",
+  ).bind(target, base.length + 1, `${base}:`).all<{ status: string; restored: number | boolean | null }>()).results ?? [];
+  if (rows.some((r) => r.status === "approved" || r.status === "running")) return { reason: "identity_redeploy_in_progress" };
+  if (rows.some((r) => r.status === "succeeded")) return { reason: "identity_redeploy_done" };
+  if (rows.some((r) => !(r.restored === 1 || r.restored === true))) return { reason: "identity_redeploy_not_restored" };
+  if (rows.length > IDENTITY_REDEPLOY_RETRIES) return { reason: "identity_redeploy_retries_exhausted" };
+  return { attempt: rows.length + 1 };
+}
+
+/** identityClientHash of the CI Client ID gate 4 holds; null without one. */
+export async function ciClientHash(gate4: { deployVars?: DeployVarReference }): Promise<string | null> {
+  const id = gate4.deployVars?.CI_CLIENT_ID;
+  return id ? identityClientHash(id) : null;
+}
+
+/**
  * Whether `unit` may be redeployed at `sha` for identity revision `revision`, with the plan the native deploy runs.
  * `gate4` is the Orchestrator's gate 4 reference with the identity source read now (index.ts gate4Deploy). Refused:
  *   - `access_service_token_not_set`: gate 4 is off, so no deploy writes the identity lists;
  *   - `identity_source_<status>`: the row is not owner-saved (absent, seed, invalid, unreadable): nothing is written
  *     from it, so nothing is redeployed;
  *   - `identity_revision_moved`: the owner saved another revision since the proposal (that one has its own);
+ *   - `identity_ci_token_moved`: the Orchestrator holds another CI service token than the proposal names (that one has
+ *     its own);
  *   - `identity_redeploy_not_running_commit` (or the running commit's reason): the unit runs another commit now;
  *   - `not_eligible: <reason>`: the native deploy at that commit is not possible (every check of native-deploy.ts);
  *   - `identity_redeploy_migrations`: the plan would apply a D1 migration (a redeploy never does);
  *   - `identity_vars_match`: every Worker already carries the expected values (nothing to do).
  */
-export async function identityRedeployChoice(deps: IdentityRedeployDeps, unit: DeployUnit, sha: string, revision: number, cf: VersionReader,
+export async function identityRedeployChoice(deps: IdentityRedeployDeps, unit: DeployUnit, sha: string, revision: number, client: string, cf: VersionReader,
   gate4: { deployVars?: DeployVarReference }): Promise<IdentityRedeployChoice> {
   if (!gate4.deployVars) return { ok: false, reason: "access_service_token_not_set" };
   const source = gate4.deployVars.IDENTITIES;
   if (!source || source.status !== "owner") return { ok: false, reason: `identity_source_${source?.status ?? "absent"}` };
   if (source.revision !== revision) return { ok: false, reason: "identity_revision_moved" };
+  if ((await ciClientHash(gate4)) !== client) return { ok: false, reason: "identity_ci_token_moved" };
   if (!carriesIdentities(unit)) return { ok: false, reason: "identity_vars_none" };
   const running = await runningCommit(deps, unit);
   if ("reason" in running) return { ok: false, reason: running.reason };
@@ -79,16 +108,18 @@ export async function identityDriftOf(deps: IdentityRedeployDeps, cf: VersionRea
     const source = gate4.deployVars?.IDENTITIES;
     const status = source?.status ?? "absent";
     const revision = source?.status === "owner" ? source.revision : null;
-    const base = { ok: true as const, source: status, revision, units: [] as IdentityDriftUnit[], skipped: [] as Array<{ unit: string; reason: string }> };
+    const client = await ciClientHash(gate4);
+    const base = { ok: true as const, source: status, revision, client, units: [] as IdentityDriftUnit[], skipped: [] as Array<{ unit: string; reason: string }> };
     if (!gate4.deployVars) return { ...base, reason: "access_service_token_not_set" };
     if (!source || source.status !== "owner") {
       return { ...base, reason: source?.status === "invalid" ? `identity_source_invalid: ${source.reason}` : `identity_source_${status}` };
     }
+    if (!client) return { ...base, reason: "access_service_token_not_set" };
     for (const unit of DEPLOY_UNITS) {
       if (!carriesIdentities(unit)) continue;
       const running = await runningCommit(deps, unit);
       if ("reason" in running) { base.skipped.push({ unit: unit.unit, reason: running.reason }); continue; }
-      const c = await identityRedeployChoice(deps, unit, running.sha, source.revision, cf, gate4);
+      const c = await identityRedeployChoice(deps, unit, running.sha, source.revision, client, cf, gate4);
       if (!c.ok) {
         if (c.reason !== "identity_vars_match") base.skipped.push({ unit: unit.unit, reason: `${c.reason}${c.service ? ` (${c.service})` : ""}`.slice(0, 120) });
         continue;

@@ -128,6 +128,19 @@ export function describeAction(action: string, target?: string | null): string {
   return target ? `${verb} ${target.startsWith("cryptophys-") || target.startsWith("xauusd-") ? serviceName(target) : target}` : verb;
 }
 
+/**
+ * A proposal in plain English, from its params where they change what it does. Owner 2026-11-16: a deploy_commit with
+ * `redeploy: "identity_vars"` (identity-redeploy.ts) deploys no new code, so it is not "deploy the latest code to".
+ */
+export function describeProposal(action: string, target?: string | null, params?: Record<string, unknown> | null): string {
+  if (action === "deploy_commit" && params?.redeploy === "identity_vars") {
+    const unit = typeof params.unit === "string" && params.unit ? params.unit : target ? (target.startsWith("cryptophys-") ? serviceName(target) : target) : "the unit";
+    const rev = typeof params.identity_revision === "number" ? ` (revision ${params.identity_revision})` : "";
+    return `Redeploy ${unit} at its running commit to apply the identity lists${rev}`;
+  }
+  return describeAction(action, target);
+}
+
 /** "deploy_commit:cryptophys-x" style resources. */
 export function describeResource(resource: string): string {
   const i = resource.indexOf(":");

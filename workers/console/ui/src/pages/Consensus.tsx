@@ -5,7 +5,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
-import { describeAction, explainReason } from "../lib/plain";
+import { describeProposal, explainReason } from "../lib/plain";
 import { ownerClickMode } from "../lib/consensus";
 
 /** Proposal outcomes in the validated segment order (good, info, warning, owner, serious, critical, neutral). */
@@ -44,7 +44,7 @@ function Votes({ p }: { p: any }) {
   const votes = listOf(data, "votes");
   return (
     <div className="space-y-2 py-1">
-      <div className="text-[12px] text-slate-200">Proposal: {describeAction(p.action, p.target)}.</div>
+      <div className="text-[12px] text-slate-200">Proposal: {describeProposal(p.action, p.target, p.params)}.</div>
       <div className="text-[11px] text-slate-500">proposed by <span className="mono">{p.proposer_agent_id}</span>{p.evidence?.policy_reason ? <> · {explainReason(p.evidence.policy_reason)}</> : null}</div>
       {loading && !data ? <Skeleton rows={3} /> : <DataTable rows={votes} columns={VOTE_COLS} rowKey={(v) => v.voter_agent_id} maxHeight={260} dense empty="No votes recorded." />}
     </div>

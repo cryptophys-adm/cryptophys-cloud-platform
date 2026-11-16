@@ -18,7 +18,10 @@ import { verifyAuditChain } from "../src/audit.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import { deployStall } from "../src/deploy-stall.ts";
-import { IDENTITY_REDEPLOY, identityRedeployKey, identityRedeployParams } from "../src/identity-redeploy.ts";
+import {
+  IDENTITY_REDEPLOY, IDENTITY_REDEPLOY_RETRIES, IDENTITY_REDEPLOY_RETRY_AFTER_MS, identityAttemptOf, identityClientHash, identityRedeployKey, identityRedeployParams,
+} from "../src/identity-redeploy.ts";
+import { describeAction, describeProposal } from "../src/plain.ts";
 import { storeBundles, type BuiltModule, type BundleBucket } from "../../forge/src/bundles.ts";
 import registry from "../../platform-registry/src/index.ts";
 import { recordNativeDeploy, recordRollback } from "../../platform-registry/src/index.ts";
@@ -27,7 +30,7 @@ import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import { DeploymentLock, deployForConsensus, identityDrift, pendingDeploys, runNativeExecutors, seedIdentities } from "../../deployment-orchestrator/src/index.ts";
 import { DEPLOY_VARS } from "../../deployment-orchestrator/src/deploy-vars.ts";
 import { SAFE_MINUTES } from "../../deployment-orchestrator/src/native-rollback.ts";
-import { runCycle } from "../../ai-kernel/src/supervisor.ts";
+import { DEPLOY_RETRIES_PER_COMMIT, DEPLOY_RETRY_AFTER_MS, runCycle } from "../../ai-kernel/src/supervisor.ts";
 
 type Db = ReturnType<typeof migratedDb>;
 const ROOT = new URL("../../../", import.meta.url);
@@ -38,6 +41,9 @@ const ACCOUNT = "a".repeat(32);
 const AUD = "f".repeat(64);
 const TEAM = "cryptophys.cloudflareaccess.com";
 const CLIENT = "ci0123456789abcdef.access";
+const HASH = await identityClientHash(CLIENT);
+/** A rotated CI service token (owner 2026-11-16: the redeploy follows it, once per unit, for the same revision). */
+const ROTATED = "ci-rotated-0001.access";
 const SECRET = "s3cr3t-value";
 const SUBDOMAIN = "cryptophys";
 /** The commit every unit runs, and main's head (a docs-only commit: no unit is pending). */
@@ -121,7 +127,7 @@ function fakeCloud(emails: (service: string) => string[]) {
     const host = /^https:\/\/([a-z0-9-]+)\.cryptophys\.workers\.dev(\/.*)$/.exec(url);
     if (host) {
       calls.push(`probe ${host[1]}${host[2]}`);
-      if (headers.get("CF-Access-Client-Id") !== CLIENT || headers.get("CF-Access-Client-Secret") !== SECRET) return reply(302);
+      if (headers.get("CF-Access-Client-Id") !== cloud.client || headers.get("CF-Access-Client-Secret") !== SECRET) return reply(302);
       const name = host[1] === PLATFORM_API ? "cryptophys-cloud-platform" : host[1];
       if (host[2] === "/health") return reply(200, { status: "ok", service: name, environment: "production", contract_version: "v1", version: { id: "v", tag: RUN_TAG } });
       if (host[2] === "/ready") return reply(200, { status: "ready", service: name, production_ready: true, checks: { a: true } });
@@ -167,7 +173,8 @@ function fakeCloud(emails: (service: string) => string[]) {
     scripts.get(svc)!.versions.set(id, { bindings: productionBindings(svc, list) });
     scripts.get(svc)!.active = [{ version_id: id, percentage: 100 }];
   };
-  return { fetcher, uploads, calls, scripts, live, liveText, dashboardEdit };
+  const cloud = { fetcher, uploads, calls, scripts, live, liveText, dashboardEdit, client: CLIENT };
+  return cloud;
 }
 type Cloud = ReturnType<typeof fakeCloud>;
 
@@ -265,7 +272,7 @@ function passedProposal(db: Db, target: string, params: Record<string, unknown>)
     .run(decision, `deploy_commit:${target}`, at);
   return { proposal, decision };
 }
-const identityParams = (unit: string, revision: number, sha = RUN) => ({ commit_sha: sha, unit, workflow: DEPLOY_UNITS.find((u) => u.unit === unit)!.workflow, reason: "test", redeploy: IDENTITY_REDEPLOY, identity_revision: revision });
+const identityParams = (unit: string, revision: number, sha = RUN, client = HASH) => ({ commit_sha: sha, unit, workflow: DEPLOY_UNITS.find((u) => u.unit === unit)!.workflow, reason: "test", redeploy: IDENTITY_REDEPLOY, identity_revision: revision, identity_client: client });
 async function orchestrate<T>(w: World, f: () => Promise<T>): Promise<T> {
   globalThis.fetch = w.cloud.fetcher;
   try { return await f(); } finally { globalThis.fetch = realFetch; }
@@ -274,13 +281,18 @@ async function orchestrate<T>(w: World, f: () => Promise<T>): Promise<T> {
 // ================================================================= 1. the params, the key and the shared rules
 test("IR-1. the params are strict, the key names the revision, and an identity redeploy is no deploy of main for the stall alarm", async () => {
   assert.equal(identityRedeployParams({ commit_sha: RUN }), null, "a deploy of main names no redeploy");
-  assert.deepEqual(identityRedeployParams(identityParams("forge", 2)), { commit_sha: RUN, unit: "forge", revision: 2 });
+  assert.deepEqual(identityRedeployParams(identityParams("forge", 2)), { commit_sha: RUN, unit: "forge", revision: 2, client: HASH });
+  assert.match(HASH, /^[0-9a-f]{8}$/);
+  assert.deepEqual(identityRedeployParams({ ...identityParams("forge", 2), identity_client: CLIENT }), { problem: "identity_client_invalid" }, "a hash, never the Client ID");
+  assert.deepEqual([identityAttemptOf({ identity_attempt: 1 }), identityAttemptOf({ identity_attempt: 3 }), identityAttemptOf({ identity_attempt: 4 }), identityAttemptOf({})], [1, 3, null, null]);
+  // The retry rule is the main-deploy rule.
+  assert.deepEqual([IDENTITY_REDEPLOY_RETRIES, IDENTITY_REDEPLOY_RETRY_AFTER_MS], [DEPLOY_RETRIES_PER_COMMIT, DEPLOY_RETRY_AFTER_MS]);
   assert.deepEqual(identityRedeployParams({ ...identityParams("forge", 2), redeploy: "anything" }), { problem: "identity_redeploy_unknown" });
   assert.deepEqual(identityRedeployParams({ ...identityParams("forge", 2), identity_revision: 0 }), { problem: "identity_revision_invalid" });
   assert.deepEqual(identityRedeployParams({ ...identityParams("forge", 2), identity_revision: "2" }), { problem: "identity_revision_invalid" });
   assert.deepEqual(identityRedeployParams({ ...identityParams("forge", 2), commit_sha: RUN_TAG }), { problem: "invalid_commit_sha" });
-  assert.equal(identityRedeployKey("deploy-forge.yml", RUN, 3), `consensus:deploy-forge.yml:${RUN}:identities:3`);
-  assert.notEqual(identityRedeployKey("deploy-forge.yml", RUN, 3), `consensus:deploy-forge.yml:${RUN}`, "never the key of the commit's own deploy");
+  assert.equal(identityRedeployKey("deploy-forge.yml", RUN, 3, HASH, 1), `consensus:deploy-forge.yml:${RUN}:identities:3:${HASH}:1`);
+  assert.notEqual(identityRedeployKey("deploy-forge.yml", RUN, 3, HASH, 1), `consensus:deploy-forge.yml:${RUN}`, "never the key of the commit's own deploy");
   // The stall alarm counts deploys of main: an executed identity redeploy neither ends nor starts an episode.
   const db = migratedDb();
   const at = new Date().toISOString();
@@ -298,7 +310,7 @@ test("IR-1. the params are strict, the key names the revision, and an identity r
 test("IR-2. the seed changes nothing; after the owner saves a new list, each unit whose active values differ is found at its running commit (names only)", async () => {
   const w = await world({ current: ["deployment-orchestrator", "control-plane"] });
   let d = await identityDrift(w.orch as never, w.cloud.fetcher);
-  assert.deepEqual(d, { ok: true, source: "seed", revision: null, units: [], skipped: [], reason: "identity_source_seed" });
+  assert.deepEqual(d, { ok: true, source: "seed", revision: null, client: HASH, units: [], skipped: [], reason: "identity_source_seed" });
   assert.ok(!w.cloud.calls.length, "nothing is read from Cloudflare while the row is not owner-saved");
   const c0 = await cycle(w);
   assert.equal(deployProposals(w.db).length, 0, "the seed is never redeployed");
@@ -335,7 +347,7 @@ test("IR-3. the Supervisor proposes a deploy_commit of each drifted unit at its 
   // Queued for the native executor, keyed by the revision, with the signed redeploy details; GitHub is not involved.
   let rs = requests(w.db);
   assert.equal(rs.length, 1);
-  assert.deepEqual([rs[0].service_id, rs[0].requested_version, rs[0].status, rs[0].idempotency_key], [PLATFORM_API, RUN, "approved", identityRedeployKey("deploy-platform-api.yml", RUN, 2)]);
+  assert.deepEqual([rs[0].service_id, rs[0].requested_version, rs[0].status, rs[0].idempotency_key], [PLATFORM_API, RUN, "approved", identityRedeployKey("deploy-platform-api.yml", RUN, 2, HASH, 1)]);
   assert.deepEqual([rs[0].details.executor, rs[0].details.redeploy, rs[0].details.identity_revision, rs[0].details.commit_sha], ["native:deploy", "identity_vars", 2, RUN]);
   const queued = events(w.db, "deployment.native_deploy_queued");
   assert.deepEqual([queued[0].payload.redeploy, queued[0].payload.identity_revision, queued[0].payload.identity_vars_changed], ["identity_vars", 2, { [PLATFORM_API]: ["OPERATOR_IDENTITIES"] }]);
@@ -401,7 +413,7 @@ test("IR-5. no redeploy while the row is invalid: not detected, not proposed, re
   assert.equal((await orchestrate(w, () => deployForConsensus(w.orch as never, proposal, decision, FORGE, identityParams("forge", 2)))).dispatched, true);
   w.db.raw.prepare("UPDATE platform_identities SET approver_emails = 'Not An Email' WHERE id = 'access'").run();
   const d = await identityDrift(w.orch as never, w.cloud.fetcher);
-  assert.deepEqual(d, { ok: true, source: "invalid", revision: null, units: [], skipped: [], reason: "identity_source_invalid: identity_approver_emails_malformed" });
+  assert.deepEqual(d, { ok: true, source: "invalid", revision: null, client: HASH, units: [], skipped: [], reason: "identity_source_invalid: identity_approver_emails_malformed" });
   // The executor refuses the queued request: nothing is uploaded or deployed.
   assert.deepEqual(await execute(w), { executed: 0, succeeded: 0 });
   const [r] = requests(w.db);
@@ -433,9 +445,9 @@ test("IR-6. one redeploy per unit and revision, not a loop: a dashboard edit aft
   await cycle(w);
   await cycle(w);
   assert.equal(deployProposals(w.db).length, 1, "revision 2 is not redeployed twice");
-  // The Orchestrator's own guard: the same unit, commit and revision is queued once.
+  // The Orchestrator's own guard: after a succeeded attempt the same unit, commit, revision and token is never queued again.
   const p = passedProposal(w.db, PLATFORM_API, identityParams("platform-api", 2));
-  assert.deepEqual((await orchestrate(w, () => deployForConsensus(w.orch as never, p.proposal, p.decision, PLATFORM_API, identityParams("platform-api", 2)))).reason, "already_dispatched");
+  await assert.rejects(orchestrate(w, () => deployForConsensus(w.orch as never, p.proposal, p.decision, PLATFORM_API, identityParams("platform-api", 2))), /identity_redeploy_done/);
   w.db.raw.prepare("DELETE FROM consensus_proposals WHERE proposal_id = ?").run(p.proposal);
   // The owner saves again: revision 3 differs on every unit, so each is redeployed once, one per cycle, in deploy order.
   const r3 = await ownerSaves(w.db, [...NEW_EMAILS, "third@cryptophys.work"]);
@@ -550,9 +562,12 @@ test("IR-8. the executor checks again: a newer revision or another running commi
   const e = passedProposal(w.db, PLATFORM_API, { ...identityParams("platform-api", 3), identity_revision: "3" });
   await assert.rejects(orchestrate(w, () => deployForConsensus(w.orch as never, e.proposal, e.decision, PLATFORM_API, { ...identityParams("platform-api", 3), identity_revision: "3" })), /identity_revision_invalid/);
 
-  // Revision 3 was queued once (and refused): its lock stays taken, so it is never queued again.
+  // Revision 3 was queued once and refused by the executor (nothing restored, nothing changed): never retried.
   const again = passedProposal(w.db, PLATFORM_API, identityParams("platform-api", 3));
-  assert.equal((await orchestrate(w, () => deployForConsensus(w.orch as never, again.proposal, again.decision, PLATFORM_API, identityParams("platform-api", 3)))).reason, "already_dispatched");
+  await assert.rejects(orchestrate(w, () => deployForConsensus(w.orch as never, again.proposal, again.decision, PLATFORM_API, identityParams("platform-api", 3))), /identity_redeploy_not_restored/);
+  // A proposal naming another CI token than the Orchestrator holds is refused.
+  const other = passedProposal(w.db, PLATFORM_API, identityParams("platform-api", 3, RUN, "0badc0de"));
+  await assert.rejects(orchestrate(w, () => deployForConsensus(w.orch as never, other.proposal, other.decision, PLATFORM_API, identityParams("platform-api", 3, RUN, "0badc0de"))), /identity_ci_token_moved/);
 
   // A queued identity request whose key is not the revision's (or a deploy of main's key with redeploy details) is invalid.
   assert.equal(await ownerSaves(w.db, [...NEW_EMAILS, "fourth@cryptophys.work"]), 4);
@@ -574,4 +589,130 @@ test("IR-9. break-glass and rescue are unchanged; the docs say how an identity c
   assert.match(section.slice(0, 4000), /redeploy/i);
   assert.match(section.slice(0, 4000), /identity_vars/);
   assert.match(read("docs/SSOT.md"), /Last reviewed: 2026-11-16 \([^)]*redeploy for identities/);
+});
+
+// ================================================================= 10-14. owner 2026-11-16 ("sesuai rekomendasimu"): retries, the CI token, the label
+const HEALTHY = { probeService: async () => ({ reachable: true, healthy: true, version_tag: RUN_TAG, error: null }) };
+/** The live check fails after the upload: the executor restores every changed Worker (`restored: true`). */
+const UNHEALTHY = { probeService: async () => ({ reachable: true, healthy: false, version_tag: RUN_TAG, error: "unhealthy" }) };
+/** An hour and a minute later: the last attempt, the hourly limits and the propose window are behind us. */
+function later(db: Db) {
+  const t = new Date(Date.now() - 61 * 60_000).toISOString();
+  db.raw.prepare("UPDATE consensus_proposals SET created_at = ?, decided_at = ?").run(t, t);
+  db.raw.prepare("UPDATE agent_syscall_consumptions SET consumed_at = ?").run(t);
+}
+const identityDeploys = (db: Db, target = PLATFORM_API) => deployProposals(db).filter((p) => p.target === target && p.params.redeploy === IDENTITY_REDEPLOY);
+
+test("IR-10. a failed identity redeploy that restored production is retried an hour later with its own key, at most twice", async () => {
+  const w = await world({ current: ["deployment-orchestrator", "control-plane", "forge"] });
+  await ownerSaves(w.db, NEW_EMAILS);
+  w.orch.DRIFT = UNHEALTHY;
+  await cycle(w);
+  assert.deepEqual(await execute(w), { executed: 1, succeeded: 0 });
+  let rs = requests(w.db);
+  assert.deepEqual([rs[0].status, rs[0].details.outcome.restored, rs[0].details.identity_attempt], ["failed", true, 1]);
+  assert.equal(w.cloud.liveText(PLATFORM_API, "OPERATOR_IDENTITIES"), `${CLIENT},${OLD_EMAILS.join(",")}`, "restored");
+  // Not within the hour.
+  await cycle(w);
+  assert.equal(identityDeploys(w.db).length, 1);
+  later(w.db);
+  const retry = await cycle(w);
+  assert.equal(identityDeploys(w.db).length, 2);
+  assert.ok(identityFindings(retry).some((f) => /^retry 1 of 2: the identity redeploy failed and production was restored/.test(String(f.why))), JSON.stringify(identityFindings(retry)));
+  rs = requests(w.db);
+  assert.deepEqual([rs[1].idempotency_key, rs[1].details.identity_attempt, rs[1].details.identity_client], [identityRedeployKey("deploy-platform-api.yml", RUN, 2, HASH, 2), 2, HASH]);
+  w.orch.DRIFT = HEALTHY;
+  assert.deepEqual(await execute(w), { executed: 1, succeeded: 1 });
+  assert.equal(w.cloud.liveText(PLATFORM_API, "OPERATOR_IDENTITIES"), `${CLIENT},${NEW_EMAILS.join(",")}`);
+  assert.deepEqual(events(w.db, "deployment.native_deploy_succeeded").map((e) => [e.payload.identity_revision, e.payload.identity_attempt]), [[2, 2]]);
+  later(w.db);
+  await cycle(w);
+  assert.equal(identityDeploys(w.db).length, 2, "done: nothing more");
+
+  // Three failed and restored attempts: the first and two retries, then no more (the Supervisor and the Orchestrator).
+  const x = await world({ current: ["deployment-orchestrator", "control-plane", "forge"] });
+  await ownerSaves(x.db, NEW_EMAILS);
+  x.orch.DRIFT = UNHEALTHY;
+  for (let k = 0; k < 3; k++) {
+    await cycle(x);
+    assert.deepEqual(await execute(x), { executed: 1, succeeded: 0 });
+    later(x.db);
+  }
+  assert.deepEqual(requests(x.db).map((r) => r.details.identity_attempt), [1, 2, 3]);
+  await cycle(x);
+  assert.equal(identityDeploys(x.db).length, 1 + IDENTITY_REDEPLOY_RETRIES, "no fourth attempt");
+  const forced = passedProposal(x.db, PLATFORM_API, identityParams("platform-api", 2));
+  await assert.rejects(orchestrate(x, () => deployForConsensus(x.orch as never, forced.proposal, forced.decision, PLATFORM_API, identityParams("platform-api", 2))), /identity_redeploy_retries_exhausted/);
+});
+
+test("IR-11. a failure that did not restore production is never retried automatically", async () => {
+  const w = await world({ current: ["deployment-orchestrator", "control-plane", "forge"] });
+  await ownerSaves(w.db, NEW_EMAILS);
+  w.orch.DRIFT = UNHEALTHY;
+  await cycle(w);
+  assert.deepEqual(await execute(w), { executed: 1, succeeded: 0 });
+  // As when a restore fails (the Worker stays on the new version): the outcome says restored false.
+  w.db.raw.prepare("UPDATE deployment_requests SET details_json = json_set(details_json, '$.outcome.restored', json('false'))").run();
+  later(w.db);
+  await cycle(w);
+  await cycle(w);
+  assert.equal(identityDeploys(w.db).length, 1, "the owner decides");
+  const forced = passedProposal(w.db, PLATFORM_API, identityParams("platform-api", 2));
+  await assert.rejects(orchestrate(w, () => deployForConsensus(w.orch as never, forced.proposal, forced.decision, PLATFORM_API, identityParams("platform-api", 2))), /identity_redeploy_not_restored/);
+  assert.deepEqual(events(w.db, "deployment.identity_redeploy_refused").map((e) => e.payload.reason), ["identity_redeploy_not_restored"]);
+});
+
+test("IR-12. no retry under the brake: the restored failure waits for the critical report's acknowledgement", async () => {
+  const w = await world({ current: ["deployment-orchestrator", "control-plane", "forge"] });
+  await ownerSaves(w.db, NEW_EMAILS);
+  w.orch.DRIFT = UNHEALTHY;
+  await cycle(w);
+  assert.deepEqual(await execute(w), { executed: 1, succeeded: 0 });
+  later(w.db);
+  // The failed deploy's critical report holds the brake (the fake report channel does not write it; it is added here).
+  w.db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES ('rpt_ir12', 'deployment-orchestrator', 'platform_digest', 'critical', 'Identity redeploy of platform-api failed', '{}', 'not_used', NULL, ?)").run(new Date(Date.now() - 60_000).toISOString());
+  const braked = await cycle(w);
+  assert.equal(identityDeploys(w.db).length, 1);
+  assert.ok(identityFindings(braked).some((f) => /not checked while a critical report is open/.test(String(f.why))));
+  w.db.raw.prepare("INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at) VALUES ('rpt_ir12', ?, 'live check fixed', ?)").run(APPROVER_EMAIL, new Date().toISOString());
+  await cycle(w);
+  assert.equal(identityDeploys(w.db).length, 2, "retried once the brake is off");
+});
+
+test("IR-13. a rotated CI service token redeploys each unit once for the same revision; only a hash of the Client ID is stored", async () => {
+  const w = await world({ current: ["deployment-orchestrator", "control-plane", "forge"] });
+  await ownerSaves(w.db, NEW_EMAILS);
+  await cycle(w);
+  assert.deepEqual(await execute(w), { executed: 1, succeeded: 1 });
+  later(w.db);
+  await cycle(w);
+  assert.equal(deployProposals(w.db).length, 1);
+  // The owner rotates the token on the Orchestrator (and Access accepts the new one).
+  w.orch.CF_ACCESS_CLIENT_ID = ROTATED;
+  w.cloud.client = ROTATED;
+  const rotated = await identityClientHash(ROTATED);
+  assert.notEqual(rotated, HASH);
+  const d = await identityDrift(w.orch as never, w.cloud.fetcher);
+  assert.deepEqual(d.ok && [d.revision, d.client, d.units.map((u) => u.unit)], [2, rotated, ["deployment-orchestrator", "control-plane", "platform-api", "forge"]]);
+  for (let k = 0; k < 6; k++) { later(w.db); await cycle(w); }
+  const ps = deployProposals(w.db);
+  assert.deepEqual(ps.map((p) => [p.target, p.params.identity_revision, p.params.identity_client]), [
+    [PLATFORM_API, 2, HASH],
+    ["cryptophys-deployment-orchestrator", 2, rotated], ["cryptophys-policy-engine", 2, rotated], [PLATFORM_API, 2, rotated], [FORGE, 2, rotated],
+  ], "one new redeploy per unit, then nothing");
+  // The Orchestrator's deploy (the oldest queued) writes the new Client ID first and verifies it.
+  assert.deepEqual(await execute(w), { executed: 1, succeeded: 1 });
+  assert.equal(w.cloud.liveText("cryptophys-deployment-orchestrator", "OPERATOR_IDENTITIES"), `${ROTATED},${NEW_EMAILS.join(",")}`);
+  assert.equal(w.cloud.liveText("cryptophys-deployment-orchestrator", "DEPLOY_ALLOWED_IDENTITIES"), `${ROTATED},${NEW_EMAILS.join(",")}`);
+  const stored = JSON.stringify([deployProposals(w.db), requests(w.db), w.db.raw.prepare("SELECT payload_json FROM audit_events").all()]);
+  assert.ok(!stored.includes(ROTATED) && !stored.includes(CLIENT), "the Client ID is never stored in clear");
+});
+
+test("IR-14. the Console describes an identity redeploy as what it is, not as a deploy of the latest code", () => {
+  assert.equal(describeProposal("deploy_commit", PLATFORM_API, identityParams("platform-api", 2)), "Redeploy platform-api at its running commit to apply the identity lists (revision 2)");
+  assert.equal(describeProposal("deploy_commit", PLATFORM_API, { commit_sha: MAIN }), describeAction("deploy_commit", PLATFORM_API));
+  assert.equal(describeProposal("rollback_worker_version", PLATFORM_API, null), describeAction("rollback_worker_version", PLATFORM_API));
+  const page = read("workers/console/ui/src/pages/Consensus.tsx");
+  assert.match(page, /describeProposal\(p\.action, p\.target, p\.params\)/);
+  assert.match(read("workers/console/ui/src/lib/plain.ts"), /describeProposal/);
 });
