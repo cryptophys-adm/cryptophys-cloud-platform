@@ -36,14 +36,14 @@
  * does not bind them as declared (on 2026-11-15 a dashboard edit dropped the AGENTS binding's `props`), the upload sends
  * the declared service bindings and keeps every other type, and the uploaded version must bind exactly the declared
  * values, props included, and every other binding as the active one. Refused before any upload: an active service
- * binding the config does not declare (`service_binding_undeclared:<NAME>`) unless the plan names it, a declared name
- * bound as another type, and a missing or retargeted binding whose target script the account does not list
+ * binding the config does not declare (`service_binding_undeclared:<NAME>`; never dropped on any path, owner
+ * 2026-11-16: it stays refused and reported, and the owner decides case by case), a declared name bound as another
+ * type, and a missing or retargeted binding whose target script the account does not list
  * (`service_binding_target_missing:<NAME>`; `service_binding_target_unverifiable:<NAME>` when the list cannot be read).
  * The account's script list (`GET /accounts/{a}/workers/scripts`, read only) is the one address this client may reach
- * besides the Orchestrator's own script (2026-11-16, owner "sesuai rekomendasimu"); every other address is refused.
- * The plan's `destructive_topology` may name `service_binding_removal:cryptophys-deployment-orchestrator:<NAME>` (the
- * only item this path applies; any other item is `named_topology_not_pending`): that undeclared binding is audited
- * before the upload, left out of it, verified gone, and listed in the report's `destructive_topology_applied`.
+ * besides the Orchestrator's own script (2026-11-16, owner); every other address is refused before a request is made.
+ * This path applies no topology change: a plan for the Orchestrator that names any `destructive_topology` item is
+ * refused (`named_topology_not_pending`, with the item) rather than run with the item silently ignored.
  * Props unknown (service-bindings.ts `propsUnknown`): a record without a `props` key is not drift by itself; the
  * declared bindings are still sent, `<worker>:service_binding_props_unverifiable:<NAME>` is recorded once, and a new
  * version whose record has no `props` key is accepted. One that shows the declared props proves the loss: restored.
@@ -63,7 +63,7 @@ import { forgeReady } from "./forge-gate.ts";
 import { ORCHESTRATOR_SERVICE, ORCHESTRATOR_UNIT, RESCUE_EXECUTOR, executorFirstVerdict, readOrchestratorManifest, readOrchestratorModule, sha256Hex, type BundleTextReader } from "./executor-first.ts";
 import {
   BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindingsFromToml, nonServiceBindingSet, restoredStep, serviceBindingDrift,
-  removalItem, removedStep, serviceDriftRefusal, splitUndeclared, unverifiableStep, verifyServiceBindings, type ApiBinding, type BindingDrift, type ServiceBinding,
+  serviceDriftRefusal, unverifiableStep, verifyServiceBindings, type ApiBinding, type BindingDrift, type ServiceBinding,
 } from "./service-bindings.ts";
 
 export { RESCUE_EXECUTOR };
@@ -303,18 +303,12 @@ export async function rescueChoice(env: RescueEnv, sha: string, named: readonly 
 export interface RescueRun {
   ok: boolean; reason?: string; restored?: boolean; production_changed: boolean; version_id?: string; steps: string[];
   /** 2026-11-16: the service bindings the active version did not bind as declared (names only), and whether the new version is live with them. */
-  binding_drift?: { restored: BindingDrift[]; undeclared: string[]; repaired: boolean; refused?: string; removed?: string[] };
-  /** 2026-11-16: the plan's `service_binding_removal` items applied (each audited before the upload). */
-  destructive_topology_applied?: string[];
+  binding_drift?: { restored: BindingDrift[]; undeclared: string[]; repaired: boolean; refused?: string };
 }
 
 /** Run the deploy over a choice. Never throws; the caller records the outcome. */
 export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<RescueEnv, "DRIFT" | "REGISTRY">, requestId: string, sha: string,
-  choice: Extract<RescueChoice, { ok: true }>, opts: {
-    delayMs?: number; sleep?: (ms: number) => Promise<void>;
-    /** The plan's `service_binding_removal:<orchestrator>:<NAME>` items, and the audit written before each is applied. */
-    namedTopology?: readonly string[]; auditRemoval?: (item: string) => Promise<boolean>;
-  } = {}): Promise<RescueRun> {
+  choice: Extract<RescueChoice, { ok: true }>, opts: { delayMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<RescueRun> {
   const tag = sha.slice(0, 12);
   const sleep = opts.sleep ?? realSleep;
   const steps: string[] = [];
@@ -331,10 +325,8 @@ export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<Rescue
     // 2026-11-16: the active version's service bindings against the declared ones, before anything is uploaded.
     const found = serviceBindingDrift(choice.services, active.records);
     if (!found) throw new Error("version_bindings_unreadable");
-    const named = opts.namedTopology ?? [];
-    const { remove, refuse } = splitUndeclared(ORCHESTRATOR_SERVICE, found.undeclared, named);
     if (found.restore.length || found.undeclared.length || found.conflicts.length) {
-      let refused = serviceDriftRefusal({ undeclared: refuse, conflicts: found.conflicts }, ORCHESTRATOR_SERVICE) ?? undefined;
+      let refused = serviceDriftRefusal(found) ?? undefined;
       // A missing or retargeted binding is restored only to a Worker the account lists (read only).
       let ids: string[] | null = null;
       for (const d of refused ? [] : found.restore.filter((x) => x.retarget)) {
@@ -345,20 +337,12 @@ export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<Rescue
       drift = { restored: found.restore, undeclared: found.undeclared, repaired: false, ...(refused ? { refused } : {}) };
       if (refused) throw new Error(refused);
     }
-    // A named item that is not an undeclared binding of the active version: the plan no longer matches production.
-    const stale = named.find((i) => !remove.some((n) => removalItem(ORCHESTRATOR_SERVICE, n) === i));
-    if (stale) throw new Error(`named_topology_not_pending:${stale}`);
-    // Audited before it is applied; without the audit it is not applied.
-    for (const n of remove) {
-      const item = removalItem(ORCHESTRATOR_SERVICE, n);
-      if (!opts.auditRemoval || !(await opts.auditRemoval(item).catch(() => false))) throw new Error(`destructive_audit_unavailable: ${item}`);
-    }
     const unverifiable = (names: readonly string[]) => {
       for (const n of names) { const st = unverifiableStep(ORCHESTRATOR_SERVICE, n); if (!steps.includes(st)) steps.push(st); }
     };
     unverifiable(found.unverifiable);
     // Sent on a drift, and also when props are unknown (harmless; it repairs a loss the API may not show).
-    const restore = found.restore.length > 0 || found.unverifiable.length > 0 || remove.length > 0;
+    const restore = found.restore.length > 0 || found.unverifiable.length > 0;
     versionId = await cf.upload(choice.module, choice.text, {
       compatibility_date: choice.compatibility_date, compatibility_flags: choice.compatibility_flags, tag, message: `rescue deploy commit ${sha}`,
       ...(restore ? { services: choice.services } : {}),
@@ -386,8 +370,6 @@ export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<Rescue
       for (const n of proven) drift.restored.push({ name: n, kinds: ["props"], retarget: false });
     }
     for (const d of drift?.restored ?? []) steps.push(restoredStep(ORCHESTRATOR_SERVICE, d.name));
-    // verifyServiceBindings found no service binding but the declared ones: each named removal is gone.
-    for (const n of remove) steps.push(removedStep(ORCHESTRATOR_SERVICE, n));
     // Recorded before the call: an ambiguous failure of the deploy call is restored as well.
     changed = true;
     await cf.deploy([{ version_id: versionId, percentage: 100 }], `rescue deploy ${tag}, ${requestId}`);
@@ -401,11 +383,9 @@ export async function executeRescueDeploy(cf: RescueCloudflare, env: Pick<Rescue
     if (!live) throw new Error("not_live_at_tag");
     steps.push("verified");
     if (drift) drift.repaired = true;
-    if (drift && remove.length) drift.removed = [...remove];
     await env.REGISTRY.recordNativeDeploy(requestId);
     steps.push("desired_recorded");
-    return { ok: true, production_changed: true, version_id: versionId, steps, ...(drift ? { binding_drift: drift } : {}),
-      ...(remove.length ? { destructive_topology_applied: remove.map((n) => removalItem(ORCHESTRATOR_SERVICE, n)) } : {}) };
+    return { ok: true, production_changed: true, version_id: versionId, steps, ...(drift ? { binding_drift: drift } : {}) };
   } catch (err) {
     const reason = String((err as Error)?.message ?? err).slice(0, 200);
     let restored = true;
@@ -438,7 +418,7 @@ async function audit(db: D1Database, event: Parameters<typeof appendAuditEvent>[
  * was not stored is recorded here as deployment.rescue_report_failed with the kernel's reason (incident 2026-11-16:
  * plan_b94d06cf's report was lost without a trace), and the reason is returned for the step's detail.
  */
-async function report(env: RescueEnv, r: { request_id: string; plan_id: string; sha: string; ok: boolean; reason?: string; restored?: boolean; steps: string[]; binding_drift?: RescueRun["binding_drift"]; destructive_topology_applied?: string[] }): Promise<string | null> {
+async function report(env: RescueEnv, r: { request_id: string; plan_id: string; sha: string; ok: boolean; reason?: string; restored?: boolean; steps: string[]; binding_drift?: RescueRun["binding_drift"] }): Promise<string | null> {
   const tag = r.sha.slice(0, 12);
   const severity = r.ok ? "warning" : "critical";
   const after = r.ok ? "It was verified live and recorded; the Orchestrator was not used."
@@ -451,8 +431,7 @@ async function report(env: RescueEnv, r: { request_id: string; plan_id: string; 
       break_glass: true, rescue: true, executor: RESCUE_EXECUTOR, alert_key: `break_glass:${r.request_id}`, state: r.ok ? "open" : "failed",
       request_id: r.request_id, plan_id: r.plan_id, unit: ORCHESTRATOR_UNIT, commit_sha: r.sha, outcome: r.ok ? "succeeded" : "failed",
       reason: r.reason ?? null, restored: r.restored ?? null, steps: r.steps.slice(0, 20),
-      ...(r.binding_drift ? { binding_drift: { restored: r.binding_drift.restored.map((d) => d.name), undeclared: r.binding_drift.undeclared, repaired: r.binding_drift.repaired, ...(r.binding_drift.removed?.length ? { removed: r.binding_drift.removed } : {}) } } : {}),
-      ...(r.destructive_topology_applied?.length ? { destructive_topology_applied: r.destructive_topology_applied } : {}),
+      ...(r.binding_drift ? { binding_drift: { restored: r.binding_drift.restored.map((d) => d.name), undeclared: r.binding_drift.undeclared, repaired: r.binding_drift.repaired } } : {}),
     },
   });
   if (published.ok) return null;
@@ -480,7 +459,7 @@ export async function rescueForRecovery(env: RescueEnv, planId: string, decision
   const actor = `recovery:${planId}`;
   const refuse = async (reason: string, extra: Record<string, unknown> = {}): Promise<RescueOutcome> => {
     await audit(env.DB, { event_type: "deployment.rescue_refused", actor, subject: ORCHESTRATOR_SERVICE, outcome: "refused", payload: { plan_id: planId, policy_decision_id: decisionId, reason, ...extra } });
-    return { status: "failed", refused: true, detail: `rescue deploy refused: ${reason}${extra.file ? ` (${String(extra.file)})` : ""}; nothing in production changed` };
+    return { status: "failed", refused: true, detail: `rescue deploy refused: ${reason}${extra.file ? ` (${String(extra.file)})` : ""}${extra.item ? ` (${String(extra.item)}; the rescue deploy applies no topology change)` : ""}; nothing in production changed` };
   };
   if (!plan || plan.status !== "executing" || exec.policy_decision_id !== decisionId) return refuse("plan_not_executing");
   if (plan.service_id !== ORCHESTRATOR_SERVICE) return refuse("not_the_orchestrator");
@@ -508,9 +487,8 @@ export async function rescueForRecovery(env: RescueEnv, planId: string, decision
     }
     return { status: "failed", request_id: prior.request_id, detail: `rescue deploy request ${prior.request_id} already ran for this plan; write a new plan` };
   }
-  // 2026-11-16: the only destructive topology this path applies is an undeclared service binding of the Orchestrator.
-  const notOurs = bg.destructive_topology.find((i) => !i.startsWith(`service_binding_removal:${ORCHESTRATOR_SERVICE}:`));
-  if (notOurs) return refuse("named_topology_not_pending", { item: notOurs });
+  // 2026-11-16: this path applies no topology change, so a named destructive_topology item is refused, never ignored.
+  if (bg.destructive_topology.length) return refuse("named_topology_not_pending", { item: bg.destructive_topology[0], items: bg.destructive_topology });
   const choice = await rescueChoice(env, sha, bg.destructive_migrations, now);
   if (!choice.ok) return refuse(choice.reason, choice.file ? { file: choice.file } : {});
   const requestId = `dep_${crypto.randomUUID()}`;
@@ -531,24 +509,10 @@ export async function rescueForRecovery(env: RescueEnv, planId: string, decision
   await audit(env.DB, { event_type: "deployment.rescue_started", actor, subject: ORCHESTRATOR_SERVICE, outcome: "running",
     payload: { request_id: requestId, executor: RESCUE_EXECUTOR, plan_id: planId, policy_decision_id: decisionId, commit_sha: sha, running: details.running, pending_migrations: choice.pending_migrations } });
   const cf = new RescueCloudflare(env.CF_ORCHESTRATOR_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, opts.fetcher ?? fetch);
-  const run = await executeRescueDeploy(cf, env, requestId, sha, choice, {
-    delayMs: opts.delayMs, sleep: opts.sleep, namedTopology: bg.destructive_topology,
-    // Not best effort: the item is applied only once this event is in the audit chain.
-    auditRemoval: async (item) => {
-      try {
-        await appendAuditEvent(env.DB, { event_type: "deployment.destructive_topology_applying", actor, subject: ORCHESTRATOR_SERVICE, outcome: "applying",
-          payload: { request_id: requestId, executor: RESCUE_EXECUTOR, plan_id: planId, commit_sha: sha, service: ORCHESTRATOR_SERVICE, item, step: "service_binding_removal", restore_possible: true } });
-        return true;
-      } catch { return false; }
-    },
-  });
+  const run = await executeRescueDeploy(cf, env, requestId, sha, choice, { delayMs: opts.delayMs, sleep: opts.sleep });
   await env.DB.prepare("UPDATE deployment_requests SET status = ?, details_json = ?, updated_at = ? WHERE request_id = ? AND status = 'running'")
     .bind(run.ok ? "succeeded" : "failed", JSON.stringify({ ...details, outcome: { reason: run.reason ?? null, restored: run.restored ?? null, production_changed: run.production_changed, version_id: run.version_id ?? null, steps: run.steps } }),
       new Date().toISOString(), requestId).run();
-  for (const item of run.destructive_topology_applied ?? []) {
-    await audit(env.DB, { event_type: "deployment.destructive_topology_applied", actor, subject: ORCHESTRATOR_SERVICE, outcome: "applied",
-      payload: { request_id: requestId, executor: RESCUE_EXECUTOR, plan_id: planId, commit_sha: sha, service: ORCHESTRATOR_SERVICE, item, step: "service_binding_removal", version_id: run.version_id ?? null } });
-  }
   if (run.binding_drift) {
     // 2026-11-16: a service binding the active version did not bind as declared: repaired, or the reason it was not.
     const d = run.binding_drift;
@@ -557,7 +521,7 @@ export async function rescueForRecovery(env: RescueEnv, planId: string, decision
   }
   await audit(env.DB, { event_type: run.ok ? "deployment.rescue_succeeded" : "deployment.rescue_failed", actor, subject: ORCHESTRATOR_SERVICE, outcome: run.ok ? "succeeded" : "failed",
     payload: { request_id: requestId, executor: RESCUE_EXECUTOR, plan_id: planId, commit_sha: sha, reason: run.reason ?? null, restored: run.restored ?? null, steps: run.steps } });
-  const lost = await report(env, { request_id: requestId, plan_id: planId, sha, ok: run.ok, reason: run.reason, restored: run.restored, steps: run.steps, binding_drift: run.binding_drift, destructive_topology_applied: run.destructive_topology_applied });
+  const lost = await report(env, { request_id: requestId, plan_id: planId, sha, ok: run.ok, reason: run.reason, restored: run.restored, steps: run.steps, binding_drift: run.binding_drift });
   return run.ok
     ? { status: "succeeded", request_id: requestId, detail: `rescue deploy of the Orchestrator at ${sha.slice(0, 12)} succeeded without the Orchestrator (request ${requestId}${unreported(lost)})` }
     : { status: "failed", request_id: requestId, detail: `rescue deploy of the Orchestrator at ${sha.slice(0, 12)} failed: ${run.reason ?? "unknown"} (request ${requestId}; ${run.restored === false ? "restore did not complete, check production" : "restored"}${unreported(lost)})` };

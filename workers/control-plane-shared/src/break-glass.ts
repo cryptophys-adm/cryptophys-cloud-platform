@@ -22,11 +22,7 @@
  *   topology.ts) is applied only when the step names it in `destructive_topology`, one item each (TOPOLOGY_ITEM):
  *     `custom_domain_removal:<host>`, `custom_domain_change:<host>` (a custom domain's zone fields),
  *     `do_migration:<deleted_classes|renamed_classes|transferred_classes>:<worker>:<tag>`, `workflow_removal:<name>`,
- *     `workers_dev_disable:<worker>`, `preview_urls_disable:<worker>`, and (2026-11-16, owner "sesuai rekomendasimu")
- *     `service_binding_removal:<worker>:<BINDING>`: an active service binding the Worker's wrangler.toml does not
- *     declare, which every other deploy refuses (`service_binding_undeclared:<BINDING>`, control-plane-shared/src/
- *     service-bindings.ts); the named deploy drops exactly it and verifies it gone (the captured deployment, which a
- *     failure restores, still has it).
+ *     `workers_dev_disable:<worker>`, `preview_urls_disable:<worker>`.
  *   An unnamed one keeps its refusal; a named one the deploy does not contain refuses the deploy. A zone route can never
  *   be named: creating or removing one needs Workers Routes Edit, which the deploy token does not hold (owner decision
  *   2026-11-06, ADR-0010).
@@ -40,11 +36,10 @@ export const MIGRATION_FILE_NAME = /^[0-9]{4}_[a-z0-9_]{1,80}\.sql$/;
 export const MAX_NAMED_DESTRUCTIVE = 10;
 const HOSTNAME = "[a-z0-9-]+(?:\\.[a-z0-9-]+)+";
 const WORKER_NAME = "[a-z0-9-]{1,63}";
-const BINDING_NAME = "[A-Za-z_][A-Za-z0-9_]{0,63}";
 /** One destructive topology item a break-glass plan may name (topology.ts uses the same strings). */
 export const TOPOLOGY_ITEM = new RegExp(
   `^(?:custom_domain_(?:removal|change):${HOSTNAME}|do_migration:(?:deleted_classes|renamed_classes|transferred_classes):${WORKER_NAME}:[A-Za-z0-9._-]{1,64}`
-  + `|workflow_removal:[A-Za-z0-9_-]{1,64}|(?:workers_dev|preview_urls)_disable:${WORKER_NAME}|service_binding_removal:${WORKER_NAME}:${BINDING_NAME})$`,
+  + `|workflow_removal:[A-Za-z0-9_-]{1,64}|(?:workers_dev|preview_urls)_disable:${WORKER_NAME})$`,
 );
 const COMMIT = /^[0-9a-f]{40}$/;
 const PERSON = /^[^@\s:]+@[^@\s:]+\.[^@\s:]+$/;
@@ -72,8 +67,7 @@ export function namedTopology(raw: unknown): string[] | Error {
   if (raw === undefined) return [];
   if (!Array.isArray(raw) || raw.length > MAX_NAMED_DESTRUCTIVE || !raw.every((f) => typeof f === "string" && f.length <= 200 && TOPOLOGY_ITEM.test(f))) {
     return new Error(`destructive_topology must list at most ${MAX_NAMED_DESTRUCTIVE} items (custom_domain_removal:<host>, custom_domain_change:<host>, `
-      + "do_migration:<deleted_classes|renamed_classes|transferred_classes>:<worker>:<tag>, workflow_removal:<name>, workers_dev_disable:<worker>, preview_urls_disable:<worker>, "
-      + "service_binding_removal:<worker>:<BINDING>)");
+      + "do_migration:<deleted_classes|renamed_classes|transferred_classes>:<worker>:<tag>, workflow_removal:<name>, workers_dev_disable:<worker>, preview_urls_disable:<worker>)");
   }
   const items = [...new Set(raw as string[])].sort();
   if (items.length !== raw.length) return new Error("destructive_topology lists an item twice");

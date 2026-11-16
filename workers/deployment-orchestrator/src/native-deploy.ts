@@ -72,17 +72,13 @@
 // deployment.binding_drift_repaired once the Worker is verified live). An active service binding the config does not
 // declare (`service_binding_undeclared:<NAME>`), a declared name bound as another type, or a restored binding whose
 // target script the account does not list (`service_binding_target_missing:<NAME>`) refuses the deploy before
-// anything is uploaded; the failure is reported like any failed native deploy. Dropping a binding is the owner's.
+// anything is uploaded; the failure is reported like any failed native deploy. No path drops such a binding, the
+// break-glass deploy included: it stays refused and reported, and the owner decides case by case (owner 2026-11-16).
 // Props unknown: an API record with no `props` key for a binding declared with props is not drift by itself (it is not
 // verified live that the versions API returns props). The declared binding is still sent, the step
 // `<worker>:service_binding_props_unverifiable:<NAME>` is recorded once, no drift audit is written, and a new version
 // whose record has no `props` key is accepted. If the new version's record carries the declared props, the active
 // version's missing key was a real loss and is reported as restored (step, binding_drift, repaired audit).
-// Break-glass (2026-11-16, owner "sesuai rekomendasimu"): an undeclared service binding the owner-approved plan names in
-// `destructive_topology` (`service_binding_removal:<worker>:<BINDING>`) is dropped: audited before the upload
-// (deployment.destructive_topology_applying), left out of the upload, verified gone on the new version, recorded as
-// `<worker>:service_binding_removed:<BINDING>` and `destructive_topology_applied` once the Worker is live. Any other
-// undeclared binding still refuses; the routine refusal names the item.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -105,7 +101,7 @@ import { RESTORE_POINT_EVENT, restoreCommand } from "../../control-plane-shared/
 import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
 import {
   BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindingsFromToml, nonServiceBindingSet, restoredStep, serviceBindingDrift,
-  removalItem, removedStep, serviceDriftRefusal, splitUndeclared, unverifiableStep, verifyServiceBindings, type BindingDrift, type ServiceBinding,
+  serviceDriftRefusal, unverifiableStep, verifyServiceBindings, type BindingDrift, type ServiceBinding,
 } from "../../control-plane-shared/src/service-bindings.ts";
 import {
   applyTopologyStep, deployWithDoMigration, DO_IRREVERSIBLE, planTopology, restoreTopologyStep, topologyDiff, topologyStepLabel, type TopologyPlan, type TopologyStep,
@@ -721,7 +717,7 @@ export interface DeployRun {
    * (`restored`, names and what differed), the undeclared ones that refused the deploy, and whether the Worker was
    * verified live with the declared values (`repaired`). Names only.
    */
-  binding_drift?: Record<string, { restored: BindingDrift[]; undeclared: string[]; repaired: boolean; refused?: string; removed?: string[] }>;
+  binding_drift?: Record<string, { restored: BindingDrift[]; undeclared: string[]; repaired: boolean; refused?: string }>;
 }
 
 /** Every key of `want` is in `got` with an equal value (objects compared recursively, arrays exactly). */
@@ -870,12 +866,9 @@ export async function executeNativeDeploy(
   };
   /** A drift's targets must be Workers of the account; the list is read once, only when a binding is retargeted. */
   let scriptIds: string[] | null = null;
-  /** Per Worker, the undeclared service bindings an owner-approved break-glass plan named for removal. */
-  const removals = new Map<string, string[]>();
   const checkDrift = async (service: string, restore: BindingDrift[], undeclared: string[], conflicts: string[] = []) => {
     if (!restore.length && !undeclared.length && !conflicts.length) return;
-    const { remove, refuse } = splitUndeclared(service, undeclared, opts.destructiveTopology ?? []);
-    let refused = serviceDriftRefusal({ undeclared: refuse, conflicts }, service);
+    let refused = serviceDriftRefusal({ undeclared, conflicts });
     if (!refused) {
       for (const d of restore.filter((x) => x.retarget)) {
         const target = String((declaredFor.get(service) ?? []).find((b) => b.name === d.name)?.service ?? "");
@@ -883,28 +876,12 @@ export async function executeNativeDeploy(
         if (!scriptIds.includes(target)) { refused = `service_binding_target_missing:${d.name}`; break; }
       }
     }
-    bindingDrift[service] = { restored: restore, undeclared, repaired: false, ...(refused ? { refused } : {}), ...(remove.length && !refused ? { removed: [] } : {}) };
+    bindingDrift[service] = { restored: restore, undeclared, repaired: false, ...(refused ? { refused } : {}) };
     await auditQuietly(env.DB, {
       event_type: BINDING_DRIFT_DETECTED_EVENT, actor: "agent:deployment-orchestrator", subject: service, outcome: refused ? "refused" : "repairing",
-      payload: { request_id: requestId, commit_sha: commit, service, restore: restore.map((d) => ({ name: d.name, kinds: d.kinds })), undeclared, conflicts,
-        ...(remove.length ? { named_removals: remove.map((n) => removalItem(service, n)) } : {}), ...(refused ? { reason: refused } : {}) },
+      payload: { request_id: requestId, commit_sha: commit, service, restore: restore.map((d) => ({ name: d.name, kinds: d.kinds })), undeclared, conflicts, ...(refused ? { reason: refused } : {}) },
     });
     if (refused) throw new Error(refused);
-    // A named removal is audited before it is applied; without the audit it is not applied (as every destructive item).
-    for (const n of remove) await auditDestructive(service, removalItem(service, n), "service_binding_removal");
-    if (remove.length) removals.set(service, remove);
-  };
-  /** After the Worker is live: the named removals are applied (the new version, verified, binds none of them). */
-  const removalsApplied = async (service: string, versionId: string) => {
-    for (const n of removals.get(service) ?? []) {
-      const item = removalItem(service, n);
-      destructiveApplied.push(item);
-      bindingDrift[service]?.removed?.push(n);
-      await auditQuietly(env.DB, {
-        event_type: "deployment.destructive_topology_applied", actor: "agent:deployment-orchestrator", subject: service, outcome: "applied",
-        payload: { request_id: requestId, commit_sha: commit, service, item, step: "service_binding_removal", version_id: versionId },
-      });
-    }
   };
   const unitName = plan.length ? unitForService(plan[0].service)?.unit ?? "" : "";
   let smoke: DeployRun["smoke"] = opts.smoke?.skipped ? { status: "skipped", reason: opts.smoke.skipped, probes: 0 } : undefined;
@@ -1011,7 +988,7 @@ export async function executeNativeDeploy(
         unknownProps.set(service, drift.unverifiable);
         markUnverifiable(service, drift.unverifiable);
         // Sent as declared on a drift, and also when props are unknown (harmless; it repairs a loss the API may not show).
-        const send = drift.restore.length > 0 || drift.unverifiable.length > 0 || (removals.get(service)?.length ?? 0) > 0;
+        const send = drift.restore.length > 0 || drift.unverifiable.length > 0;
         active = { names: set.names, digest: set.digest, restore: send, rest: send ? await nonServiceBindingSet(set.records) : null };
       }
       // Gate 4: the deploy-time --var values, from the version just captured, before anything is uploaded.
@@ -1102,8 +1079,6 @@ export async function executeNativeDeploy(
         steps.push(`${service}:bindings_match`);
         propsAfterUpload(service, sb.unverifiable);
         for (const d of bindingDrift[service]?.restored ?? []) steps.push(restoredStep(service, d.name));
-        // verifyServiceBindings found no service binding but the declared ones: each named removal is gone.
-        for (const n of removals.get(service) ?? []) steps.push(removedStep(service, n));
         const v = verifyVersionSettings(configPlan.metadata, uploaded);
         if (!v.ok) throw new Error(`version_settings_differ: ${v.reason}`);
         steps.push(`${service}:settings_match`);
@@ -1127,8 +1102,6 @@ export async function executeNativeDeploy(
         steps.push(`${service}:bindings_match`);
         propsAfterUpload(service, sb.unverifiable);
         for (const d of bindingDrift[service]?.restored ?? []) steps.push(restoredStep(service, d.name));
-        // verifyServiceBindings found no service binding but the declared ones: each named removal is gone.
-        for (const n of removals.get(service) ?? []) steps.push(removedStep(service, n));
         if (keptVars[service]) {
           const record = await readUploaded(() => cf.version(service, versionId), opts.delayMs);
           const d = verifyDeployVars(keptVars[service], record.resources?.bindings);
@@ -1150,7 +1123,6 @@ export async function executeNativeDeploy(
       }
       if (!live) throw new Error("not_live_at_tag");
       steps.push(`${service}:verified`);
-      await removalsApplied(service, versionId);
       if (bindingDrift[service]?.restored.length) {
         bindingDrift[service].repaired = true;
         await auditQuietly(env.DB, {

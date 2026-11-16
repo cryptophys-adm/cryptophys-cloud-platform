@@ -20,14 +20,14 @@ import { DeploymentLock, deployForConsensus, runNativeExecutors } from "../../de
 import { CloudflareWorkers, executeRollback, KEEP_BINDINGS, SAFE_MINUTES } from "../../deployment-orchestrator/src/native-rollback.ts";
 import { executeNativeDeploy, nativeDeployEligible, type PlannedService } from "../../deployment-orchestrator/src/native-deploy.ts";
 import { bindingsFromToml, parseToml, planConfigChange, type BindingRecord, type ConfigPlan } from "../../deployment-orchestrator/src/config-diff.ts";
-import { breakGlassChoice, reportBreakGlass } from "../../deployment-orchestrator/src/recovery-deploy.ts";
+import { breakGlassChoice } from "../../deployment-orchestrator/src/recovery-deploy.ts";
 import { namedTopology as validateTopology, TOPOLOGY_ITEM } from "../src/break-glass.ts";
 import { recordNativeDeploy, recordRollback } from "../../platform-registry/src/index.ts";
 import {
   BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindings, unverifiableStep, declaredServiceBindingsFromToml, serviceBindingDrift, serviceDriftRefusal,
   verifyServiceBindings, type ServiceBinding,
 } from "../src/service-bindings.ts";
-import { RESCUE_KEEP_BINDINGS, RescueCloudflare, executeRescueDeploy, rescueChoice } from "../src/executor-rescue.ts";
+import { RESCUE_KEEP_BINDINGS, RESCUE_MINUTES, RescueCloudflare, executeRescueDeploy, rescueChoice, rescueForRecovery } from "../src/executor-rescue.ts";
 import { ORCHESTRATOR_SERVICE } from "../src/executor-first.ts";
 
 type Db = ReturnType<typeof migratedDb>;
@@ -214,9 +214,8 @@ const noGitHub = () => { globalThis.fetch = (async (i: RequestInfo | URL) => { t
 const events = (db: Db, type: string) => (db.raw.prepare("SELECT subject, outcome, payload_json FROM audit_events WHERE event_type = ? ORDER BY rowid").all(type) as any[])
   .map((r) => ({ subject: r.subject as string, outcome: r.outcome as string, payload: JSON.parse(r.payload_json) }));
 const agents = (b: BindingRecord[]) => b.find((x) => x.name === "AGENTS");
-/** The routine refusal of an undeclared binding names the break-glass item that would drop it. */
-const undeclaredRefusal = (worker: string, name: string) =>
-  `service_binding_undeclared:${name} (declare it in wrangler.toml, or name service_binding_removal:${worker}:${name} in a break-glass plan's destructive_topology)`;
+/** An undeclared service binding is refused with its name only (no path drops it; the owner decides, 2026-11-16). */
+const undeclaredRefusal = (name: string) => `service_binding_undeclared:${name}`;
 const RM_AGENTS = { type: "service", name: "AGENTS", service: "cryptophys-ai-kernel", entrypoint: "AgentRpc", props: { host_worker: RM }, environment: "production" };
 
 /** The Orchestrator's own plan and executor for the Control Plane unit, against `fake`. */
@@ -408,13 +407,13 @@ test("BP6. an active service binding wrangler.toml does not declare refuses the 
     assert.deepEqual([cf.uploads.length, cf.deployments.length], [0, 0], "nothing uploaded, nothing deployed");
     assert.ok(cf.activeBindings("cryptophys-policy-engine").some((x) => x.name === "SHADOW"), "not dropped silently");
     const outcome = JSON.parse((db.raw.prepare("SELECT details_json FROM deployment_requests").get() as any).details_json).outcome;
-    assert.deepEqual([outcome.reason, outcome.production_changed, outcome.restored], [undeclaredRefusal("cryptophys-policy-engine", "SHADOW"), false, true]);
+    assert.deepEqual([outcome.reason, outcome.production_changed, outcome.restored], [undeclaredRefusal("SHADOW"), false, true]);
     assert.equal(reports.length, 1);
     assert.equal(reports[0].severity, "critical");
-    assert.deepEqual(reports[0].body.binding_drift, { "cryptophys-policy-engine": { restored: [], undeclared: ["SHADOW"], repaired: false, refused: undeclaredRefusal("cryptophys-policy-engine", "SHADOW") } });
+    assert.deepEqual(reports[0].body.binding_drift, { "cryptophys-policy-engine": { restored: [], undeclared: ["SHADOW"], repaired: false, refused: undeclaredRefusal("SHADOW") } });
     assert.match(reports[0].body.binding_action_required, /does not drop or retarget it/);
     assert.deepEqual(events(db, BINDING_DRIFT_DETECTED_EVENT).map((x) => [x.subject, x.outcome, x.payload.undeclared, x.payload.reason]),
-      [["cryptophys-policy-engine", "refused", ["SHADOW"], undeclaredRefusal("cryptophys-policy-engine", "SHADOW")]]);
+      [["cryptophys-policy-engine", "refused", ["SHADOW"], undeclaredRefusal("SHADOW")]]);
     assert.equal(events(db, BINDING_DRIFT_REPAIRED_EVENT).length, 0);
   } finally { globalThis.fetch = realFetch; }
 
@@ -425,7 +424,7 @@ test("BP6. an active service binding wrangler.toml does not declare refuses the 
   const s2 = await scenario({ [RM]: target });
   const cf2 = fakeCloudflare(production((x) => [...x, EXTRA]));
   const { run } = await deployDirect(s2.db, s2.b, cf2);
-  assert.deepEqual([run.ok, run.reason, run.production_changed], [false, undeclaredRefusal(RM, "SHADOW"), true], "earlier Workers of the unit moved, then restored");
+  assert.deepEqual([run.ok, run.reason, run.production_changed], [false, undeclaredRefusal("SHADOW"), true], "earlier Workers of the unit moved, then restored");
   assert.equal(run.restored, true);
   assert.ok(!cf2.uploads.some((u) => u.script === RM), "the Recovery Manager was never uploaded");
   for (const s of CONTROL_PLANE.services) assert.equal(cf2.tagOf(s), OLD.slice(0, 12), `${s} restored`);
@@ -506,7 +505,7 @@ test("BP9. rescue: the Orchestrator's stripped AGENTS props are sent again by th
 
 test("BP10. rescue refuses before any upload what it may not repair: an undeclared binding, a retarget to a Worker the account does not list, a stored config that does not match", async () => {
   const cases: Array<[string, BindingRecord[], string]> = [
-    ["undeclared", [...deployedFrom(ORCH_TOML), { type: "service", name: "SHADOW", service: "cryptophys-forge", environment: "production" }], undeclaredRefusal(ORCHESTRATOR_SERVICE, "SHADOW")],
+    ["undeclared", [...deployedFrom(ORCH_TOML), { type: "service", name: "SHADOW", service: "cryptophys-forge", environment: "production" }], undeclaredRefusal("SHADOW")],
     ["missing (retarget)", deployedFrom(ORCH_TOML).filter((x) => x.name !== "AGENTS"), "service_binding_target_missing:AGENTS"],
     ["another service (retarget)", withField(deployedFrom(ORCH_TOML), "AGENTS", { service: "cryptophys-forge" }), "service_binding_target_missing:AGENTS"],
   ];
@@ -649,94 +648,50 @@ test("BP12. an API that never returns props: every path succeeds, resends the de
   }
 });
 
-// ---------------------------------------------------------------- 2026-11-16 (owner "sesuai rekomendasimu"): named removal, rescue script list
+// ---------------------------------------------------------------- 2026-11-16 (owner): undeclared bindings are never dropped; rescue script list
 const PE = "cryptophys-policy-engine";
 const SHADOW = { type: "service", name: "SHADOW", service: "cryptophys-forge", entrypoint: "MergeRpc", environment: "production" };
-const withShadow = (extra: BindingRecord[] = []) => { const p = production(); p[PE] = [...p[PE], SHADOW, ...extra]; return p; };
-const bgEnv = (db: Db | undefined, b: Bucket) => ({ DRIFT: { probeService: async () => ({ reachable: true, healthy: true, version_tag: TAG, error: null }) }, REGISTRY: { recordRollback: async () => ({ desired_version: "" }), recordNativeDeploy: async () => ({ desired_version: TAG, services: [] }) }, BUNDLES: b, ...(db ? { DB: db as never } : {}) });
+const withShadow = () => { const p = production(); p[PE] = [...p[PE], SHADOW]; return p; };
+const bgEnv = (db: Db, b: Bucket) => ({ DRIFT: { probeService: async () => ({ reachable: true, healthy: true, version_tag: TAG, error: null }) }, REGISTRY: { recordRollback: async () => ({ desired_version: "" }), recordNativeDeploy: async () => ({ desired_version: TAG, services: [] }) }, BUNDLES: b, DB: db as never });
 
-test("BP13. break-glass drops an undeclared service binding only when its plan names service_binding_removal:<worker>:<BINDING>; anything else still refuses", async () => {
-  const ITEM = `service_binding_removal:${PE}:SHADOW`;
-  // The item is one a plan may name (the Recovery Manager and the Policy Engine validate steps with these rules).
-  assert.ok(TOPOLOGY_ITEM.test(ITEM));
-  assert.deepEqual(validateTopology([ITEM]), [ITEM]);
-  for (const bad of ["service_binding_removal:Bad_Worker:X", "service_binding_removal:w:9x", "service_binding_removal:w"]) assert.ok(validateTopology([bad]) instanceof Error, bad);
-
-  // Named and pending: dropped, audited before and after, verified gone, listed in the owner notice.
-  {
-    const { db, b } = await scenario();
-    const cf = fakeCloudflare(withShadow());
-    const workers = new CloudflareWorkers("deploy-token", ACCOUNT, cf.fetcher);
-    const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, [], workers, [ITEM]);
-    assert.equal(choice.ok, true, JSON.stringify(choice));
-    const run = await executeNativeDeploy(workers, bgEnv(db, b), "dep_bg13", NEW, (choice as { services: PlannedService[] }).services, { delayMs: 0, migrations: [], destructive: [], destructiveTopology: [ITEM] });
-    assert.equal(run.ok, true, run.reason);
-    assert.ok(!cf.activeBindings(PE).some((x) => x.name === "SHADOW"), "gone from production");
-    const up = cf.uploads.find((u) => u.script === PE)!;
-    assert.deepEqual(up.metadata.bindings, (declaredServiceBindingsFromToml(tomlFor(PE)) as { bindings: ServiceBinding[] }).bindings, "only the declared service bindings sent");
-    assert.deepEqual(up.metadata.keep_bindings, KEEP_BINDINGS.filter((t) => t !== "service"));
-    assert.ok(run.steps.indexOf(`${PE}:service_binding_removed:SHADOW`) > run.steps.indexOf(`${PE}:uploaded`));
-    assert.ok(run.steps.indexOf(`${PE}:service_binding_removed:SHADOW`) < run.steps.indexOf(`${PE}:deployed`), "verified gone before traffic moves");
-    assert.deepEqual(run.destructive_topology_applied, [ITEM]);
-    assert.deepEqual(run.binding_drift?.[PE], { restored: [], undeclared: ["SHADOW"], repaired: false, removed: ["SHADOW"] });
-    const applying = events(db, "deployment.destructive_topology_applying");
-    const applied = events(db, "deployment.destructive_topology_applied");
-    assert.deepEqual([applying.map((x) => x.payload.item), applied.map((x) => x.payload.item)], [[ITEM], [ITEM]]);
-    const order = (db.raw.prepare("SELECT event_type FROM audit_events WHERE event_type LIKE 'deployment.destructive_topology_%' ORDER BY rowid").all() as any[]).map((r) => r.event_type);
-    assert.deepEqual(order, ["deployment.destructive_topology_applying", "deployment.destructive_topology_applied"]);
-    // Every other Worker of the unit kept its code-only upload.
-    assert.ok(cf.uploads.filter((u) => u.script !== PE).every((u) => u.metadata.bindings === undefined));
-    // The owner notice lists it.
-    const sent: any[] = [];
-    await reportBreakGlass({ syscall: async (_a: string, _c: string, input: unknown) => { sent.push(input); return { outcome: "succeeded" }; } } as never,
-      { request_id: "dep_bg13", plan_id: "plan_x", unit: "control-plane", commit_sha: NEW, outcome: "succeeded", steps: run.steps, destructive_topology_applied: run.destructive_topology_applied });
-    assert.deepEqual(sent[0].body.destructive_topology_applied, [ITEM]);
+test("BP13. an undeclared service binding is never dropped: refused with its name on the routine, break-glass and rescue paths; no break-glass item removes it", async () => {
+  // No destructive_topology item drops a service binding: a plan naming one is invalid (Recovery Manager, Policy Engine).
+  for (const item of [`service_binding_removal:${PE}:SHADOW`, `service_binding_removal:${ORCHESTRATOR_SERVICE}:SHADOW`]) {
+    assert.equal(TOPOLOGY_ITEM.test(item), false, item);
+    assert.ok(validateTopology([item]) instanceof Error, item);
   }
-  // Named, but another undeclared binding is not: refused before any upload, with the item that would drop it.
-  {
-    const { db, b } = await scenario();
-    const cf = fakeCloudflare(withShadow([{ type: "service", name: "OTHER", service: "cryptophys-forge", environment: "production" }]));
-    const workers = new CloudflareWorkers("deploy-token", ACCOUNT, cf.fetcher);
-    const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, [], workers, [ITEM]);
-    assert.equal(choice.ok, true);
-    const run = await executeNativeDeploy(workers, bgEnv(db, b), "dep_bg14", NEW, (choice as { services: PlannedService[] }).services, { delayMs: 0, migrations: [], destructive: [], destructiveTopology: [ITEM] });
-    assert.deepEqual([run.ok, run.reason, cf.uploads.length], [false, undeclaredRefusal(PE, "OTHER"), 0]);
-    assert.ok(cf.activeBindings(PE).some((x) => x.name === "SHADOW"), "nothing dropped");
-    assert.equal(events(db, "deployment.destructive_topology_applying").length, 0);
-  }
-  // Named but not pending: no such undeclared binding (or a Worker outside the unit, or a declared one).
-  for (const [label, prod, item] of [
-    ["no undeclared binding", production(), ITEM],
-    ["a declared binding", production(), `service_binding_removal:${PE}:AGENTS`],
-    ["a Worker outside the unit", withShadow(), "service_binding_removal:cryptophys-forge:SHADOW"],
-  ] as const) {
-    const { db, b } = await scenario();
-    const cf = fakeCloudflare(prod);
-    const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, [], new CloudflareWorkers("deploy-token", ACCOUNT, cf.fetcher), [item]);
-    assert.deepEqual(choice, { ok: false, reason: "named_topology_not_pending", item }, label);
-    assert.equal(cf.uploads.length, 0);
-  }
-  // Without the audit the named item is not applied (no DB: the executor's audit cannot be written).
-  {
-    const { db, b } = await scenario();
-    const cf = fakeCloudflare(withShadow());
-    const workers = new CloudflareWorkers("deploy-token", ACCOUNT, cf.fetcher);
-    const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, [], workers, [ITEM]);
-    const run = await executeNativeDeploy(workers, bgEnv(undefined, b), "dep_bg15", NEW, (choice as { services: PlannedService[] }).services, { delayMs: 0, migrations: [], destructive: [], destructiveTopology: [ITEM] });
-    assert.deepEqual([run.ok, run.reason, cf.uploads.length], [false, `destructive_audit_unavailable: ${ITEM}`, 0]);
-  }
-  // A routine deploy (no named items) keeps refusing, and its reason names the item (BP6 runs it end to end).
+  // Routine: refused before any upload, with the plain reason (no break-glass item mentioned).
   {
     const { db, b } = await scenario();
     const cf = fakeCloudflare(withShadow());
     const { run } = await deployDirect(db, b, cf);
-    assert.equal(run.ok, false);
-    assert.match(run.reason!, /^service_binding_undeclared:SHADOW .*service_binding_removal:cryptophys-policy-engine:SHADOW/);
-    assert.equal(cf.uploads.length, 0);
+    assert.deepEqual([run.ok, run.reason, cf.uploads.length], [false, "service_binding_undeclared:SHADOW", 0]);
+    assert.doesNotMatch(run.reason!, /break-glass|destructive_topology|service_binding_removal/);
+    assert.ok(cf.activeBindings(PE).some((x) => x.name === "SHADOW"), "not dropped");
+  }
+  // Break-glass: the plan is chosen (the refusal is the executor's, so it is reported), then refused the same way,
+  // whatever destructive topology the plan names.
+  {
+    const { db, b } = await scenario();
+    const cf = fakeCloudflare(withShadow());
+    const workers = new CloudflareWorkers("deploy-token", ACCOUNT, cf.fetcher);
+    const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, [], workers);
+    assert.equal(choice.ok, true, JSON.stringify(choice));
+    const run = await executeNativeDeploy(workers, bgEnv(db, b), "dep_bg13", NEW, (choice as { services: PlannedService[] }).services,
+      { delayMs: 0, migrations: [], destructive: [], destructiveTopology: [`workers_dev_disable:${PE}`, `service_binding_removal:${PE}:SHADOW`] });
+    assert.deepEqual([run.ok, run.reason, cf.uploads.length, run.production_changed], [false, "service_binding_undeclared:SHADOW", 0, false]);
+    assert.ok(cf.activeBindings(PE).some((x) => x.name === "SHADOW"), "not dropped");
+    assert.equal(events(db, "deployment.destructive_topology_applying").length, 0);
+  }
+  // Rescue: refused the same way (BP10 runs the other refusals).
+  {
+    const cf = fakeCloudflare({ [ORCHESTRATOR_SERVICE]: [...deployedFrom(ORCH_TOML), SHADOW] }, { onlyScript: ORCHESTRATOR_SERVICE, token: "rescue-token" });
+    const run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_r13", NEW, rescueChoiceFor(), { sleep: async () => undefined });
+    assert.deepEqual([run.ok, run.reason, cf.uploads.length], [false, "service_binding_undeclared:SHADOW", 0]);
   }
 });
 
-test("BP14. rescue: its client may also read the account's script list (only that), restores a missing binding to a listed Worker, and drops a named undeclared one", async () => {
+test("BP14. rescue: its client may also read the account's script list (only that), and restores a missing binding only to a listed Worker", async () => {
   const noSleep = { sleep: async () => undefined };
   const rescueFake = (active: BindingRecord[], listed?: string[]) =>
     fakeCloudflare({ [ORCHESTRATOR_SERVICE]: active }, { onlyScript: ORCHESTRATOR_SERVICE, token: "rescue-token", ...(listed ? { listed } : {}) });
@@ -751,6 +706,11 @@ test("BP14. rescue: its client may also read the account's script list (only tha
   cf = rescueFake(deployedFrom(ORCH_TOML).filter((x) => x.name !== "AGENTS"), [ORCHESTRATOR_SERVICE]);
   run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_l2", NEW, rescueChoiceFor(), noSleep);
   assert.deepEqual([run.ok, run.reason, cf.uploads.length], [false, "service_binding_target_missing:AGENTS", 0]);
+  // A props-only repair reads no list (the target is the one production already binds).
+  cf = rescueFake(withField(deployedFrom(ORCH_TOML), "AGENTS", { props: { host_worker: "x" } }), []);
+  run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_l3", NEW, rescueChoiceFor(), noSleep);
+  assert.equal(run.ok, true, run.reason);
+  assert.equal(cf.calls.filter((c) => c === "GET scripts").length, 0);
 
   // Every other address is refused before any request: another script, a write to the list, another account, a traversal.
   let fetched = 0;
@@ -772,32 +732,26 @@ test("BP14. rescue: its client may also read the account's script list (only tha
   assert.equal(fetched, 0, "nothing was sent");
   assert.deepEqual(await client.scriptIds(), []);
   assert.equal(fetched, 1, "the list itself is allowed");
+});
 
-  // A named undeclared binding of the Orchestrator: audited first, dropped, verified gone.
-  const ITEM = `service_binding_removal:${ORCHESTRATOR_SERVICE}:SHADOW`;
-  const audited: string[] = [];
-  cf = rescueFake([...deployedFrom(ORCH_TOML), SHADOW]);
-  run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_l3", NEW, rescueChoiceFor(),
-    { ...noSleep, namedTopology: [ITEM], auditRemoval: async (item) => { audited.push(item); return true; } });
-  assert.equal(run.ok, true, run.reason);
-  assert.deepEqual(audited, [ITEM]);
-  assert.ok(!cf.activeBindings(ORCHESTRATOR_SERVICE).some((x) => x.name === "SHADOW"));
-  assert.deepEqual(cf.uploads[0].metadata.bindings, ORCH_DECLARED);
-  assert.ok(run.steps.includes(`${ORCHESTRATOR_SERVICE}:service_binding_removed:SHADOW`));
-  assert.deepEqual(run.destructive_topology_applied, [ITEM]);
-  // Without the audit, unnamed, or named but not pending: refused before any upload.
-  for (const [label, active, o, reason] of [
-    ["no audit", [...deployedFrom(ORCH_TOML), SHADOW], { namedTopology: [ITEM] }, `destructive_audit_unavailable: ${ITEM}`],
-    ["audit failed", [...deployedFrom(ORCH_TOML), SHADOW], { namedTopology: [ITEM], auditRemoval: async () => false }, `destructive_audit_unavailable: ${ITEM}`],
-    ["unnamed", [...deployedFrom(ORCH_TOML), SHADOW], {}, undeclaredRefusal(ORCHESTRATOR_SERVICE, "SHADOW")],
-    ["not pending", deployedFrom(ORCH_TOML), { namedTopology: [ITEM], auditRemoval: async () => true }, `named_topology_not_pending:${ITEM}`],
-  ] as Array<[string, BindingRecord[], Record<string, unknown>, string]>) {
-    cf = rescueFake(active);
-    run = await executeRescueDeploy(new RescueCloudflare("rescue-token", ACCOUNT, cf.fetcher), rescueEnv, "dep_l4", NEW, rescueChoiceFor(), { ...noSleep, ...o });
-    assert.deepEqual([run.ok, run.reason, cf.uploads.length], [false, reason, 0], label);
-  }
-  // The rescue applies no other destructive topology item: the plan step refuses it as not pending.
-  const src = read("workers/control-plane-shared/src/executor-rescue.ts");
-  assert.match(src, /bg\.destructive_topology\.find\(\(i\) => !i\.startsWith\(`service_binding_removal:\$\{ORCHESTRATOR_SERVICE\}:`\)\)/);
-  assert.match(src, /refuse\("named_topology_not_pending", \{ item: notOurs \}\)/);
+test("BP15. rescue applies no topology change: an Orchestrator plan naming any destructive_topology item is refused, not run with it ignored", async () => {
+  const db = migratedDb();
+  const now = (() => { const t = Math.ceil(Date.now() / 60_000) * 60_000; for (let i = 0; i < 60; i++) { const c = t + i * 60_000; if ((RESCUE_MINUTES as readonly number[]).includes(new Date(c).getUTCMinutes())) return c + 5_000; } throw new Error("no minute"); })();
+  const planId = "plan_bp15";
+  const decisionId = "dec_bp15";
+  const steps = { steps: [{ action: "force_redeploy_unit", description: "rescue", destructive_topology: [`workers_dev_disable:${ORCHESTRATOR_SERVICE}`] }] };
+  const at = new Date(now - 60_000).toISOString();
+  db.raw.prepare(`INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, approved_by, created_by, last_execution_json, created_at, updated_at)
+    VALUES (?, ?, ?, 'executing', ?, 'owner@example.com', 'ops@example.com', ?, ?, ?)`).run(planId, ORCHESTRATOR_SERVICE, NEW, JSON.stringify(steps), JSON.stringify({ policy_decision_id: decisionId }), at, at);
+  db.raw.prepare(`INSERT INTO policy_decisions (decision_id, subject, action, resource, decision, reason, evidence_json, created_at) VALUES (?, 'ops@example.com', 'recovery.execute', ?, 'allow', 'ok', '{}', ?)`)
+    .run(decisionId, planId, at);
+  let fetched = 0;
+  const env = { DB: db as never, BUNDLES: bucket(), DRIFT: rescueEnv.DRIFT, REGISTRY: rescueEnv.REGISTRY, CF_ORCHESTRATOR_DEPLOY_TOKEN: "rescue-token", CF_ACCOUNT_ID: ACCOUNT };
+  const out = await rescueForRecovery(env as never, planId, decisionId, { now, fetcher: (async () => { fetched++; return Response.json({ success: false }); }) as typeof fetch });
+  assert.equal(out.status, "failed");
+  assert.match((out as { detail: string }).detail, /^rescue deploy refused: named_topology_not_pending \(workers_dev_disable:cryptophys-deployment-orchestrator; the rescue deploy applies no topology change\); nothing in production changed$/);
+  assert.equal(fetched, 0, "no Cloudflare call");
+  const refused = events(db, "deployment.rescue_refused");
+  assert.deepEqual(refused.map((x) => [x.payload.reason, x.payload.item]), [["named_topology_not_pending", `workers_dev_disable:${ORCHESTRATOR_SERVICE}`]]);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM deployment_requests").get() as any).n, 0, "no request claimed");
 });

@@ -27,20 +27,13 @@
 // (deployment-orchestrator/src/topology.ts); an unnamed one keeps its refusal, and a named one that no Worker of the unit
 // changes refuses the deploy (`named_topology_not_pending`). Each is audited before it is applied; the owner notice
 // lists what no restore can give back.
-//
-// 2026-11-16 (owner "sesuai rekomendasimu"): the item `service_binding_removal:<worker>:<BINDING>` drops an active
-// service binding the Worker's wrangler.toml (as the Forge stored it for main) does not declare, which every other deploy
-// refuses. It is pending only when <worker> is a Worker of the unit and its active version binds <BINDING> as an
-// undeclared service binding (read here with `cf`, and again by the executor right before the upload); otherwise the
-// deploy is refused as `named_topology_not_pending`. The executor audits it before the upload and verifies it gone.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { forgeReady } from "../../control-plane-shared/src/forge-gate.ts";
 import { approvedBreakGlassPlan } from "../../control-plane-shared/src/break-glass.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
-import { declaredServiceBindingsFromToml, removalItem, serviceBindingDrift } from "../../control-plane-shared/src/service-bindings.ts";
 import {
-  appliedMigrations, MIGRATING_UNIT, nativeDeployEligible, readConfig, readManifest, readMigration,
+  appliedMigrations, MIGRATING_UNIT, nativeDeployEligible, readManifest, readMigration,
   type BundleReader, type PlannedMigration, type PlannedService, type RestorePoint, type VersionReader,
 } from "./native-deploy.ts";
 import { restoreCommand } from "../../control-plane-shared/src/destructive-deploy.ts";
@@ -133,21 +126,6 @@ export async function breakGlassChoice(env: { DB: D1Database; BUNDLES?: BundleRe
   if (!e.eligible) return { ok: false, reason: e.reason, ...(e.service ? { service: e.service } : {}), ...(e.file ? { file: e.file } : {}) };
   // Every item the owner approved must be a destructive change of this deploy: else the plan no longer matches main.
   const present = new Set(e.services.flatMap((s) => s.config?.destructive ?? []));
-  // Named service binding removals: pending only while the Worker's active version binds the binding undeclared.
-  for (const item of namedTopology.filter((i) => i.startsWith("service_binding_removal:"))) {
-    const [, worker, binding] = item.split(":");
-    const planned = e.services.find((s) => s.service === worker);
-    if (!planned || !cf) continue;
-    try {
-      const active = await cf.active(worker);
-      if (active.length !== 1 || active[0].percentage !== 100) continue;
-      const record = await cf.version(worker, active[0].version_id);
-      const cfg = await readConfig(env.BUNDLES, sha, planned.worker);
-      const declared = "toml" in cfg ? declaredServiceBindingsFromToml(cfg.toml) : null;
-      const drift = declared && "bindings" in declared ? serviceBindingDrift(declared.bindings, record.resources?.bindings) : null;
-      if (drift?.undeclared.includes(binding) && removalItem(worker, binding) === item) present.add(item);
-    } catch { /* unreadable: not shown pending, so refused below */ }
-  }
   const stale = namedTopology.find((i) => !present.has(i));
   if (stale) return { ok: false, reason: "named_topology_not_pending", item: stale };
   return { ok: true, services: e.services, migrations: m.migrations };
