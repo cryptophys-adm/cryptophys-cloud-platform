@@ -114,5 +114,5 @@ test("I6. SSOT: a dashboard secret or variable change reads as observed_version_
   const ssot = read("docs/SSOT.md");
   assert.match(ssot, /dashboard secret or variable change creates an untagged Worker version/);
   assert.match(ssot, /observed_version_unavailable/);
-  assert.match(ssot, /a 66-route allow-list/);
+  assert.match(ssot, /a 68-route allow-list/);
 });

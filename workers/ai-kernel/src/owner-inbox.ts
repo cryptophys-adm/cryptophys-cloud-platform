@@ -30,6 +30,7 @@ import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } fr
 import { resolvedLaterSql } from "./syscall.ts";
 import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 import { latestGitBackupVerify } from "../../control-plane-shared/src/git-backup.ts";
+import { readIdentitySource } from "../../control-plane-shared/src/identity-source.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -57,7 +58,7 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid";
 /** The Orchestrator's own failed native deploy of its unit is listed this long, unless a later deploy of it succeeded. */
 export const EXECUTOR_FAILURE_WINDOW_MS = 24 * 3_600_000;
 export interface ProductionProblem {
@@ -222,6 +223,12 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     Orchestrator (control-plane-shared/src/executor-rescue.ts). A desired version recorded for the Orchestrator since
  *     closes it. The subject is the failed request, so one message.
  *  A succeeded rescue deploy is a break_glass_deployed item too (its warning report comes from the Recovery Manager).
+ * 11. identity_source_invalid (owner 2026-11-16, migration 0073): the row of D1 `platform_identities`, the owner's
+ *     operator and approver emails, is not one the Console's save would write (control-plane-shared/src/identity-source.ts:
+ *     an email that is not valid, duplicates, the two lists differ, an unknown source). The native deploy then deploys
+ *     nothing from it and carries every Worker's active identity lists, so an owner's edit would silently not apply;
+ *     this item says so. One item (subject: the table); it closes when an owner saves a valid list. No row and the seed
+ *     are not problems: the deploys carry the deployed lists, as before.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -359,5 +366,15 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }
   } catch { executor = []; }
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...backups, ...executor];
+  let identities: ProductionProblem[] = [];
+  const src = await readIdentitySource(db);
+  if (src.status === "invalid") {
+    identities = [{
+      code: "identity_source_invalid", subject: "platform_identities",
+      detail: `The operator and approver email list (revision ${src.revision ?? "unknown"}) is not valid (${src.reason}); the deploys keep each Worker's current identity lists and apply nothing from it. Save a valid list on the Users page`,
+      since: src.updated_at, link: "#/users",
+    }];
+  }
+
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...backups, ...executor, ...identities];
 }

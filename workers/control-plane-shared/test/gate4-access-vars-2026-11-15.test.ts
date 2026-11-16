@@ -487,9 +487,11 @@ test("G4-5b. eligibility refuses the same way, read only, so the unit stays on i
 
 test("G4-6. wiring: the planned deploy gets both gate-4 checks once the owner sets the token; the break-glass deploy keeps its own rules", () => {
   const src = read("workers/deployment-orchestrator/src/index.ts");
-  assert.match(src, /nativeDeployEligible\(env, unit, sha, new CloudflareWorkers\([^)]*\), gate4Eligibility\(env\)\)/);
-  assert.match(src, /nativeDeployEligible\(env, unitForService\(r\.service_id\)!, r\.requested_version, cf, gate4Eligibility\(env\)\)/);
-  assert.match(src, /isBreakGlass \? \{ destructive: named \} : \{ \.\.\.gate4Eligibility\(env\), \.\.\.gate4Smoke\(env, fetcher, opts\.delayMs\) \}/);
+  // Owner 2026-11-16: gate4Deploy is gate4Eligibility plus the identity table (identity-lists-2026-11-16.test.ts).
+  assert.match(src, /const g = gate4Eligibility\(env\);\n  if \(!g\.deployVars\) return g;/);
+  assert.match(src, /nativeDeployEligible\(env, unit, sha, new CloudflareWorkers\([^)]*\), await gate4Deploy\(env\)\)/);
+  assert.match(src, /nativeDeployEligible\(env, unitForService\(r\.service_id\)!, r\.requested_version, cf, await gate4Deploy\(env\)\)/);
+  assert.match(src, /isBreakGlass \? \{ destructive: named \} : \{ \.\.\.\(await gate4Deploy\(env\)\), \.\.\.gate4Smoke\(env, fetcher, opts\.delayMs\) \}/);
   assert.match(src, /reason === "access_service_token_not_set"\) return \{\};/);
   const nd = read("workers/deployment-orchestrator/src/native-deploy.ts");
   // The smoke tests run after the live check and before new schedules; the unit's step before the desired version.

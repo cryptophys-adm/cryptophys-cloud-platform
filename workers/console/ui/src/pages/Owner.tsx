@@ -50,6 +50,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   deploys_stalled: "deploys stalled",
   git_backup_unverified: "git backup failed verify",
   executor_deploy_failed: "deploy executor blocked",
+  identity_source_invalid: "identity list invalid",
 };
 
 /** One production problem no agent is handling: what, since when, and the page with the evidence. */

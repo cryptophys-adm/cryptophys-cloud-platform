@@ -12,6 +12,7 @@ import { forgeMainHead, forgePendingDeploys, forgeReady } from "../../control-pl
 import { CloudflareWorkers, executeRollback, NATIVE_EXECUTOR, nativeRollbackConfigured, SAFE_MINUTES, type NativeRollbackEnv } from "./native-rollback.ts";
 import type { DeployVarReference } from "./deploy-vars.ts";
 import { SmokeRunner, smokeToken } from "./native-smoke.ts";
+import { readIdentitySource, seedIdentitySource, type SeedOutcome } from "../../control-plane-shared/src/identity-source.ts";
 import { appliedMigrations, executeNativeDeploy, NATIVE_DEPLOY_EXECUTOR, nativeDeployConfigured, nativeDeployEligible, readManifest, readMigration, type BundleReader, type DeployRun, type PlannedMigration, type PlannedService, type RestorePoint } from "./native-deploy.ts";
 import { readD1RestorePoint } from "./d1-restore-point.ts";
 import { D1_BOOKMARK_PERMISSION, DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployParams, restoreCommand, type NamedDestructive } from "../../control-plane-shared/src/destructive-deploy.ts";
@@ -278,7 +279,7 @@ type NativeChoice = { eligible: true; services: PlannedService[]; migrations: Pl
  */
 async function nativeDeployChoice(env: Env, unit: DeployUnit, sha: string): Promise<NativeChoice> {
   if (!nativeDeployConfigured(env)) return { eligible: false, reason: "not_configured" };
-  const e = await nativeDeployEligible(env, unit, sha, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!), gate4Eligibility(env));
+  const e = await nativeDeployEligible(env, unit, sha, new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!), await gate4Deploy(env));
   return e.eligible
     ? { eligible: true, services: e.services, migrations: e.migrations }
     : { eligible: false, reason: e.reason, ...(e.service ? { service: e.service } : {}), ...(e.file ? { file: e.file } : {}) };
@@ -293,6 +294,28 @@ function gate4Eligibility(env: Env): { deployVars?: DeployVarReference } {
   const t = smokeToken(env);
   if ("reason" in t && t.reason === "access_service_token_not_set") return {};
   return { deployVars: { ACCESS_TEAM_DOMAIN: env.ACCESS_TEAM_DOMAIN, ACCESS_AUD: env.ACCESS_AUD, CF_ACCOUNT_ID: env.CF_ACCOUNT_ID, ...("id" in t ? { CI_CLIENT_ID: t.id } : {}) } };
+}
+/**
+ * Owner 2026-11-16: gate 4's reference plus the identity lists' native source, D1 `platform_identities`
+ * (control-plane-shared/src/identity-source.ts), read at each eligibility check and again right before the executor
+ * runs. No row or the seed: the identity lists are carried as before; an owner-saved row: the expected values are built
+ * from it; an invalid or unreadable row: carried, and the Owner page lists identity_source_invalid.
+ */
+export async function gate4Deploy(env: Env): Promise<{ deployVars?: DeployVarReference }> {
+  const g = gate4Eligibility(env);
+  if (!g.deployVars) return g;
+  return { deployVars: { ...g.deployVars, IDENTITIES: await readIdentitySource(env.DB) } };
+}
+/**
+ * Owner 2026-11-16: the one-time seed of the identity table, from the Orchestrator's own active version (its
+ * OPERATOR_IDENTITIES and APPROVER_IDENTITIES, the values the workflows deployed), so the Console shows the current
+ * list. Only when no row exists, and only a list that reproduces those values exactly. A seed changes no deployed
+ * value: the native deploy carries the active values until an owner saves the list.
+ */
+export async function seedIdentities(env: Env): Promise<SeedOutcome> {
+  if (!env.DB) return { seeded: false, reason: "no_database" };
+  const t = smokeToken(env);
+  return seedIdentitySource(env.DB, { OPERATOR_IDENTITIES: env.OPERATOR_IDENTITIES, APPROVER_IDENTITIES: env.APPROVER_IDENTITIES }, "id" in t ? t.id : undefined, "agent:deployment-orchestrator");
 }
 const gate4Smoke = (env: Env, fetcher: typeof fetch, delayMs?: number) => {
   const runner = new SmokeRunner(env, fetcher, delayMs !== undefined ? { delayMs } : {});
@@ -600,7 +623,7 @@ export async function deployDestructiveForConsensus(env: Env, proposalId: string
   };
   try { await forgeDecision(env, sha); } catch (err) { return refuse(String((err as Error)?.message ?? err).slice(0, 120)); }
   const cf = new CloudflareWorkers(env.CF_DEPLOY_TOKEN!, env.CF_ACCOUNT_ID!, fetcher);
-  const choice = await nativeDeployEligible(env, unit, sha, cf, { ...gate4Eligibility(env), destructive: named });
+  const choice = await nativeDeployEligible(env, unit, sha, cf, { ...(await gate4Deploy(env)), destructive: named });
   if (!choice.eligible) return refuse(choice.reason, { ...(choice.service ? { service: choice.service } : {}), ...(choice.file ? { file: choice.file } : {}) });
   const mismatch = namedMismatch(choice.migrations, d.destructive_migrations);
   if (mismatch) return refuse(mismatch.reason, { file: mismatch.file });
@@ -1174,8 +1197,8 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
           // Gate 4 part A: the deploy-time values are checked on the planned path (a destructive deploy included).
           // Gate 2026-11-15: a destructive deploy plans with exactly the owner-approved files allowed, each with its SQL.
           const e = isDestructive
-            ? await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, { ...gate4Eligibility(env), destructive: named })
-            : await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, gate4Eligibility(env));
+            ? await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, { ...(await gate4Deploy(env)), destructive: named })
+            : await nativeDeployEligible(env, unitForService(r.service_id)!, r.requested_version, cf, await gate4Deploy(env));
           const changed = e.eligible && isDestructive ? namedMismatch(e.migrations, approved) : null;
           if (changed) refusal = "not_eligible: " + changed.reason + " (" + changed.file + ")";
           else if (e.eligible) { plan = e.services; migrations = e.migrations; }
@@ -1242,7 +1265,7 @@ export async function runNativeExecutors(env: Env, now = Date.now(), fetcher: ty
       // (executeNativeDeploy); a routine deploy names none.
       run = await executeNativeDeploy(cf, { DRIFT: env.DRIFT!, REGISTRY: env.REGISTRY!, BUNDLES: env.BUNDLES!, DB: env.DB }, r.request_id, r.requested_version, plan, {
         ...opts, migrations,
-        ...(isBreakGlass ? { destructive: named } : { ...gate4Eligibility(env), ...gate4Smoke(env, fetcher, opts.delayMs) }),
+        ...(isBreakGlass ? { destructive: named } : { ...(await gate4Deploy(env)), ...gate4Smoke(env, fetcher, opts.delayMs) }),
         ...(isDestructive ? { destructive: named } : {}),
         ...(isBreakGlass || isDestructive ? { restorePoint: restorePointReader(env, cf, fetcher) } : {}),
         destructiveTopology: namedTopology,
@@ -1682,6 +1705,8 @@ export default {
     ctx.waitUntil(runNativeExecutors(env, at).then(() => undefined, log("native_executor_failed")));
     // Hardening (d): a succeeded break-glass deploy's owner notice closes after 24 hours (a "Resolved:" report).
     if (minute === 10 || minute === 40) ctx.waitUntil(resolveBreakGlassNotices(env.DB, env.AGENTS, at).then(() => undefined, log("break_glass_resolve_failed")));
+    // Owner 2026-11-16: the identity table's one-time seed (a no-op once any row exists).
+    if (minute === 10 || minute === 40) ctx.waitUntil(seedIdentities(env).then(() => undefined, log("identity_seed_failed")));
   },
 };
 
