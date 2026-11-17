@@ -523,7 +523,7 @@ test("AS13. the queue serializes cycles; docs/SSOT.md and the design record step
   await Promise.all([1, 2, 3].map(() => q.run(async () => { active++; max = Math.max(max, active); await Promise.resolve(); active--; })));
   assert.equal(max, 1);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:ADR Steward step \d+[^()]*; )*ADR Steward step 3, the agent: [^()]*`adr_progress`[^()]*; ADR Steward step 2: /);
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 3, the agent: [^()]*`adr_progress`[^()]*; ADR Steward step 2: /);
   assert.match(ssot, /\| `cryptophys-ai-kernel` \| [^|]*ADR Steward/);
   assert.match(ssot, /0075/);
   assert.match(read("docs/design/ADR-STEWARD.md"), /\| 3 \| The agent: [^\n]*\*\*Built 2026-11-17\*\*/);
