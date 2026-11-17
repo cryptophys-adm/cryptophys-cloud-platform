@@ -47,4 +47,6 @@ body {
   .tbl-dense td { @apply py-1.5; }
   .tbl tr.is-open td { @apply bg-white/[0.03]; }
   .tbl tr.is-detail td { @apply bg-black/30; white-space: normal; }
+  /* ADR Steward step 5: the asserted share of an ADR's progress bar is hatched, the proven share solid (ADR-STEWARD.md §6.4). */
+  .adr-hatch { background-image: repeating-linear-gradient(135deg, rgba(251, 191, 36, 0.7) 0 2px, rgba(251, 191, 36, 0.12) 2px 5px); }
 }

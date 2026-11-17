@@ -24,7 +24,9 @@ const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   const id = parts[1] && SAFE.test(parts[1]) ? parts[1] : undefined;
-  return { head: parts[0] ?? "", id };
+  // A third segment, for #/vision/adr/<id> (ADR Steward step 5).
+  const sub = id && parts[2] && SAFE.test(parts[2]) ? parts[2] : undefined;
+  return { head: parts[0] ?? "", id, sub };
 }
 
 export default function App() {
@@ -34,7 +36,7 @@ export default function App() {
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
-  const { head, id } = route;
+  const { head, id, sub } = route;
   let page; let current = head;
   switch (head) {
     // Owner 2026-11-11: the Metabolism page duplicated Organism and is removed; an old #/metabolism link lands on Organism.
@@ -42,8 +44,9 @@ export default function App() {
     case "metabolism": page = <Organism />; current = "organism"; break;
     // Owner 2026-11-13: the one page where the platform needs a person; every owner email and Telegram message links here.
     case "owner": page = <Owner />; break;
-    // ADR-0016 T0: the organism's vision (mission, identity, constitution, goals and KPIs), read-only.
-    case "vision": page = <Vision />; break;
+    // ADR-0016 T0: the organism's vision (mission, identity, constitution, goals and KPIs), read-only, with the ADR
+    // Steward's panel: #/vision/adr scrolls to it and #/vision/adr/<id> opens that ADR's row.
+    case "vision": page = <Vision section={id} item={sub} />; break;
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;

@@ -1,6 +1,8 @@
 import { Compass, Flag, Landmark, Target } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "../components/ui";
+import AdrPanel from "../components/AdrPanel";
 import { call } from "../lib/api";
+import { openAdrId } from "../lib/adr";
 import { usePoll } from "../lib/usePoll";
 
 // ADR-0016 (Telos) T0: the organism's vision, read-only. Everything on this page comes from GET /v1/vision on the
@@ -25,7 +27,8 @@ function Value({ label, v }: { label: string; v: unknown }) {
   );
 }
 
-export default function Vision() {
+/** `#/vision/adr` scrolls to the ADR panel and `#/vision/adr/<id>` opens that row (ADR-STEWARD.md §6.2). */
+export default function Vision({ section, item }: { section?: string; item?: string }) {
   const { data, loading, error } = usePoll(() => call("kernel.vision"), 0);
   const v: any = data?.vision ?? null;
   const problems = arr(data?.problems);
@@ -93,6 +96,8 @@ export default function Vision() {
           )}
         </Panel>
       </>)}
+      {/* ADR Steward step 5: below Goals and KPIs, and shown even when no valid vision is served (§6.2). */}
+      <AdrPanel focus={section === "adr"} openId={openAdrId(section, item)} />
     </div>
   );
 }

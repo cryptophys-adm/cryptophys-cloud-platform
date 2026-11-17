@@ -119,7 +119,7 @@ test("V4. GET /v1/vision on the AI Kernel: operators read the bundled vision, va
 test("V5. the Console's Vision page: one read-only route, in the nav, measured values only, rendered by the smoke test", () => {
   assert.deepEqual(UI_ROUTES.find((r) => r.id === "kernel.vision"), { id: "kernel.vision", service: "kernel", method: "GET", path: "/v1/vision", approverOnly: false, confirm: null });
   assert.deepEqual(CONSOLE_ALLOW_LIST.filter((a) => a.path.startsWith("/v1/vision")), [{ service: "kernel", method: "GET", path: "/v1/vision" }]);
-  assert.match(read("workers/console/ui/src/App.tsx"), /case "vision": page = <Vision \/>; break;/);
+  assert.match(read("workers/console/ui/src/App.tsx"), /case "vision": page = <Vision section=\{id\} item=\{sub\} \/>; break;/, "the page, with #/vision/adr/<id> (ADR Steward step 5)");
   assert.match(read("workers/console/ui/src/components/AppShell.tsx"), /\{ label: "Vision", href: "#\/vision", key: "vision", icon: Compass \}/);
   const page = read("workers/console/ui/src/pages/Vision.tsx");
   assert.deepEqual([...page.matchAll(/\b(?:call|act)\(\s*(?:\{\s*route:\s*)?"([a-z_.]+)"/g)].map((m) => m[1]), ["kernel.vision"], "one read, no action");

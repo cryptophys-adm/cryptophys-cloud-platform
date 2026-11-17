@@ -296,6 +296,38 @@ MOCK["/api/kernel/v1/vision"] = { schema: "organism.vision-view.v1", source: "or
         { id: "agent_grounding_rate", baseline: null, target: 0.95, source: "metric_shadow" }], evidence: "owner 2026-11-14: AI must interpret metrics, not narrate" },
       { id: "g-self-knowledge", horizon: "now", organs: ["Forge", "Observer"], kpis: [{ id: "undeclared_components", baseline: 3, target: 0, source: "census inventory diff" }], evidence: "owner 2026-11-13/14" },
     ] } } };
+// ADR Steward step 5: the Vision page's ADR panel reads GET /v1/adr (kernel.adr) and an open row's GET /v1/adr/{id}
+// (kernel.adr_one). Every number and label comes from these responses; a planned ADR without phases draws no bar.
+const ADR_STEWARD = { agent_id: "adr-steward", status: "enabled", last_pass_at: "2026-11-17T22:37:00.000Z", last_full_pass_at: "2026-11-17T22:37:00.000Z", deployed_commit: "abc1234def56", ai_today: { used: null, cap: null } };
+const adrEntry = (o) => ({ title: null, lifecycle: "accepted", deferred: false, superseded_by: null, status: "in_progress", phases_total: 0, phases_proven: 0, phases_asserted: 0, percent: 0, percent_proven: 0,
+  next_step: null, blockers: [], owner_actions: [], drift_count: 0, stale: false, revision: 1, changed_at: "2026-11-17T08:00:00.000Z",
+  explanation: { schema: "adr.explanation.v1", source: "template", teks: `${o.adr}: teks otomatis.`, rujukan: [] }, ...o });
+const ADR_ROWS = [
+  adrEntry({ adr: "0001", title: "Cloudflare-native runtime", status: "done", phases_total: 1, phases_proven: 1, percent: 100, percent_proven: 100 }),
+  adrEntry({ adr: "0012", title: "Leave GitHub — the Forge, with a title long enough to wrap on a phone screen", status: "in_progress", phases_total: 26, phases_proven: 12, phases_asserted: 6, percent: 69, percent_proven: 46,
+    next_step: { phase: "G4B", text: "First live run of a part B path" }, blockers: ["G4B: built, not yet run live", "G10: built, not yet run live", "W24: earliest 2026-11-17T14:12Z"],
+    owner_actions: [{ phase: "G10", text: "Approve the first native retirement when one is proposed", href: "#/owner", outside_platform: false, proposal_id: null }], revision: 14, changed_at: "2026-11-17T21:56:00.000Z",
+    explanation: { schema: "adr.explanation.v1", source: "template", teks: "0012: 18 dari 26 fase lengkap (12 terbukti, 6 dinyatakan dokumen). Terbuka: G4B, G10, W24 (paling cepat 2026-11-17 14:12 UTC). Berikutnya: G4B.", rujukan: [] } }),
+  adrEntry({ adr: "0014", title: "Evolution loop", lifecycle: "deferred", deferred: true, status: "in_progress", phases_total: 9, phases_proven: 1, percent: 11, percent_proven: 11, next_step: { phase: "E0", text: "intents" } }),
+  adrEntry({ adr: "0018", title: "External organs", lifecycle: "held", status: "held", phases_total: 5, phases_proven: 0, phases_asserted: 1, percent: 20, percent_proven: 0, next_step: { phase: "X3", text: "registry CR" } }),
+  adrEntry({ adr: "0019", title: "AI Mesh program", lifecycle: "planned", status: "planned" }),
+];
+MOCK["/api/kernel/v1/adr"] = { schema: "adr.progress-view.v1", available: true, steward: ADR_STEWARD, adrs: ADR_ROWS };
+MOCK["/api/kernel/v1/adr/0012"] = { schema: "adr.progress-doc.v1", adr: "0012", title: ADR_ROWS[1].title, lifecycle: "accepted", deferred: false, superseded_by: null, status: "in_progress",
+  phases_total: 26, phases_complete: 18, phases_proven: 12, phases_asserted: 6, phases_doc_asserted: 6, phases_external_asserted: 0, percent: 69, percent_proven: 46,
+  phases: [
+    { id: "G1", group: "gates", title: "Gate 1", weight: 1, state: "doc_asserted", reason: null, refs: ["ev:platform/doc/docs-GITHUB-CUTOVER.md"], built: true, depends_on: [], doc_claim: "done", drift: null, blockers: [], earliest: null },
+    { id: "G2", group: "gates", title: "Gate 2: the council merges", weight: 1, state: "proven", reason: null, refs: ["ev:platform/consensus/cns_00000000-0000-4000-8000-000000000001"], built: true, depends_on: [], doc_claim: "done", drift: null, blockers: [], earliest: null },
+    { id: "G4B", group: "gates", title: "Gate 4 part B: routes, DO migrations, Workflows natively", weight: 1, state: "open", reason: "built, not yet run live", refs: [], built: true, depends_on: [], doc_claim: "built", drift: null, blockers: ["G4B: built, not yet run live"], earliest: null },
+    { id: "W24", group: "window", title: "The 24 h window", weight: 1, state: "open", reason: "quiet window", refs: [], built: true, depends_on: [], doc_claim: null, drift: null, blockers: ["W24: earliest 2026-11-17T14:12Z"], earliest: "2026-11-17T14:12:00.000Z" },
+  ],
+  blockers: ["G4B: built, not yet run live", "G10: built, not yet run live", "W24: earliest 2026-11-17T14:12Z", "GB: the GitHub side is not dated"],
+  next_step: { phase: "G4B", text: "First live run of a part B path" },
+  owner_actions: [{ phase: "G10", text: "Approve the first native retirement when one is proposed", href: "#/owner", outside_platform: false, proposal_id: null },
+    { phase: "GB", text: "Delete GH_ACTIONS_TOKEN on the Orchestrator, then archive the GitHub repository", href: null, outside_platform: true, proposal_id: null }],
+  drift: [], stale: false, stale_sources: [], manifest_sha256: "0".repeat(64), deployed_commit: "abc1234def56",
+  revision: 14, changed_at: "2026-11-17T21:56:00.000Z", explanation: ADR_ROWS[1].explanation,
+  history: [{ revision: 14, status: "in_progress", percent: 69, created_at: "2026-11-17T21:56:00.000Z" }, { revision: 13, status: "in_progress", percent: 65, created_at: "2026-11-17T09:00:00.000Z" }] };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -433,6 +465,76 @@ for (const width of [390, 1440]) {
     await page.close();
   }
 }
+// ADR Steward step 5 (docs/design/ADR-STEWARD.md §6): the Vision page's ADR panel, filled, with a row opened by
+// #/vision/adr/0012, and its honest states: no pass yet (an empty list), no table yet (available: false), and the
+// Steward not registered or suspended. The proven share of a bar is solid and the asserted share hatched; a planned
+// ADR without phases draws no bar; an empty or unavailable list shows no number at all.
+const ADR_PANEL_TITLE = "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)";
+const adrList = (o) => ({ schema: "adr.progress-view.v1", available: true, steward: ADR_STEWARD, adrs: ADR_ROWS, ...o });
+const ADR_CHECKS = [
+  { name: "filled", hash: "vision", override: {},
+    want: [ADR_PANEL_TITLE, "baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui 2026-11-17 22:37 UTC", "Steward: aktif", "selesai", "berjalan (18 dari 26 fase)", "69%", "46% terbukti",
+      "ditunda", "ditahan (1 dari 5 fase)", "direncanakan", "Menunggu klik pemilik: 1", "First live run of a part B path"],
+    not: ["Belum ada pass Steward", "Steward belum berjalan", "tidak dikenali"], numbers: true },
+  { name: "open row", hash: "vision/adr/0012", override: {}, open: "0012",
+    want: [ADR_PANEL_TITLE, "Fase", "G1 ◆", "G2 ●", "G4B ○", "terbukti", "dinyatakan dokumen", "terbuka", "Penghambat", "GB: the GitHub side is not dated", "Langkah berikutnya", "Menunggu klik pemilik → Buka halaman Owner",
+      "di luar platform", "rev 14 · 2026-11-17 21:56 UTC", "rev 13 · berjalan · 65%", "Penjelasan (teks otomatis)", "0012: 18 dari 26 fase lengkap", "paling cepat 2026-11-17 14:12 UTC", "ev:consensus/cns_00000000…", "Gate 4 part B"],
+    not: ["tidak dapat dibaca"], numbers: true },
+  { name: "no pass yet", hash: "vision/adr", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
+    want: [ADR_PANEL_TITLE, "Belum ada pass Steward", "diperbarui —", "Steward: aktif"], not: ["selesai", "berjalan", "terbukti", "0012"] },
+  { name: "unavailable", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ available: false, steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
+    want: [ADR_PANEL_TITLE, "Steward belum berjalan", "Steward: belum terdaftar", "Steward belum terdaftar: tidak ada pass baru."], not: ["Belum ada pass Steward", "selesai", "berjalan (", "terbukti", "Steward: aktif"] },
+  { name: "not registered", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
+    want: ["Belum ada pass Steward", "Steward: belum terdaftar"], not: ["Steward: aktif", "Steward belum berjalan"] },
+  { name: "suspended", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "suspended" } }) },
+    want: ["Steward: ditangguhkan", "Steward ditangguhkan: tidak ada pass baru; yang tampil adalah dokumen tersimpan terakhir (pass terakhir 2026-11-17 22:37 UTC)", "berjalan (18 dari 26 fase)"], not: ["Steward: aktif"], numbers: true },
+  // The Vision page's own panels fail to load: the ADR panel still renders (§6.2).
+  { name: "no vision", hash: "vision", override: { "/api/kernel/v1/vision": { schema: "organism.vision-view.v1", status: "invalid", vision: null, problems: ["vision.schema: x"] } },
+    want: [ADR_PANEL_TITLE, "berjalan (18 dari 26 fase)"], not: [], numbers: true },
+];
+for (const width of [390, 1440]) {
+  for (const check of ADR_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const requested = [];
+    page.on("pageerror", (e) => problems.push(`${width}px adr/${check.name} page error: ${e.message}`));
+    page.on("request", (r) => requested.push(new URL(r.url()).pathname));
+    await page.goto(`${base}#/${check.hash}`);
+    await page.waitForTimeout(800);
+    if (check.open) {
+      // The phase chips expand to the phase list.
+      await page.click(`[data-testid="adr-detail-${check.open}"] button[aria-expanded]`);
+      await page.waitForTimeout(200);
+    }
+    const panel = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="adr-panel"]');
+      if (!el) return null;
+      const seg = (k) => [...el.querySelectorAll(`[data-adr-seg="${k}"]`)];
+      return { text: el.textContent ?? "", proven: seg("proven").length, hatched: seg("asserted").filter((s) => getComputedStyle(s).backgroundImage.includes("repeating-linear-gradient")).length,
+        asserted: seg("asserted").length, dashed: ["0018", "0019"].filter((id) => document.getElementById(`adr-${id}`)?.className.includes("border-dashed")).length,
+        planned: document.getElementById("adr-0019")?.textContent ?? null, top: el.getBoundingClientRect().top,
+        bottom: Math.abs(window.scrollY + window.innerHeight - document.documentElement.scrollHeight) <= 2 };
+    });
+    if (!panel) { problems.push(`${width}px #/${check.hash} (adr ${check.name}): no ADR panel`); await page.close(); continue; }
+    for (const w of check.want) if (!panel.text.includes(w)) problems.push(`${width}px #/${check.hash} (adr ${check.name}): missing "${w}"`);
+    for (const w of check.not) if (panel.text.includes(w)) problems.push(`${width}px #/${check.hash} (adr ${check.name}): shows "${w}"`);
+    if (check.numbers) {
+      if (panel.proven !== 4 || panel.asserted !== 4 || panel.hatched !== 4) problems.push(`${width}px adr ${check.name}: bars ${panel.proven} solid / ${panel.asserted} asserted (${panel.hatched} hatched), expected 4 bars, the planned ADR without one`);
+      if (panel.dashed !== 2) problems.push(`${width}px adr ${check.name}: the held and planned rows are not drawn apart (${panel.dashed} of 2)`);
+      if (panel.planned === null || !panel.planned.includes("—") || /\d%/.test(panel.planned)) problems.push(`${width}px adr ${check.name}: the planned ADR shows a number: ${panel.planned}`);
+    } else if (/\d+ ?%|\d+ dari \d+/.test(panel.text)) problems.push(`${width}px adr ${check.name}: a number without a document: ${panel.text.slice(0, 160)}`);
+    if (!requested.some((u) => u.endsWith("/api/kernel/v1/adr"))) problems.push(`${width}px adr ${check.name}: GET /v1/adr was not read`);
+    if (check.open && !requested.some((u) => u.endsWith(`/api/kernel/v1/adr/${check.open}`))) problems.push(`${width}px adr ${check.name}: GET /v1/adr/${check.open} was not read`);
+    if (!check.open && requested.some((u) => /\/api\/kernel\/v1\/adr\/\d{4}$/.test(u))) problems.push(`${width}px adr ${check.name}: a closed panel read a detail`);
+    // #/vision/adr and #/vision/adr/<id> scroll to the panel (or its row).
+    if (check.hash.startsWith("vision/adr") && panel.top > 450 && !panel.bottom) problems.push(`${width}px adr ${check.name}: #/${check.hash} did not scroll to the panel (top ${Math.round(panel.top)})`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/${check.hash} (adr ${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-adr-${check.name.replace(/ /g, "_")}.png`), fullPage: true });
+    await page.close();
+  }
+}
+OVERRIDE = {};
 // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): Services & Drift is read only. A click on a service opens its
 // detail, a bottom sheet on a phone and a side panel on a desktop, with measured values only; a value that was not
 // measured reads "not measured", never a number. The Edit form is gone and an untagged version is labelled as such.
@@ -499,4 +601,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Users page identity lists (owner, operator, invalid), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);

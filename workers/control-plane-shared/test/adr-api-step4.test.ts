@@ -28,7 +28,7 @@ const VIEWER_EMAIL = "viewer@cryptophys.work";
 const VIEWER_JWT = await signAccessJwt({ email: VIEWER_EMAIL });
 
 const STEWARD_KEYS = ["agent_id", "status", "last_pass_at", "last_full_pass_at", "deployed_commit", "ai_today"];
-const ENTRY_KEYS = ["adr", "title", "lifecycle", "deferred", "status", "phases_total", "phases_proven", "phases_asserted", "percent", "percent_proven",
+const ENTRY_KEYS = ["adr", "title", "lifecycle", "deferred", "superseded_by", "status", "phases_total", "phases_proven", "phases_asserted", "percent", "percent_proven",
   "next_step", "blockers", "owner_actions", "drift_count", "stale", "revision", "changed_at", "explanation"];
 
 /** The Steward's Durable Object as the kernel sees it: its state() RPC over a memory, or one that throws. */
@@ -126,7 +126,7 @@ test("AR2. after a pass: one entry per stored ADR in §5's shape, sorted, every 
     const body = JSON.parse(row.body_json) as AdrProgressDoc;
     assert.deepEqual(Object.keys(a), ENTRY_KEYS, a.adr);
     assert.deepEqual(a, {
-      adr: row.adr_id, title: body.title, lifecycle: row.lifecycle, deferred: body.deferred, status: row.status,
+      adr: row.adr_id, title: body.title, lifecycle: row.lifecycle, deferred: body.deferred, superseded_by: body.superseded_by, status: row.status,
       phases_total: row.phases_total, phases_proven: row.phases_proven, phases_asserted: row.phases_asserted, percent: row.percent, percent_proven: row.percent_proven,
       next_step: body.next_step, blockers: body.blockers.slice(0, 3), owner_actions: body.owner_actions, drift_count: body.drift.length, stale: body.stale,
       revision: row.revision, changed_at: row.changed_at, explanation: JSON.parse(row.explanation_json),
@@ -310,7 +310,7 @@ test("AR8. no guard path is touched; docs/SSOT.md documents the endpoints and th
   for (const p of ["workers/ai-kernel/src/adr-view.ts", "workers/ai-kernel/src/index.ts", "workers/console/src/index.ts", "workers/console/src/ui/routes.ts",
     "workers/control-plane-shared/test/adr-api-step4.test.ts", "docs/SSOT.md", "docs/design/ADR-STEWARD.md"]) assert.equal(criticalPathReason(p), null, p);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \(ADR Steward step 4, the read-only API: [^()]*`GET \/v1\/adr`[^()]*`GET \/v1\/adr\/\{id\}`[^()]*; ADR Steward step 3, the agent: /);
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:ADR Steward step \d+[^()]*; )*ADR Steward step 4, the read-only API: [^()]*`GET \/v1\/adr`[^()]*`GET \/v1\/adr\/\{id\}`[^()]*; ADR Steward step 3, the agent: /);
   assert.match(ssot, /read API, `GET \/v1\/adr` and `GET \/v1\/adr\/\{id\}` on the AI Kernel/);
   assert.match(read("docs/design/ADR-STEWARD.md"), /\| 4 \| API: [^\n]*\*\*Built 2026-11-17\*\*/);
 });

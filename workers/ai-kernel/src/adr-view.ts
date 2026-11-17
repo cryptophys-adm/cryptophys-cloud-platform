@@ -56,6 +56,8 @@ export interface AdrListEntry {
   title: string | null;
   lifecycle: string;
   deferred: boolean | null;
+  /** The ADR that replaces this one, for the panel's "digantikan oleh ADR-NNNN" (step 5); null when none is named. */
+  superseded_by: string | null;
   status: string;
   phases_total: number;
   phases_proven: number;
@@ -125,6 +127,7 @@ function listEntry(r: ProgressRow): AdrListEntry {
     title: typeof body?.title === "string" ? body.title : null,
     lifecycle: r.lifecycle,
     deferred: typeof body?.deferred === "boolean" ? body.deferred : null,
+    superseded_by: typeof body?.superseded_by === "string" ? body.superseded_by : null,
     status: r.status,
     phases_total: Number(r.phases_total),
     phases_proven: Number(r.phases_proven),
