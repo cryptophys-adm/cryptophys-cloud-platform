@@ -1,0 +1,74 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0018",
+  "title": "The Forge deploys external organs natively from their own repositories",
+  "adr_file": null,
+  "lifecycle": "held",
+  "lifecycle_note": "Accepted on branch adr-0018 (owner 2026-11-15), not merged into main; X3's platform joins are on main.",
+  "phases": [
+    {
+      "id": "X0",
+      "title": "This ADR; the repository contract for cryptophys-cta",
+      "evidence": {
+        "kind": "external_asserted",
+        "source": "branch:adr-0018",
+        "ref": "architecture/adr/0018-forge-deploys-external-organs.md",
+        "as_of": "2026-11-15"
+      }
+    },
+    {
+      "id": "X1",
+      "title": "Artifacts mirror of opted-in external repositories, checks per repository",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built"
+      }
+    },
+    {
+      "id": "X2",
+      "title": "Plan against DNA; native upload, live verification",
+      "depends_on": [
+        "X1"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built: cryptophys-cta deploys through its own workflow"
+      }
+    },
+    {
+      "id": "X2b",
+      "title": "Dependency bundling from the lockfile; Browser Run",
+      "depends_on": [
+        "X2"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built"
+      }
+    },
+    {
+      "id": "X3",
+      "title": "Registry, census, Forge binding EXT_ORGANISM_CTA and drift binding",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "migration_applied",
+            "name": "0074_register_cta.sql"
+          },
+          {
+            "kind": "census_clean"
+          }
+        ]
+      },
+      "built": [
+        "workers/control-plane-shared/src/organism.ts",
+        "workers/forge/wrangler.toml",
+        "workers/drift-detector/wrangler.toml",
+        "workers/deployment-orchestrator/src/native-access.ts",
+        "workers/control-plane-migrations/0074_register_cta.sql"
+      ],
+      "note": "cta's agents register through the census and consensus, not by the migration"
+    }
+  ]
+}

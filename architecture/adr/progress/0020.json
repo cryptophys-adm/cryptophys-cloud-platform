@@ -1,0 +1,39 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0020",
+  "title": "Standing trading authorization: arming a strategy is the owner's standing click",
+  "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
+  "lifecycle": "accepted",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click. Nothing is built on the platform side; the implementation is the xauusd repository's RFC_STRATEGY_RECOMMENDATION.",
+  "phases": [
+    {
+      "id": "D",
+      "title": "The decision recorded; the vision core's trading line amended",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "organism/vision.json",
+        "quote": "given per action or as a standing arm of one strategy"
+      },
+      "note": "a documented decision, not a build: this ADR changes no platform code"
+    },
+    {
+      "id": "N",
+      "title": "Arm and disarm in Nexus: cap of 3, auto-disarm, Decision Engine veto",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "lives in the xauusd repository (RFC_STRATEGY_RECOMMENDATION); the platform has no xauusd evidence source yet"
+      }
+    },
+    {
+      "id": "R",
+      "title": "Arm and disarm mirrored as strategy_arm.v1 xauusd_digest reports",
+      "depends_on": [
+        "N"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "recommended to xauusd; no reading of strategy_arm.v1 reports exists yet"
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0008",
+  "title": "Cerebrum portal, operator Console, and Cloudflare Access sign-in",
+  "adr_file": "architecture/adr/0008-cerebrum-console-access.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "B",
+      "title": "The Console as a backend-for-frontend with no authority of its own",
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "deploy_step",
+            "step": "cryptophys-console:smoke_passed",
+            "executor": "native:deploy"
+          },
+          {
+            "kind": "doc_asserted",
+            "ref": "docs/SSOT.md",
+            "quote": "Backend-for-frontend with no authority of its own"
+          }
+        ]
+      },
+      "note": "proven once a native Console deploy passes its smoke tests through Access; until then doc-asserted"
+    },
+    {
+      "id": "A",
+      "title": "Cloudflare Access is the only login",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "Cloudflare Access is the only login."
+      }
+    }
+  ]
+}

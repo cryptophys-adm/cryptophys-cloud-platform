@@ -1,0 +1,17 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0003",
+  "title": "Service-scoped D1 integrity and idempotency",
+  "adr_file": "architecture/adr/0003-service-scoped-d1-integrity.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "M2",
+      "title": "Service-scoped references and idempotency keys (migration 0002)",
+      "evidence": {
+        "kind": "migration_applied",
+        "name": "0002_service_referential_integrity.sql"
+      }
+    }
+  ]
+}

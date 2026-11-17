@@ -1,0 +1,114 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0014",
+  "title": "The evolution loop",
+  "adr_file": "architecture/adr/0014-evolution-loop.md",
+  "lifecycle": "deferred",
+  "lifecycle_note": "Accepted and deferred by the owner on 2026-11-12 until ADR-0012 phase 5; E1 runs on the Forge since the cut-over.",
+  "phases": [
+    {
+      "id": "E1",
+      "title": "Autonomous merge by consensus",
+      "evidence": {
+        "kind": "consensus_executed",
+        "action": "merge_change"
+      }
+    },
+    {
+      "id": "E0",
+      "title": "Self-inventory; findings become intents",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "observer",
+            "source": "runs",
+            "kind_filter": "inventory",
+            "expect": "some"
+          },
+          {
+            "kind": "not_measurable_yet",
+            "reason": "no intents table: inventory findings are not turned into intents"
+          }
+        ]
+      },
+      "built": [
+        "workers/control-plane-shared/src/observer-inventory.ts"
+      ],
+      "next": "Turn inventory findings into intents"
+    },
+    {
+      "id": "E2",
+      "title": "The evolver agent",
+      "depends_on": [
+        "E0"
+      ],
+      "evidence": {
+        "kind": "agent_registered",
+        "agent_id": "evolver"
+      },
+      "built": [
+        "workers/control-plane-shared/src/evolution-limits.ts"
+      ],
+      "note": "limits only; no evolver agent"
+    },
+    {
+      "id": "E3",
+      "title": "Fitness, automatic revert, freeze",
+      "depends_on": [
+        "E2"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no fitness or revert records exist"
+      }
+    },
+    {
+      "id": "E4",
+      "title": "Evolution memory and Console page",
+      "depends_on": [
+        "E3"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no evolutions table"
+      }
+    },
+    {
+      "id": "E5",
+      "title": "Morphogenesis",
+      "depends_on": [
+        "E2",
+        "E3"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    },
+    {
+      "id": "A1",
+      "title": "Agentic votes with reasons",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "votes are deterministic rules only"
+      }
+    },
+    {
+      "id": "A2",
+      "title": "Diagnosis of what is stuck",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    },
+    {
+      "id": "A3",
+      "title": "Agent-to-agent protocol",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    }
+  ]
+}

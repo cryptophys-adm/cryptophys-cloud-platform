@@ -1,0 +1,94 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0009",
+  "title": "Consensus autonomy for the AI mesh",
+  "adr_file": "architecture/adr/0009-consensus-autonomy.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "C1",
+      "title": "Phase 1: shadow consensus (proposals, votes, tally)",
+      "evidence": {
+        "kind": "migration_applied",
+        "name": "0023_consensus_shadow.sql"
+      }
+    },
+    {
+      "id": "C2",
+      "title": "Phase 2: routine execution of reversible actions",
+      "depends_on": [
+        "C1"
+      ],
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "consensus_executed",
+            "action": "observe_drift"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "set_desired_version"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "registry_disable_service"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "registry_enable_service"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "suspend_agent"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "resume_agent"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "register_agent"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "register_engine"
+          }
+        ]
+      }
+    },
+    {
+      "id": "C3",
+      "title": "Phase 3: routine deploy of green commits, with automatic rollback",
+      "depends_on": [
+        "C2"
+      ],
+      "evidence": {
+        "kind": "consensus_executed",
+        "action": "deploy_commit"
+      }
+    },
+    {
+      "id": "C4",
+      "title": "Phase 4: critical actions with the owner's click",
+      "depends_on": [
+        "C3"
+      ],
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "consensus_executed",
+            "action": "merge_owner_change",
+            "owner_approved": true
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "change_access",
+            "owner_approved": true
+          }
+        ]
+      }
+    }
+  ]
+}

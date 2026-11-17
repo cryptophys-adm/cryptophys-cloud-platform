@@ -1,0 +1,34 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0007",
+  "title": "AI Worker Operating System",
+  "adr_file": "architecture/adr/0007-ai-worker-os.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "K1",
+      "title": "The kernel, the syscall gate and the first agent, the Platform Supervisor",
+      "evidence": {
+        "kind": "agent_registered",
+        "agent_id": "supervisor"
+      }
+    },
+    {
+      "id": "K2",
+      "title": "More agents on the same OS: the Auditor and the Signal Analyst",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "agent_registered",
+            "agent_id": "auditor"
+          },
+          {
+            "kind": "agent_registered",
+            "agent_id": "signal-analyst"
+          }
+        ]
+      }
+    }
+  ]
+}
