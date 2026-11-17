@@ -10,7 +10,7 @@
   - ADR-0013 (DNA, census, self-registration);
   - ADR-0014 (evolution loop; E0 self-inventory, E2 evolver, E5 morphogenesis);
   - ADR-0015 (organs as cells; the AI Neuron is the core);
-  - the Observer organ (in progress, 2026-11-14; not on main yet).
+  - the Observer organ (on main and live since 2026-11-14).
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0015: Organs as cells: Durable Object actors, push to the senses, D1 as the ledger of facts
 
-- **Status:** Accepted (owner, 2026-11-14: "setuju"). Nothing in the Decision is built yet; the phases below run in order, each in shadow first.
+- **Status:** Accepted (owner, 2026-11-14: "setuju"). On the platform side nothing in the Decision is built yet; the phases below run in order, each in shadow first. The xauusd side, in its own repository, has built its part of phase 1, the push hub, and runs P2a and P2b live; P2c is parked as B-16 (status 2026-11-16).
 - **Owner direction (2026-11-14):**
   - "Satu-satunya yang memang core system ini adalah Ai Neuron karena ini adalah Ai Operating System" (the only true core is the AI Neuron, because this is an AI Operating System).
   - "alternatif arsitektur lain untuk mengurangi jumlah penulisan maupun akses data ke D1, tanpa mengurangi kemampuan yang sudah ada bahkan mungkin akan lebih meningkatkan lagi secara performa tapi hemat resources/billing" (another architecture that writes to and reads D1 less, without losing any capability and ideally performing better, while saving resources and billing).
