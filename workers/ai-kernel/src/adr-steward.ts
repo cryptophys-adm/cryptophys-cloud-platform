@@ -2,7 +2,7 @@
  * The ADR Steward (docs/design/ADR-STEWARD.md §4; owner 2026-11-16, "ya semua, sesuai rekomendasimu"), step 3.
  *
  * Hosted by cryptophys-ai-kernel as the SQLite-backed Durable Object AdrStewardAgent, tier_max 1, holding `adr.observe`
- * (tier 0) and `reports.publish` (tier 1, for the drift reports of step 7; not used yet). It keeps one compact document
+ * (tier 0) and `reports.publish` (tier 1, for the drift reports of step 7, adr-drift.ts). It keeps one compact document
  * per ADR in D1 (`adr_progress`, `adr_progress_history`, migration 0075) and writes it only when it changed.
  *
  * One cycle (§4.4), serialized by the Durable Object (AdrStewardCycleQueue):
@@ -28,11 +28,16 @@
  *     validator passes (refs only from the stored document, numbers only from the input, no contradicting status
  *     word); on a cap, survival, a refused budget, an invalid output or an AI error the sentence stays and
  *     `adr.explanation_skipped` says why;
- *  7. advance: the cursor (the newest watched event's created_at), the pass time, the version id and the next quiet
+ *  7. the drift reports (§4.8, design step 7, adr-drift.ts): from the documents as stored, one `platform_digest`
+ *     warning (`adr_drift.v1`) per drift episode with alert_key adr_drift:<adr>:<phase>, batched when the 4 calls an
+ *     hour of reports.publish do not cover them, and a `Resolved:` info report when the episode closes. Never critical
+ *     (it must not hold the consensus brake) and never sent to Telegram (owner Q12). Work left over for the hourly
+ *     limit is published on the next tick, without a pass;
+ *  8. advance: the cursor (the newest watched event's created_at), the pass time, the version id and the next quiet
  *     window end live in the Durable Object's storage, never in D1 (ADR-0015 §7: no heartbeat writes).
  *
- * The Steward writes only its own two tables and the audit chain. It never edits an ADR, docs/SSOT.md or a manifest,
- * proposes nothing to consensus and decides nothing: every state comes from the evaluator.
+ * The Steward writes only its own two tables, the audit chain and its drift reports. It never edits an ADR,
+ * docs/SSOT.md or a manifest, proposes nothing to consensus and decides nothing: every state comes from the evaluator.
  */
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
@@ -44,6 +49,7 @@ import { isPowerMode } from "../../control-plane-shared/src/power-mode.ts";
 import { isComplete, type AdrEvaluation, type AdrEvidenceState, type AdrInvalid, type AdrOwnerAction, type AdrStatus } from "../../control-plane-shared/src/adr-evidence.ts";
 import { predicateLeaves, type AdrManifest } from "../../control-plane-shared/src/adr-progress.ts";
 import { ADR_MANIFESTS, type BundledManifest } from "./adr-observe.ts";
+import { reconcileDriftReports, type DriftReportState } from "./adr-drift.ts";
 import type { CycleReport, KernelEnv, Memory } from "./supervisor.ts";
 import { syscall, type SyscallResult } from "./syscall.ts";
 
@@ -123,8 +129,10 @@ export interface StewardState {
   } | null;
   /** The AI explanation's counter for one UTC day (§7): requests used, and the ADRs explained that day. */
   ai: AdrAiCounter | null;
+  /** The drift reports (step 7): this hour's reports.publish call times, and whether work is left over (absent before step 7). */
+  drift_reports?: DriftReportState | null;
 }
-const EMPTY_STATE: StewardState = { cursor: null, cursor_ids: [], last_pass_at: null, version_id: null, wake_at: null, daily_day: null, retry_at: null, invalid: {}, last_pass: null, ai: null };
+const EMPTY_STATE: StewardState = { cursor: null, cursor_ids: [], last_pass_at: null, version_id: null, wake_at: null, daily_day: null, retry_at: null, invalid: {}, last_pass: null, ai: null, drift_reports: null };
 
 /**
  * The cheap tick (§4.3.1), one query by idx_audit_events_type_created: the newest watched audit events from the cursor
@@ -662,6 +670,8 @@ export async function runAdrStewardCycle(env: KernelEnv, memory: Memory, trigger
   if (events) reasons.push("events");
   if (!reasons.length) {
     report.findings.push({ kind: "adr", action: "none", why: "nothing due" });
+    // Drift reports the hourly limit held back are published without a pass (step 7).
+    if (state.drift_reports?.pending) await driftReports(env, memory, state, report, now);
     await memory.put("last_cycle", report);
     return report;
   }
@@ -686,8 +696,21 @@ export async function runAdrStewardCycle(env: KernelEnv, memory: Memory, trigger
   state.last_pass = pass;
   await memory.put("state", state);
   report.findings.push({ kind: "adr", action: pass.written.length ? "written" : "unchanged", reasons, ...(events ? { events: events.types } : {}), ...pass } as unknown as JsonObject);
+  await driftReports(env, memory, state, report, now);
   await memory.put("last_cycle", report);
   return report;
+}
+
+/** Step 7: publish what the stored drift calls for (adr-drift.ts), and keep the call times in the Durable Object. */
+async function driftReports(env: KernelEnv, memory: Memory, state: StewardState, report: CycleReport, now: number): Promise<void> {
+  const r = await reconcileDriftReports(env, state.drift_reports, now);
+  state.drift_reports = r.state;
+  await memory.put("state", state);
+  // The cycle report keeps each call's outcome and report id, not the report body (the Durable Object stores it).
+  report.actions.push(...r.actions.map((x): SyscallResult => x.outcome === "succeeded"
+    ? { ...x, result: { report_id: String((x.result.report as JsonObject | undefined)?.report_id ?? "") } }
+    : x));
+  report.findings.push(r.finding);
 }
 
 /** The Steward's state for the status RPC (step 4 serves it under `steward`). */

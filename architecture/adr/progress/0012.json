@@ -67,9 +67,9 @@
       ],
       "next": "First live run of a part B path",
       "doc_claim": {
-        "state": "built",
+        "state": "done",
         "ref": "docs/GITHUB-CUTOVER.md",
-        "quote": "built, not yet run live):** routes, Durable Object migrations and Workflows"
+        "quote": "built, first live run 2026-11-17 07:07 UTC for the additive DO migration path):** routes, Durable Object migrations and Workflows"
       }
     },
     {

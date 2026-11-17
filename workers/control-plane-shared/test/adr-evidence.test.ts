@@ -490,7 +490,9 @@ test("AE5. the 0012 seed reads 18 of 26 (12 proven, 6 asserted) on matching evid
   assert.deepEqual(e.owner_actions.map((a) => [a.phase, a.href, a.proposal_id, a.outside_platform]),
     [["G10", "#/consensus", "cns_retire", false], ["G10", "#/owner", null, false], ["S7", null, null, true]]);
   assert.equal(e.stale, false);
-  assert.deepEqual(e.drift, [], "G4B, G10 and GB are built and open: the documents agree");
+  // G4B's document says it ran live (docs/GITHUB-CUTOVER.md, 2026-11-17), and this seed has no part B deploy: the document
+  // is ahead of the evidence. G10 and GB are built and open: the documents agree.
+  assert.deepEqual(e.drift.map((d) => [d.phase, d.kind, d.doc_state]), [["G4B", "doc_ahead", "done"]]);
   for (const p of e.phases) p.refs.forEach((r) => assert.match(r, EV_REF, `${p.id}: ${r}`));
   assert.ok(e.phases.find((p) => p.id === "G5")!.refs.includes(`ev:platform/consensus/cns_merge@${ago(120)}`));
 
