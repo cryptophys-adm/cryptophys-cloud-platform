@@ -321,3 +321,53 @@ test("M10. a merge the council rejected without the brake (evidence critical_rep
   await runCycle(env as never, memory, "scheduled", Date.now());
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = 'merge_change'").get() as any).n, 1, "a real rejection stands for that head");
 });
+
+/** A merge_owner_change for another request, waiting for the owner's click since `createdAt`. */
+function seedOwnerWaiting(db: any, createdAt: string, status = "pending_owner") {
+  db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision, status, outcome_json, created_at, decided_at)
+    VALUES ('cns_owner', 'supervisor', 'merge_owner_change', 'fg-claude-guarded', 'critical', ?, '{}', 'deploy', 8, 8, 0, 1, 'allow', ?, NULL, ?, ?)`)
+    .run(JSON.stringify({ head_sha: X }), status, createdAt, createdAt);
+}
+
+test("M11. while a merge_owner_change waits for the owner's click, no other request is proposed for merge (2026-11-17, cns_c2470c88)", async () => {
+  const db = migratedDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  await seedChange(db);
+  const g = gitWorld({ platform: { "refs/heads/main": M }, "platform-work": { "refs/heads/main": M, "refs/heads/claude/x": H } });
+  const env = kernelEnv(db, { DB: db, ARTIFACTS: g.binding }, g.fetchImpl);
+  const mem = new Map<string, unknown>();
+  const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, v); } };
+  const merges = () => (db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = 'merge_change'").get() as any).n;
+  seedOwnerWaiting(db, new Date(Date.now() - 30 * 60_000).toISOString());
+
+  const held = await runCycle(env as never, memory, "scheduled", Date.now()) as any;
+  assert.equal(merges(), 0, "held while the owner's merge waits");
+  assert.equal(g.refs.platform["refs/heads/main"], M, "main does not move under the owner's pending merge");
+  assert.ok(JSON.stringify(held).includes("waits for the owner's click"), "the hold is reported");
+
+  // Also while the owner's merge is executing.
+  db.raw.prepare("UPDATE consensus_proposals SET status = 'executing' WHERE proposal_id = 'cns_owner'").run();
+  await runCycle(env as never, memory, "scheduled", Date.now());
+  assert.equal(merges(), 0, "held while the owner's merge executes");
+
+  // The owner's merge is done: the routine request is proposed and merges.
+  db.raw.prepare("UPDATE consensus_proposals SET status = 'executed' WHERE proposal_id = 'cns_owner'").run();
+  await runCycle(env as never, memory, "scheduled", Date.now());
+  assert.equal(merges(), 1);
+  assert.equal(g.refs.platform["refs/heads/main"], H);
+});
+
+test("M12. a merge_owner_change past the 24 h owner window holds nothing", async () => {
+  const db = migratedDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  db.raw.prepare("UPDATE forge_controls SET value = 'forge' WHERE control = 'merge_path'").run();
+  await seedChange(db);
+  const g = gitWorld({ platform: { "refs/heads/main": M }, "platform-work": { "refs/heads/main": M, "refs/heads/claude/x": H } });
+  const env = kernelEnv(db, { DB: db, ARTIFACTS: g.binding }, g.fetchImpl);
+  const mem = new Map<string, unknown>();
+  const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, v); } };
+  seedOwnerWaiting(db, new Date(Date.now() - 25 * 3_600_000).toISOString());
+  await runCycle(env as never, memory, "scheduled", Date.now());
+  assert.equal(g.refs.platform["refs/heads/main"], H, "an expired owner window does not block the routine merge");
+});
