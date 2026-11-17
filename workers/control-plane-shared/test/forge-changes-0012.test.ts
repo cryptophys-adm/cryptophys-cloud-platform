@@ -190,6 +190,28 @@ test("CR5. outcome: GitHub's merge is frozen next to the Forge verdict; parity c
     { target: 10, consecutive: 2, compared: 3, late: 0, disagreements: ["d"] });
 });
 
+test("CR6b. a change request head whose run ended in error is checked again once the run is 30 minutes old (2026-11-17, 9a09010)", async () => {
+  const db = migratedDb();
+  const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "workers/control-plane-shared/test/a.test.ts": "x" } });
+  await registerChange(db as never, repo, REG, CI_CLIENT_ID);
+  const t0 = Date.now();
+  const deps = async (): Promise<CheckDeps> => { throw new Error("An internal error occurred."); };
+  const env = { DB: db as never, ARTIFACTS: { get: async () => repo } };
+  const out = await tickWith(env, "platform", deps, () => t0, (r) => nextChangeHead(db as never, r, t0), "change");
+  assert.deepEqual([out.outcome, (out as { status: string }).status], ["checked", "error"]);
+  assert.equal(await nextChangeHead(db as never, repo, t0 + 60_000), null, "not retried at once");
+  const later = t0 + 30 * 60_000 + 60_000;
+  assert.equal(await nextChangeHead(db as never, repo, later), HEAD, "retried once stale");
+  const okDeps = async (): Promise<CheckDeps> => ({
+    esbuild: { async build() { return { outputFiles: [{ text: "x", contents: new Uint8Array() }], errors: [], warnings: [] }; } },
+    shims: {} as never, sqlJs: "", sqlWasm: null,
+    async runWorker(code) { return { files: (code.modules["files.json"] as { json: string[] }).json.map((file) => ({ file, results: [{ name: "t", status: "pass" }] })) }; },
+  });
+  const again = await tickWith(env, "platform", okDeps, () => later, (r) => nextChangeHead(db as never, r, later), "change");
+  assert.deepEqual([again.outcome, (again as { status: string }).status], ["checked", "passed"], "the stale error row is claimed and replaced");
+  assert.equal(await nextChangeHead(db as never, repo, later + 31 * 60_000), null, "a passed run is never retried");
+});
+
 test("CR6. the tick checks open change request heads first; their runs stay out of main's checks list and parity", async () => {
   const db = migratedDb();
   const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "workers/control-plane-shared/test/a.test.ts": "x" } });

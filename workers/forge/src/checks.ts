@@ -188,7 +188,8 @@ export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: n
 export type CheckSource = "main" | "change";
 
 /**
- * Claim a commit for this tick. False if another tick holds a live run of it. A run of main also takes over a
+ * Claim a commit for this tick. False if another tick holds a live run of it; a run lost or ended in error is taken
+ * over once it is STALE_RUN_MS old (2026-11-17). A run of main also takes over a
  * finished run of the same commit as a change request head (nextCommit), so that the commit's bundles are stored,
  * and a finished run of any source that finished before 00:00 UTC today (the daily run of main's head).
  */
@@ -200,7 +201,7 @@ export async function claim(db: D1Database, commit: string, nowMs: number, sourc
     `INSERT INTO forge_check_runs (commit_sha, status, runner, started_at, source) VALUES (?, 'running', ?, ?, ?)
      ON CONFLICT(commit_sha) DO UPDATE SET status = 'running', runner = excluded.runner, started_at = excluded.started_at, source = excluded.source,
        files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL, steps = NULL, guard_status = NULL
-     WHERE (forge_check_runs.status = 'running' AND forge_check_runs.started_at < ?)
+     WHERE (forge_check_runs.status IN ('running', 'error') AND forge_check_runs.started_at < ?)
         OR (excluded.source = 'main' AND forge_check_runs.source = 'change' AND forge_check_runs.status <> 'running')
         OR (excluded.source = 'main' AND forge_check_runs.status <> 'running' AND coalesce(forge_check_runs.finished_at, forge_check_runs.started_at) < ?)`,
   ).bind(commit, RUNNER_ID, startedAt, source, staleBefore, today).run();

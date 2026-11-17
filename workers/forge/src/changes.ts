@@ -328,7 +328,10 @@ export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowM
      WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
   ).bind(repoName).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
   for (const r of rows) {
-    if (r.status && !(r.status === "running" && Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS)) continue;
+    // A run that ended in error (the runner failed, not the tests: 2026-11-17, 9a09010 "An internal error occurred.")
+    // is retried once it is STALE_RUN_MS old, like a lost run; otherwise the request could never be checked again.
+    const stale = Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS;
+    if (r.status && !((r.status === "running" || r.status === "error") && stale)) continue;
     if (await repo.readCommit(r.head_sha)) return r.head_sha;
   }
   return null;
