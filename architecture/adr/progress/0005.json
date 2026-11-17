@@ -1,0 +1,18 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0005",
+  "title": "Transform the Kubernetes GitOps estate into Cloudflare",
+  "adr_file": "architecture/adr/0005-cloudflare-transformation.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "C1",
+      "title": "Cloudflare only: no containers, no Kubernetes",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "**No containers.** Production runs on Workers and their bindings only (ADR-0005 decision 1)"
+      }
+    }
+  ]
+}

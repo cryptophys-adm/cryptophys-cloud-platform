@@ -1,0 +1,19 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0001",
+  "title": "Cloudflare-native platform runtime",
+  "adr_file": "architecture/adr/0001-cloudflare-native.md",
+  "lifecycle": "accepted",
+  "lifecycle_note": "A baseline. Its \"GitHub as the source of truth\" was replaced by ADR-0012 (the Forge on Artifacts); the ADR's Status line is unchanged.",
+  "phases": [
+    {
+      "id": "W",
+      "title": "Cloudflare Workers as the compute target, no Kubernetes or containers",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "Production runs on Workers and their bindings only"
+      }
+    }
+  ]
+}

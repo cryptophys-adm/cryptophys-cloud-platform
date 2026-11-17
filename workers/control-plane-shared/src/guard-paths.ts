@@ -20,12 +20,16 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
   [/^workers\/control-plane-shared\/src\/secrets\.ts$/, "secrets"],
   [/^architecture\/adr\/00(09|12)-/, "adr_0009_0012"],
+  // ADR Steward Q2 (owner 2026-11-16, "ya semua, sesuai rekomendasimu"): the progress manifest of a guarded ADR says how
+  // its gates are measured, so it is guarded with the ADR, under the same reason (docs/design/ADR-STEWARD.md §2.1).
+  [/^architecture\/adr\/progress\/00(09|12)\.json$/, "adr_0009_0012"],
   // ADR-0012 §5d: a change request's type-check runs its own code, so a change to the harness is the owner's.
   [/^workers\/forge-typecheck(-cr)?\//, "typecheck_harness"],
   [/^workers\/(control-plane-tsconfig\.json|forge\/src\/cr-builds\.ts)$/, "typecheck_harness"],
   [/^workers\/(control-plane-shared|console\/ui)\/(package(-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[a-z]+)$/, "typecheck_harness"],
   // ADR-0014 §3: the evolution loop's own guards.
   [/^architecture\/adr\/0014-/, "evolution_guard"],
+  [/^architecture\/adr\/progress\/0014\.json$/, "evolution_guard"],
   [/^workers\/control-plane-shared\/src\/(evolution-limits|guard-paths|capabilities)\.ts$/, "evolution_guard"],
   [/^workers\/ai-kernel\/(organism\.json|src\/evolver\.ts)$/, "evolution_guard"],
   [/^workers\/forge\/src\/(evolution|git-write)\.ts$/, "evolution_guard"],

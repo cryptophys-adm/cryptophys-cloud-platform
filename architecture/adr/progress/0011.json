@@ -1,0 +1,26 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0011",
+  "title": "Users and privileges in the Cerebrum Console",
+  "adr_file": "architecture/adr/0011-users-and-privileges.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "U",
+      "title": "Accounts in D1 and one auth path (migration 0026)",
+      "evidence": {
+        "kind": "migration_applied",
+        "name": "0026_platform_accounts.sql"
+      }
+    },
+    {
+      "id": "O",
+      "title": "Sign out, switch account and the access fallback",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "Sign out goes to `/cdn-cgi/access/logout`."
+      }
+    }
+  ]
+}

@@ -1,0 +1,429 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0012",
+  "title": "Leave GitHub — Cloudflare-native source, CI and deploy (the Forge)",
+  "adr_file": "architecture/adr/0012-github-independence.md",
+  "lifecycle": "accepted",
+  "groups": [
+    {
+      "id": "gates",
+      "title": "Cut-over gates"
+    },
+    {
+      "id": "steps",
+      "title": "Cut-over procedure"
+    }
+  ],
+  "phases": [
+    {
+      "id": "G1",
+      "group": "gates",
+      "title": "Deploy decisions read the Forge",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "done: merged in #301"
+      }
+    },
+    {
+      "id": "G2",
+      "group": "gates",
+      "title": "Forge keeps built modules",
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "forge.bundles_stored"
+      }
+    },
+    {
+      "id": "G3",
+      "group": "gates",
+      "title": "Native deploy of code-only changes",
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "deployment.native_deploy_succeeded"
+      }
+    },
+    {
+      "id": "G4A",
+      "group": "gates",
+      "title": "Gate 4 part A: smoke tests through Access, deploy-time vars",
+      "evidence": {
+        "kind": "deploy_step",
+        "step": "unit:smoke_passed",
+        "executor": "native:deploy"
+      }
+    },
+    {
+      "id": "G4B",
+      "group": "gates",
+      "title": "Gate 4 part B: routes, DO migrations, Workflows natively",
+      "evidence": {
+        "kind": "deploy_step",
+        "step_suffix": ":topology_planned",
+        "executor": "native:deploy"
+      },
+      "built": [
+        "workers/deployment-orchestrator/src/topology.ts"
+      ],
+      "next": "First live run of a part B path",
+      "doc_claim": {
+        "state": "built",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "built, not yet run live):** routes, Durable Object migrations and Workflows"
+      }
+    },
+    {
+      "id": "G4D",
+      "group": "gates",
+      "title": "Gate 4: destructive path (owner click)",
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "audit_event",
+            "event_type": "deployment.destructive_deploy_succeeded"
+          },
+          {
+            "kind": "audit_event",
+            "event_type": "deployment.destructive_topology_applied"
+          }
+        ]
+      },
+      "built": [
+        "workers/control-plane-shared/src/destructive-deploy.ts"
+      ],
+      "next": "First owner-approved destructive deploy, live"
+    },
+    {
+      "id": "G5",
+      "group": "gates",
+      "title": "Forge merges by fast-forward, merge_change by consensus",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "reading",
+            "name": "forge_merge_path"
+          },
+          {
+            "kind": "consensus_executed",
+            "action": "merge_change"
+          }
+        ]
+      }
+    },
+    {
+      "id": "G6",
+      "group": "gates",
+      "title": "Contributors push to platform-work",
+      "evidence": {
+        "kind": "reading",
+        "name": "forge_work_cr_merged"
+      }
+    },
+    {
+      "id": "G7",
+      "group": "gates",
+      "title": "Dependency audit and secret scan",
+      "evidence": {
+        "kind": "reading",
+        "name": "dependency_audit_fresh_48h"
+      }
+    },
+    {
+      "id": "G8",
+      "group": "gates",
+      "title": "Daily git bundle to R2, verified",
+      "evidence": {
+        "kind": "reading",
+        "name": "git_backup_verified_48h"
+      }
+    },
+    {
+      "id": "G9",
+      "group": "gates",
+      "title": "Access provisioning without provision-access.yml",
+      "evidence": {
+        "kind": "consensus_executed",
+        "action": "change_access",
+        "owner_approved": true
+      }
+    },
+    {
+      "id": "G10",
+      "group": "gates",
+      "title": "Worker retirement through the Scripts API",
+      "evidence": {
+        "kind": "sequence",
+        "of": [
+          {
+            "kind": "consensus_executed",
+            "action": "retire_worker",
+            "owner_approved": true
+          },
+          {
+            "kind": "audit_event",
+            "event_type": "deployment.retire_succeeded",
+            "payload": {
+              "$.executor": "native:retire"
+            }
+          }
+        ]
+      },
+      "built": [
+        "workers/deployment-orchestrator/src/native-retire.ts"
+      ],
+      "owner_action": {
+        "text": "Approve the first native retirement when one is proposed",
+        "href": "#/owner"
+      },
+      "doc_claim": {
+        "state": "built",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "**built, live, not yet run**"
+      }
+    },
+    {
+      "id": "G11",
+      "group": "gates",
+      "title": "Rollback, alerts and owner notices off GitHub",
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "audit_event",
+            "event_type": "deployment.rollback_succeeded"
+          },
+          {
+            "kind": "doc_asserted",
+            "ref": "docs/GITHUB-CUTOVER.md",
+            "quote": "done: native rollback (credentials set), Kernel notices"
+          }
+        ]
+      }
+    },
+    {
+      "id": "G12",
+      "group": "gates",
+      "title": "Checks and type-check off GitHub",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "parity 34/34 checks and 78/78 plans"
+      }
+    },
+    {
+      "id": "G13",
+      "group": "gates",
+      "title": "Secrets as Worker secrets; native identity lists",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "migration_applied",
+            "name": "0073_platform_identities.sql"
+          },
+          {
+            "kind": "doc_asserted",
+            "ref": "docs/GITHUB-CUTOVER.md",
+            "quote": "**secrets: met via Worker secrets**"
+          }
+        ]
+      }
+    },
+    {
+      "id": "GX",
+      "group": "gates",
+      "title": "Executor first: a fix to the executor reaches production without it",
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "deployment.rescue_succeeded",
+        "payload": {
+          "$.executor": "rescue:deployment-orchestrator"
+        }
+      }
+    },
+    {
+      "id": "GB",
+      "group": "gates",
+      "title": "Binding gate: native uploads restore declared service bindings",
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "audit_event",
+            "event_type": "deployment.binding_drift_repaired"
+          },
+          {
+            "kind": "not_measurable_yet",
+            "reason": "no deploy step records a clean binding check, so 'ran live and found none' cannot be read yet"
+          }
+        ]
+      },
+      "built": [
+        "workers/control-plane-shared/src/service-bindings.ts"
+      ],
+      "note": "first live run 2026-11-16 at ff6fd35: props unverifiable on all five Workers, resent; Met once not recorded",
+      "next": "A native deploy restores a drifted binding live, and the kernel accepts the Worker's reports again",
+      "doc_claim": {
+        "state": "built",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "**Status: built, not yet run live** (branch `binding-props`"
+      }
+    },
+    {
+      "id": "W24",
+      "group": "gates",
+      "title": "Native deploys clean for 24 hours",
+      "evidence": {
+        "kind": "quiet_window",
+        "fail_types": [
+          "deployment.native_deploy_failed",
+          "deployment.rescue_failed",
+          "deployment.break_glass_failed",
+          "deployment.destructive_deploy_failed"
+        ],
+        "success_type": "deployment.native_deploy_succeeded",
+        "hours": 24
+      }
+    },
+    {
+      "id": "S1",
+      "group": "steps",
+      "title": "Freeze",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "## Cut-over log (2026-11-13"
+      }
+    },
+    {
+      "id": "S2",
+      "group": "steps",
+      "title": "Final sync",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/GITHUB-CUTOVER.md",
+        "quote": "## Cut-over log (2026-11-13"
+      }
+    },
+    {
+      "id": "S3",
+      "group": "steps",
+      "title": "Backup",
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "forge.git_backup_written"
+      }
+    },
+    {
+      "id": "S4",
+      "group": "steps",
+      "title": "Flip the merge path",
+      "evidence": {
+        "kind": "migration_applied",
+        "name": "0058_cutover_merge_path_forge.sql"
+      }
+    },
+    {
+      "id": "S5",
+      "group": "steps",
+      "title": "Flip contributors (linear history guard)",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "reading",
+            "name": "forge_work_cr_merged"
+          },
+          {
+            "kind": "migration_applied",
+            "name": "0071_forge_linear_history_guard.sql"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S6",
+      "group": "steps",
+      "title": "Retire GitHub paths",
+      "depends_on": [
+        "G4A",
+        "G4B",
+        "G4D",
+        "G10",
+        "GX",
+        "GB",
+        "W24"
+      ],
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "quiet_window",
+            "fail_types": [
+              "deployment.dispatched"
+            ],
+            "success_type": "deployment.native_deploy_succeeded",
+            "hours": 168
+          },
+          {
+            "kind": "not_measurable_yet",
+            "reason": "GitHub is outside the platform's view: the workflows are not disabled yet"
+          }
+        ]
+      },
+      "next": "Disable the GitHub workflows once the gates and the 24 h window are met"
+    },
+    {
+      "id": "S7",
+      "group": "steps",
+      "title": "Revoke the Orchestrator's GitHub token; archive the repository (owner)",
+      "depends_on": [
+        "S6"
+      ],
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "reading",
+            "name": "orchestrator_github_fallback_absent"
+          },
+          {
+            "kind": "not_measurable_yet",
+            "reason": "GitHub is outside the platform's view: the repository is not archived yet"
+          }
+        ]
+      },
+      "owner_action": {
+        "text": "Delete GH_ACTIONS_TOKEN on the Orchestrator, then archive the GitHub repository",
+        "outside_platform": true
+      }
+    },
+    {
+      "id": "S8",
+      "group": "steps",
+      "title": "Verify one routine change end to end",
+      "depends_on": [
+        "S7"
+      ],
+      "evidence": {
+        "kind": "sequence",
+        "of": [
+          {
+            "kind": "audit_event",
+            "event_type": "forge.merged"
+          },
+          {
+            "kind": "audit_event",
+            "event_type": "deployment.native_deploy_succeeded"
+          },
+          {
+            "kind": "reading",
+            "name": "drift_in_sync_all"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Design: the ADR Steward agent and the Vision page's ADR panel
 
-- **Status:** design (2026-11-16), reviewed by the owner: the open questions are answered in §10 and the build may start in the order of §11. Nothing here is built yet.
+- **Status:** design (2026-11-16), reviewed by the owner: the open questions are answered in §10 and the build may start in the order of §11. Step 1 is built (2026-11-17); steps 2–8 are not.
 - **Owner request (2026-11-16, confirmed "ya steward"):** "buatkan Agent monitoring ADR yang akan selalu dinamis update progress, detail, penjelasan, dan selalu diupdate di panel Vision sebagai panel ADR (sebutkan singkatannya)" (build an agent that monitors the ADRs, always updates their progress, detail and explanation, and shows them on the Vision page as an ADR panel, with the abbreviation spelled out).
 - **Panel title (owner):** "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)".
 - **Reads with:** ADR-0007 (AI Worker OS: agents, capabilities, syscalls), ADR-0009 (consensus, the owner's click), ADR-0012 and `docs/GITHUB-CUTOVER.md` (the cut-over gates), ADR-0013 (DNA and census), ADR-0015 (documents, push to the senses), ADR-0016 (Telos: the Vision page, the self-model), ADR-0017 (the "Needs you" inbox, "Ask the organism"), `docs/SSOT.md`.
@@ -738,7 +738,7 @@ Each step is one change request. The effort is rough and assumes the session tha
 
 | # | Change request | Guard path? | Effort |
 |---|---|---|---|
-| 1 | `control-plane-shared/src/adr-progress.ts` (schema validator), `architecture/adr/progress/0001.json`–`0019.json` (the seed of §8), `test/adr-progress.test.ts` (schema, quotes, lifecycle, `built` paths). The Q2 rule goes in `guard-paths.ts` if approved. | Only if Q2 is yes (then `merge_owner_change`) | 1 day |
+| 1 | `control-plane-shared/src/adr-progress.ts` (schema validator), `architecture/adr/progress/0001.json`–`0019.json` (the seed of §8), `test/adr-progress.test.ts` (schema, quotes, lifecycle, `built` paths). The Q2 rule goes in `guard-paths.ts` if approved. **Built 2026-11-17**, with `0020.json` for ADR-0020 (merged after this design) and the seed re-checked against main: GB has no "checked, none found" step, S6 and S7 keep the GitHub side open until it is dated, X3 measures `0074_register_cta.sql`, 0008 drops the `vision_valid` proxy. | Yes, Q2 (`merge_owner_change`) | 1 day |
 | 2 | `control-plane-shared/src/adr-evidence.ts`: the predicate evaluator and the readings, pure over a D1 interface, with tests on `node:sqlite` fixtures built from the real migrations (the test runner already uses `--experimental-sqlite`) | No | 1.5 days |
 | 3 | The agent: the DNA entry and engine in `workers/ai-kernel/organism.json`; `adr.observe` in `capabilities.ts` and its handler in `syscall.ts`; `AdrStewardAgent` with the wrangler migration v5; the D1 migration for `adr_progress` and `adr_progress_history`; the scheduled hook and the wake id; the audit events; `architecture/adr/progress/` added to the Control Plane unit's paths in `deploy-units.ts`. Then the census registers the agent and the engine by consensus. | Yes (`organism.json`, `capabilities.ts`): one owner click | 2 days |
 | 4 | API: `GET /v1/adr` and `GET /v1/adr/{id}` on the kernel; the two allow-list rows and the two UI routes; tests like `vision-telos-0016.test.ts` V4 | No | 0.5 day |

@@ -1,0 +1,26 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0006",
+  "title": "Cloudflare Workflows for the recovery lifecycle and signal ingestion",
+  "adr_file": "architecture/adr/0006-cloudflare-workflows.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "R",
+      "title": "The recovery lifecycle Workflow (migration 0009)",
+      "evidence": {
+        "kind": "migration_applied",
+        "name": "0009_recovery_lifecycle.sql"
+      }
+    },
+    {
+      "id": "S",
+      "title": "The signal ingestion Workflow, built and retired with the Signal Engine",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0006-cloudflare-workflows.md",
+        "quote": "## Amendment — 2026-11-05: SignalIngestWorkflow retired"
+      }
+    }
+  ]
+}

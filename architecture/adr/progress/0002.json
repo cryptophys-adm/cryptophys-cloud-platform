@@ -1,0 +1,28 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0002",
+  "title": "Infrastructure state and recovery",
+  "adr_file": "architecture/adr/0002-infrastructure-state-and-recovery.md",
+  "lifecycle": "accepted",
+  "lifecycle_note": "Accepted as policy. The IaC state backend is deferred by the decision itself until an IaC-managed resource needs one: a clause, not a phase.",
+  "phases": [
+    {
+      "id": "P1",
+      "title": "Git is the desired state; Cloudflare's live inventory is the observed state",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "Desired-versus-observed versions and health"
+      }
+    },
+    {
+      "id": "P2",
+      "title": "Recovery from durable copies: a daily D1 backup to R2 and D1 Time Travel",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "gets a daily backup written by the Recovery Manager"
+      }
+    }
+  ]
+}

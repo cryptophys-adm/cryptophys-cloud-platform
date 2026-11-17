@@ -1,0 +1,113 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0015",
+  "title": "Organs as cells: Durable Object actors, push to the senses, D1 as the ledger",
+  "adr_file": "architecture/adr/0015-organs-as-cells.md",
+  "lifecycle": "accepted",
+  "lifecycle_note": "The ADR's Status line says nothing in the Decision is built: true of the platform; the xauusd phases are asserted from that repository.",
+  "groups": [
+    {
+      "id": "platform",
+      "title": "Platform phases"
+    },
+    {
+      "id": "xauusd",
+      "title": "xauusd phases (its own repository)"
+    }
+  ],
+  "phases": [
+    {
+      "id": "1",
+      "group": "platform",
+      "title": "Platform 1: push hub DO for the Console, Cache API for the rest",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no push hub exists: no Worker accepts a WebSocket"
+      }
+    },
+    {
+      "id": "2",
+      "group": "platform",
+      "title": "Platform 2: the Supervisor's observe() snapshot in its DO",
+      "depends_on": [
+        "1"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built: each Supervisor cycle still reads D1"
+      }
+    },
+    {
+      "id": "3",
+      "group": "platform",
+      "title": "Platform 3: telemetry to Analytics Engine",
+      "depends_on": [
+        "2"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no Analytics Engine dataset is bound"
+      }
+    },
+    {
+      "id": "4",
+      "group": "platform",
+      "title": "Platform 4: retention with an R2 archive",
+      "depends_on": [
+        "3"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no R2 archive of D1 history exists"
+      }
+    },
+    {
+      "id": "X1",
+      "group": "xauusd",
+      "title": "xauusd 1: push hub for Nexus and Omega",
+      "evidence": {
+        "kind": "external_asserted",
+        "source": "xauusd",
+        "ref": "main: the push hub (#337, #338) and its rooms and Omega overview (#347, #348)",
+        "as_of": "2026-11-14"
+      }
+    },
+    {
+      "id": "X2a",
+      "group": "xauusd",
+      "title": "xauusd 2a: room run documents, in shadow",
+      "evidence": {
+        "kind": "external_asserted",
+        "source": "xauusd",
+        "ref": "docs/RFC_ROOM_CELLS.md Status: P2a live in shadow (2026-11-15)",
+        "as_of": "2026-11-15"
+      }
+    },
+    {
+      "id": "X2b",
+      "group": "xauusd",
+      "title": "xauusd 2b: every reader of a concluded run reads the run documents",
+      "depends_on": [
+        "X2a"
+      ],
+      "evidence": {
+        "kind": "external_asserted",
+        "source": "xauusd",
+        "ref": "docs/RFC_ROOM_CELLS.md Status: P2b done 2026-11-16",
+        "as_of": "2026-11-16"
+      }
+    },
+    {
+      "id": "X2c",
+      "group": "xauusd",
+      "title": "xauusd 2c: rooms in a Durable Object",
+      "depends_on": [
+        "X2b"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "parked by the owner on 2026-11-16 (xauusd BACKLOG B-16)"
+      }
+    }
+  ]
+}
