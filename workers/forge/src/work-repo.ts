@@ -29,7 +29,8 @@ import { CANONICAL_REPO, discoverRefs, mainPosition, refHead, repoStatus, truste
 export const WORK_REPO = "platform-work";
 export const WORK_READ_TOKEN_TTL_S = 120;
 /** The branches the Forge registers; anything else in the work repository is ignored. */
-export const WORK_BRANCH = /^(cr|claude|agent)\/[A-Za-z0-9._/-]{1,80}$/;
+// evo/: the evolver's branches, written only by the Forge (evolution.ts; ADR-0014 §11, docs/design/EVOLVER.md §6).
+export const WORK_BRANCH = /^(cr|claude|agent|evo)\/[A-Za-z0-9._/-]{1,80}$/;
 /** Registrations (tree diffs and ancestry walks) per tick; the rest wait for the next tick. */
 export const MAX_REGISTRATIONS_PER_TICK = 5;
 const ACTOR = "system:forge-work";

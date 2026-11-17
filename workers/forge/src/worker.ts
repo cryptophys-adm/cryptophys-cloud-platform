@@ -12,6 +12,7 @@ import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
 import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
+import { proposeEvolution, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
 import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
@@ -61,6 +62,16 @@ export class MergeRpc extends WorkerEntrypoint<Env> {
   }
   async mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     return mergeForConsensus(this.env as never, String(proposalId), String(decisionId), String(crId), params && typeof params === "object" ? params : {});
+  }
+}
+
+/**
+ * ADR-0014 §11, docs/design/EVOLVER.md §6 (step V4): the evolver's one write path, bound only to the AI Kernel. It writes
+ * one commit to evo/<evolution_id> of platform-work after every check of evolution.ts; it never writes another ref.
+ */
+export class EvolutionRpc extends WorkerEntrypoint<Env> {
+  async propose(input: EvolutionInput): Promise<EvolutionResult> {
+    return proposeEvolution(this.env as never, input && typeof input === "object" ? input : {});
   }
 }
 
