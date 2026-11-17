@@ -3,7 +3,7 @@
 //
 // A manifest (adr-progress.ts, adr.progress.v1) names how each phase is measured. This module measures it: every
 // predicate kind is one fixed, parameterized, read-only query here, and the manifest supplies only values. Nothing
-// here writes, and nothing is wired to a Worker yet: the kernel's `adr.observe` handler calls it in step 3.
+// here writes. The kernel's tier-0 `adr.observe` handler calls it (ai-kernel/src/adr-observe.ts, step 3).
 //
 // Pure over two injected dependencies:
 //   - `db`: a small D1-like reader, `prepare(sql).bind(...).first()/all()`. Every query is a SELECT with a LIMIT on
@@ -48,6 +48,11 @@ export interface AdrEvidenceDeps {
   githubFallback?: () => Promise<string | null>;
   /** Evaluation time in ms; defaults to Date.now(). */
   now?: number;
+  /**
+   * The ADR ids the manifests of this pass describe, for `adr_index_live` (a row of adr_progress for each).
+   * evaluateAdrManifests supplies the ids of the manifests it is given; without them the reading is not measurable.
+   */
+  manifestIds?: readonly string[];
 }
 
 export const ADR_EVIDENCE_STATES = ["proven", "doc_asserted", "external_asserted", "open", "not_measurable_yet", "unknown"] as const;
@@ -640,8 +645,14 @@ export class AdrEvidenceContext {
       if (!r) return open("the ADR Steward is not registered");
       const refs = [evRef("agent", "adr-steward", isoTime(r.updated_at), "status")];
       if (r.status !== "enabled") return open(`the ADR Steward is ${r.status}`, { refs });
-      // The adr_progress table comes with step 3 (§4.6); until it is migrated its rows cannot be counted.
-      return res("not_measurable_yet", { refs, reason: "adr_progress is not migrated yet (ADR Steward step 3)" });
+      // Step 3 (§4.6, migration 0075): the Steward's documents, one adr_progress row for every manifest of this pass.
+      const ids = [...new Set(this.deps.manifestIds ?? [])];
+      if (!ids.length) return res("not_measurable_yet", { refs, reason: "no manifest list to count adr_progress against" });
+      const c = await this.row<{ n: number }>("adr_progress",
+        `SELECT COUNT(*) AS n FROM adr_progress WHERE adr_id IN (${ids.map(() => "?").join(", ")}) LIMIT 1`, ids);
+      const n = Number(c?.n ?? 0);
+      if (n < ids.length) return open(`adr_progress has ${n} of ${ids.length} ADR documents`, { refs });
+      return proven(isoTime(r.updated_at), refs, true);
     },
 
     orchestrator_github_fallback_absent: async () => {
@@ -819,7 +830,8 @@ function summarize(e: Evaluated, complete: (dep: string) => boolean | null, nowI
  * computed (no query is made for it).
  */
 export async function evaluateAdrManifests(manifests: readonly unknown[], deps: AdrEvidenceDeps): Promise<(AdrEvaluation | AdrInvalid)[]> {
-  const ctx = new AdrEvidenceContext(deps);
+  const ids = manifests.map((m) => (m as { adr?: unknown })?.adr).filter((a): a is string => typeof a === "string");
+  const ctx = new AdrEvidenceContext({ ...deps, manifestIds: deps.manifestIds ?? ids });
   const done: (Evaluated | AdrInvalid)[] = [];
   for (const raw of manifests) {
     const problems = adrEvidenceProblems(raw);

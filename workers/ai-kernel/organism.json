@@ -12,6 +12,16 @@
   },
   "agents": [
     {
+      "id": "adr-steward",
+      "display_name": "ADR Steward",
+      "capabilities": [
+        "adr.observe",
+        "reports.publish"
+      ],
+      "tier_max": 1,
+      "voter": false
+    },
+    {
       "id": "auditor",
       "display_name": "Platform Auditor",
       "capabilities": [
@@ -50,6 +60,9 @@
     }
   ],
   "engines": [
+    {
+      "task": "draft_adr_explanation"
+    },
     {
       "task": "draft_audit_digest"
     },

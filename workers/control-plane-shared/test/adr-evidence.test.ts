@@ -298,11 +298,19 @@ test("AE2. the named readings read real tables, and an unreadable source is unkn
   await want("drift_in_sync_all", "proven");
   obs.run("do_last", services[0], 1, ago(1));
   assert.match((await want("drift_in_sync_all", "open")).reason!, new RegExp(`drifted: ${services[0]}`));
-  // adr_index_live: the Steward registered and enabled; adr_progress comes with step 3, so not measurable until then.
+  // adr_index_live: the Steward registered and enabled, and (step 3, migration 0075) an adr_progress row for every manifest.
   await want("adr_index_live", "open");
   db.raw.prepare(`INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, updated_by, created_at, updated_at)
     VALUES ('adr-steward', 'ADR Steward', 'cryptophys-ai-kernel', 'test', 1, '[]', 'enabled', 'test', ?, ?)`).run(ago(1), ago(1));
   await want("adr_index_live", "not_measurable_yet");
+  const ids = { manifestIds: ["0012", "0016"] };
+  assert.equal((await want("adr_index_live", "open", ids)).reason, "adr_progress has 0 of 2 ADR documents");
+  const doc = db.raw.prepare(`INSERT INTO adr_progress (adr_id, revision, lifecycle, status, phases_total, phases_proven, phases_asserted, percent, percent_proven,
+    manifest_sha256, body_sha256, body_json, explanation_json, changed_at) VALUES (?, 1, 'accepted', 'in_progress', 1, 0, 0, 0, 0, 'm', 'b', '{}', NULL, ?)`);
+  doc.run("0012", ago(1));
+  await want("adr_index_live", "open", ids);
+  doc.run("0016", ago(1));
+  await want("adr_index_live", "proven", ids);
   // orchestrator_github_fallback_absent: no read-only RPC yet; with one, absent is proven.
   await want("orchestrator_github_fallback_absent", "not_measurable_yet");
   await want("orchestrator_github_fallback_absent", "proven", { githubFallback: async () => "absent" });

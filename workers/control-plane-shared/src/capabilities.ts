@@ -28,6 +28,8 @@ export const CAPABILITIES: Record<string, Capability> = {
   "audit.verify": { tier: 0, reversible: true, description: "Verify the audit hash chain and count 24-hour governance events" },
   "memory.recall": { tier: 0, reversible: true, description: "Recall up to 5 semantically similar memories owned by the calling agent" },
   "metabolism.observe": { tier: 0, reversible: true, description: "Read treasury balance, burn rate, market status and active power mode" },
+  // ADR Steward (docs/design/ADR-STEWARD.md §4.2, owner Q3 2026-11-16): a capability of its own, so platform.observe is not widened.
+  "adr.observe": { tier: 0, reversible: true, description: "Evaluate the bundled ADR progress manifests against D1 evidence (read only)" },
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
   "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
   "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize (learning: no rate limit)" },

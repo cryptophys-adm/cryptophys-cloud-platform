@@ -1,7 +1,7 @@
 /**
  * cryptophys-ai-kernel: the AI Worker OS kernel (ADR-0007).
  *
- *  - Agents are Durable Object processes (SupervisorAgent, SignalAnalystAgent, AuditorAgent)
+ *  - Agents are Durable Object processes (SupervisorAgent, SignalAnalystAgent, AuditorAgent, AdrStewardAgent)
  *    woken by the cron and by operators, plus external agents bound via agent_principals (TP-009).
  *  - Every agent action is a syscall: tier 0 checked here, tier >= 1 decided by the Policy
  *    Engine, dispatched over RPC to the owning Worker, recorded and audited.
@@ -24,6 +24,7 @@ import { KERNEL_HOST, alertVaultOf } from "./kernel.ts";
 import { AlertChannelError, createChannel, deleteChannel, listChannels, testChannel, updateChannel } from "./alert-channels.ts";
 import { REPORT_ID_RE, ReportAcknowledgeError, acknowledgeReport, listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
+import { ADR_STEWARD_ID } from "./adr-steward.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { pruneSyscallConsumptions } from "./retention.ts";
 import { AGENT_ID } from "./supervisor.ts";
@@ -287,7 +288,7 @@ export default {
       if (verb === "actions") return request.method === "GET" ? json(await listActions(env, agentId, limitParam(url))) : errorResponse(405, "method_not_allowed");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       if (verb === "wake") {
-        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID && agentId !== AUDITOR_ID) return errorResponse(404, "not_found");
+        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID && agentId !== AUDITOR_ID && agentId !== ADR_STEWARD_ID) return errorResponse(404, "not_found");
         return json(await wakeAgent(env, agentId));
       }
       if (verb === "suspend") {
@@ -319,6 +320,13 @@ export default {
     if (minute === 37 && env.AUDITOR) {
       ctx.waitUntil(env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID)).cycle("scheduled").then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "auditor_cycle_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
+    // ADR Steward (docs/design/ADR-STEWARD.md §4.3): every tick. One indexed audit query decides whether a pass is due
+    // (a watched event, a new deploy, a quiet window's end, the 02:52 UTC daily pass); otherwise it writes nothing.
+    if (env.ADR_STEWARD) {
+      ctx.waitUntil(env.ADR_STEWARD.get(env.ADR_STEWARD.idFromName(ADR_STEWARD_ID)).cycle("scheduled").then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "adr_steward_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).

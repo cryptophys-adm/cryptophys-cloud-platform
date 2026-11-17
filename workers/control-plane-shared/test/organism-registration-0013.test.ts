@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, CONSENSUS_REGISTERED, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { VOTERS, castVote, councilSeats, forbiddenCapabilities, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
@@ -55,7 +55,7 @@ function grownDna(capabilities = ["platform.observe", "reports.publish"]) {
   return files;
 }
 
-function kernelEnv(db: Db = migratedDb()) {
+function kernelEnv(db: Db = registeredDb()) {
   const canonical = { head: MAIN as string | null };
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
   const mem = new Map<string, unknown>();
@@ -80,15 +80,24 @@ test("R1. migration 0041 seeds the founding council and the engines the DNA decl
   const db = migratedDb();
   const seats = (db.raw.prepare("SELECT agent_id FROM agents WHERE voter = 1 ORDER BY agent_id").all() as any[]).map((r) => r.agent_id);
   assert.deepEqual(seats, [...VOTERS].sort());
+  // What main declared after 0041 is registered by consensus, never seeded: the census finds exactly that, nothing more.
   const r = await censusTick(db as never, repoWith(realDna()), Date.parse("2026-11-09T12:00:00Z"));
-  assert.equal(r.status, "consistent", JSON.stringify(db.raw.prepare("SELECT findings FROM forge_organism_census").get()));
+  const findings = JSON.parse((db.raw.prepare("SELECT findings FROM forge_organism_census").get() as any).findings).map((f: any) => `${f.kind}:${f.subject}`);
+  assert.deepEqual(findings, [
+    ...CONSENSUS_REGISTERED.agents.map((a) => `unregistered_agent:${a.agent_id}`),
+    ...CONSENSUS_REGISTERED.engines.map((e) => `unregistered_engine:${e.service}:${e.task}`),
+  ].sort());
+  assert.equal(r.status, CONSENSUS_REGISTERED.agents.length + CONSENSUS_REGISTERED.engines.length ? "changes" : "consistent");
   const engines = db.raw.prepare("SELECT COUNT(*) AS n FROM engines WHERE status = 'enabled'").get() as any;
   const declared = DIRS.reduce((n, d) => n + JSON.parse(read(`workers/${d}/organism.json`)).engines.length, 0);
-  assert.equal(engines.n, declared);
+  assert.equal(engines.n, declared - CONSENSUS_REGISTERED.engines.length);
+  // Once consensus has registered them, the census of the same DNA is consistent.
+  const after = registeredDb();
+  assert.equal((await censusTick(after as never, repoWith(realDna()), Date.parse("2026-11-09T12:00:00Z"))).status, "consistent");
 });
 
 test("R2. the census reports new engines and seats asked for or no longer asked for", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("DELETE FROM engines WHERE task = 'suggest_tags'").run();
   db.raw.prepare("UPDATE agents SET voter = 0 WHERE agent_id = 'policy-engine'").run();
   db.raw.prepare("UPDATE agents SET voter = 1 WHERE agent_id = 'signal-analyst'").run();

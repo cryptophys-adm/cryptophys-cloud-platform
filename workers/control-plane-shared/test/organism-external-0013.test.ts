@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { castVote, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { EXTERNAL_CEILING, EXTERNAL_ORIGINS, externalCeilingViolations, externalOrgans } from "../src/organism.ts";
@@ -112,7 +112,7 @@ test("X1. the external ceiling: tier 1, no seat, four capabilities; organs outsi
 });
 
 test("X2. the census reads XAUUSD's DNA next to main's: today's 13 agents are consistent; organs carry their origin", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const r = await censusTick(db as never, repoWith(realDna()), Date.now(), reader(() => xauusdDna(db)));
   assert.equal(r.status, "consistent", JSON.stringify((db.raw.prepare("SELECT findings FROM forge_organism_census").get() as any)?.findings));
   const row = db.raw.prepare("SELECT organs, agents FROM forge_organism_census WHERE main_sha = ?").get(MAIN) as any;
@@ -125,7 +125,7 @@ test("X2. the census reads XAUUSD's DNA next to main's: today's 13 agents are co
 });
 
 test("X3. an origin that does not answer is a finding; main's census still runs and nothing of the origin is retired", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const r = await censusTick(db as never, repoWith(realDna()), Date.now(), [{ origin: XAUUSD, dna: () => Promise.reject(new Error("no such entrypoint")) }]);
   assert.equal(r.status, "changes");
   const f = (await latestCensusRow({ DB: db } as never))!.findings;
@@ -138,7 +138,7 @@ test("X3. an origin that does not answer is a finding; main's census still runs 
 });
 
 test("X4. a new XAUUSD agent and AI task register themselves by consensus; one above the ceiling never does", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   setMode(db, "deploy");
   const { env, memory } = kernelEnv(db);
   const grow = { agents: [agent("hud-supertrend"), agent("hud-greedy", [...CAPS, "consensus.propose"])], engines: ["war_room_opening"] };
@@ -172,7 +172,7 @@ test("X4. a new XAUUSD agent and AI task register themselves by consensus; one a
 });
 
 test("X4b. a Worker's second new AI task is not held a day behind its first, nor proposed into the Policy Engine's hourly limit", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   setMode(db, "deploy");
   const { env, memory } = kernelEnv(db);
   const files = realDna();
@@ -196,7 +196,7 @@ test("X4b. a Worker's second new AI task is not held a day behind its first, nor
 });
 
 test("X5. defence in depth: a tampered census or a proposal above the ceiling is refused by the vote and by the executor", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   setMode(db, "deploy");
   const { env } = kernelEnv(db);
   await censusTick(db as never, repoWith(realDna()), Date.now(), reader(() => xauusdDna(db, { agents: [agent("hud-new-sensor")] })));

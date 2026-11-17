@@ -159,6 +159,11 @@ class_name = "AuditorAgent"
 name = "ALERT_VAULT_NS"
 class_name = "AlertVault"
 
+# ADR Steward (docs/design/ADR-STEWARD.md §4.1): computes each ADR's progress from evidence; cycles serialized here.
+[[durable_objects.bindings]]
+name = "ADR_STEWARD"
+class_name = "AdrStewardAgent"
+
 [[vectorize]]
 binding = "MEMORY"
 index_name = "cryptophys-agent-memory"
@@ -178,6 +183,10 @@ new_sqlite_classes = ["AuditorAgent"]
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["AlertVault"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["AdrStewardAgent"]
 
 # No shared secrets: /v1 and /mcp are authorized by the verified Cloudflare Access identity.
 # The deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.

@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { DNA_FILE, agentsOf, genomeFrom, parseDna, servicesWhere, voters, type Genome } from "../src/organism.ts";
 import { DEPLOY_UNITS } from "../src/deploy-units.ts";
-import { KERNEL_AGENTS, VOTERS } from "../src/consensus-rules.ts";
+import { KERNEL_AGENTS, VOTERS, forbiddenCapabilities, privilegedCapabilities } from "../src/consensus-rules.ts";
+import { CONSENSUS_REGISTERED } from "./harness.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -102,12 +103,29 @@ test("O7. every AI engine a Worker runs is declared in its DNA, and nothing more
   }
 });
 
-test("O8. every service the DNA declares has a plain-English name, and every DNA agent was seeded", () => {
+test("O8. every service the DNA declares has a plain-English name, and every DNA agent was seeded or is registered by consensus", () => {
   const plain = read("workers/control-plane-shared/src/plain.ts");
   for (const d of genome.values()) {
     if (d.kind === "build-stub") continue;
     assert.ok(plain.includes(`"${d.service}": "${d.display_name}"`), `plain.ts SERVICE_NAMES has ${d.service}: ${d.display_name}`);
   }
   const migrations = readdirSync(new URL("workers/control-plane-migrations/", ROOT)).filter((f) => f.endsWith(".sql")).map((f) => read(`workers/control-plane-migrations/${f}`)).join("\n");
-  for (const d of genome.values()) for (const a of d.agents) assert.match(migrations, new RegExp(`'${a.id}'\\s*,\\s*'[^']*'\\s*,\\s*'${d.service}'`), `agent ${a.id} seeded on ${d.service}`);
+  const seeded = (id: string, service: string) => new RegExp(`'${id}'\\s*,\\s*'[^']*'\\s*,\\s*'${service}'`).test(migrations);
+  // ADR-0013 phase 3 (migration 0041): an agent main declares after 0041 is registered by consensus, never seeded. Each
+  // is listed (harness.ts CONSENSUS_REGISTERED), declared on its host, routine (register_agent passes the council
+  // without the owner: no privileged or forbidden capability, tier_max 1) and seeded by no migration.
+  const byConsensus = new Map(CONSENSUS_REGISTERED.agents.map((a) => [a.agent_id, a.service]));
+  for (const d of genome.values()) for (const a of d.agents) {
+    if (byConsensus.get(a.id) === d.service) {
+      assert.ok(!seeded(a.id, d.service), `agent ${a.id} is registered by consensus, not seeded`);
+      assert.deepEqual([privilegedCapabilities(a.capabilities), forbiddenCapabilities(a.capabilities), a.tier_max <= 1], [[], [], true], `agent ${a.id} registers as routine`);
+      continue;
+    }
+    assert.ok(seeded(a.id, d.service), `agent ${a.id} seeded on ${d.service}`);
+  }
+  for (const [id, service] of byConsensus) assert.ok(genome.get(service)?.agents.some((a) => a.id === id), `${id} is declared on ${service}`);
+  for (const e of CONSENSUS_REGISTERED.engines) {
+    assert.ok(genome.get(e.service)?.engines.some((x) => x.task === e.task), `engine ${e.task} is declared on ${e.service}`);
+    assert.doesNotMatch(migrations, new RegExp(`'${e.service}'\\s*,\\s*'${e.task}'`), `engine ${e.task} is registered by consensus, not seeded`);
+  }
 });

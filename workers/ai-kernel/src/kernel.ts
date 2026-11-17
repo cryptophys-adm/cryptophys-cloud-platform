@@ -10,6 +10,7 @@ import { CAPABILITIES, agentsEnabled, getAgent, type AgentPrincipalRow, type Age
 import { AGENT_ID, type CycleReport, type KernelEnv } from "./supervisor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { AUDITOR_ID } from "./auditor.ts";
+import { ADR_STEWARD_ID } from "./adr-steward.ts";
 
 export interface SupervisorStub { cycle(trigger: "scheduled" | "operator"): Promise<CycleReport>; status(): Promise<CycleReport | null> }
 export interface SupervisorNamespace { idFromName(name: string): unknown; get(id: unknown): SupervisorStub }
@@ -18,6 +19,8 @@ export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
   SIGNAL_ANALYST?: SupervisorNamespace;
   AUDITOR?: SupervisorNamespace;
+  /** ADR Steward (docs/design/ADR-STEWARD.md §4.1): the AdrStewardAgent Durable Object. */
+  ADR_STEWARD?: SupervisorNamespace;
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
   OWNER_EMAIL?: SendEmailBinding;
@@ -166,11 +169,16 @@ const auditor = (env: KernelHttpEnv) => {
   if (!env.AUDITOR) throw new Error("auditor_binding_missing");
   return env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID));
 };
+const adrSteward = (env: KernelHttpEnv) => {
+  if (!env.ADR_STEWARD) throw new Error("adr_steward_binding_missing");
+  return env.ADR_STEWARD.get(env.ADR_STEWARD.idFromName(ADR_STEWARD_ID));
+};
 
 export async function wakeAgent(env: KernelHttpEnv, agentId: string): Promise<CycleReport | JsonObject> {
   if (agentId === AGENT_ID) return supervisor(env).cycle("operator");
   if (agentId === SIGNAL_ANALYST_ID) return signalAnalyst(env).cycle("operator");
   if (agentId === AUDITOR_ID) return auditor(env).cycle("operator");
+  if (agentId === ADR_STEWARD_ID) return adrSteward(env).cycle("operator");
   throw new Error("unknown runnable agent");
 }
 
@@ -183,7 +191,9 @@ export async function agentStatus(env: KernelHttpEnv, agentId: string): Promise<
       ? await signalAnalyst(env).status()
       : agentId === AUDITOR_ID && env.AUDITOR
         ? await auditor(env).status()
-        : null;
+        : agentId === ADR_STEWARD_ID && env.ADR_STEWARD
+          ? await adrSteward(env).status()
+          : null;
   const principals = await listAgentPrincipals(env, agentId);
   return {
     agent: present(agent),

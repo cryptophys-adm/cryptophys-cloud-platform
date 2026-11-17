@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { castVote, classify, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { EXTERNAL_CEILING, EXTERNAL_ORIGINS } from "../src/organism.ts";
@@ -97,7 +97,7 @@ function kernelEnv(db: Db) {
 
 /** A database in mode deploy with an enabled engine the DNA does not declare (cryptophys-forge:ghost_task). */
 function setup(extra: Array<[string, string]> = [[FORGE, "ghost_task"]]) {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
   for (const [service, task] of extra) {
     db.raw.prepare("INSERT INTO engines (service_id, task, status, registered_by, created_at, updated_at) VALUES (?, ?, 'enabled', 'consensus:old', '2026-11-10T00:00:00.000Z', '2026-11-10T00:00:00.000Z')").run(service, task);

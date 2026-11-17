@@ -21,6 +21,7 @@ import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
 import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
+import { observeAdr } from "./adr-observe.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -836,6 +837,8 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
   "knowledge.status": (env, input, agentId) => knowledgeStatus(env.DB, agentId, input),
   "doctrine.status": (env, input) => doctrineStatus(env.DB, input),
+  // ADR Steward (docs/design/ADR-STEWARD.md §4.2): the bundled ADR progress manifests evaluated against D1, read only.
+  "adr.observe": (env, input) => observeAdr(env, input),
 };
 
 /**

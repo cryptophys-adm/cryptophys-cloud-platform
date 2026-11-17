@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { castVote, RETIRE_IDLE_DAYS, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { DOCTRINE_ACTIONS } from "../src/doctrine.ts";
@@ -91,7 +91,7 @@ function kernelEnv(db: Db) {
 // ------------------------------------------------------------------------------------------- A. the ceiling
 
 test("AC1. Aether's ceiling is exactly what its agents hold today: the registered grants (0027, 0029, 0045) and its DNA", () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const rows = db.raw.prepare("SELECT agent_id, tier_max, voter, capabilities_json FROM agents WHERE host_worker = ? ORDER BY agent_id").all(HOST) as any[];
   assert.deepEqual(rows.map((r) => r.agent_id), Object.keys(AETHER_CEILING.agents).sort(), "one ceiling entry per registered Aether agent, no more");
   for (const r of rows) {
@@ -170,7 +170,7 @@ test("AC4. the vote holds each origin to its own ceiling; Aether's council regis
 });
 
 test("AC5. over AgentRpc, the Knowledge Council proposes only doctrine actions", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const { env } = kernelEnv(db);
   const count = () => (db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE proposer_agent_id = 'knowledge-council'").get() as any).n;
   for (const action of ["merge_change", "deploy_commit", "retire_agent"]) {
@@ -206,7 +206,7 @@ test("AC-CTA2. bound, cryptophys-cta is never an undeclared Worker: unread, it i
     traffic7d: new Map([["cryptophys-cta", 40]]), senses_cover_7d: false, day: "2026-11-16",
   }).filter((f) => f.worker === "cryptophys-cta").map((f) => `${f.metric} ${f.worker}`);
   // Unread (timeout, or no OrganismDna yet): a finding, and the Observer leaves cryptophys-cta alone.
-  const db1 = migratedDb();
+  const db1 = registeredDb();
   await censusTick(db1 as never, repoWith(realDna()), Date.now(), [{ origin: CTA, dna: () => Promise.reject(new Error("timeout")) }]);
   const census = (await latestCensusRow({ DB: db1 } as never))!;
   assert.deepEqual(census.findings.map((f) => `${f.kind} ${f.subject}`), ["external_dna_unavailable cta"]);
@@ -215,7 +215,7 @@ test("AC-CTA2. bound, cryptophys-cta is never an undeclared Worker: unread, it i
   assert.deepEqual(live(unread), []);
   // Read: its organ joins the DNA union with origin cta. The organ as the deployed cryptophys-cta serves it (2026-11-16):
   // two agents within the general ceiling, drift over EXT_CRYPTOPHYS_CTA, no unit, Access or rollback entry.
-  const db2 = migratedDb();
+  const db2 = registeredDb();
   const agent = (id: string, display_name: string) => ({ id, display_name, capabilities: ["signals.observe", "reports.publish"], tier_max: 1, voter: false });
   const organ = {
     $schema_version: 1, service: "cryptophys-cta", display_name: "Cryptophys CTA · content studio", kind: "portal", deploy_unit: null, access: false, rollback: false,
@@ -230,13 +230,13 @@ test("AC-CTA2. bound, cryptophys-cta is never an undeclared Worker: unread, it i
   assert.deepEqual([read2.declared.has("cryptophys-cta"), read2.unknown_origins.has("cryptophys-cta")], [true, false]);
   assert.deepEqual(live(read2), []);
   // Unbound (main before 2026-11-16): the census never names cta, so the live Worker read as undeclared.
-  const db3 = migratedDb();
+  const db3 = registeredDb();
   await censusTick(db3 as never, repoWith(realDna()), Date.now(), []);
   assert.deepEqual(live((await knownOrganism(db3 as never, SERVICES))!), ["undeclared_worker cryptophys-cta"]);
 });
 
 test("AC7. Aether's DNA unreachable is a finding: the census completes, and no Aether agent reads as undeclared", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const readers: ExternalDnaReader[] = [{ origin: AETHER, dna: () => Promise.reject(new Error("Worker cryptophys-aether has no entrypoint OrganismDna")) }];
   const r = await censusTick(db as never, repoWith(realDna()), Date.now(), readers);
   assert.equal(r.status, "changes");
@@ -251,7 +251,7 @@ test("AC7. Aether's DNA unreachable is a finding: the census completes, and no A
 });
 
 test("AC8. Aether's DNA read: its five agents match their registrations; the organ carries origin aether", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   await censusTick(db as never, repoWith(realDna()), Date.now(), [{ origin: AETHER, dna: async () => aetherDna() }]);
   const census = (await latestCensusRow({ DB: db } as never))!;
   const organ = census.genome.find((o) => o.service === HOST)!;
@@ -323,7 +323,7 @@ function pendingRetire(db: Db, id: string, target: string, at: string) {
 const retireProposals = (db: Db) => db.raw.prepare("SELECT proposal_id, target, status, outcome_json FROM consensus_proposals WHERE action = 'retire_agent' ORDER BY rowid").all() as any[];
 
 test("AS3. the Supervisor: a scheduled agent quiet between its runs is not proposed; an unscheduled one keeps the old rule", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const { env, memory } = kernelEnv(db);
   const now = Date.now();
   // Silent 15 days each; the weekly one is older, so the old rule would have proposed it first.
@@ -343,7 +343,7 @@ test("AS3. the Supervisor: a scheduled agent quiet between its runs is not propo
 });
 
 test("AS4. an open retire_agent of a scheduled agent that is not idle by its schedule is closed with the owner's reason", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const { env, memory } = kernelEnv(db);
   const now = Date.now();
   // aether-calibrator, registered by 0027: daily at 02:52 UTC, last report 3 days ago. A weekly helper silent for 30 days.

@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
+import { CONSENSUS_REGISTERED, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, registeredByConsensus, registeredDb, req } from "./harness.ts";
 import forge, { FORGE_MIGRATIONS } from "../../forge/src/index.ts";
 import { censusTick, compare, latestCensus, readGenome } from "../../forge/src/census.ts";
 import { collectNotices } from "../../ai-kernel/src/owner-notices.ts";
@@ -38,7 +38,7 @@ function repoWith(files: Record<string, string>, head = MAIN): ArtifactsReader {
 }
 const realDna = () => Object.fromEntries(DIRS.map((d) => [`workers/${d}/organism.json`, read(`workers/${d}/organism.json`)]));
 
-test("C1. the repository's own DNA matches the migrated registries: a consistent census", async () => {
+test("C1. the repository's own DNA matches the migrated registries plus what consensus registers: a consistent census", async () => {
   const db = migratedDb();
   const repo = repoWith({ ...realDna(), "workers/control-plane-shared/package.json": "{}", "README.md": "x" });
   const { genome, files } = await readGenome(repo, MAIN);
@@ -46,15 +46,23 @@ test("C1. the repository's own DNA matches the migrated registries: a consistent
   // 12 since 2026-11-13: cryptophys-home was retired (its registry row is disabled and has no DNA, so no finding).
   assert.equal(files, 12);
   assert.equal(genome.size, 12);
+  // ADR-0013 phase 3: what main declared after 0041 (the ADR Steward and its engine) is found unregistered, exactly
+  // that and nothing else, so the Supervisor proposes it to consensus; no migration registers it.
+  assert.deepEqual((await compare(db as never, genome)).map((f) => `${f.kind}:${f.subject}`), [
+    ...CONSENSUS_REGISTERED.agents.map((a) => `unregistered_agent:${a.agent_id}`),
+    ...CONSENSUS_REGISTERED.engines.map((e) => `unregistered_engine:${e.service}:${e.task}`),
+  ].sort());
+  // Once consensus has registered them, main's DNA and the registries agree.
+  registeredByConsensus(db);
   assert.deepEqual(await compare(db as never, genome), []);
   assert.deepEqual(await censusTick(db as never, repo), { outcome: "recorded", main_sha: MAIN, status: "consistent", findings: 0 });
   assert.equal((await censusTick(db as never, repo)).outcome, "up_to_date", "once per main commit");
   const row = (await latestCensus(db as never)).census[0];
-  assert.deepEqual([row.status, row.organs, row.agents, row.voters, row.engines], ["consistent", 12, 10, 9, 9]);
+  assert.deepEqual([row.status, row.organs, row.agents, row.voters, row.engines], ["consistent", 12, 11, 9, 10]);
 });
 
 test("C2. findings: an unregistered organ and agent (with its council request), an undeclared agent, host and capability changes", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const dna = realDna();
   const forgeDna = JSON.parse(dna["workers/forge/organism.json"]);
   forgeDna.agents = [{ id: "forge-steward", display_name: "Forge Steward", capabilities: ["platform.observe"], tier_max: 1, voter: true, vote_binding: "VOTE_FORGE" }];
@@ -80,11 +88,11 @@ test("C2. findings: an unregistered organ and agent (with its council request), 
 });
 
 test("C3. an invalid DNA is recorded as invalid, never thrown away; unchanged findings are not audited twice", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const bad = repoWith({ ...realDna(), "workers/forge/organism.json": "{ not json" });
   assert.equal((await censusTick(db as never, bad)).status, "invalid");
   assert.equal((await latestCensus(db as never)).census[0].findings[0].kind, "invalid_dna");
-  const db2 = migratedDb();
+  const db2 = registeredDb();
   await censusTick(db2 as never, repoWith(realDna(), "1".repeat(40)));
   await censusTick(db2 as never, repoWith(realDna(), "2".repeat(40)));
   assert.equal((db2 as any).raw.prepare("SELECT count(*) n FROM audit_events WHERE event_type = 'forge.organism_census'").get().n, 1, "the second census found nothing new");
@@ -92,7 +100,7 @@ test("C3. an invalid DNA is recorded as invalid, never thrown away; unchanged fi
 });
 
 test("C4. GET /v1/forge/census for operators; migration 0040 required; the tick takes the census", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   await censusTick(db as never, repoWith(realDna()));
   const env = baseEnv("cryptophys-forge", db);
   const r = await call(forge, env, req("GET", "/v1/forge/census?limit=1", undefined, OPERATOR_JWT));
@@ -104,7 +112,7 @@ test("C4. GET /v1/forge/census for operators; migration 0040 required; the tick 
 });
 
 test("C5. tier_max drift is reported rather than silently accepted", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("UPDATE agents SET tier_max = 0 WHERE agent_id = 'supervisor'").run();
   const findings = await compare(db as never, (await readGenome(repoWith(realDna(), "3".repeat(40)), "3".repeat(40))).genome);
   assert.deepEqual(findings.map((f) => `${f.kind}:${f.subject}`), ["agent_tier_changed:supervisor"]);
@@ -113,7 +121,7 @@ test("C5. tier_max drift is reported rather than silently accepted", async () =>
 });
 
 test("C6. a partially applied phase-3 schema fails closed when engines is missing", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("DROP TABLE engines").run();
   const r = await censusTick(db as never, repoWith(realDna()));
   assert.equal(r.status, "invalid");
@@ -123,7 +131,7 @@ test("C6. a partially applied phase-3 schema fails closed when engines is missin
 });
 
 test("C7. unexpected registry query errors do not fall back to the legacy schema", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   const broken = new Proxy(db as never, {
     get(target: any, property: string | symbol) {
       if (property === "prepare") return (sql: string) => {
@@ -143,7 +151,7 @@ test("C7. unexpected registry query errors do not fall back to the legacy schema
 
 
 test("C8. a partially applied phase-3 schema fails closed when engines exists without agents.voter", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("ALTER TABLE agents DROP COLUMN voter").run();
   const r = await censusTick(db as never, repoWith(realDna()));
   assert.equal(r.status, "invalid");
@@ -153,7 +161,7 @@ test("C8. a partially applied phase-3 schema fails closed when engines exists wi
 });
 
 test("C9. the exact pre-0041 schema remains a supported legacy census mode", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("ALTER TABLE agents DROP COLUMN voter").run();
   db.raw.prepare("DROP TABLE engines").run();
   const r = await censusTick(db as never, repoWith(realDna()));

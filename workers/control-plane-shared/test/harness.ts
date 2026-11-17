@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { AiBinding, D1Database, D1PreparedStatement, D1Result } from "../src/types.ts";
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "../../control-plane-migrations");
+const WORKERS = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const norm = (v: unknown): string | number | bigint | null | Uint8Array => {
   if (v === undefined || v === null) return null;
@@ -81,6 +82,40 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
   }
   return new FakeD1(raw);
 }
+
+/**
+ * ADR-0013 phase 3 (migration 0041): "from here on, new agents, engines and seats are added only by consensus actions,
+ * never by hand". The agents and engines main's DNA declared after 0041, which the census registers by consensus
+ * (register_agent, register_engine), with no migration seeding them. A test that compares the repository's DNA with the
+ * live registries applies them with registeredByConsensus(): the registries once consensus has registered what main
+ * declares. organism-dna-0013 O8 checks each is declared, routine (no privileged capability) and seeded by no migration.
+ */
+export const CONSENSUS_REGISTERED: { agents: ReadonlyArray<{ service: string; agent_id: string }>; engines: ReadonlyArray<{ service: string; task: string }> } = {
+  // ADR Steward (docs/design/ADR-STEWARD.md §4.1, step 3).
+  agents: [{ service: "cryptophys-ai-kernel", agent_id: "adr-steward" }],
+  engines: [{ service: "cryptophys-ai-kernel", task: "draft_adr_explanation" }],
+};
+
+/** Write the CONSENSUS_REGISTERED rows as the registration executors do (ai-kernel/src/organism.ts), each gene from its DNA. */
+export function registeredByConsensus(db: FakeD1): FakeD1 {
+  const at = "2026-11-17T12:00:00.000Z";
+  const dirOf = (service: string) => service.replace(/^cryptophys-/, "");
+  for (const a of CONSENSUS_REGISTERED.agents) {
+    const dna = JSON.parse(readFileSync(join(WORKERS, dirOf(a.service), "organism.json"), "utf8")) as { agents: Array<{ id: string; display_name: string; capabilities: string[]; tier_max: number }> };
+    const gene = dna.agents.find((g) => g.id === a.agent_id);
+    if (!gene) throw new Error(`${a.agent_id} is not in ${a.service}'s DNA`);
+    db.raw.prepare(`INSERT OR IGNORE INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at, voter)
+      VALUES (?, ?, ?, ?, ?, ?, 'enabled', NULL, 'consensus:test', ?, ?, 0)`)
+      .run(gene.id, gene.display_name, a.service, `Declared in ${a.service}'s DNA; registered by consensus (test).`, gene.tier_max, JSON.stringify(gene.capabilities), at, at);
+  }
+  for (const e of CONSENSUS_REGISTERED.engines) {
+    db.raw.prepare("INSERT OR IGNORE INTO engines (service_id, task, status, registered_by, created_at, updated_at) VALUES (?, ?, 'enabled', 'consensus:test', ?, ?)").run(e.service, e.task, at, at);
+  }
+  return db;
+}
+
+/** A migrated database whose registries also hold what consensus registers from main's DNA (CONSENSUS_REGISTERED). */
+export const registeredDb = (options: { recordLedger?: boolean } = {}): FakeD1 => registeredByConsensus(migratedDb(options));
 
 export interface FakeAi extends AiBinding {
   calls: { model: string; input: Record<string, unknown> }[];

@@ -5,6 +5,7 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import worker, { type Env } from "./index.ts";
 import { runAuditCycle, AuditorCycleQueue } from "./auditor.ts";
+import { AdrStewardCycleQueue, runAdrStewardCycle, stewardState, type StewardState } from "./adr-steward.ts";
 import { runSignalCycle, SignalAnalystCycleQueue } from "./signal-analyst.ts";
 import { runCycle, SerialCycleQueue, type CycleReport } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
@@ -78,6 +79,24 @@ export class AlertVault extends DurableObject<Env> {
   async put(channelId: string, token: string): Promise<void> { return vaultOn(this.ctx.storage as never).put(channelId, token); }
   async get(channelId: string): Promise<string | null> { return vaultOn(this.ctx.storage as never).get(channelId); }
   async delete(channelId: string): Promise<void> { return vaultOn(this.ctx.storage as never).delete(channelId); }
+}
+
+/**
+ * ADR Steward agent process (docs/design/ADR-STEWARD.md §4): each ADR's progress from evidence, written only on change.
+ * Its cursor, pass times and version id live in this object's storage, so D1 gets no heartbeat writes.
+ */
+export class AdrStewardAgent extends DurableObject<Env> {
+  private readonly cycles = new AdrStewardCycleQueue();
+
+  async cycle(trigger: "scheduled" | "operator"): Promise<CycleReport> {
+    return this.cycles.run(() => runAdrStewardCycle(this.env, this.ctx.storage, trigger));
+  }
+  async status(): Promise<CycleReport | null> {
+    return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;
+  }
+  async state(): Promise<StewardState> {
+    return stewardState(this.ctx.storage);
+  }
 }
 
 /** Platform Auditor agent process (TP-007): hourly audit hash chain & 24h governance verification. */
