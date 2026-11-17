@@ -8,8 +8,13 @@
  * extends the schema). Live: the account's lists (Workers scripts, D1, KV, R2, Queues, Durable Object namespaces),
  * read with the Observer's token, and the scripts the analytics saw in the last 7 days (observer_vitals).
  *
- * Findings: undeclared_worker (live, with traffic, in no DNA), undeclared_resource (informational), orphaned_declaration
+ * Findings: undeclared_worker (on the scripts list, with traffic, in no DNA), undeclared_resource (informational), orphaned_declaration
  * (declared, gone from the account), idle_worker (no traffic for 7 days, once the Observer has 7 days of senses).
+ * 2026-11-17 (owner, "Ya, kerjakan"): a Worker is live only when its script is on a reliable scripts list. One the
+ * analytics saw within 7 days but the list does not hold is deleted_worker (informational, never a warning, never
+ * undeclared); without a reliable list, analytics alone prove nothing and it is not reported. A KV/D1/R2/Queue that
+ * no wrangler.toml of this repository binds but an external organ owns is organ_resource (informational, "owned by
+ * organ <origin>", with its evidence; organOwnerOf), never undeclared_resource.
  * Bindings (owner 2026-11-15, "tambahkan"; observer-bindings.ts): every listed Worker's bindings are read and stored as
  * an index, part of the digest. unbound_resource (informational): a listed KV/D1/R2/Queue that no live Worker binds
  * and no wrangler.toml declares, only when every Worker was read. binding_to_missing_resource (warning): a Worker binds
@@ -25,6 +30,7 @@
  */
 import type { D1Database } from "./types.ts";
 import { THRESHOLDS, REPORT_ONLY_WORKERS, observerCredentials, recordRun, storeFindings, type Finding, type ObserverEnv } from "./observer.ts";
+import { externalOriginOf } from "./organism.ts";
 import {
   BINDINGS_PERMISSION, QUEUE_CONSUMERS_PERMISSION, RESOURCE_BINDING, indexComplete, indexDatasetLine, indexDigestInput, listedConsumers, queueConsumersDatasetLine,
   queueConsumersDigestInput, queueReferences, readBindingIndex, readQueueConsumerIndex, storeBindingIndex,
@@ -60,7 +66,9 @@ export const DECLARED_RESOURCES = Object.freeze({
  * id (the config's) or its name on the account; a queue (the config names queues) by its name.
  */
 export interface CiPreviewResource { resource: "d1" | "kv" | "r2" | "queues"; name: string; id?: string; source: string }
-const XAUUSD_PREVIEW = "cryptophys-adm/xauusd-ai-trading-assistant wrangler.preview.jsonc";
+const XAUUSD_REPO = "cryptophys-adm/xauusd-ai-trading-assistant";
+const AETHER_REPO = "cryptophys-adm/cryptophys-aether";
+const XAUUSD_PREVIEW = `${XAUUSD_REPO} wrangler.preview.jsonc`;
 const XAUUSD_PREVIEWS_BLOCK = `${XAUUSD_PREVIEW} and the previews block of its wrangler.jsonc`;
 export const CI_PREVIEW_RESOURCES: readonly CiPreviewResource[] = Object.freeze([
   { resource: "kv", name: "xauusd-preview-signal-cache", id: "0cbd6ecc0fbc4dc99342960456ca71e5", source: `${XAUUSD_PREVIEWS_BLOCK} (SIGNAL_CACHE)` },
@@ -74,6 +82,72 @@ export const CI_PREVIEW_RESOURCES: readonly CiPreviewResource[] = Object.freeze(
 export function ciPreviewOf(key: "d1" | "kv" | "r2" | "queues", item: { id: string; name: string }, list: readonly CiPreviewResource[] = CI_PREVIEW_RESOURCES): CiPreviewResource | null {
   return list.find((r) => r.resource === key && ((r.id !== undefined && r.id === item.id) || r.name === item.name)) ?? null;
 }
+
+/**
+ * Storage owned by an external organ (2026-11-17). The xauusd and Aether repositories bind their own KV, D1, R2 and
+ * queues in their own wrangler files, so no wrangler.toml of this repository does, and they were reported as
+ * undeclared_resource. The census reads an external organ's DNA over RPC, and its summary keeps no storage, so this
+ * reviewed list names each resource with its source, as read from the organ's main: xauusd 5c64075 and Aether f7b332e,
+ * whose organism.json also declares storage.d1 aether-knowledge. The CI preview resources above are the xauusd organ's
+ * as well. A KV namespace or D1 database matches by its id, the config's, or its name on the account; R2 and queues by name.
+ */
+export interface OrganResource { origin: string; resource: "d1" | "kv" | "r2" | "queues"; name: string; id?: string; source: string }
+export const ORGAN_RESOURCES: readonly OrganResource[] = Object.freeze([
+  { origin: "xauusd", resource: "d1", name: "xauusd-signals", id: "ff99b940-254e-4d44-ac1d-bccb9ed18f6e", source: `${XAUUSD_REPO} wrangler.jsonc (DB)` },
+  { origin: "xauusd", resource: "kv", name: "xauusd-signal-cache", id: "4ada6196de5a4000a28a047bf6b30ff3", source: `${XAUUSD_REPO} wrangler.jsonc (SIGNAL_CACHE) and market-data-ingestion/wrangler.jsonc (MARKET_DATA_CACHE)` },
+  { origin: "xauusd", resource: "kv", name: "xauusd-webhook-buffer", id: "a7ceeae9a1d2471980e2bc71cb38e041", source: `${XAUUSD_REPO} wrangler.jsonc (WEBHOOK_BUFFER)` },
+  { origin: "xauusd", resource: "kv", name: "xauusd-knowledge-base", id: "f611edadb19c4260a111eb5796f2fba7", source: `${XAUUSD_REPO} wrangler.jsonc (KNOWLEDGE_BASE)` },
+  { origin: "xauusd", resource: "kv", name: "xauusd-fundamental-news-oauth", id: "a1c0f1055bd1434192d681a45866614d", source: `${XAUUSD_REPO} fundamental-news-ingestion/wrangler.jsonc (OAUTH_STORE)` },
+  { origin: "xauusd", resource: "r2", name: "xauusd-room-transcripts", source: `${XAUUSD_REPO} wrangler.jsonc (ROOM_TRANSCRIPTS)` },
+  { origin: "xauusd", resource: "queues", name: "xauusd-webhook-events", source: `${XAUUSD_REPO} wrangler.jsonc (queues.producers XAUUSD_EVENTS, queues.consumers)` },
+  { origin: "xauusd", resource: "queues", name: "xauusd-webhook-events-dlq", source: `${XAUUSD_REPO} wrangler.jsonc (dead_letter_queue of xauusd-webhook-events)` },
+  { origin: "aether", resource: "d1", name: "aether-knowledge", source: `${AETHER_REPO} wrangler.jsonc (AETHER_DB) and its organism.json storage.d1` },
+  ...CI_PREVIEW_RESOURCES.map((r) => ({ origin: "xauusd", ...r })),
+].map((r) => Object.freeze(r as OrganResource)));
+/**
+ * The fallback when neither a live binding nor a reviewed wrangler entry names a resource: an organ's resource
+ * namespace, by name prefix. It is a naming rule, not evidence, and the finding says so (evidence "name_prefix").
+ * Only prefixes no resource of this repository uses: cryptophys-* is this repository's, so cta has none.
+ */
+export const ORGAN_NAME_PREFIXES: ReadonlyArray<{ origin: string; prefix: string }> = Object.freeze([
+  Object.freeze({ origin: "xauusd", prefix: "xauusd-" }),
+  Object.freeze({ origin: "aether", prefix: "aether-" }),
+]);
+
+export type OrganEvidence =
+  | { origin: string; evidence: "live_binding"; worker: string; via: string }
+  | { origin: string; evidence: "wrangler"; source: string }
+  | { origin: string; evidence: "name_prefix"; prefix: string };
+/**
+ * The external organ that owns a listed resource, by evidence first (pure; exported for tests): a live Worker of an
+ * external origin (EXTERNAL_ORIGINS) binds or consumes it, then a reviewed wrangler entry of the organ names it
+ * (ORGAN_RESOURCES), then, as a labelled fallback, the organ's name prefix. Null when no organ matches.
+ */
+export function organOwnerOf(key: "d1" | "kv" | "r2" | "queues", item: { id: string; name: string }, bindings?: BindingIndex | null, queueConsumers?: QueueConsumerIndex | null, list: readonly OrganResource[] = ORGAN_RESOURCES): OrganEvidence | null {
+  const { type, match } = RESOURCE_BINDING[key];
+  const ref = match === "id" ? item.id : item.name;
+  for (const [w, r] of Object.entries(bindings?.workers ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    const origin = externalOriginOf(w)?.origin;
+    if (!origin || r.status !== "ok") continue;
+    const b = r.bindings.find((x) => x.type === type && x.id === ref);
+    if (b) return { origin, evidence: "live_binding", worker: w, via: `binding ${b.name}` };
+  }
+  if (key === "queues") {
+    const q = queueConsumers?.queues[item.name];
+    for (const c of q?.status === "ok" ? q.consumers : []) {
+      const origin = c.script ? externalOriginOf(c.script)?.origin : undefined;
+      if (origin) return { origin, evidence: "live_binding", worker: c.script!, via: "queue consumer" };
+    }
+  }
+  const reviewed = list.find((r) => r.resource === key && ((r.id !== undefined && r.id === item.id) || r.name === item.name));
+  if (reviewed) return { origin: reviewed.origin, evidence: "wrangler", source: reviewed.source };
+  const p = ORGAN_NAME_PREFIXES.find((x) => item.name.startsWith(x.prefix));
+  return p ? { origin: p.origin, evidence: "name_prefix", prefix: p.prefix } : null;
+}
+const organWhy = (o: OrganEvidence) =>
+  o.evidence === "live_binding" ? `the live Worker ${o.worker} of that organ uses it (${o.via})`
+  : o.evidence === "wrangler" ? `bound in ${o.source}`
+  : `by the name prefix ${o.prefix} only, a naming rule: no live Worker or reviewed wrangler file of the organ names it`;
 
 /** A preview or environment copy of `base` (Workers Builds previews, wrangler environments). */
 export const PREVIEW_SUFFIX = /^(.+?)-(preview|staging|dev|pr-\d+|cr-\d+)$/;
@@ -208,13 +282,23 @@ export function compareInventory(i: InventoryInput): Finding[] {
     out.push({ ...finding(i.day, "account", "inventory_permission_missing:scripts", `The Workers list came back with ${listed!.length} Worker(s) and none of the ${liveDeclared.length} declared Workers that had traffic in 7 days; the token likely lacks ${LISTS.scripts.permission} (owner)`, { listed: listed!.length, live_declared: liveDeclared.length, permission: LISTS.scripts.permission }), kind: "capability" });
   }
   const live = new Set([...(scripts ?? []), ...traffic7d.keys()]);
+  const listedNow = new Set(scripts ?? []);
   const known = (w: string) => k.declared.has(w) || k.unknown_origins.has(w) || k.disabled.has(w) || previewOf(w, k.declared) !== null;
   for (const w of [...live].sort()) {
     if (known(w)) continue;
     const requests = traffic7d.get(w) ?? 0;
+    // Live means on the scripts list (2026-11-17: deleted CI preview Workers and xauusd-content were reported as
+    // undeclared from their 7-day analytics alone). Without a reliable list, analytics prove nothing either way.
+    if (!listedNow.has(w)) {
+      if (scripts !== null && requests > 0) {
+        out.push(finding(i.day, w, "deleted_worker", `${w} is not on the account's Workers list (deleted); it still had ${requests.toLocaleString("en-US")} requests within 7 days (informational)`,
+          { requests_7d: requests, in_scripts_list: false }));
+      }
+      continue;
+    }
     if (requests > 0) {
       out.push(finding(i.day, w, "undeclared_worker", `${w} is live with ${requests.toLocaleString("en-US")} requests in 7 days but no DNA declares it${REPORT_ONLY_WORKERS.has(w) ? " (observed only; report only)" : ""}`,
-        { requests_7d: requests, in_scripts_list: scripts?.includes(w) ?? null }, REPORT_ONLY_WORKERS.has(w) ? "info" : "warning"));
+        { requests_7d: requests, in_scripts_list: true }, REPORT_ONLY_WORKERS.has(w) ? "info" : "warning"));
     } else if (i.senses_cover_7d) {
       out.push(finding(i.day, w, "idle_worker", `${w} is on the account, in no DNA, and had no traffic for ${THRESHOLDS.IDLE_DAYS} days`, { requests_7d: 0, declared: false }));
     }
@@ -237,7 +321,14 @@ export function compareInventory(i: InventoryInput): Finding[] {
     for (const x of l.items) {
       // A queue's consumers and the queues that name it as their dead-letter queue (what references it besides bindings).
       const refs = key === "queues" && queueRefs ? { referenced_by: (queueRefs.refs.get(x.name) ?? []).slice(0, 10) } : {};
-      if (!declared.includes(x.name)) out.push(finding(i.day, `${key}:${x.name}`, "undeclared_resource", `${key.toUpperCase()} ${x.name} is on the account; no wrangler.toml of this repository binds it (storage has no DNA yet; informational)`, { resource: key, id: x.id, name: x.name, ...refs }));
+      if (declared.includes(x.name)) continue;
+      // An external organ's storage (2026-11-17): owned by that organ, with the evidence, never undeclared.
+      const owner = organOwnerOf(key, x, i.bindings, i.queue_consumers);
+      if (owner) {
+        out.push(finding(i.day, `${key}:${x.name}`, "organ_resource", `${key.toUpperCase()} ${x.name} is owned by organ ${owner.origin}: ${organWhy(owner)}; no wrangler.toml of this repository binds it (informational)`, { resource: key, id: x.id, name: x.name, ...owner, ...refs }));
+        continue;
+      }
+      out.push(finding(i.day, `${key}:${x.name}`, "undeclared_resource", `${key.toUpperCase()} ${x.name} is on the account; no wrangler.toml of this repository binds it (storage has no DNA yet; informational)`, { resource: key, id: x.id, name: x.name, ...refs }));
     }
     for (const d of declared) if (!names.has(d)) out.push(finding(i.day, `${key}:${d}`, "orphaned_declaration", `${key.toUpperCase()} ${d} is bound in this repository but is not on the account`, { resource: key, name: d }, "warning"));
   };

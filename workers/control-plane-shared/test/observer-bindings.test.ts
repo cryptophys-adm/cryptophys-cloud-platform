@@ -290,8 +290,12 @@ test("BQ2. a dead-letter queue and a queue with only a consumer are referenced, 
     "no binding anywhere: the DLQ is the dead_letter_queue of xauusd-webhook-events, pull-only has a pull consumer, xauusd-webhook-events a consumer Worker");
   const orphan = fs.find((f) => f.metric === "unbound_resource")!;
   assert.deepEqual([orphan.severity, orphan.sample.referenced_by, orphan.sample.queues_read], ["info", [], 4]);
-  const dlq = fs.find((f) => f.metric === "undeclared_resource" && f.worker === "queues:xauusd-webhook-events-dlq")!;
+  // 2026-11-17: the xauusd queues are the xauusd organ's (organ_resource), and their references are still recorded.
+  const dlq = fs.find((f) => f.metric === "organ_resource" && f.worker === "queues:xauusd-webhook-events-dlq")!;
   assert.deepEqual(dlq.sample.referenced_by, ["dead_letter_queue of xauusd-webhook-events"], "the reason is recorded on the queue's finding");
+  assert.deepEqual([dlq.sample.origin, dlq.sample.evidence], ["xauusd", "wrangler"]);
+  const events = fs.find((f) => f.worker === "queues:xauusd-webhook-events")!;
+  assert.deepEqual([events.metric, events.sample.evidence, events.sample.worker], ["organ_resource", "live_binding", "xauusd-ai-trading-assistant"], "its consumer is a live xauusd Worker");
 });
 
 test("BQ3. consumer settings that could not be read: no queue is unbound in that run, and a finding names what was unread", async () => {
@@ -313,7 +317,7 @@ test("BQ3. consumer settings that could not be read: no queue is unbound in that
   // Every consumers read refused: one capability finding naming Queues Read (what the list itself needs), no unbound.
   const refusedAll = Object.fromEntries([Q_EVENTS, Q_DLQ, Q_PULL, Q_ORPHAN].map((q) => [`consumers:${q}`, () => new Response("{}", { status: 403 })]));
   const refused = compareInventory({ ...input, queue_consumers: await readQueueConsumerIndex("analytics-token", ACCOUNT, listed, fakeCf(refusedAll).fetcher) });
-  assert.deepEqual(kinds(refused).filter((k) => !k.startsWith("undeclared")), ["inventory_permission_missing:queue_consumers account"]);
+  assert.deepEqual(kinds(refused).filter((k) => !/^(undeclared|organ)_resource /.test(k)), ["inventory_permission_missing:queue_consumers account"]);
   const cap = refused.find((f) => f.metric === "inventory_permission_missing:queue_consumers")!;
   assert.deepEqual([cap.kind, cap.sample.permission, cap.sample.http], ["capability", LISTS.queues.permission, 403]);
 });
