@@ -178,7 +178,7 @@ test("3. confirmations: non-GET have confirm except policy.evaluate and drift.ob
 });
 
 // ---------------------------------------------------------------- UI source (React SPA, workers/console/ui)
-// Since the Nexus redesign the client is a React SPA built by Vite into Workers Static Assets.
+// Since the Nexus redesign the client is a React SPA built into Workers Static Assets (by esbuild since 2026-11-17).
 // These criteria keep TP-024's guarantees by checking the UI source the bundle is built from.
 const UI = new URL("../../console/ui/", import.meta.url).pathname;
 function walk(dir: string): string[] {
@@ -195,8 +195,14 @@ test("4. no unsafe DOM or eval in the UI source, and the HTML entry has no inlin
   const html = read("index.html");
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/);
   assert.doesNotMatch(html, /\sstyle=|\son[a-z]+=/i);
-  // The build emits no inline script or modulepreload polyfill (CSP script-src 'self').
-  assert.match(read("vite.config.ts"), /modulePreload:\s*\{\s*polyfill:\s*false\s*\}/);
+  // The build emits no inline script and no modulepreload polyfill (CSP script-src 'self'): build.mjs (esbuild since
+  // 2026-11-17) writes only an external module script and an external stylesheet into the shell, and refuses an
+  // index.html that lost its single entry script tag.
+  const build = read("build.mjs");
+  assert.match(build, /<script type="module" crossorigin src="\$\{href\(jsPath\)\}"><\/script>/);
+  assert.match(build, /<link rel="stylesheet" crossorigin href="\$\{href\(cssPath\)\}">/);
+  assert.match(build, /throw new Error\("index\.html no longer has the entry script tag"\)/);
+  assert.doesNotMatch(build, /modulepreload|<style|<script>/);
 });
 
 test("5. assets come only from the ASSETS binding, after the operator check, with the exact CSP", async () => {

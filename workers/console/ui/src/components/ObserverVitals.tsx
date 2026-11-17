@@ -49,7 +49,7 @@ function Timeline({ anomalies, deploys, now }: { anomalies: any[]; deploys: any[
         <span className="absolute left-0 right-0 top-[30px] h-px bg-[#3a404a]" />
         {deploys.map((d, i) => (
           <span key={`d${i}`} title={`${d.rollback ? "rollback" : "deploy"} ${d.worker} → ${d.version} · ${d.deployed_at}`}
-            className="absolute top-[22px] h-4 w-[2px] -translate-x-1/2 rounded-sm" style={{ left: `${x(d.deployed_at)}%`, background: d.rollback ? STATUS.serious : STATUS.info }} />
+            className="absolute top-[22px] h-4 w-[2px] -translate-x-1/2 rounded-xs" style={{ left: `${x(d.deployed_at)}%`, background: d.rollback ? STATUS.serious : STATUS.info }} />
         ))}
         {anomalies.map((a, i) => (
           <span key={`a${i}`} title={`${a.worker} · ${a.metric} · ${a.detail}`}
@@ -135,7 +135,7 @@ export default function ObserverVitals() {
           ]} />
           <div className="text-[11px] text-slate-400">
             Inventory {d.last_inventory?.ran_at ? `· ${ago(d.last_inventory.ran_at)}` : "· —"}: {inventory.length ? `${inventory.length} finding(s)` : d.last_inventory ? "nothing undeclared, orphaned or idle" : "—"}
-            {inventory.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-4">{inventory.slice(0, 12).map((f, i) => <li key={i} className="break-words">{f.detail}</li>)}</ul>}
+            {inventory.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-4">{inventory.slice(0, 12).map((f, i) => <li key={i} className="wrap-break-word">{f.detail}</li>)}</ul>}
           </div>
         </div>
       )}

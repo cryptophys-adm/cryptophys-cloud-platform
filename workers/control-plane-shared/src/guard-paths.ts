@@ -26,7 +26,7 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // ADR-0012 §5d: a change request's type-check runs its own code, so a change to the harness is the owner's.
   [/^workers\/forge-typecheck(-cr)?\//, "typecheck_harness"],
   [/^workers\/(control-plane-tsconfig\.json|forge\/src\/cr-builds\.ts)$/, "typecheck_harness"],
-  [/^workers\/(control-plane-shared|console\/ui)\/(package(-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[a-z]+)$/, "typecheck_harness"],
+  [/^workers\/(control-plane-shared|console\/ui)\/(package(-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[a-z]+|build\.mjs)$/, "typecheck_harness"],
   // ADR-0014 §3: the evolution loop's own guards.
   [/^architecture\/adr\/0014-/, "evolution_guard"],
   [/^architecture\/adr\/progress\/0014\.json$/, "evolution_guard"],

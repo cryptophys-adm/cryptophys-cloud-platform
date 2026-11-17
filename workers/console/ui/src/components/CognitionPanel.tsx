@@ -17,10 +17,10 @@ export default function CognitionPanel() {
   const posture = !ov ? "unknown" : ov.agents_enabled === false ? "halted" : critical > 0 ? "degraded" : drifted > 0 ? "elevated" : "nominal";
   const style = {
     halted: { box: "border-rose-400/20 bg-rose-400/5 text-rose-300", dot: "red" as const },
-    degraded: { box: "border-rose-400/15 bg-rose-400/[0.03] text-rose-300", dot: "red" as const },
-    elevated: { box: "border-amber-400/15 bg-amber-400/[0.03] text-amber-200", dot: "amber" as const },
-    nominal: { box: "border-cyan-400/10 bg-cyan-400/[0.04] text-slate-300", dot: "green" as const },
-    unknown: { box: "border-white/10 bg-white/[0.02] text-slate-400", dot: "slate" as const },
+    degraded: { box: "border-rose-400/15 bg-rose-400/3 text-rose-300", dot: "red" as const },
+    elevated: { box: "border-amber-400/15 bg-amber-400/3 text-amber-200", dot: "amber" as const },
+    nominal: { box: "border-cyan-400/10 bg-cyan-400/4 text-slate-300", dot: "green" as const },
+    unknown: { box: "border-white/10 bg-white/2 text-slate-400", dot: "slate" as const },
   }[posture];
   const objective = !ov ? "Awaiting cerebrum…"
     : ov.agents_enabled === false ? "Kill switch engaged. Agents hold until an approver resumes them."

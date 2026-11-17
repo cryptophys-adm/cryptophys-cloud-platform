@@ -89,8 +89,8 @@ export default function Code() {
             <div className="space-y-1 text-[11px] text-slate-300">
               <div className="mono break-all text-slate-400">{c.repo ? `${c.repo} · ` : ""}{c.source_branch} · head {String(c.head_sha).slice(0, 12)} · base {String(c.base_sha).slice(0, 12)} · {c.author}</div>
               {c.check ? <div>Check: {c.check.status} · {c.check.pass ?? "—"} passed · {c.check.fail ?? "—"} failed{c.check.typecheck ? ` · types ${c.check.typecheck.status}` : ""}{c.check.typecheck?.console_build ? ` · UI build ${c.check.typecheck.console_build}` : ""}</div> : <div className="text-slate-500">Not checked yet.</div>}
-              {c.reasons?.length ? <ul className="space-y-0.5">{c.reasons.map((r: string, i: number) => <li key={i} className="mono break-words text-[10px] text-amber-200">{r}</li>)}</ul> : null}
-              {c.changed_paths?.length ? <div className="mono break-words text-[10px] text-slate-500">{c.changed_paths.length} paths: {c.changed_paths.slice(0, 12).join(", ")}{c.changed_paths.length > 12 ? " …" : ""}</div> : null}
+              {c.reasons?.length ? <ul className="space-y-0.5">{c.reasons.map((r: string, i: number) => <li key={i} className="mono wrap-break-word text-[10px] text-amber-200">{r}</li>)}</ul> : null}
+              {c.changed_paths?.length ? <div className="mono wrap-break-word text-[10px] text-slate-500">{c.changed_paths.length} paths: {c.changed_paths.slice(0, 12).join(", ")}{c.changed_paths.length > 12 ? " …" : ""}</div> : null}
             </div>
           )} />
         </>)}
@@ -134,7 +134,7 @@ export default function Code() {
             { key: "github", header: "GitHub CI", cell: (r) => <span className="text-[11px] text-slate-400">{r.github ?? "not reported"}{r.agrees === true ? " · agrees" : r.agrees === false ? " · disagrees" : ""}</span> },
             { key: "when", header: "when", sort: (r) => Date.parse(r.started_at) || 0, cell: (r) => <span className="text-slate-500">{r.started_at ? ago(r.started_at) : ""}{r.duration_ms ? ` · ${Math.round(r.duration_ms / 1000)} s` : ""}</span> },
           ]} expand={(r) => r.failures?.length ? (
-            <ul className="space-y-1">{r.failures.map((f: string, i: number) => <li key={i} className="mono break-words text-[10px] leading-relaxed text-rose-200">{f}</li>)}</ul>
+            <ul className="space-y-1">{r.failures.map((f: string, i: number) => <li key={i} className="mono wrap-break-word text-[10px] leading-relaxed text-rose-200">{f}</li>)}</ul>
           ) : <p className="text-[11px] text-slate-500">No failures.</p>} />
         </>)}
         <p className="mt-3 text-[11px] leading-relaxed text-slate-500">The Forge runs the control-plane tests, bundles every Worker, type-checks on Workers Builds and scans for committed credentials, on Cloudflare, for each new commit of main, from the Artifacts copy. These checks become a deploy gate after they agree with GitHub CI on {parity?.target ?? 20} commits in a row (ADR-0012).</p>

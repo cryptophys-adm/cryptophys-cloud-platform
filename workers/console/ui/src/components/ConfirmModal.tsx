@@ -33,16 +33,16 @@ export default function ConfirmModal({ title, lines, phrase, onCancel, onConfirm
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onKeyDown={onKey}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" onKeyDown={onKey}>
       <motion.div ref={box} role="dialog" aria-modal="true" aria-labelledby="confirm-title"
         initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-[480px] rounded-2xl border border-rose-400/20 bg-[#0b0f18] p-5 shadow-[0_0_60px_rgba(244,63,94,0.12)]">
+        className="w-full max-w-[480px] rounded-2xl border border-rose-400/20 bg-obsidian-panel p-5 shadow-[0_0_60px_rgba(244,63,94,0.12)]">
         <div className="mb-3 flex items-center gap-2">
           <ShieldAlert className="h-4 w-4 text-rose-300" />
           <h2 id="confirm-title" className="text-sm font-semibold text-white">{title}</h2>
         </div>
         <div className="space-y-1.5 text-[12px] text-slate-400">{lines.map((l, i) => <p key={i}>{l}</p>)}</div>
-        <p className="mt-3 text-[12px] text-slate-400">Type <span className="mono rounded bg-white/5 px-1.5 py-0.5 text-cyan-200">{phrase}</span> to continue.</p>
+        <p className="mt-3 text-[12px] text-slate-400">Type <span className="mono rounded-sm bg-white/5 px-1.5 py-0.5 text-cyan-200">{phrase}</span> to continue.</p>
         <label className="mt-2 block">
           <span className="label">Confirmation phrase</span>
           <input ref={input} className="field mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} aria-invalid={typed.length > 0 && !ok} />

@@ -83,11 +83,11 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
                 {who.approver ? (
                   <div className="flex flex-wrap gap-2">
                     {runnable && ownerClickMode(mode) && (
-                      <button type="button" className="btn btn-approve !py-1" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
+                      <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
                         lines: ["Your click is recorded under your Access identity and is final.", "The Policy Engine re-checks, then the platform executes it immediately.", p.action === "retire_worker" ? "Retiring deletes the Worker from Cloudflare. D1 data is not touched." : p.action === "admit_voter" ? "The agent gets a council seat and votes on every later proposal." : p.action === "register_privileged_agent" ? "The agent is registered with the privileged capabilities its DNA declares." : "The principal can act as this agent until revoked."],
                         done: "Approved and executed.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>
                     )}
-                    <button type="button" className="btn btn-danger !py-1" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
+                    <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
                       lines: ["The proposal is closed as rejected; nothing executes."], done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
                   </div>
                 ) : <span className="text-[11px] text-slate-500">Only an approver can decide.</span>}

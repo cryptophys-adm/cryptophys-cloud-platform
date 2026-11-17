@@ -13,7 +13,7 @@ repository `cryptophys/platform`. No GitHub, no Container.
    (`tsc --noEmit -p ../control-plane-tsconfig.json`), and reports the result for the commit to the
    Forge: `POST /v1/forge/typecheck-report`, with the CI service token. Diagnostics contain only file, line and TypeScript error code; compiler messages and source literals are neither printed to build logs nor sent to Forge. Existing D1 report and check rows are sanitized when read; historical values are not rewritten.
    The same build then installs `../console/ui` and runs its `npm run build` (the UI's own
-   `tsc --noEmit` and the Vite build, as GitHub CI's "Build the Console UI" step) and reports it in
+   `tsc --noEmit` and the esbuild build of `build.mjs`, as GitHub CI's "Build the Console UI" step) and reports it in
    the same request as `console_build` (conclusion, errors, diagnostics, output size).
    On a build of `main` (`WORKERS_CI_BRANCH` is `main`, or empty for an Artifacts build of main) whose
    Console UI built, the script first posts the built `dist` to the Forge (`POST /v1/forge/console-dist`,
@@ -48,7 +48,7 @@ otherwise from `git rev-parse HEAD` of the checkout (builds from Artifacts may n
      update GitHub `production` and these build secrets together).
 6. **Deploy.** The first build runs on the current `main`; later builds run on every push.
 7. **Do not enable preview builds with the CI service token (security, 2026-11-09).** A build
-   runs the checked-out branch's own code: `typecheck-and-report.mjs`, the Vite config and the npm
+   runs the checked-out branch's own code: `typecheck-and-report.mjs`, the bundle build script (`build.mjs`) and the npm
    scripts all come from that branch. A preview build of a change request would therefore run
    unreviewed code with `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET` in its environment, and the
    CI service token is operator-level across the control plane. On GitHub, pull request code never

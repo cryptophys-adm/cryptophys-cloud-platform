@@ -4,7 +4,7 @@
 // straight from the Artifacts repository (workers/forge-typecheck). Each build runs
 // `tsc --noEmit -p workers/control-plane-tsconfig.json` and reports to POST /v1/forge/typecheck-report
 // with the CI service token. The Forge check of the same commit takes that report as its typecheck step.
-// The same build also builds the Console UI (tsc + Vite, as GitHub CI does) and reports it as
+// The same build also builds the Console UI (tsc + the esbuild build of build.mjs, Vite before 2026-11-17, as GitHub CI does) and reports it as
 // `console_build`; a failure of either fails the step.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";

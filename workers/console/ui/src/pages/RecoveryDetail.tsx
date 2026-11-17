@@ -13,11 +13,11 @@ interface Stage { id: string; kind: string; label: string; status: string; start
 const STAGE_TONE: Record<string, string> = {
   succeeded: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
   running: "border-cyan-400/50 bg-cyan-400/10 text-cyan-200",
-  pending: "border-white/10 bg-white/[0.02] text-slate-500",
+  pending: "border-white/10 bg-white/2 text-slate-500",
   skipped: "border-slate-400/20 bg-slate-400/5 text-slate-400",
   failed: "border-rose-400/40 bg-rose-400/10 text-rose-300",
   blocked: "border-amber-400/40 bg-amber-400/10 text-amber-200",
-  cancelled: "border-white/10 bg-white/[0.02] text-slate-600",
+  cancelled: "border-white/10 bg-white/2 text-slate-600",
 };
 
 function StageIcon({ status }: { status: string }) {
@@ -50,7 +50,7 @@ function Pipeline({ plan }: { plan: any }) {
         After the approval click the Recovery Manager runs every step in the background: the Policy Engine checks first, each step re-checks the live state before acting, and a final stage verifies health and drift. Nothing here needs another click.
       </p>
       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/5" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-        <div className={`h-full rounded-full transition-all duration-700 ${plan.status === "failed" ? "bg-rose-400/70" : "bg-gradient-to-r from-cyan-400 to-violet-400"}`} style={{ width: `${waiting ? 4 : pct}%` }} />
+        <div className={`h-full rounded-full transition-all duration-700 ${plan.status === "failed" ? "bg-rose-400/70" : "bg-linear-to-r from-cyan-400 to-violet-400"}`} style={{ width: `${waiting ? 4 : pct}%` }} />
       </div>
       {waiting ? (
         <div className="mt-3 flex items-center gap-2 text-[12px] text-cyan-200"><Loader2 className="h-3.5 w-3.5 animate-spin" />Approved. The AI is starting the run…</div>
@@ -63,14 +63,14 @@ function Pipeline({ plan }: { plan: any }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="mono text-[10px] text-slate-500">{String(i + 1).padStart(2, "0")}</span>
                   <span className="mono text-[11px] text-violet-200">{s.kind}</span>
-                  <span className="break-words text-[12px] text-slate-200">{s.label}</span>
+                  <span className="wrap-break-word text-[12px] text-slate-200">{s.label}</span>
                   <span className="ml-auto flex items-center gap-2 text-[10px] text-slate-500">
                     {duration(s) && <span>{duration(s)}</span>}
                     {s.finished_at && <span>{ago(s.finished_at)}</span>}
                     <span className="uppercase tracking-wider">{s.status}</span>
                   </span>
                 </div>
-                {s.detail && <div className="mt-0.5 break-words text-[11px] text-slate-400">{s.detail}</div>}
+                {s.detail && <div className="mt-0.5 wrap-break-word text-[11px] text-slate-400">{s.detail}</div>}
                 {s.link && <a className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:underline" href={s.link} target="_blank" rel="noreferrer">deploy run <ExternalLink className="h-3 w-3" /></a>}
               </div>
             </li>
@@ -110,7 +110,7 @@ export default function RecoveryDetail({ id }: { id: string }) {
             {plan.plan?.rationale && <p className="mb-3 whitespace-pre-line text-[12px] text-slate-400">{plan.plan.rationale}</p>}
             <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
               {["service_id", "plan_version", "created_by", "approved_by", "created_at", "approve_by", "workflow_instance_id"].filter((k) => plan[k] != null).map((k) => (
-                <div key={k}><dt className="label">{k}</dt><dd className="mono break-words text-[12px] text-slate-200">{fmt(plan[k])}</dd></div>
+                <div key={k}><dt className="label">{k}</dt><dd className="mono wrap-break-word text-[12px] text-slate-200">{fmt(plan[k])}</dd></div>
               ))}
             </dl>
             {Array.isArray(plan.plan?.steps) && !autonomous && (

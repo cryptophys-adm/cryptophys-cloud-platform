@@ -22,7 +22,7 @@ function Value({ label, v }: { label: string; v: unknown }) {
   return (
     <div className="min-w-0">
       <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
-      <div className={`mono break-words text-[12px] ${shown === NOT_MEASURED ? "text-slate-500" : "text-slate-100"}`}>{shown}</div>
+      <div className={`mono wrap-break-word text-[12px] ${shown === NOT_MEASURED ? "text-slate-500" : "text-slate-100"}`}>{shown}</div>
     </div>
   );
 }
@@ -44,7 +44,7 @@ export default function Vision({ section, item }: { section?: string; item?: str
         {loading && !data ? <Skeleton rows={2} /> : error && !data ? <Empty>The vision could not be read: {error}</Empty> : !v ? (
           <div>
             <Empty>No valid vision was served.</Empty>
-            {problems.length > 0 && <ul className="mt-1 space-y-1 text-[12px] text-rose-300">{problems.map((p, i) => <li key={i} className="mono break-words">{String(p)}</li>)}</ul>}
+            {problems.length > 0 && <ul className="mt-1 space-y-1 text-[12px] text-rose-300">{problems.map((p, i) => <li key={i} className="mono wrap-break-word">{String(p)}</li>)}</ul>}
           </div>
         ) : (
           <div className="space-y-3">
@@ -80,16 +80,16 @@ export default function Vision({ section, item }: { section?: string; item?: str
                   <div className="grid gap-2 md:grid-cols-2">
                     {arr(g.kpis).map((k: any) => (
                       <div key={String(k.id)} className="min-w-0 rounded-lg border border-white/10 p-2.5">
-                        <div className="mono mb-1.5 break-words text-[12px] text-slate-200">{text(k.id)}</div>
+                        <div className="mono mb-1.5 wrap-break-word text-[12px] text-slate-200">{text(k.id)}</div>
                         <div className="grid grid-cols-2 gap-2">
                           <Value label="baseline" v={k.baseline} />
                           <Value label="target" v={k.target} />
                         </div>
-                        <div className="mt-1.5 break-words text-[11px] text-slate-500">source · {text(k.source)}</div>
+                        <div className="mt-1.5 wrap-break-word text-[11px] text-slate-500">source · {text(k.source)}</div>
                       </div>
                     ))}
                   </div>
-                  <p className="mt-2 break-words text-[11px] text-slate-500">evidence · {text(g.evidence)}</p>
+                  <p className="mt-2 wrap-break-word text-[11px] text-slate-500">evidence · {text(g.evidence)}</p>
                 </div>
               ))}
             </div>
