@@ -1,5 +1,5 @@
 {
-  "$comment": "Accepted by the owner on 2026-11-14; core amended by the owner on 2026-11-16 (ADR-0020) and 2026-11-17 (ADR-0020 amendment 1, AUTO). Written in English. The core is owner-only; the growth layer is proposed and amended through evidence (ADR-0016).",
+  "$comment": "Accepted by the owner on 2026-11-14; core amended by the owner on 2026-11-16 (ADR-0020) and 2026-11-17 (ADR-0020 amendment 1, AUTO; amendment 2, Council auto-arm). Written in English. The core is owner-only; the growth layer is proposed and amended through evidence (ADR-0016).",
   "schema": "organism.vision.v1",
   "core": {
     "mission": "A living, self-aware AI Operating System whose core is the AI Neuron: it reads markets and itself, decides by measured evidence, and keeps evolving to become smarter, more resilient and more adaptive, independent of outside ecosystems where it can be.",
@@ -20,7 +20,7 @@
     },
     "constitution": [
       "Learning is the highest mandate: no organ, mode, budget, rate limit or agent may limit it.",
-      "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed) or, with none armed, as Omega's live arm for AUTO selection of the single best strategy by measured confidence and confluence; auto-disarm on the kill switch or the daily loss limit, Decision Engine veto kept.",
+      "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed, by the owner or, while the owner's Council auto-arm is on, by the council within its gates) or, with none armed, as Omega's live arm for AUTO selection of the single best strategy by measured confidence and confluence; auto-disarm on the kill switch or the daily loss limit, Decision Engine veto kept.",
       "Never widen trading autonomy without the owner.",
       "Never weaken consensus, the brake, rollback, backups, the audit chain, Access or tests.",
       "Guard paths and this core change only by the owner's click.",

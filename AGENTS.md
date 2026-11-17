@@ -18,7 +18,8 @@ owner closed #269 and asked for a real panel instead (#270).
 - No text that claims the platform moves funds, pays bills from trading, or "auto-funds" anything.
   Deal results are read only. ADR-0009 (amended 2026-11-12): no fund movement, ever; a trading action needs the owner's click,
   given per action or, since ADR-0020 (2026-11-16), as a standing arm of one xauusd strategy, or, with none armed,
-  as Omega's live arm for AUTO selection of the single best strategy (ADR-0020 amendment 1, 2026-11-17).
+  as Omega's live arm for AUTO selection of the single best strategy (ADR-0020 amendment 1, 2026-11-17); while the owner's
+  Council auto-arm is on, the council may arm and disarm within its gates (ADR-0020 amendment 2, 2026-11-17).
 - `workers/control-plane-shared/test/console-truthfulness.test.ts` enforces this in CI. Do not weaken
   or skip it; change the data source instead.
 - Agents open pull requests; they do not merge them. The orchestrator (the Claude cloud session)
