@@ -15,7 +15,7 @@ import { boundedString, engineFor, type AiTask } from "../../control-plane-share
 import { CAPABILITIES, OWNER_ONLY_STEP_ACTIONS, RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
-import { expireOwnerProposals } from "./consensus.ts";
+import { OWNER_DECISION_WINDOW_MS, expireOwnerProposals } from "./consensus.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
 import { latestCensusRow, latestCensusRows, proposalFor, undeclaredEngineProven, undeclaredEnginePersistent, RETIRE_ENGINE_PERSIST_ROWS, type CensusRow } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
@@ -631,6 +631,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   // A request the Forge refused is never proposed: not based on main (blocked_reason), or main merged in as the second
   // parent (history_blocked_reason main_not_first_parent, the linear-history guard of 2026-11-14). The Forge's live
   // state is the last word: changeState reports such a head as verdict blocked, which maps to no action below.
+  // While a merge_owner_change waits for the owner's click (pending_owner, or executing it, within the 24 h owner
+  // window), no other request is proposed for merge: a merge of another request moves main, and the owner's merge is
+  // then refused (2026-11-17 00:08: the owner approved cns_c2470c88, ADR-0020, in the minute fdc6025 merged; the
+  // Forge refused it as merge_refused:not_fast_forward and the click was lost). The waiting request itself may still
+  // be proposed again; deploys are not held, as they do not move main.
   const mergeBrakeOff = async (db: Parameters<typeof openCriticalReportRows>[0]): Promise<boolean> => {
     try { return (await openCriticalReportRows(db, Date.now(), 1)).length === 0; } catch { return false; }
   };
@@ -640,7 +645,15 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         "SELECT cr_id, head_sha FROM forge_change_requests WHERE status = 'open' AND source = 'forge' AND blocked_reason IS NULL AND history_blocked_reason IS NULL ORDER BY updated_at ASC LIMIT 10",
       ).all<{ cr_id: string; head_sha: string }>()).results ?? [];
       const hourAgo = new Date(now - 3_600_000).toISOString();
+      const ownerWaiting = await env.DB.prepare(
+        `SELECT target FROM consensus_proposals WHERE action = 'merge_owner_change' AND status IN ('pending_owner', 'executing') AND created_at >= ?
+           ORDER BY created_at ASC LIMIT 1`,
+      ).bind(new Date(now - OWNER_DECISION_WINDOW_MS).toISOString()).first<{ target: string }>();
       for (const cr of open) {
+        if (ownerWaiting && cr.cr_id !== ownerWaiting.target) {
+          report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "none", why: `held: ${ownerWaiting.target} waits for the owner's click (merge_owner_change); merging another request first would refuse it` });
+          continue;
+        }
         if (!TARGET.test(cr.cr_id)) {
           report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "none", why: "the change request's id cannot name a consensus target (letters, digits and dashes only)" });
           continue;

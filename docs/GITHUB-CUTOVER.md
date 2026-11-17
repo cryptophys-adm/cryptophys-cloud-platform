@@ -34,6 +34,7 @@ Each step is reversible until step 7.
    - Download that object and check its SHA-256. Then run `git bundle verify <file>` and `git clone <file> platform-restore`; the clone must check out main at the same SHA.
 4. **Flip the merge path.** A reviewed migration sets `forge_controls.merge_path` to `forge` (migration 0057 created it as `github`). From then on:
    - the Supervisor proposes `merge_change` for a `platform-work` change request whose every check passed (`would_merge`), or `merge_owner_change` when it touches a guard path (`needs_owner`, the owner's click);
+   - while a `merge_owner_change` waits for the owner's click or executes, within the 24 h owner window, the Supervisor proposes no other request for merge, so another merge cannot move main and refuse the owner's (2026-11-17, test M11);
    - the Policy Engine allows a merge only in that state (`merge_path_forge`);
    - the Forge's `MergeRpc` re-verifies the proposal, copies the head to `cr/<cr_id>` of `platform` and fast-forwards `main` (`forge.merged`).
 
