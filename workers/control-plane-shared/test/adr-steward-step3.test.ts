@@ -535,3 +535,24 @@ test("AS13. the queue serializes cycles; docs/SSOT.md and the design record step
   assert.match(ssot, /0075/);
   assert.match(read("docs/design/ADR-STEWARD.md"), /\| 3 \| The agent: [^\n]*\*\*Built 2026-11-17\*\*/);
 });
+
+test("AS14. a stored deterministic sentence in an older wording is refreshed in place, with no new revision or history row (2026-11-17, all in English)", async () => {
+  const { db, cycle } = stewardDb();
+  await cycle("scheduled");
+  await cycle("operator", NOW + MIN / 2);
+  const old = JSON.stringify({ schema: "adr.explanation.v1", source: "template", teks: "0012: 18 dari 26 fase selesai.", rujukan: [] });
+  db.raw.prepare("UPDATE adr_progress SET explanation_json = ? WHERE adr_id = '0012'").run(old);
+  const ai = JSON.stringify({ schema: "adr.explanation.v1", source: "ai", teks: "kept as written", rujukan: ["ev:platform/x/y"] });
+  db.raw.prepare("UPDATE adr_progress SET explanation_json = ? WHERE adr_id = '0013'").run(ai);
+  const before = { docs: docs(db), history: history(db).length };
+  const p = passOf(await cycle("operator", NOW + MIN));
+  assert.deepEqual(p.written, [], "no document is rewritten");
+  const after = docs(db);
+  const e12 = JSON.parse(after.find((d) => d.adr_id === "0012")!.explanation_json);
+  assert.equal(e12.source, "template");
+  assert.notEqual(e12.teks, "0012: 18 dari 26 fase selesai.");
+  assert.match(e12.teks, /^0012: \d+ of \d+ phases complete/);
+  assert.equal(after.find((d) => d.adr_id === "0012")!.revision, before.docs.find((d) => d.adr_id === "0012")!.revision, "same revision");
+  assert.equal(history(db).length, before.history, "no history row");
+  assert.equal(after.find((d) => d.adr_id === "0013")!.explanation_json, ai, "an AI explanation is never replaced by the sentence");
+});

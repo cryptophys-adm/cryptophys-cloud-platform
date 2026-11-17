@@ -501,16 +501,18 @@ async function explainStatusChange(
 
 // ---------------------------------------------------------------------------------------------------- storage
 
-interface StoredRow { adr_id: string; revision: number; status: string; body_sha256: string; body_json: string }
-interface Stored { revision: number; status: string; body_sha256: string; body: AdrProgressDoc | null }
+interface StoredRow { adr_id: string; revision: number; status: string; body_sha256: string; body_json: string; explanation_json: string | null }
+interface Stored { revision: number; status: string; body_sha256: string; body: AdrProgressDoc | null; explanation: AdrExplanationJson | null }
 
 async function loadStored(db: D1Database): Promise<Map<string, Stored>> {
-  const rows = (await db.prepare("SELECT adr_id, revision, status, body_sha256, body_json FROM adr_progress ORDER BY adr_id LIMIT 200").bind().all<StoredRow>()).results ?? [];
+  const rows = (await db.prepare("SELECT adr_id, revision, status, body_sha256, body_json, explanation_json FROM adr_progress ORDER BY adr_id LIMIT 200").bind().all<StoredRow>()).results ?? [];
   const out = new Map<string, Stored>();
   for (const r of rows) {
     let body: AdrProgressDoc | null = null;
     try { body = JSON.parse(r.body_json) as AdrProgressDoc; } catch { body = null; }
-    out.set(r.adr_id, { revision: Number(r.revision), status: r.status, body_sha256: r.body_sha256, body });
+    let explanation: AdrExplanationJson | null = null;
+    try { explanation = r.explanation_json ? JSON.parse(r.explanation_json) as AdrExplanationJson : null; } catch { explanation = null; }
+    out.set(r.adr_id, { revision: Number(r.revision), status: r.status, body_sha256: r.body_sha256, body, explanation });
   }
   return out;
 }
@@ -604,7 +606,22 @@ export async function applyObservation(env: Pick<KernelEnv, "DB" | "CF_VERSION_M
     const prev = stored.get(e.adr) ?? null;
     const doc = buildAdrDoc(e, prev?.body ?? null, { manifest_sha256: shaOf.get(e.adr) ?? "unknown", deployed_commit: commit, complete: (k) => completeKeys.get(k) ?? null });
     const hash = await adrDocHash(doc);
-    if (prev && prev.body_sha256 === hash) { pass.unchanged++; continue; }
+    if (prev && prev.body_sha256 === hash) {
+      // The explanation is outside the body hash. A deterministic sentence written by an older version (2026-11-17:
+      // the Indonesian sentences of the first pass, after the owner's "all in english please") is refreshed in place,
+      // at the same revision and with no history row: the document did not change, only its wording.
+      const sentence = templateSentence(doc);
+      if (prev.explanation?.source === "template" && prev.explanation.teks !== sentence) {
+        try {
+          await env.DB.prepare("UPDATE adr_progress SET explanation_json = ? WHERE adr_id = ? AND revision = ? AND body_sha256 = ?")
+            .bind(JSON.stringify(explanationOf(doc)), e.adr, prev.revision, hash).run();
+        } catch (err) {
+          failures.push({ kind: "adr", adr: e.adr, action: "sentence_refresh_failed", why: String((err as Error)?.message ?? err).slice(0, 200) });
+        }
+      }
+      pass.unchanged++;
+      continue;
+    }
     const revision = (prev?.revision ?? 0) + 1;
     const changed = changedPhases(prev?.body ?? null, doc);
     // §4.4 step 7: the AI explains a status change only; a first document, or a change under the same status, keeps
