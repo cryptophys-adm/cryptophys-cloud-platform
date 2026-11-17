@@ -21,7 +21,7 @@
     },
     {
       "id": "H1",
-      "title": "\"Ask the organism\" chat: read-only, Indonesian, metric-first, cited",
+      "title": "\"Ask the organism\" chat: read-only, English, metric-first, cited",
       "evidence": {
         "kind": "not_measurable_yet",
         "reason": "not built: no chat route or tool set exists"

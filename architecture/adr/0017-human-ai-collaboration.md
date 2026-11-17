@@ -30,7 +30,7 @@ The organism informs the owner and asks for clicks. It cannot be asked questions
    - Each item is metric-form: what, evidence, risk, the deadline or what it blocks, and a deep link to the action.
    - Items are ranked by urgency and by what they block.
    - Telegram carries a digest and deep links only.
-2. **"Ask the organism": a conversational agent in Cerebrum, in Indonesian**
+2. **"Ask the organism": a conversational agent in Cerebrum, in English** (amended 2026-11-17, owner 2026-11-17: "all in englihs, hanya percakapan owner dengan sesi claude yang bahasa indonesia": everything the platform builds is English; only the owner's conversations with Claude sessions are in Indonesian)
    - Built on the Cloudflare Agents SDK, as one Durable Object per conversation, with its memory in DO SQLite.
    - Model: the Workers AI frontier model chosen by the ADR-0016 arena (default `@cf/deepseek-ai/deepseek-v4.1-flash-1017`).
    - Read-only tools: the self-model, Observer vitals and findings, census, outcome scores, consensus state, the ADR and SSOT index, and the cost and metabolism views.
@@ -79,7 +79,7 @@ The organism informs the owner and asks for clicks. It cannot be asked questions
 | # | Phase | Output |
 |---|---|---|
 | H0 | "Needs you" inbox and Telegram digest with deep links | One place for everything that waits on the owner |
-| H1 | "Ask the organism" chat (read-only, Indonesian, metric-first, cited) | The owner talks to the organism directly |
+| H1 | "Ask the organism" chat (read-only, English, metric-first, cited) | The owner talks to the organism directly |
 | H2 | Directives as structured proposals, with the owner's confirmation | Intent becomes typed, governed change |
 | H3 | Corrections and ratings in Nexus become knowledge | The organism learns from the owner |
 | H4 | Autonomy dial per action class | Trust-based, measured autonomy |
