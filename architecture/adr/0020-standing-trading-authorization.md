@@ -45,6 +45,23 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **Recording (recommended to xauusd):** the `strategy_arm.v1` digest also carries `mode` (`auto` or `armed`), and each AUTO pick names the chosen strategy with its measured confidence and confluence, so that the owner inbox and the audit chain can see why a strategy traded.
 - **Order of events.** xauusd #413 turned AUTO on live (`STRATEGY_ARM_MODE=live`) before this amendment was merged. From its merge, the constitution covers it.
 
+## Amendment 2 (owner, 2026-11-17): Council auto-arm
+
+- **Owner's words** (relayed by the orchestrator, confirmed by the owner directly to the platform session on 2026-11-17, "Ya, benar, amandemen"): "council boleh langsung arm/disarm otomatis jika owner mengaktifkan mode auto."
+- **The toggle.** "Council auto-arm" (`STRATEGY_COUNCIL_ARM`, `off` or `on`) is owner-only, default `off`, and switched only by the owner in Nexus under the same identity, CSRF and audit rules as arm and disarm. Switching it on is the owner's standing click that authorises the xauusd strategy council to arm and disarm strategies itself, within the gates below; switching it off ends that authority at once.
+- **Off:** the council's daily verdicts (walk-forward and proposal) are suggestions only; arm and disarm stay the owner's click.
+- **On, within these gates:**
+  - the council arms a strategy only on a passing walk-forward gate;
+  - at most 3 strategies are armed at once, the same cap as for the owner;
+  - at most one change per strategy per UTC day, with hysteresis;
+  - an auto-disarm on the kill switch or the daily loss limit overrides the council, and the council cannot re-arm before the next UTC day;
+  - the owner's own arm or disarm always wins and pins that strategy against the council;
+  - on any council failure, nothing changes;
+  - every council action is audited with actor `council`, sent to the owner on Telegram, and recorded in `strategy_arm.v1` with `council_auto`.
+- **Unchanged:** funds are never moved; the Decision Engine veto; the risk-only Position Manager; the Entry and Stop Grid acts only before an order is placed, never on an open position's stop; auto-disarm; AUTO under Omega's live arm when nothing is armed (Amendment 1); the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line now reads:** "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed, by the owner or, while the owner's Council auto-arm is on, by the council within its gates) or, with none armed, as Omega's live arm for AUTO selection of the single best strategy by measured confidence and confluence; auto-disarm on the kill switch or the daily loss limit, Decision Engine veto kept."
+- **Order of events.** xauusd builds the toggle with its default `off` until this amendment is merged.
+
 ## Guards
 
 - **Funds are never moved.** Arming authorises entries and closes only. No deposit, withdrawal, transfer or wallet action, at any tier, armed or not.

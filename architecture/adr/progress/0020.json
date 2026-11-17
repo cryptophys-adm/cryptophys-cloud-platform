@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendment 1 (AUTO when nothing is armed, a risk-reducing Position Manager) 2026-11-17. Nothing is built on the platform side; the implementation is the xauusd repository's RFC_STRATEGY_RECOMMENDATION.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendment 1 (AUTO when nothing is armed, a risk-reducing Position Manager) and amendment 2 (Council auto-arm) 2026-11-17. Nothing is built on the platform side; the implementation is the xauusd repository's RFC_STRATEGY_RECOMMENDATION.",
   "phases": [
     {
       "id": "D",
@@ -23,6 +23,16 @@
         "kind": "doc_asserted",
         "ref": "organism/vision.json",
         "quote": "as Omega's live arm for AUTO selection of the single best strategy"
+      },
+      "note": "a documented decision, not a build"
+    },
+    {
+      "id": "A2",
+      "title": "Amendment 2 recorded: while the owner's Council auto-arm is on, the council arms and disarms within its gates",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "organism/vision.json",
+        "quote": "while the owner's Council auto-arm is on, by the council within its gates"
       },
       "note": "a documented decision, not a build"
     },
