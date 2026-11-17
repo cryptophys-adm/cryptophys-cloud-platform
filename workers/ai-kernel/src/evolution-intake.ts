@@ -9,7 +9,7 @@
 //   - the platform repository → queued; any other repository → waiting_external (owner 2026-11-17: "Tunggu ADR-0018
 //     X1/X2"); a missing title or spec, or a spec over SPEC_MAX bytes → rejected (invalid_spec);
 //   - any other kind or state (a policy_parameter is xauusd's own; a later state update) is not an intent: ignored.
-// Each council intent's state goes to evolution_updates, the return path that council.decisions.read serves (V3).
+// Each council intent's state goes to evolution_updates_v2 (migration 0077), the return path that council.decisions.read serves (V3).
 // The body's price fields are never stored (the kernel drops them as signals.observe does).
 //
 // Platform intents (§4.2). An Observer inventory finding that no registration can settle (undeclared_worker,
@@ -125,7 +125,7 @@ export async function intakeCouncil(db: D1Database, now = Date.now()): Promise<I
      WHERE r.created_at >= ? AND a.host_worker IN (${q}) AND r.kind = 'xauusd_digest'
        AND json_extract(r.body_json, '$.schema') = ? AND json_extract(r.body_json, '$.kind') = 'repository_task'
        AND json_extract(r.body_json, '$.state') IN ('handoff_pending', 'handed_off')
-       AND NOT EXISTS (SELECT 1 FROM evolution_intents i WHERE i.source = 'council'
+       AND NOT EXISTS (SELECT 1 FROM evolution_intents_v2 i WHERE i.source = 'council'
          AND i.source_ref IN (json_extract(r.body_json, '$.proposal_id'), 'report:' || r.report_id))
      ORDER BY r.created_at, r.rowid LIMIT ${SCAN_LIMIT}`,
   ).bind(new Date(now - SCAN_MS).toISOString(), ...COUNCIL_HOSTS, COUNCIL_SCHEMA).all<ReportRow>();
@@ -138,12 +138,12 @@ export async function intakeCouncil(db: D1Database, now = Date.now()): Promise<I
     const intent_id = `int_${hex12()}`;
     const origin = { ...t.origin, origin: COUNCIL_ORIGIN, report_id: r.report_id, agent_id: r.agent_id };
     const inserted = await db.prepare(
-      `INSERT OR IGNORE INTO evolution_intents (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at)
+      `INSERT OR IGNORE INTO evolution_intents_v2 (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at)
        VALUES (?, 'council', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     ).bind(intent_id, source_ref, JSON.stringify(origin), t.target_repo, t.title, t.spec, JSON.stringify(t.evidence_refs), t.state, t.reason, at, at).run();
     if (!inserted.meta?.changes) continue; // the same proposal in two reports of one batch: recorded once
     if (t.proposal_id) {
-      await db.prepare("INSERT INTO evolution_updates (update_id, intent_id, origin, proposal_id, state, reason, refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      await db.prepare("INSERT INTO evolution_updates_v2 (update_id, intent_id, origin, proposal_id, state, reason, refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(`evu_${crypto.randomUUID()}`, intent_id, COUNCIL_ORIGIN, t.proposal_id, t.state, t.reason, JSON.stringify({ intent_id }), at).run();
     }
     await audit(db, intent_id, t.state, { source: "council", source_ref, report_id: r.report_id, agent_id: r.agent_id, target_repo: t.target_repo, state: t.state, reason: t.reason });
@@ -172,20 +172,20 @@ export async function intakeInventory(db: D1Database, now = Date.now()): Promise
     if (externallyOwned(f.worker)) continue;
     const source_ref = `${f.metric}:${f.worker}`.slice(0, 200);
     const ref = `ev:platform/observer.finding/${f.finding_id}`;
-    const existing = await db.prepare("SELECT intent_id, evidence_refs_json FROM evolution_intents WHERE source = 'inventory' AND source_ref = ?")
+    const existing = await db.prepare("SELECT intent_id, evidence_refs_json FROM evolution_intents_v2 WHERE source = 'inventory' AND source_ref = ?")
       .bind(source_ref).first<{ intent_id: string; evidence_refs_json: string }>();
     if (existing) {
       let refs: string[] = [];
       try { const v = JSON.parse(existing.evidence_refs_json); if (Array.isArray(v)) refs = v.filter((x) => typeof x === "string"); } catch { /* replaced below */ }
       if (refs.includes(ref)) continue;
       const next = [...refs, ref].slice(-MAX_EVIDENCE_REFS);
-      await db.prepare("UPDATE evolution_intents SET evidence_refs_json = ?, updated_at = ? WHERE intent_id = ?").bind(JSON.stringify(next), at, existing.intent_id).run();
+      await db.prepare("UPDATE evolution_intents_v2 SET evidence_refs_json = ?, updated_at = ? WHERE intent_id = ?").bind(JSON.stringify(next), at, existing.intent_id).run();
       out.push({ intent_id: existing.intent_id, source: "inventory", source_ref, state: "unchanged", reason: null, outcome: "evidence_added" });
       continue;
     }
     const intent_id = `int_${hex12()}`;
     const inserted = await db.prepare(
-      `INSERT OR IGNORE INTO evolution_intents (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at)
+      `INSERT OR IGNORE INTO evolution_intents_v2 (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at)
        VALUES (?, 'inventory', ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, ?, ?)`,
     ).bind(intent_id, source_ref, JSON.stringify({ metric: f.metric, subject: f.worker }), PLATFORM_REPO,
       `${f.metric.replace(/_/g, " ")}: ${f.worker}`.slice(0, TITLE_MAX), f.detail.slice(0, SPEC_MAX), JSON.stringify([ref]), at, at).run();
@@ -199,7 +199,7 @@ export async function intakeInventory(db: D1Database, now = Date.now()): Promise
 /** One intake pass: council tasks, then inventory findings. Before migration 0076 (no table) it does nothing. */
 export async function intakeEvolutionIntents(db: D1Database, now = Date.now()): Promise<IntakeResult[]> {
   try {
-    await db.prepare("SELECT 1 FROM evolution_intents LIMIT 1").first();
+    await db.prepare("SELECT 1 FROM evolution_intents_v2 LIMIT 1").first();
   } catch (err) {
     if (/no such table/i.test(String((err as Error)?.message ?? err))) return [];
     throw err;

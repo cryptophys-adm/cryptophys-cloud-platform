@@ -88,12 +88,12 @@ function setup(o: { answers?: unknown[]; forge?: Partial<{ written: Record<strin
 function intent(db: Db, o: { source?: string; repo?: string; title?: string; at?: number; proposal?: string } = {}): string {
   const id = `int_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const origin = o.source === "council" ? { origin: "xauusd", proposal_id: o.proposal ?? "cp_1" } : {};
-  db.raw.prepare("INSERT INTO evolution_intents (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'Make a equal 2.', '[]', 'queued', ?, ?)")
+  db.raw.prepare("INSERT INTO evolution_intents_v2 (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'Make a equal 2.', '[]', 'queued', ?, ?)")
     .run(id, o.source ?? "owner", id, JSON.stringify(origin), o.repo ?? "platform", o.title ?? "Raise a", new Date(o.at ?? NOW - HOUR).toISOString(), new Date(o.at ?? NOW - HOUR).toISOString());
   return id;
 }
-const evolutions = (db: Db) => rows(db, "SELECT * FROM evolutions ORDER BY started_at, rowid");
-const intentOf = (db: Db, id: string) => rows(db, "SELECT * FROM evolution_intents WHERE intent_id = ?", id)[0];
+const evolutions = (db: Db) => rows(db, "SELECT * FROM evolutions_v2 ORDER BY started_at, rowid");
+const intentOf = (db: Db, id: string) => rows(db, "SELECT * FROM evolution_intents_v2 WHERE intent_id = ?", id)[0];
 const events = (db: Db) => rows(db, "SELECT event_type, outcome FROM audit_events WHERE event_type LIKE 'evolution.%' ORDER BY rowid").map((e) => `${e.event_type}:${e.outcome}`);
 
 test("V1. the gene: tier 2, code.read and code.propose, no seat; its two engines; a kernel agent; its files are guard paths", () => {
@@ -146,21 +146,21 @@ test("V3. the gates, in order: the switch, the kill switch, the mode, the regist
   s.db.raw.prepare("UPDATE agents SET status = 'suspended' WHERE agent_id = ?").run(EVOLVER_ID); assert.equal(await g(), "evolver_suspended");
   s.db.raw.prepare("UPDATE agents SET status = 'enabled' WHERE agent_id = ?").run(EVOLVER_ID);
   const i = intent(s.db);
-  const evo = (id: string, state: string, started: number, ended: number | null) => s.db.raw.prepare("INSERT INTO evolutions (evolution_id, intent_id, state, model, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)")
+  const evo = (id: string, state: string, started: number, ended: number | null) => s.db.raw.prepare("INSERT INTO evolutions_v2 (evolution_id, intent_id, state, model, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run(id, i, state, EVOLVER_MODEL, new Date(started).toISOString(), ended === null ? null : new Date(ended).toISOString());
   evo("evo_000000000001", "proposed", NOW - 10 * HOUR, null); assert.equal(await g(), "evolution_in_flight");
-  s.db.raw.prepare("UPDATE evolutions SET state = 'closed', ended_at = ? WHERE evolution_id = 'evo_000000000001'").run(new Date(NOW - 9 * HOUR).toISOString());
+  s.db.raw.prepare("UPDATE evolutions_v2 SET state = 'closed', ended_at = ? WHERE evolution_id = 'evo_000000000001'").run(new Date(NOW - 9 * HOUR).toISOString());
   evo("evo_000000000002", "refused", NOW - (MIN_START_INTERVAL_HOURS - 1) * HOUR, NOW - 2 * HOUR); assert.equal(await g(), "start_interval");
-  s.db.raw.prepare("UPDATE evolutions SET started_at = ? WHERE evolution_id = 'evo_000000000002'").run(new Date(NOW - 5 * HOUR).toISOString());
+  s.db.raw.prepare("UPDATE evolutions_v2 SET started_at = ? WHERE evolution_id = 'evo_000000000002'").run(new Date(NOW - 5 * HOUR).toISOString());
   assert.equal(await g(), null);
   s.db.raw.prepare("INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at) VALUES ('dep_x', 'cryptophys-policy-engine', ?, 'x', 'running', 'k', '{}', ?, ?)")
     .run(MAIN, new Date(NOW - 60_000).toISOString(), new Date(NOW - 60_000).toISOString());
   assert.equal(await g(), "deploy_running");
   s.db.raw.prepare("UPDATE deployment_requests SET status = 'succeeded'").run();
   // The freeze: the last two ended evolutions closed by failed checks, the switch not turned on since.
-  s.db.raw.prepare("UPDATE evolution_intents SET state = 'closed', state_reason = 'checks_failed', evolution_id = 'evo_000000000002' WHERE intent_id = ?").run(i);
+  s.db.raw.prepare("UPDATE evolution_intents_v2 SET state = 'closed', state_reason = 'checks_failed', evolution_id = 'evo_000000000002' WHERE intent_id = ?").run(i);
   const j = intent(s.db);
-  s.db.raw.prepare("UPDATE evolution_intents SET state = 'closed', state_reason = 'checks_failed', evolution_id = 'evo_000000000001' WHERE intent_id = ?").run(j);
+  s.db.raw.prepare("UPDATE evolution_intents_v2 SET state = 'closed', state_reason = 'checks_failed', evolution_id = 'evo_000000000001' WHERE intent_id = ?").run(j);
   assert.equal(await g(), "frozen");
   s.db.raw.prepare("UPDATE evolver_controls SET updated_at = ?").run(new Date(NOW - 60_000).toISOString());
   assert.equal(await g(), null, "the owner turned it on again after the freeze");
@@ -179,7 +179,7 @@ test("V4. one cycle: the oldest council intent first; plan, read, write, checkEd
   const [e] = evolutions(s.db);
   assert.deepEqual([e.state, e.cr_id, e.ai_calls, e.changed_lines, JSON.parse(e.files_json)], ["proposed", `fg-evo-${e.evolution_id}`, 2, 4, GOOD.edits.map((x) => x.path).sort()]);
   assert.deepEqual([intentOf(s.db, council).state, intentOf(s.db, owner).state], ["proposed", "queued"]);
-  assert.deepEqual(rows(s.db, "SELECT proposal_id, state FROM evolution_updates ORDER BY created_at, rowid").map((u) => `${u.proposal_id}:${u.state}`), ["cp_9:in_progress", "cp_9:proposed"]);
+  assert.deepEqual(rows(s.db, "SELECT proposal_id, state FROM evolution_updates_v2 ORDER BY created_at, rowid").map((u) => `${u.proposal_id}:${u.state}`), ["cp_9:in_progress", "cp_9:proposed"]);
   assert.deepEqual(events(s.db), ["evolution.started:started", "evolution.proposed:proposed"]);
   const decision = rows(s.db, "SELECT subject, resource, decision FROM policy_decisions WHERE resource = 'code.propose'");
   assert.deepEqual(decision, [{ subject: `agent:${EVOLVER_ID}`, resource: "code.propose", decision: "allow" }]);
@@ -238,7 +238,7 @@ test("V7. tracking: merged, then deployed once every unit its files touch deploy
   s.db.raw.prepare("INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at) VALUES ('dep_y', 'cryptophys-policy-engine', ?, 'x', 'succeeded', 'k2', '{}', ?, ?)")
     .run("c".repeat(40), new Date(NOW + 3 * HOUR).toISOString(), new Date(NOW + 3 * HOUR).toISOString());
   assert.deepEqual(await trackEvolutions({ DB: s.db } as never, NOW + 4 * HOUR), [`${e.evolution_id}:deployed_unmeasured`]);
-  assert.deepEqual(rows(s.db, "SELECT state FROM evolution_updates WHERE proposal_id = 'cp_7' ORDER BY created_at, rowid").map((u) => u.state), ["in_progress", "proposed", "merged", "deployed_unmeasured"]);
+  assert.deepEqual(rows(s.db, "SELECT state FROM evolution_updates_v2 WHERE proposal_id = 'cp_7' ORDER BY created_at, rowid").map((u) => u.state), ["in_progress", "proposed", "merged", "deployed_unmeasured"]);
   assert.equal(intentOf(s.db, i).state, "deployed_unmeasured");
 
   const t = setup();
@@ -254,7 +254,7 @@ test("V7. tracking: merged, then deployed once every unit its files touch deploy
   // An attempt that stopped mid-cycle never holds the slot: refused as interrupted after an hour.
   const v = setup();
   const k = intent(v.db);
-  v.db.raw.prepare("INSERT INTO evolutions (evolution_id, intent_id, state, model, started_at) VALUES ('evo_00000000000a', ?, 'writing', ?, ?)").run(k, EVOLVER_MODEL, new Date(NOW - 2 * HOUR).toISOString());
+  v.db.raw.prepare("INSERT INTO evolutions_v2 (evolution_id, intent_id, state, model, started_at) VALUES ('evo_00000000000a', ?, 'writing', ?, ?)").run(k, EVOLVER_MODEL, new Date(NOW - 2 * HOUR).toISOString());
   assert.deepEqual(await trackEvolutions({ DB: v.db } as never, NOW), ["evo_00000000000a:refused"]);
   assert.equal(intentOf(v.db, k).state_reason, "interrupted");
 });
@@ -268,7 +268,7 @@ test("V8. the council path end to end: a platform council task from the intake i
   await intakeEvolutionIntents(s.db, NOW);
   const r = await runEvolverCycle(s.env as never, s.storage, NOW);
   assert.equal(r.outcome, "proposed");
-  assert.deepEqual(rows(s.db, "SELECT state FROM evolution_updates WHERE proposal_id = 'cp_p' ORDER BY created_at, rowid").map((u) => u.state), ["queued", "in_progress", "proposed"]);
+  assert.deepEqual(rows(s.db, "SELECT state FROM evolution_updates_v2 WHERE proposal_id = 'cp_p' ORDER BY created_at, rowid").map((u) => u.state), ["queued", "in_progress", "proposed"]);
   assert.deepEqual(relevantPaths(["docs/a.md", "workers/x/raise.ts"], "raise a"), ["workers/x/raise.ts", "docs/a.md"]);
 });
 
