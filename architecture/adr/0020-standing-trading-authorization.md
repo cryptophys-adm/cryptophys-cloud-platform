@@ -22,7 +22,7 @@ The owner's decision of 2026-11-16, for the xauusd feature "Strategy Recommendat
 - **Arm and disarm in Nexus.** Each is one click, directly on the xauusd Nexus "Strategy Agents" page, with no confirm step in Cerebrum. Required: the owner-only Access identity, a CSRF check and an audit record. This is an owner-decided exception to the HAIC rule that approvals happen in Cerebrum only. It covers arm and disarm only; council picks and promotions stay in Cerebrum.
 - **No shadow prerequisite.** A strategy needs no shadow run before it can be armed.
 - **At most 3 strategies armed at once.**
-- **Nothing armed means nothing opens.** If no strategy is armed, no positions are opened.
+- **Nothing armed means nothing opens.** If no strategy is armed, no positions are opened. *Superseded on 2026-11-17 by Amendment 1 below: with none armed, AUTO selection applies under Omega's live arm.*
 - **Auto-disarm** happens on the trading kill switch and on the daily loss limit.
 - **The Decision Engine keeps its veto.**
 - **What arming does.** An armed strategy is used by the Signal Engine and Omega for entry and close.
@@ -30,6 +30,20 @@ The owner's decision of 2026-11-16, for the xauusd feature "Strategy Recommendat
 - **Unchanged.** "Never move funds" stays: arming never permits deposits or withdrawals. Leverage and risk limits stay with the Decision Engine and Omega.
 
 The constitution's line now reads: "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed, auto-disarmed on the kill switch or the daily loss limit, Decision Engine veto kept)."
+
+## Amendment 1 (owner, 2026-11-17): AUTO when nothing is armed; the Position Manager only reduces risk
+
+- **Owner's words** (relayed by the orchestrator, confirmed by the owner directly to the platform session on 2026-11-17, "Ya, benar, amandemen"): "jika tidak ada strategy yang di-Armed maka kembali ke asal pakai semua strategy dan wajib memilih strategy terbaik dengan tingkat confidence dan confluence tertinggi. Langsung live."
+- **AUTO.** With no strategy armed, Omega's global live arm (`live_armed`, the owner's standing click) authorises AUTO: the engine considers every strategy and may act only on the single best one, ranked by measured agent confidence × confluence. The minimum confidence and confluence thresholds, and every other entry rule, are unchanged; below them nothing opens.
+- **One to three armed.** Only the armed strategies are eligible, as decided on 2026-11-16. AUTO does not apply.
+- **Omega's live arm off** means nothing opens, armed or not. Turning it on or off is the owner's click.
+- **The 5-minute Position Manager** (xauusd #412) acts on open positions under the same standing arm, and only to reduce risk:
+  - it may close a position, tighten a stop loss, or move a take profit outward once, to TP2;
+  - it never opens, adds to, reverses or hedges a position, and never widens a stop loss.
+- **Kept:** the Decision Engine veto; auto-disarm on the trading kill switch and on the daily loss limit, which also stops AUTO and switches Omega's live arm off until the owner turns it on again; no fund movement, ever; the xauusd external ceiling and the platform's trading capability rules unchanged.
+- **The constitution's line now reads:** "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed) or, with none armed, as Omega's live arm for AUTO selection of the single best strategy by measured confidence and confluence; auto-disarm on the kill switch or the daily loss limit, Decision Engine veto kept."
+- **Recording (recommended to xauusd):** the `strategy_arm.v1` digest also carries `mode` (`auto` or `armed`), and each AUTO pick names the chosen strategy with its measured confidence and confluence, so that the owner inbox and the audit chain can see why a strategy traded.
+- **Order of events.** xauusd #413 turned AUTO on live (`STRATEGY_ARM_MODE=live`) before this amendment was merged. From its merge, the constitution covers it.
 
 ## Guards
 
@@ -46,7 +60,7 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **Good:**
   - a strategy can trade at the moment its conditions hold, within an authorization the owner gave on purpose;
   - the owner's click keeps its meaning: one decision per strategy, revocable at any time with one click;
-  - the default is safe: nothing armed, nothing opens; the kill switch and the daily loss limit disarm everything.
+  - the default is safe: Omega's live arm off, nothing opens; the kill switch and the daily loss limit disarm everything and stop AUTO (Amendment 1 replaced "nothing armed, nothing opens").
 - **Costs and risks:**
   - between arm and disarm, entries and closes happen without a per-trade click. Mitigated by the cap of 3, auto-disarm, the Decision Engine veto, and the audit record of every arm and disarm;
   - no shadow run is required, so a strategy can be armed before it has a track record. This is the owner's choice; the Decision Engine and the risk limits still apply to every trade;

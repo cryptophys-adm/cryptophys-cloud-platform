@@ -134,6 +134,7 @@ All of it is metric-form and console-truthful.
 - Consensus, the brake, rollback, backups, the append-only audit chain and the kill switches.
 - No fund movement. Trading actions need the owner's click. No widening of trading autonomy by any intent.
   - Amendment 2026-11-16 (owner; ADR-0020): the owner's click may be given per action or as a standing arm of one strategy (at most 3 armed, auto-disarmed on the kill switch or the daily loss limit, Decision Engine veto kept). Funds are still never moved.
+  - Amendment 2026-11-17 (owner; ADR-0020 amendment 1): with none armed, Omega's live arm authorises AUTO selection of the single best strategy; the Position Manager only reduces risk.
 - Guard paths and the constitution change only through `merge_owner_change` and the owner's click.
 - **cryptophys-aether changes only through its own CI and guard paths; its guard paths need the owner's click.** Amended by the owner on 2026-11-14: "ya, Aether perlu DNA, tes CI, dan file yang dilindungi sendiri lebih dulu sebelum boleh diubah oleh agen" ("Yes. Aether needs DNA, CI tests and its own protected files before agents may change it."). This replaces the earlier rule that the platform never modifies Aether.
   - Until Aether's bootstrap PR is merged, Aether stays read-only for agents. The PR adds its `organism.json` DNA, CI DNA tests, a guard-path list (doctrine, canon schema, DNA, CI, auth) and an AGENTS.md section, and the owner reviews and merges it.
