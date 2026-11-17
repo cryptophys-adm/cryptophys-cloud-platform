@@ -530,7 +530,23 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       // Unreadable counts as on (fail closed), so nothing is retried while the brake may hold.
       let brakeOff = false;
       try { brakeOff = (await openCriticalReportRows(env.DB, Date.now(), 1)).length === 0; } catch { brakeOff = false; }
-      for (const u of (daily?.n ?? 0) >= dailyLimit ? [] : pending.units) {
+      // 2026-11-17 (owner "ya"): the least recently deployed unit goes first. The plan lists units in DEPLOY_UNITS order
+      // and one deploy is proposed per cycle; every merge to main made the Control Plane pending again, so the Forge,
+      // last in that order, was not deployed from 02:23 to past 11:45 while its guard rules lagged main. The ordering
+      // rules of orderPending (executor first, the migration-bearing Control Plane alone) leave a single unit, so this
+      // only reorders units that are free to go in any order.
+      const lastDeployed = new Map<string, string>();
+      if (pending.units.length > 1) {
+        for (const u of pending.units) {
+          const services = [...(DEPLOY_UNITS.find((d) => d.unit === u.unit)?.services ?? [u.target])];
+          const row = await env.DB.prepare(
+            `SELECT MAX(decided_at) AS at FROM consensus_proposals WHERE action = 'deploy_commit' AND status IN ${ran} AND target IN (${services.map(() => "?").join(", ")})`,
+          ).bind(...services).first<{ at: string | null }>();
+          lastDeployed.set(u.unit, row?.at ?? "");
+        }
+      }
+      const byWait = [...pending.units].sort((a, b) => (lastDeployed.get(a.unit) ?? "").localeCompare(lastDeployed.get(b.unit) ?? ""));
+      for (const u of (daily?.n ?? 0) >= dailyLimit ? [] : byWait) {
         const recentTarget = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND status IN ${ran} AND decided_at >= ? LIMIT 1`,
         ).bind(u.target, hourAgo).first();
