@@ -3,8 +3,8 @@
   "adr": "0014",
   "title": "The evolution loop",
   "adr_file": "architecture/adr/0014-evolution-loop.md",
-  "lifecycle": "deferred",
-  "lifecycle_note": "Accepted and deferred by the owner on 2026-11-12 until ADR-0012 phase 5; E1 runs on the Forge since the cut-over.",
+  "lifecycle": "accepted",
+  "lifecycle_note": "Deferred on 2026-11-12 until ADR-0012 phase 5; the owner lifted the deferral on 2026-11-17 (\"aktifkan evolver sekarang termasuk jalur balik\", §11). Build order: docs/design/EVOLVER.md §9.",
   "phases": [
     {
       "id": "E1",
@@ -48,9 +48,41 @@
         "agent_id": "evolver"
       },
       "built": [
-        "workers/control-plane-shared/src/evolution-limits.ts"
+        "workers/control-plane-shared/src/evolution-limits.ts",
+        "docs/design/EVOLVER.md"
       ],
-      "note": "limits only; no evolver agent"
+      "note": "limits and design only; the agent is step V5 and the Forge write path V4 of docs/design/EVOLVER.md",
+      "next": "V2: the intents tables and the intake (docs/design/EVOLVER.md §9)"
+    },
+    {
+      "id": "C1",
+      "title": "Council tasks become intents",
+      "depends_on": [
+        "E0"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no evolution_intents table: council repository_task reports are not recorded as intents"
+      },
+      "built": [
+        "docs/design/EVOLVER.md"
+      ],
+      "next": "V2: record typed_proposal.v1 repository_task reports as intents"
+    },
+    {
+      "id": "C2",
+      "title": "Return path to xauusd (council.decisions.read)",
+      "depends_on": [
+        "C1"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "council.decisions.read does not exist"
+      },
+      "built": [
+        "docs/design/EVOLVER.md"
+      ],
+      "next": "V3: council.decisions.read under an xauusd ceiling"
     },
     {
       "id": "E3",

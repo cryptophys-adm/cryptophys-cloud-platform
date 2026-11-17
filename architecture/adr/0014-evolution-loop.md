@@ -1,6 +1,6 @@
 # ADR-0014: The evolution loop: the platform writes, merges and deploys its own improvements
 
-- **Status:** Accepted, **deferred** (owner, 2026-11-12: "tunda hingga berhasil lepas dari github", postpone until the platform is off GitHub). Building starts after ADR-0012 phase 5, the cut-over to Artifacts. The model and the cadence are decided (amendment 2026-11-13).
+- **Status:** Accepted. Building starts now (owner, 2026-11-17: "aktifkan evolver sekarang termasuk jalur balik", activate the evolver now, together with the return path; §11). It was deferred on 2026-11-12 ("tunda hingga berhasil lepas dari github", postpone until the platform is off GitHub) until ADR-0012 phase 5; the model and the cadence were decided in the amendment of 2026-11-13.
 - **Owner direction (2026-11-12):** "kekuatan organism ini adalah otak yang terus berkembang dan melakukan evolusi melalui auto-deployment untuk menyesuaikan dan terus meningkatkan kemampuan diri" (the organism's strength is a brain that keeps growing and evolves through auto-deployment, to adapt and keep improving its own abilities).
 - **Owner decisions (2026-11-12):** "tidak perlu shadow bisa langsung production dan merge dilakukan semua autonomous" (no shadow phase; straight to production; every merge is autonomous).
   1. **No shadow phase.** Each step goes live in production when it is built.
@@ -255,6 +255,28 @@ The organism grows new organs, not only repairs the ones it has.
 - **Nutrients.** Growth is bounded by the Metabolism budget and the account's Worker limits.
 
 The build order becomes E1 (done 2026-11-13), E0, E2, E3, E4, A1–A3 alongside, then E5.
+
+### 11. Amendment 2026-11-17: the deferral lifted; council tasks and the return path
+
+Owner, 2026-11-17: "aktifkan evolver sekarang termasuk jalur balik" (activate the evolver now, together with the return path). The orchestrator relayed it; the owner confirmed it directly in the platform session, with the answers below. The build is `docs/design/EVOLVER.md`.
+
+- **The deferral is lifted.** Canonical main has lived on the Forge since the cut-over, and E1 merges there. So §5's reason for waiting (no GitHub write credential) already holds. Building E2 starts now, in the order of the design's §9.
+- **A new intent source: the council.**
+  - A `repository_task` that the owner accepted in Nexus reaches the platform as a `typed_proposal.v1` report from `xauusd-moderator`, with `executor: "cryptophys"`.
+  - The kernel records it as an evolution intent, and Cerebrum's inbox lists it.
+  - E0's inventory findings and the census's unsettled findings are intents too.
+- **External repositories wait.** A task for a repository other than the platform's waits as `waiting_external` until ADR-0018 X1/X2 exist (owner, 2026-11-17: "Tunggu ADR-0018 X1/X2"). The evolver never writes to another repository, and the platform still deploys no external organ.
+- **The return path.**
+  - `council.decisions.read` is a tier 1, read-only capability under an xauusd-specific ceiling (`docs/design/HAIC-H0-H1.md` §5).
+  - xauusd pulls the state of each proposal it handed off: queued, waiting, proposed, merged, deployed, closed or refused. Cerebrum never calls into xauusd.
+- **Unchanged.**
+  - §4 and §9's cadence: one evolution in flight and at most one started per 4 hours. The owner first chose "10 CR/hari, 5 terbuka", then kept the 4-hour cycle ("Tetap 1 per 4 jam"), since fitness and revert (E3) are not built.
+  - §3, guard paths under unanimous consensus with no owner click ("Tetap §3 lama"). Until E3 is built, the evolver proposes routine paths only (`evolution-limits.ts`), so §3 does not yet come into play.
+  - The model (`gpt-oss` on Workers AI only), the diff limits, the quiet conditions, the freeze and every refusal of §3.
+- **New.**
+  - **A kill switch for the evolver alone**, `evolver_controls.mode` (`on` or `off`), which only the owner sets. The platform kill switch and mode `shadow` stop it as well.
+  - **At most 3 AI calls per cycle.**
+  - **Until E3 is built**, a deployed evolution is recorded as deployed but unmeasured. The deploy's health check and automatic rollback stay its protection.
 
 ## Consequences
 
