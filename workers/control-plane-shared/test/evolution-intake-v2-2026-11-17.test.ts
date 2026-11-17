@@ -50,8 +50,8 @@ function finding(db: Db, worker: string, metric: string, at = NOW - 600_000): st
     .run(id, worker, metric, new Date(at).toISOString() + id, `${worker}: ${metric}`, new Date(at).toISOString());
   return id;
 }
-const intents = (db: Db) => rows(db, "SELECT * FROM evolution_intents ORDER BY created_at, rowid");
-const updates = (db: Db) => rows(db, "SELECT * FROM evolution_updates ORDER BY created_at, rowid");
+const intents = (db: Db) => rows(db, "SELECT * FROM evolution_intents_v2 ORDER BY created_at, rowid");
+const updates = (db: Db) => rows(db, "SELECT * FROM evolution_updates_v2 ORDER BY created_at, rowid");
 const intentEvents = (db: Db) => rows(db, "SELECT outcome, subject, payload_json FROM audit_events WHERE event_type = 'evolution.intent_recorded' ORDER BY rowid").map((e) => ({ ...e, payload: JSON.parse(e.payload_json) }));
 
 test("EV1. migration 0076 is additive: the next number, four new tables, never destructive, applies twice; the switch starts on", () => {
@@ -70,11 +70,11 @@ test("EV1. migration 0076 is additive: the next number, four new tables, never d
   db.raw.exec(sql);
   assert.deepEqual(schema(), before, "applied again, nothing changes");
   assert.deepEqual(rows(db, "SELECT control, value FROM evolver_controls"), [{ control: "mode", value: "on" }], "on by the owner's decision of 2026-11-17");
-  const ins = (id: string, state: string) => () => db.raw.prepare("INSERT INTO evolution_intents (intent_id, source, source_ref, target_repo, title, state, created_at, updated_at) VALUES (?, 'owner', ?, 'platform', 't', ?, 'a', 'a')").run(id, id, state);
+  const ins = (id: string, state: string) => () => db.raw.prepare("INSERT INTO evolution_intents_v2 (intent_id, source, source_ref, target_repo, title, state, created_at, updated_at) VALUES (?, 'owner', ?, 'platform', 't', ?, 'a', 'a')").run(id, id, state);
   assert.throws(ins("int_bad", "queued"), /CHECK/, "a malformed id is refused");
   assert.throws(ins("int_0123456789ab", "done"), /CHECK/, "an unknown state is refused");
   ins("int_0123456789ab", "queued")();
-  assert.throws(() => db.raw.prepare("INSERT INTO evolution_intents (intent_id, source, source_ref, target_repo, title, state, created_at, updated_at) VALUES ('int_0123456789ac', 'owner', 'int_0123456789ab', 'platform', 't', 'queued', 'a', 'a')").run(), /UNIQUE/, "one intent per (source, source_ref)");
+  assert.throws(() => db.raw.prepare("INSERT INTO evolution_intents_v2 (intent_id, source, source_ref, target_repo, title, state, created_at, updated_at) VALUES ('int_0123456789ac', 'owner', 'int_0123456789ab', 'platform', 't', 'queued', 'a', 'a')").run(), /UNIQUE/, "one intent per (source, source_ref)");
   assert.throws(() => db.raw.prepare("UPDATE evolver_controls SET value = 'maybe'").run(), /CHECK/);
 });
 
@@ -107,7 +107,7 @@ test("EV3. a council task for the platform repository is queued; price fields ne
   assert.deepEqual([r.state, r.reason], ["queued", null]);
   const [i] = intents(db);
   assert.equal(i.target_repo, PLATFORM_REPO);
-  const stored = JSON.stringify(rows(db, "SELECT * FROM evolution_intents")) + JSON.stringify(rows(db, "SELECT payload_json FROM audit_events"));
+  const stored = JSON.stringify(rows(db, "SELECT * FROM evolution_intents_v2")) + JSON.stringify(rows(db, "SELECT payload_json FROM audit_events"));
   assert.ok(!/2650|2651|2640|2660/.test(stored), "no price is stored");
   assert.deepEqual(withoutPrices({ a: 1, price: 2, nested: [{ sl: 3, tp: 4, keep: 5 }] }), { a: 1, nested: [{ keep: 5 }] });
   assert.equal(triageCouncilTask({ ...TASK, origin: { ...TASK.origin, repo: "cryptophys/platform" } })!.target_repo, PLATFORM_REPO);
@@ -171,7 +171,7 @@ test("EV5. the platform's own inventory findings become one intent per subject; 
 
 test("EV6. before migration 0076 the intake does nothing and the switch reads off", async () => {
   const db = migratedDb();
-  for (const t of ["evolution_updates", "evolutions", "evolution_intents", "evolver_controls"]) db.raw.exec(`DROP TABLE ${t}`);
+  for (const t of ["evolution_updates_v2", "evolutions_v2", "evolution_intents_v2", "evolution_updates", "evolutions", "evolution_intents", "evolver_controls"]) db.raw.exec(`DROP TABLE ${t}`);
   withModerator(db);
   report(db, TASK);
   assert.deepEqual(await intakeEvolutionIntents(db, NOW), []);
@@ -211,7 +211,35 @@ test("EV8. wired into the kernel's cron tick, never acting: the intake writes in
   assert.match(scheduled, /intakeEvolutionIntents\(env\.DB, event\.scheduledTime\)/);
   const intake = read("workers/ai-kernel/src/evolution-intake.ts");
   const written = [...intake.matchAll(/(?:INSERT(?: OR IGNORE)? INTO|UPDATE) (\w+)/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(written)].sort(), ["evolution_intents", "evolution_updates"]);
+  assert.deepEqual([...new Set(written)].sort(), ["evolution_intents_v2", "evolution_updates_v2"]);
   assert.ok(!/syscall|consensus\.propose|FORGE|fetch\(/.test(intake), "no syscall, no proposal, no Forge call, no network");
   assert.match(read("docs/SSOT.md"), /0076/);
+});
+
+test("EV9. migration 0077: the evolution tables again with CHECKs D1 evaluates; no migration has a GLOB or LIKE pattern D1 refuses", () => {
+  // 2026-11-17: 0076's id CHECKs were one 64-character GLOB each; D1 refuses that ("LIKE or GLOB pattern too complex") on
+  // every insert, so the intake failed at every tick. SQLite's limit is far higher, so only this test can catch it.
+  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
+  // 0076 is applied and never edited; its two long patterns sit on tables no code uses since 0077 (EV9's last check).
+  for (const f of files.filter((x) => x !== MIGRATION)) {
+    const sql = readFileSync(new URL(f, MIGRATIONS), "utf8").replace(/--[^\n]*/g, "");
+    for (const m of sql.matchAll(/\b(?:GLOB|LIKE)\s+'([^']*)'/gi)) assert.ok(m[1].length <= 24, `${f}: pattern '${m[1]}' is ${m[1].length} characters (D1 refuses long patterns)`);
+  }
+  const sql = readFileSync(new URL("0077_evolution_v2.sql", MIGRATIONS), "utf8");
+  const statements = splitSqlStatements(sql);
+  assert.deepEqual(statements.map((s) => /CREATE TABLE IF NOT EXISTS (\w+)/.exec(s)?.[1]).filter(Boolean), ["evolution_intents_v2", "evolutions_v2", "evolution_updates_v2"]);
+  assert.equal(destructiveMigration(sql), false, "routine: 0076's tables stay, empty and unused");
+  assert.equal(unsupportedStatement(statements), null);
+  const db = migratedDb();
+  const ins = (table: string, idCol: string, id: string) => () => table === "evolution_intents_v2"
+    ? db.raw.prepare("INSERT INTO evolution_intents_v2 (intent_id, source, source_ref, target_repo, title, state, created_at, updated_at) VALUES (?, 'owner', ?, 'platform', 't', 'queued', 'a', 'a')").run(id, id)
+    : db.raw.prepare(`INSERT INTO evolutions_v2 (${idCol}, intent_id, state, model, started_at) VALUES (?, 'int_0123456789ab', 'planning', 'm', 'a')`).run(id);
+  for (const bad of ["int_0123456789aG", "int_0123456789a", "xnt_0123456789ab", "int_0123456789abc"]) assert.throws(ins("evolution_intents_v2", "intent_id", bad), /CHECK/, bad);
+  ins("evolution_intents_v2", "intent_id", "int_0123456789ab")();
+  for (const bad of ["evo_0123456789aG", "evo_012345678", "int_0123456789ab"]) assert.throws(ins("evolutions_v2", "evolution_id", bad), /CHECK/, bad);
+  ins("evolutions_v2", "evolution_id", "evo_0123456789ab")();
+  assert.throws(() => db.raw.prepare("INSERT INTO evolution_updates_v2 (update_id, intent_id, origin, proposal_id, state, created_at) VALUES ('x_1', 'int_0123456789ab', 'xauusd', 'p', 'queued', 'a')").run(), /CHECK/);
+  for (const src of ["workers/ai-kernel/src/evolution-intake.ts", "workers/ai-kernel/src/evolver.ts", "workers/ai-kernel/src/evolution-view.ts", "workers/ai-kernel/src/council-decisions.ts"]) {
+    assert.doesNotMatch(read(src), /\b(FROM|INTO|UPDATE) (evolution_intents|evolutions|evolution_updates)\b(?!_v2)/, `${src} uses only the _v2 tables`);
+  }
 });

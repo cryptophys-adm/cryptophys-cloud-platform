@@ -133,10 +133,12 @@ export const SMOKE_TABLE: Readonly<Record<string, UnitSmoke>> = {
         check: (b) => { const t = isObj(b) && isObj(b.result) && Array.isArray(b.result.tools) ? b.result.tools.map((x: Json) => x?.name) : null; return Boolean(t?.includes("platform_status") && t.includes("set_agents_enabled")); },
         after: "unit" },
       { id: "control-plane:kernel_supervisor", service: KERNEL, origin: "workers_dev", method: "GET", path: "/v1/kernel", auth: "service_token", status: [200],
-        jq: '.agents_enabled == true and ([.agents[] | select(.agent_id == "supervisor" and .tier_max == 1 and .status == "enabled")] | length == 1) and ([.agents[] | select(.tier_max >= 2)] | length == 0)',
+        jq: '.agents_enabled == true and ([.agents[] | select(.agent_id == "supervisor" and .tier_max == 1 and .status == "enabled")] | length == 1) and ([.agents[] | select(.tier_max >= 2 and (.agent_id != "evolver" or .tier_max != 2))] | length == 0)',
         check: (b) => isObj(b) && b.agents_enabled === true && Array.isArray(b.agents)
           && b.agents.filter((a: Json) => a?.agent_id === "supervisor" && a.tier_max === 1 && a.status === "enabled").length === 1
-          && b.agents.filter((a: Json) => typeof a?.tier_max === "number" && a.tier_max >= 2).length === 0,
+          // Owner 2026-11-17 ("Hanya evolver boleh tier 2"): the evolver (ADR-0014 §11, registered with the owner's click)
+          // is the one agent allowed above tier 1, and at tier 2 exactly; any other agent above tier 1 fails the deploy.
+          && b.agents.filter((a: Json) => typeof a?.tier_max === "number" && a.tier_max >= 2 && (a.agent_id !== "evolver" || a.tier_max !== 2)).length === 0,
         after: "unit" },
       { id: "control-plane:consensus_not_stuck", service: KERNEL, origin: "workers_dev", method: "GET", path: "/v1/consensus?limit=50", auth: "service_token", status: [200],
         jq: '(.mode | IN("shadow", "routine", "deploy", "critical")) and ([.proposals[] | select(.status == "executing" and .decided_at < $cutoff)] | length == 0)',

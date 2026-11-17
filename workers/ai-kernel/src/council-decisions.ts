@@ -25,7 +25,7 @@ export async function readCouncilDecisions(env: Pick<SyscallEnv, "DB">, agentId:
   let rows: Array<{ update_id: string; proposal_id: string; state: string; reason: string | null; refs_json: string; created_at: string }>;
   try {
     rows = (await env.DB.prepare(
-      `SELECT update_id, proposal_id, state, reason, refs_json, created_at FROM evolution_updates
+      `SELECT update_id, proposal_id, state, reason, refs_json, created_at FROM evolution_updates_v2
        WHERE origin = ? AND (created_at > ? OR (created_at = ? AND update_id > ?)) ORDER BY created_at, update_id LIMIT ${MAX_UPDATES}`,
     ).bind(origin, after.at, after.at, after.id).all<typeof rows[number]>()).results;
   } catch (err) {
