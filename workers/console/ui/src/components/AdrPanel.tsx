@@ -204,7 +204,7 @@ export default function AdrPanel({ focus, openId }: { focus: boolean; openId: st
   else body = <ul className="space-y-2">{adrs.map((e) => <AdrRow key={String(e?.adr)} e={e} open={openId === e?.adr} />)}</ul>;
   return (
     <div ref={ref} className="scroll-mt-4" data-testid="adr-panel">
-      <Panel title={ADR_PANEL_TITLE} icon={<ScrollText className="h-3.5 w-3.5 text-cyan-300" />} right={right}>
+      <Panel title={<span className="normal-case tracking-normal">{ADR_PANEL_TITLE}</span>} icon={<ScrollText className="h-3.5 w-3.5 text-cyan-300" />} right={right}>
         {known && status !== "enabled" && (
           <p className="mb-2 text-[12px] text-amber-200">
             Steward {stewardLabel(status)}: tidak ada pass baru{adrs.length > 0 ? `; yang tampil adalah dokumen tersimpan terakhir (pass terakhir ${utcMinute(steward?.last_pass_at)})` : ""}.
