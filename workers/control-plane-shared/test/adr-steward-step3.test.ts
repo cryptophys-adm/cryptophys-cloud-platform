@@ -335,9 +335,11 @@ test("AS7. a full pass writes one document per ADR, with its history row, its au
   const leaf = (t1.evaluations as any[])[0].phases.find((p: any) => p.id === "T1");
   assert.equal(leaf.state, "not_measurable_yet", "T1's self-model half is still not measurable");
   assert.doesNotMatch(String(leaf.reason), /adr_progress has/, "the index half holds");
-  // The Steward wrote only its own tables and the audit chain.
+  // The Steward wrote only its own tables, the audit chain and, since step 7, its drift report (G4B's document is ahead
+  // of an empty platform) through the policy-gated reports.publish syscall, which records policy.decision and agent.action.
   const kinds = rows(db, "SELECT DISTINCT event_type FROM audit_events WHERE actor = ?", `agent:${ADR_STEWARD_ID}`).map((e) => e.event_type).sort();
-  assert.ok(kinds.every((k) => k.startsWith("adr.")), kinds.join(", "));
+  assert.ok(kinds.every((k) => k.startsWith("adr.") || k === "agent.action" || k === "policy.decision"), kinds.join(", "));
+  assert.deepEqual(rows(db, "SELECT DISTINCT capability FROM agent_actions WHERE agent_id = ?", ADR_STEWARD_ID).map((r) => r.capability), ["reports.publish"]);
 });
 
 test("AS8. nothing changed, nothing is written; a change rewrites only its ADR, with one history row", async () => {
@@ -459,31 +461,33 @@ test("AS10. a source that cannot be read keeps the stored state and marks the do
   assert.deepEqual(passOf(await runAdrStewardCycle(b.env as never, b.stewardMem, "scheduled", NOW + 60 * MIN)).reasons, ["retry"]);
 });
 
-test("AS11. a drift episode opens and closes as audit events, no report; an invalid manifest is audited once per hash and never computed", async () => {
+test("AS11. a drift episode opens and closes as audit events; an invalid manifest is audited once per hash and never computed", async () => {
   const { db, cycle } = stewardDb();
   await cycle("scheduled");
-  await cycle("operator", NOW + MIN / 2);
   const opened = () => events(db, "adr.drift_detected").map((e) => `${e.subject} ${JSON.parse(e.payload_json).phase} ${e.outcome}`);
-  assert.deepEqual(opened(), [], "an empty platform proves nothing a document lags behind");
-  // ADR-0012 G4B: the document says "built, not yet run live"; a native deploy that planned a topology change proves it.
+  // ADR-0012 G4B: since 2026-11-17 the document says part B ran live (doc_claim "done"); an empty platform has no such
+  // deploy, so the document is ahead of the evidence. Nothing a document lags behind is proven on an empty platform.
+  assert.deepEqual(opened(), ["adr:0012 G4B doc_ahead"]);
+  const det = JSON.parse(events(db, "adr.drift_detected")[0].payload_json);
+  assert.deepEqual([det.doc_ref, det.doc_state, det.computed_state], ["docs/GITHUB-CUTOVER.md", "done", "open"]);
+  const body = JSON.parse(docs(db).find((d) => d.adr_id === "0012")!.body_json) as AdrProgressDoc;
+  assert.deepEqual(body.drift.map((d) => `${d.phase}:${d.kind}`), ["G4B:doc_ahead"]);
+  // The same drift on the next pass is not audited again.
+  await cycle("operator", NOW + MIN / 2);
+  assert.equal(opened().length, 1);
+  // A native deploy that planned a topology change proves G4B: the document and the evidence agree, and
+  // adr.drift_resolved is audited once.
   set(db, `INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, approval_id, idempotency_key, details_json, created_at, updated_at)
     VALUES ('dep_g4b', 'cryptophys-console', ?, 'test', 'succeeded', NULL, 'idem_g4b', ?, ?, ?)`, "a".repeat(40),
     JSON.stringify({ executor: "native:deploy", outcome: { steps: ["cryptophys-ai-kernel:topology_planned"] } }), new Date(NOW).toISOString(), new Date(NOW).toISOString());
   await cycle("operator", NOW + MIN);
-  assert.deepEqual(opened(), ["adr:0012 G4B doc_behind"]);
-  const det = JSON.parse(events(db, "adr.drift_detected")[0].payload_json);
-  assert.deepEqual([det.doc_ref, det.doc_state, det.computed_state], ["docs/GITHUB-CUTOVER.md", "built", "proven"]);
-  assert.ok(det.refs.some((r: string) => r.startsWith("ev:platform/deployment/dep_g4b")));
-  const body = JSON.parse(docs(db).find((d) => d.adr_id === "0012")!.body_json) as AdrProgressDoc;
-  assert.deepEqual(body.drift.map((d) => `${d.phase}:${d.kind}`), ["G4B:doc_behind"]);
-  // The same drift on the next pass is not audited again; when it closes, adr.drift_resolved is audited once.
-  await cycle("operator", NOW + 2 * MIN);
-  assert.equal(opened().length, 1);
-  set(db, "DELETE FROM deployment_requests WHERE request_id = 'dep_g4b'");
-  await cycle("operator", NOW + 3 * MIN);
   const res = events(db, "adr.drift_resolved");
-  assert.deepEqual(res.map((e) => [e.subject, JSON.parse(e.payload_json).phase, JSON.parse(e.payload_json).computed_state]), [["adr:0012", "G4B", "open"]]);
-  assert.equal(events(db, "adr.report_published").length + rows(db, "SELECT COUNT(*) AS n FROM agent_reports WHERE agent_id = ?", ADR_STEWARD_ID)[0].n, 0, "no drift report before step 7");
+  assert.deepEqual(res.map((e) => [e.subject, JSON.parse(e.payload_json).phase, JSON.parse(e.payload_json).computed_state]), [["adr:0012", "G4B", "proven"]]);
+  assert.ok(JSON.parse(res[0].payload_json).refs.some((r: string) => r.startsWith("ev:platform/deployment/dep_g4b")));
+  await cycle("operator", NOW + 2 * MIN);
+  assert.equal(events(db, "adr.drift_resolved").length, 1);
+  assert.equal(JSON.parse(docs(db).find((d) => d.adr_id === "0012")!.body_json).drift.length, 0);
+  // The drift reports (agent_reports, adr_drift.v1) are step 7's: test/adr-drift-step7.test.ts.
   // An invalid manifest (a kind the evaluator refuses) is never computed: one adr.manifest_invalid per manifest hash,
   // not repeated on the next pass, and its stored row is left as it was.
   const bad = { ...JSON.parse(read(`${ADR_PROGRESS_DIR}0001.json`)), phases: [{ id: "B1", title: "bad", evidence: { kind: "sql", query: "SELECT 1" } }] };
