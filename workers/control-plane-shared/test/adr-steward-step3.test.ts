@@ -503,18 +503,21 @@ test("AS11. a drift episode opens and closes as audit events, no report; an inva
   assert.equal(state.invalid["0001"], undefined);
 });
 
-test("AS12. the AI task is declared for the DNA's engine and never run in step 3; its validator rejects invented numbers and refs", () => {
+test("AS12. the AI task is declared for the DNA's engine; its validator rejects invented numbers and refs (step 6 runs it, adr-explanation-step6)", () => {
   const task = draftAdrExplanationTask({ status: "in_progress", refs: ["ev:platform/audit/evt_1"], text: '{"phases_complete":18,"phases_total":26}' });
   assert.equal(task.name, "draft_adr_explanation");
   assert.deepEqual(task.validate({ teks: "18 dari 26 fase lengkap.", rujukan: ["ev:platform/audit/evt_1"] }), { teks: "18 dari 26 fase lengkap.", rujukan: ["ev:platform/audit/evt_1"] });
-  assert.equal(task.validate({ teks: "19 dari 26 fase lengkap.", rujukan: [] }), null, "a number not in the input");
+  assert.equal(task.validate({ teks: "19 dari 26 fase lengkap.", rujukan: ["ev:platform/audit/evt_1"] }), null, "a number not in the input");
   assert.equal(task.validate({ teks: "18 dari 26 fase.", rujukan: ["ev:platform/audit/evt_9"] }), null, "a ref not in the input");
-  assert.equal(task.validate({ teks: "ADR ini selesai.", rujukan: [] }), null, "selesai while in progress");
-  assert.ok(task.validate({ teks: "ADR ini belum selesai.", rujukan: [] }));
-  assert.equal(task.validate({ teks: "x".repeat(401), rujukan: [] }), null);
-  // No AI call anywhere in the Steward's cycle (step 6 adds it with its caps).
+  assert.equal(task.validate({ teks: "ADR ini selesai.", rujukan: ["ev:platform/audit/evt_1"] }), null, "selesai while in progress");
+  assert.ok(task.validate({ teks: "ADR ini belum selesai.", rujukan: ["ev:platform/audit/evt_1"] }));
+  assert.equal(task.validate({ teks: "ADR ini belum selesai.", rujukan: [] }), null, "step 6: a draft must cite the stored document's evidence");
+  assert.equal(task.validate({ teks: "x".repeat(401), rujukan: ["ev:platform/audit/evt_1"] }), null);
+  // Step 6: the Steward's one AI call is the explanation of a status change, inside explainStatusChange.
   const src = read("workers/ai-kernel/src/adr-steward.ts");
-  assert.doesNotMatch(src, /engineFor\(|\.run\(\s*task|env\.AI\b/);
+  assert.equal(src.match(/engineFor\(/g)?.length, 1);
+  const fn = src.slice(src.indexOf("async function explainStatusChange("), src.indexOf("// ------", src.indexOf("async function explainStatusChange(")));
+  assert.match(fn, /engineFor\(env, SERVICE, \[task\.name\]\)\.run\(task, built\.input,/);
 });
 
 test("AS13. the queue serializes cycles; docs/SSOT.md and the design record step 3", async () => {

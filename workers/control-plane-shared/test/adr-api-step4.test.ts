@@ -80,7 +80,8 @@ test("AR1. before the first pass: an honest empty state, no row invented, no num
   assert.equal(ADR_CACHE_CONTROL, "private, max-age=60");
   assert.deepEqual(r.body, {
     schema: ADR_VIEW_SCHEMA, available: true,
-    steward: { agent_id: "adr-steward", status: "enabled", last_pass_at: null, last_full_pass_at: null, deployed_commit: "abc1234def56", ai_today: { used: null, cap: null } },
+    // Step 6: the Durable Object's AI counter is read, so the day's use is measured (none yet) against the cap of 6.
+    steward: { agent_id: "adr-steward", status: "enabled", last_pass_at: null, last_full_pass_at: null, deployed_commit: "abc1234def56", ai_today: { used: 0, cap: 6 } },
     adrs: [],
   });
   assert.equal(ADR_VIEW_SCHEMA, "adr.progress-view.v1");
@@ -91,9 +92,9 @@ test("AR1. before the first pass: an honest empty state, no row invented, no num
   assert.deepEqual(writes(db), before, "reading writes nothing");
   // Without the Steward's binding or with its state unreadable, the pass times are null, never guessed.
   const bare = await get({ ...env, ADR_STEWARD: undefined }, "/v1/adr");
-  assert.deepEqual([bare.status, bare.body.steward.last_pass_at, bare.body.steward.last_full_pass_at], [200, null, null]);
+  assert.deepEqual([bare.status, bare.body.steward.last_pass_at, bare.body.steward.last_full_pass_at, bare.body.steward.ai_today], [200, null, null, { used: null, cap: null }]);
   const down = await get({ ...env, ADR_STEWARD: stewardNs(async () => { throw new Error("DO unavailable"); }).ns, CF_VERSION_METADATA: undefined }, "/v1/adr");
-  assert.deepEqual([down.status, down.body.available, down.body.steward.last_pass_at, down.body.steward.deployed_commit], [200, true, null, null]);
+  assert.deepEqual([down.status, down.body.available, down.body.steward.last_pass_at, down.body.steward.deployed_commit, down.body.steward.ai_today], [200, true, null, null, { used: null, cap: null }]);
   // The Steward suspended, the kill switch off, or the Steward not registered: the status says which.
   db.raw.prepare("UPDATE agents SET status = 'suspended' WHERE agent_id = ?").run(ADR_STEWARD_ID);
   assert.equal((await get(env, "/v1/adr")).body.steward.status, "suspended");
@@ -118,7 +119,7 @@ test("AR2. after a pass: one entry per stored ADR in §5's shape, sorted, every 
   const r = await get(env, "/v1/adr");
   assert.equal(r.status, 200);
   assert.deepEqual(Object.keys(r.body), ["schema", "available", "steward", "adrs"]);
-  assert.deepEqual(r.body.steward, { agent_id: "adr-steward", status: "enabled", last_pass_at: new Date(NOW).toISOString(), last_full_pass_at: new Date(NOW).toISOString(), deployed_commit: "abc1234def56", ai_today: { used: null, cap: null } });
+  assert.deepEqual(r.body.steward, { agent_id: "adr-steward", status: "enabled", last_pass_at: new Date(NOW).toISOString(), last_full_pass_at: new Date(NOW).toISOString(), deployed_commit: "abc1234def56", ai_today: { used: 0, cap: 6 } });
   assert.deepEqual(r.body.adrs.map((a: any) => a.adr), MANIFEST_IDS, "sorted by ADR number");
   const rows = db.raw.prepare("SELECT * FROM adr_progress ORDER BY adr_id").all() as any[];
   for (const [i, a] of (r.body.adrs as any[]).entries()) {

@@ -15,7 +15,7 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { ADR_ID } from "../../control-plane-shared/src/adr-progress.ts";
 import type { AdrOwnerAction } from "../../control-plane-shared/src/adr-evidence.ts";
-import { ADR_STEWARD_ID, type AdrExplanationJson, type AdrProgressDoc, type StewardState } from "./adr-steward.ts";
+import { ADR_AI_DAILY_CAP, ADR_STEWARD_ID, aiUsedOn, type AdrExplanationJson, type AdrProgressDoc, type StewardState } from "./adr-steward.ts";
 
 export const ADR_VIEW_SCHEMA = "adr.progress-view.v1";
 /** §5: a plain D1 read, cached privately for a minute. */
@@ -47,7 +47,10 @@ export interface AdrStewardView {
   last_full_pass_at: string | null;
   /** The commit this kernel runs (CF_VERSION_METADATA.tag), or null where it is not reported. */
   deployed_commit: string | null;
-  /** The AI explanation's daily use and cap: step 6 of the design. Not measured until then, so null. */
+  /**
+   * The AI explanation's use on the current UTC day and its daily cap (design step 6, §7), from the Steward's Durable
+   * Object counter. Both null when that state cannot be read: not known, never 0.
+   */
   ai_today: { used: number | null; cap: number | null };
 }
 
@@ -98,7 +101,7 @@ const parsed = <T>(text: string | null): T | null => {
 };
 const missingTable = (err: unknown) => /no such table: adr_progress/.test(String((err as Error)?.message ?? err));
 
-async function stewardView(env: AdrViewEnv): Promise<AdrStewardView> {
+async function stewardView(env: AdrViewEnv, now: number): Promise<AdrStewardView> {
   const agent = await getAgent(env.DB, ADR_STEWARD_ID);
   const status: StewardStatus = !agent ? "not_registered" : !(await agentsEnabled(env.DB)) ? "agents_disabled" : agent.status !== "enabled" ? "suspended" : "enabled";
   let state: StewardState | null = null;
@@ -116,7 +119,7 @@ async function stewardView(env: AdrViewEnv): Promise<AdrStewardView> {
     agent_id: ADR_STEWARD_ID, status,
     last_pass_at: last, last_full_pass_at: last,
     deployed_commit: env.CF_VERSION_METADATA?.tag ?? null,
-    ai_today: { used: null, cap: null },
+    ai_today: state ? { used: aiUsedOn(state, new Date(now).toISOString().slice(0, 10)), cap: ADR_AI_DAILY_CAP } : { used: null, cap: null },
   };
 }
 
@@ -146,8 +149,8 @@ function listEntry(r: ProgressRow): AdrListEntry {
 }
 
 /** GET /v1/adr: every stored ADR document's summary, sorted by ADR number, and the Steward's state. */
-export async function adrListView(env: AdrViewEnv): Promise<AdrListView> {
-  const steward = await stewardView(env);
+export async function adrListView(env: AdrViewEnv, now = Date.now()): Promise<AdrListView> {
+  const steward = await stewardView(env, now);
   let rows: ProgressRow[];
   try {
     rows = (await env.DB.prepare(`SELECT ${ROW_COLUMNS} FROM adr_progress ORDER BY adr_id LIMIT ${LIST_LIMIT}`).bind().all<ProgressRow>()).results ?? [];

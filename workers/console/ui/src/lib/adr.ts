@@ -99,6 +99,15 @@ export const STEWARD_LABEL: Record<string, string> = {
 export const stewardLabel = (status: unknown): string => (typeof status === "string" && STEWARD_LABEL[status]) || shown(status);
 export const stewardTone = (status: unknown): Tone => (status === "enabled" ? "green" : status === "not_registered" ? "amber" : typeof status === "string" ? "red" : "slate");
 
+/**
+ * The Steward's AI explanations today against the daily cap (`steward.ai_today` of GET /v1/adr, design step 6), as
+ * "2/6"; "—" when the kernel could not read the Steward's counter (either value null).
+ */
+export function aiTodayLabel(steward: any): string {
+  const used = num(steward?.ai_today?.used), cap = num(steward?.ai_today?.cap);
+  return used !== null && cap !== null ? `${used}/${cap}` : MISSING;
+}
+
 /** "2026-11-17 22:37 UTC", or "—". */
 export function utcMinute(iso: unknown): string {
   const s = str(iso);
