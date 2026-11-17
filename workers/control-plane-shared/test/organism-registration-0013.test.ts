@@ -544,3 +544,23 @@ test("R19. the brake: nothing is proposed while a critical report is open, and a
   await runCycle(env2 as never, mem2, "scheduled", t0);
   assert.equal((db2.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = 'register_agent'").get() as any).n, 1, "not proposed again");
 });
+
+test("R20. a registration naming a capability the running kernel does not know waits as a finding, then registers once the kernel knows it (2026-11-17, cns_211153f4)", async () => {
+  const { env, db, memory } = kernelEnv();
+  setMode(db, "deploy");
+  const t0 = Date.now();
+  await censusTick(db as never, repoWith(grownDna(["platform.observe", "future.observe"])), t0);
+  const report = await runCycle(env as never, memory, "scheduled", t0) as any;
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE target = 'forge-steward'").get() as any).n, 0, "not proposed while unknown");
+  assert.ok(JSON.stringify(report).includes("future.observe is unknown to the running kernel"), "the wait is reported");
+  assert.equal(agentRow(db, "forge-steward"), undefined);
+  // The engine of the same change is not held behind it.
+  assert.ok(db.raw.prepare("SELECT 1 FROM consensus_proposals WHERE action = 'register_engine' AND target = 'cryptophys-forge'").get());
+
+  // The kernel that knows the capability runs (simulated: the gene now names only known capabilities).
+  await censusTick(db as never, repoWith(grownDna()), t0 + CENSUS_REFRESH_MS + 1);
+  await runCycle(env as never, memory, "scheduled", t0 + CENSUS_REFRESH_MS + 2);
+  const p = db.raw.prepare("SELECT * FROM consensus_proposals WHERE target = 'forge-steward'").get() as any;
+  assert.equal(p.action, "register_agent", "routine, not privileged");
+  assert.equal(p.status, "executed", p.outcome_json);
+});

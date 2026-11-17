@@ -462,6 +462,18 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     for (const f of registrationBrakeOff ? ordered : []) {
       const prop = census ? proposalFor(census, f, persistent) : null;
       if (!prop) continue;
+      // 2026-11-17: main's DNA can name a capability that the running kernel does not know yet, because the same
+      // change adds it and the kernel is deployed after the merge. The council then rejects the agent as holding an
+      // unknown capability (cns_211153f4: register_privileged_agent adr-steward, 8-0, adr.observe) although it is
+      // routine once deployed. Such a registration is not proposed: it waits as a finding until a kernel that knows
+      // every capability runs. Nothing is weakened: an unknown capability is never registered either way.
+      if ((prop.action === "register_agent" || prop.action === "register_privileged_agent") && Array.isArray(prop.params.capabilities)) {
+        const unknown = (prop.params.capabilities as unknown[]).map(String).filter((c) => !Object.hasOwn(CAPABILITIES, c));
+        if (unknown.length) {
+          report.findings.push({ kind: "organism", service_id: prop.target, action: "none", why: `registration of ${prop.target} waits: ${unknown.join(", ")} is unknown to the running kernel (its deploy is pending)`.slice(0, 300) });
+          continue;
+        }
+      }
       // An engine's target is its service, so its task is part of the key: a Worker's second new AI task is not
       // held for a day behind its first (owner 2026-11-12). A proposal the Policy Engine vetoed (shadow_blocked,
       // e.g. its hourly limit per action and target) is retried after an hour, as deploy proposals are.
