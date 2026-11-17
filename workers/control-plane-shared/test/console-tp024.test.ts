@@ -70,6 +70,9 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.mesh", "kernel", "GET", "/v1/mesh", false, null],
   // ADR-0016 T0: the Vision page (read-only).
   ["kernel.vision", "kernel", "GET", "/v1/vision", false, null],
+  // ADR Steward step 4: the ADR panel's two read-only routes (docs/design/ADR-STEWARD.md §5).
+  ["kernel.adr", "kernel", "GET", "/v1/adr", false, null],
+  ["kernel.adr_one", "kernel", "GET", "/v1/adr/{id}", false, null],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
   ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
   // Owner 2026-11-13: the Alerts page (Telegram alert channels), approvers only.
@@ -131,12 +134,13 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 70 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 72 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
   // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
   // + registry.identities and registry.identities_update (owner 2026-11-16).
-  assert.equal(UI_ROUTES.length, 70);
+  // + kernel.adr and kernel.adr_one (ADR Steward step 4, read-only).
+  assert.equal(UI_ROUTES.length, 72);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -145,7 +149,7 @@ test("1. route table: exactly the 70 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 70);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 72);
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
   assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
   assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
@@ -243,7 +247,8 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // - the manual deploy row, orchestrator POST /v1/deployments (owner 2026-11-14).
   // - the two registry PUT rows, a service record and a desired version (owner 2026-11-15).
   // + the registry's GET and POST /v1/identities (owner 2026-11-16).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 68);
+  // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 70);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");

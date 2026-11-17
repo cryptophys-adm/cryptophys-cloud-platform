@@ -41,6 +41,9 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.mesh", "kernel", "GET", "/v1/mesh", false, null),
   // ADR-0016 T0: the organism's vision (organism/vision.json), read-only, for the Vision page.
   r("kernel.vision", "kernel", "GET", "/v1/vision", false, null),
+  // ADR Steward step 4 (docs/design/ADR-STEWARD.md §5): each ADR's progress from evidence, read-only, for the Vision page's ADR panel.
+  r("kernel.adr", "kernel", "GET", "/v1/adr", false, null),
+  r("kernel.adr_one", "kernel", "GET", "/v1/adr/{id}", false, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
