@@ -38,13 +38,13 @@ export async function evolutionView(db: D1Database): Promise<Record<string, unkn
   try {
     const intents = await db.prepare(
       `SELECT intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at
-       FROM evolution_intents ORDER BY created_at DESC, rowid DESC LIMIT ${LIST_LIMIT}`,
+       FROM evolution_intents_v2 ORDER BY created_at DESC, rowid DESC LIMIT ${LIST_LIMIT}`,
     ).all<Record<string, unknown>>();
     const evolutions = await db.prepare(
       `SELECT evolution_id, intent_id, state, branch, base_sha, head_sha, cr_id, merge_sha, deploy_ref, model, ai_calls, changed_lines, files_json, refusals_json, started_at, ended_at
-       FROM evolutions ORDER BY started_at DESC, rowid DESC LIMIT ${LIST_LIMIT}`,
+       FROM evolutions_v2 ORDER BY started_at DESC, rowid DESC LIMIT ${LIST_LIMIT}`,
     ).all<Record<string, unknown>>();
-    const counts = await db.prepare("SELECT state, count(*) AS n FROM evolution_intents GROUP BY state").all<{ state: string; n: number }>();
+    const counts = await db.prepare("SELECT state, count(*) AS n FROM evolution_intents_v2 GROUP BY state").all<{ state: string; n: number }>();
     return {
       available: true,
       control: await evolverMode(db),
