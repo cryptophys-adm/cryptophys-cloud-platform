@@ -6,7 +6,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import {
   ADR_PANEL_TITLE, ADR_POLL_MS, ADR_VIEW_SCHEMA, DRIFT_LABEL, MARK, MARK_LEGEND, MISSING, OUTSIDE_PLATFORM, OWNER_WAITING,
-  evidenceLink, explanationSource, isDeferred, lastChange, outsideMain, ownerLink, phaseLabel, phaseMark, progressSegments,
+  aiTodayLabel, evidenceLink, explanationSource, isDeferred, lastChange, outsideMain, ownerLink, phaseLabel, phaseMark, progressSegments,
   shown, staleLabel, statusLabel, statusTone, stewardLabel, stewardTone, utcMinute, type PhaseMark,
 } from "../lib/adr";
 
@@ -193,6 +193,7 @@ export default function AdrPanel({ focus, openId }: { focus: boolean; openId: st
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] uppercase tracking-widest text-slate-600">
       <span>baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui {utcMinute(steward?.last_pass_at)}</span>
       {known && <Badge tone={stewardTone(status)}>Steward: {stewardLabel(status)}</Badge>}
+      {known && <span title="penjelasan AI hari ini / batas harian">AI hari ini: {aiTodayLabel(steward)}</span>}
     </span>
   );
   let body;

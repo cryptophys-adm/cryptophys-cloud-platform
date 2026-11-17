@@ -472,8 +472,9 @@ for (const width of [390, 1440]) {
 const ADR_PANEL_TITLE = "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)";
 const adrList = (o) => ({ schema: "adr.progress-view.v1", available: true, steward: ADR_STEWARD, adrs: ADR_ROWS, ...o });
 const ADR_CHECKS = [
-  { name: "filled", hash: "vision", override: {},
-    want: [ADR_PANEL_TITLE, "baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui 2026-11-17 22:37 UTC", "Steward: aktif", "selesai", "berjalan (18 dari 26 fase)", "69%", "46% terbukti",
+  // Step 6: the AI explanations of the day against the cap, from steward.ai_today; "—" while the kernel cannot read them.
+  { name: "filled", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, ai_today: { used: 2, cap: 6 } } }) },
+    want: [ADR_PANEL_TITLE, "baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui 2026-11-17 22:37 UTC", "Steward: aktif", "AI hari ini: 2/6", "selesai", "berjalan (18 dari 26 fase)", "69%", "46% terbukti",
       "ditunda", "ditahan (1 dari 5 fase)", "direncanakan", "Menunggu klik pemilik: 1", "First live run of a part B path"],
     not: ["Belum ada pass Steward", "Steward belum berjalan", "tidak dikenali"], numbers: true },
   { name: "open row", hash: "vision/adr/0012", override: {}, open: "0012",
@@ -481,7 +482,7 @@ const ADR_CHECKS = [
       "di luar platform", "rev 14 · 2026-11-17 21:56 UTC", "rev 13 · berjalan · 65%", "Penjelasan (teks otomatis)", "0012: 18 dari 26 fase lengkap", "paling cepat 2026-11-17 14:12 UTC", "ev:consensus/cns_00000000…", "Gate 4 part B"],
     not: ["tidak dapat dibaca"], numbers: true },
   { name: "no pass yet", hash: "vision/adr", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
-    want: [ADR_PANEL_TITLE, "Belum ada pass Steward", "diperbarui —", "Steward: aktif"], not: ["selesai", "berjalan", "terbukti", "0012"] },
+    want: [ADR_PANEL_TITLE, "Belum ada pass Steward", "diperbarui —", "Steward: aktif", "AI hari ini: —"], not: ["selesai", "berjalan", "terbukti", "0012"] },
   { name: "unavailable", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ available: false, steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
     want: [ADR_PANEL_TITLE, "Steward belum berjalan", "Steward: belum terdaftar", "Steward belum terdaftar: tidak ada pass baru."], not: ["Belum ada pass Steward", "selesai", "berjalan (", "terbukti", "Steward: aktif"] },
   { name: "not registered", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
