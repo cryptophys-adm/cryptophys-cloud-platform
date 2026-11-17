@@ -498,15 +498,17 @@ test("OB16. inventory: storage resources against what this repository's wrangler
   const fs = compareInventory({
     known: known(), traffic7d: new Map([["cryptophys-console", 1], ["cryptophys-forge", 1], ["xauusd-omega", 1], ["xauusd-ai-trading-assistant", 1]]), senses_cover_7d: false, day: "2026-11-14",
     lists: {
-      d1: { status: "ok", items: [{ id: "u1", name: "cryptophys-control-plane" }, { id: "u2", name: "xauusd-trades" }] },
+      d1: { status: "ok", items: [{ id: "u1", name: "cryptophys-control-plane" }, { id: "u2", name: "xauusd-trades" }, { id: "u3", name: "stray-db" }] },
       r2: { status: "ok", items: [{ id: "cryptophys-forge-bundles", name: "cryptophys-forge-bundles" }] },
       kv: { status: "ok", items: [{ id: "k1", name: "XAUUSD_CACHE" }] },
       queues: { status: "unavailable", reason: "http_500" },
       durable_objects: { status: "ok", items: [{ id: "n1", name: "SupervisorAgent", script: "cryptophys-ai-kernel" }, { id: "n2", name: "Room", script: "xauusd-omega" }, { id: "n3", name: "Stray", script: "mystery" }] },
     },
   });
-  assert.deepEqual(kinds(fs), ["orphaned_declaration r2:cryptophys-d1-backups", "undeclared_resource d1:xauusd-trades", "undeclared_resource do:SupervisorAgent", "undeclared_resource do:Stray", "undeclared_resource kv:XAUUSD_CACHE"].sort());
-  for (const f of fs.filter((x) => x.metric === "undeclared_resource")) assert.equal(f.severity, "info");
+  // 2026-11-17: xauusd-trades is in the xauusd organ's namespace (name prefix only, labelled so); what matches no organ stays undeclared.
+  assert.deepEqual(kinds(fs), ["orphaned_declaration r2:cryptophys-d1-backups", "organ_resource d1:xauusd-trades", "undeclared_resource d1:stray-db", "undeclared_resource do:SupervisorAgent", "undeclared_resource do:Stray", "undeclared_resource kv:XAUUSD_CACHE"].sort());
+  for (const f of fs.filter((x) => x.metric === "undeclared_resource" || x.metric === "organ_resource")) assert.equal(f.severity, "info");
+  assert.equal(fs.find((f) => f.worker === "d1:xauusd-trades")!.sample.evidence, "name_prefix");
 });
 
 test("OB17. runInventory: reads the DNA union from the census, writes on change only, and skips a refused list for an hour with the same token", async () => {
