@@ -127,6 +127,7 @@ test("EV4. the deterministic triage: invalid tasks are rejected with their reaso
   for (const [body, reason] of cases) assert.deepEqual([triageCouncilTask(body)!.state, triageCouncilTask(body)!.reason], ["rejected", reason], reason);
   assert.equal(triageCouncilTask({ ...TASK, kind: "policy_parameter", knob: "decision.min_confidence", value: 0.45 }), null, "a knob change is xauusd's own");
   assert.equal(triageCouncilTask({ ...TASK, state: "live" }), null, "a later state update is not a new intent");
+  assert.equal(triageCouncilTask({ ...TASK, state: "handed_off" })!.state, "waiting_external", "the hand-off state since xauusd #430");
   assert.equal(triageCouncilTask({ ...TASK, schema: "council_decision.v1" }), null);
 
   const db = withModerator(withModerator(migratedDb()), "cryptophys-aether", "aether-scribe");
@@ -135,9 +136,13 @@ test("EV4. the deterministic triage: invalid tasks are rejected with their reaso
   report(db, { ...TASK, proposal_id: "cp_aether" }, { agent: "aether-scribe" });
   report(db, { ...TASK, proposal_id: "cp_kind" }, { kind: "platform_digest" });
   report(db, { ...TASK, proposal_id: "cp_old" }, { at: NOW - 8 * 86_400_000 });
+  report(db, { ...TASK, proposal_id: "cp_handed", state: "handed_off" });
   const r = await intakeCouncil(db, NOW);
-  assert.deepEqual(r.map((x) => x.reason).sort(), cases.map(([, reason]) => reason).sort(), "each invalid task recorded once, rejected, with its reason");
-  assert.ok(r.every((x) => x.state === "rejected"));
+  const handed = r.filter((x) => x.source_ref === "cp_handed");
+  assert.deepEqual(handed.map((x) => [x.state, x.reason]), [["waiting_external", "adr_0018_x1_x2"]], "state handed_off (xauusd #430) is a hand-off too");
+  const invalid = r.filter((x) => x.source_ref !== "cp_handed");
+  assert.deepEqual(invalid.map((x) => x.reason).sort(), cases.map(([, reason]) => reason).sort(), "each invalid task recorded once, rejected, with its reason");
+  assert.ok(invalid.every((x) => x.state === "rejected"));
   assert.equal(intents(db).find((i) => i.source_ref.startsWith("report:"))?.state_reason, "invalid_proposal_id", "no valid proposal_id: keyed by its report");
   assert.ok(!intents(db).some((i) => ["cp_knob", "cp_aether", "cp_kind", "cp_old"].includes(i.source_ref)), "a knob, another origin's agent, another report kind, a report older than 7 days");
   assert.deepEqual(await intakeCouncil(db, NOW + 900_000), [], "a rejected task is not evaluated again");

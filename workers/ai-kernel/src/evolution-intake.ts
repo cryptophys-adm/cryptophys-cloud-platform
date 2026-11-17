@@ -5,7 +5,7 @@
 // Council intents (§4.1). A repository_task that the owner accepted in Nexus reaches the platform as an agent report
 // (reports.publish, kind xauusd_digest, body.schema typed_proposal.v1). It is recorded once per proposal_id when its
 // agent is registered with host_worker = a service of the xauusd origin. Triage is deterministic:
-//   - kind repository_task, executor cryptophys, state handoff_pending, origin.side nexus, chosen_by an owner: valid;
+//   - kind repository_task, executor cryptophys, state handoff_pending or handed_off (xauusd #430), origin.side nexus, chosen_by an owner: valid;
 //   - the platform repository → queued; any other repository → waiting_external (owner 2026-11-17: "Tunggu ADR-0018
 //     X1/X2"); a missing title or spec, or a spec over SPEC_MAX bytes → rejected (invalid_spec);
 //   - any other kind or state (a policy_parameter is xauusd's own; a later state update) is not an intent: ignored.
@@ -25,6 +25,8 @@ export const COUNCIL_ORIGIN = "xauusd";
 /** The Workers whose agents may hand a council task off: the xauusd origin's services. */
 export const COUNCIL_HOSTS: readonly string[] = EXTERNAL_ORIGINS.find((o) => o.origin === COUNCIL_ORIGIN)?.services ?? [];
 export const COUNCIL_SCHEMA = "typed_proposal.v1";
+/** The hand-off states of an owner-accepted task: handoff_pending until xauusd #430, handed_off since. */
+export const HANDOFF_STATES: readonly string[] = Object.freeze(["handoff_pending", "handed_off"]);
 /** The names the platform repository goes by: the canonical Forge repository and its GitHub mirror. */
 export const PLATFORM_REPOS: readonly string[] = Object.freeze(["cryptophys/platform", "cryptophys-adm/cryptophys-cloud-platform"]);
 export const PLATFORM_REPO = "platform";
@@ -80,7 +82,7 @@ export function targetRepoOf(repo: unknown): string {
  * intent at all (another kind, or a later state of a proposal); otherwise the intent to record.
  */
 export function triageCouncilTask(body: Record<string, unknown>): CouncilTriage | null {
-  if (body.schema !== COUNCIL_SCHEMA || body.kind !== "repository_task" || body.state !== "handoff_pending") return null;
+  if (body.schema !== COUNCIL_SCHEMA || body.kind !== "repository_task" || !HANDOFF_STATES.includes(String(body.state))) return null;
   const origin = obj(body.origin);
   const proposal_id = typeof body.proposal_id === "string" && ID.test(body.proposal_id) ? body.proposal_id : null;
   const title = str(body.title, TITLE_MAX);
@@ -122,7 +124,7 @@ export async function intakeCouncil(db: D1Database, now = Date.now()): Promise<I
      JOIN agents a ON a.agent_id = r.agent_id
      WHERE r.created_at >= ? AND a.host_worker IN (${q}) AND r.kind = 'xauusd_digest'
        AND json_extract(r.body_json, '$.schema') = ? AND json_extract(r.body_json, '$.kind') = 'repository_task'
-       AND json_extract(r.body_json, '$.state') = 'handoff_pending'
+       AND json_extract(r.body_json, '$.state') IN ('handoff_pending', 'handed_off')
        AND NOT EXISTS (SELECT 1 FROM evolution_intents i WHERE i.source = 'council'
          AND i.source_ref IN (json_extract(r.body_json, '$.proposal_id'), 'report:' || r.report_id))
      ORDER BY r.created_at, r.rowid LIMIT ${SCAN_LIMIT}`,
