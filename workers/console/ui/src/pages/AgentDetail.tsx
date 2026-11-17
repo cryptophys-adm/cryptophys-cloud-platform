@@ -42,7 +42,7 @@ export default function AgentDetail({ id }: { id: string }) {
         {agent.loading && !agent.data ? <Skeleton rows={4} /> : (
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
             {Object.entries(a).filter(([k]) => k !== "capabilities").map(([k, v]) => (
-              <div key={k}><dt className="label">{k}</dt><dd className="mono break-words text-[12px] text-slate-200">{fmt(v)}</dd></div>
+              <div key={k}><dt className="label">{k}</dt><dd className="mono wrap-break-word text-[12px] text-slate-200">{fmt(v)}</dd></div>
             ))}
             {Array.isArray(a.capabilities) && <div className="sm:col-span-2"><dt className="label">capabilities</dt><dd className="flex flex-wrap gap-1.5">{a.capabilities.map((c: any) => <Badge key={String(c.capability ?? c)} tone="cyan">{String(c.capability ?? c)}</Badge>)}</dd></div>}
           </dl>

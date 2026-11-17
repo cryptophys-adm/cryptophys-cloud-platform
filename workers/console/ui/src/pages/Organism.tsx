@@ -292,7 +292,7 @@ export default function Organism() {
             <p className="text-slate-400 leading-relaxed">
               Verifies SHA-256 hash alignment between trading assistant indicator knowledge base and Aether canon. Doctrinal adjustments are promoted strictly through deterministically reviewed PRs.
             </p>
-            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded">
+            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded-sm">
               Status: checked by the XAUUSD repository CI; not reported to this Console
             </div>
           </div>
@@ -305,7 +305,7 @@ export default function Organism() {
             <p className="text-slate-400 leading-relaxed">
               Audits weighting and parameter candidates in shadow. The rule in force (xauusd SHADOW_MIN_SAMPLE and HOLDOUT_BARS): at least 200 paired rooms for discovery, a Holm-adjusted one-sided sign test (α = 0.05), and the newest 100 rooms as a holdout.
             </p>
-            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded">
+            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded-sm">
               Gate: Holm-Bonferroni α=0.05 (rule, not a live status)
             </div>
           </div>

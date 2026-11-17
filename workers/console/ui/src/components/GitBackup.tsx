@@ -45,14 +45,14 @@ export default function GitBackup({ data, loading }: { data: any; loading: boole
               sub={v ? `${ago(v.verified_at)} · main ${short(v.main_sha, 7)}` : "—"} />
           </div>
           {v && v.verify_status === "failed" ? (
-            <p className="mono break-words text-[10px] leading-relaxed text-rose-200">git bundle verify of {v.r2_key ?? "—"} failed: {typeof vd?.reason === "string" ? vd.reason : "—"}</p>
+            <p className="mono wrap-break-word text-[10px] leading-relaxed text-rose-200">git bundle verify of {v.r2_key ?? "—"} failed: {typeof vd?.reason === "string" ? vd.reason : "—"}</p>
           ) : v && v.verify_status === "verified" ? (
             <p className="text-[10px] leading-relaxed text-slate-400">
               Verified {v.day ?? "—"} bundle: {num(vd?.objects)} objects ({num(vd?.deltas)} deltas resolved), {num(vd?.reachable)} reachable from {num(vd?.refs)} branches, pack SHA-1 and SHA-256 match the record.
             </p>
           ) : null}
           {latest && latest.status === "failed" ? (
-            <p className="mono break-words text-[10px] leading-relaxed text-amber-200">Latest run {ago(latest.ran_at)} failed: {latest.error ?? "—"}</p>
+            <p className="mono wrap-break-word text-[10px] leading-relaxed text-amber-200">Latest run {ago(latest.ran_at)} failed: {latest.error ?? "—"}</p>
           ) : null}
           {runs.length > 0 ? (
             <DataTable rows={runs} rowKey={(r) => r.run_id} maxHeight={240} columns={[

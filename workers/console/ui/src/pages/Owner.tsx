@@ -60,7 +60,7 @@ function ProblemItem({ p }: { p: any }) {
     <div className="glass-inner px-3 py-2 text-[12px]">
       <div className="flex items-start gap-2">
         <span className="mt-1.5"><Dot tone="red" pulse /></span>
-        <span className="min-w-0 flex-1 break-words text-slate-200">{p.detail ?? "—"}</span>
+        <span className="min-w-0 flex-1 wrap-break-word text-slate-200">{p.detail ?? "—"}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
         <Badge tone="red">{PROBLEM_LABEL[p.code] ?? String(p.code ?? "—")}</Badge>
@@ -81,26 +81,26 @@ function PlanItem({ p, reload }: { p: any; reload: () => void }) {
     <div className="glass-inner px-3 py-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-2">
         <Dot tone="amber" pulse />
-        <span className="min-w-0 flex-1 break-words text-slate-200">{p.title ?? `Recovery plan for ${serviceName(p.service_id)}`}</span>
+        <span className="min-w-0 flex-1 wrap-break-word text-slate-200">{p.title ?? `Recovery plan for ${serviceName(p.service_id)}`}</span>
         <a href={`#/recovery/${p.plan_id}`} className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Details <ExternalLink className="h-3 w-3" /></a>
       </div>
-      <div className="mt-0.5 break-words text-[11px] text-slate-500">
+      <div className="mt-0.5 wrap-break-word text-[11px] text-slate-500">
         {serviceName(p.service_id)} · version <span className="mono">{p.plan_version}</span> · by <span className="mono">{p.created_by}</span> · {ago(p.created_at)} · approval window closes {until(p.approve_by)}
         {p.synthetic ? <> · <Badge tone="slate">deploy check</Badge></> : null}
       </div>
       {arr(p.steps).length > 0 && (
         <ol className="mt-1.5 space-y-0.5 pl-4 text-[11px] text-slate-400">
-          {arr(p.steps).map((s: any, i: number) => <li key={i} className="list-decimal break-words"><span className="mono text-violet-200">{s.action}</span> {s.description}</li>)}
+          {arr(p.steps).map((s: any, i: number) => <li key={i} className="list-decimal wrap-break-word"><span className="mono text-violet-200">{s.action}</span> {s.description}</li>)}
         </ol>
       )}
       {who.approver ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {own ? <span className="text-[11px] text-slate-500">You authored this plan; another approver must approve it.</span> : (
-            <button type="button" className="btn btn-approve !py-1" onClick={() => act({ route: "recovery.approve", params: p.plan_id, title: `Approve plan ${p.plan_id}`,
+            <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "recovery.approve", params: p.plan_id, title: `Approve plan ${p.plan_id}`,
               lines: ["Approval is recorded under your identity. You cannot approve a plan you authored.", "After approval the AI executes every step automatically and verifies the result. Follow the pipeline on the plan's page."],
               done: "Approved. The AI is executing the plan.", after: reload })}><ShieldCheck className="h-3.5 w-3.5" />Approve…</button>
           )}
-          <button type="button" className="btn btn-danger !py-1" onClick={() => act({ route: "recovery.disable", params: p.plan_id, title: `Disable plan ${p.plan_id}`,
+          <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "recovery.disable", params: p.plan_id, title: `Disable plan ${p.plan_id}`,
             lines: ["The plan can no longer be approved or executed."], done: "Plan disabled.", after: reload })}><Ban className="h-3.5 w-3.5" />Disable…</button>
         </div>
       ) : <ReadOnly />}
@@ -115,25 +115,25 @@ function ProposalItem({ p, mode, reload }: { p: any; mode: string | null; reload
     <div className="glass-inner px-3 py-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-2">
         <Dot tone="purple" pulse />
-        <span className="min-w-0 flex-1 break-words text-slate-200">Critical action: {describeAction(p.action, p.target)}</span>
+        <span className="min-w-0 flex-1 wrap-break-word text-slate-200">Critical action: {describeAction(p.action, p.target)}</span>
         <a href="#/consensus" className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Votes <ExternalLink className="h-3 w-3" /></a>
       </div>
-      <div className="mt-0.5 break-words text-[11px] text-slate-500">
+      <div className="mt-0.5 wrap-break-word text-[11px] text-slate-500">
         <span className="mono">{p.action}</span> → <span className="mono">{p.target}</span> · proposed by <span className="mono">{p.proposer_agent_id}</span> · agents {count(p.approvals)} for, {count(p.rejections)} against of {count(p.eligible)} · expires {until(p.expires_at)}
       </div>
       {Array.isArray(p.changes) && p.changes.length > 0 && (
-        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[11px] text-slate-300">{p.changes.map((c: string) => <li key={c} className="break-words">{c}</li>)}</ul>
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[11px] text-slate-300">{p.changes.map((c: string) => <li key={c} className="wrap-break-word">{c}</li>)}</ul>
       )}
       {p.executable !== true && <div className="mt-1 text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject to close it.</div>}
       {p.executable === true && !ownerClickMode(mode) && <div className="mt-1 text-[11px] text-amber-300">Approval executes only in consensus mode deploy or critical (now {mode ?? "—"}).</div>}
       {who.approver ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {canApprove && (
-            <button type="button" className="btn btn-approve !py-1" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
+            <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
               lines: ["Your click is recorded under your Access identity and is final.", "The Policy Engine re-checks, then the platform executes it immediately."],
               done: "Approved and executed.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>
           )}
-          <button type="button" className="btn btn-danger !py-1" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
+          <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
             lines: ["The proposal is closed as rejected; nothing executes."], done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
         </div>
       ) : <ReadOnly />}
@@ -148,19 +148,19 @@ function KnowledgeItem({ k, reload }: { k: any; reload: () => void }) {
     <div className="glass-inner px-3 py-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-2">
         <Dot tone="amber" pulse />
-        <span className="mono min-w-0 flex-1 break-words text-cyan-200">{k.item_id}@{k.item_version}</span>
+        <span className="mono min-w-0 flex-1 wrap-break-word text-cyan-200">{k.item_id}@{k.item_version}</span>
         <Badge tone="purple">{String(k.kind ?? "—").replace(/_/g, " ")}</Badge>
         <a href="#/knowledge" className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Evidence <ExternalLink className="h-3 w-3" /></a>
       </div>
-      <div className="mt-0.5 break-words text-[11px] text-slate-500">by <span className="mono">{k.proposer_agent_id}</span> · {ago(k.created_at)} · review window closes {until(k.expires_at)}</div>
-      <p className="mt-1 break-words text-[12px] text-slate-300">{text ?? "—"}</p>
+      <div className="mt-0.5 wrap-break-word text-[11px] text-slate-500">by <span className="mono">{k.proposer_agent_id}</span> · {ago(k.created_at)} · review window closes {until(k.expires_at)}</div>
+      <p className="mt-1 wrap-break-word text-[12px] text-slate-300">{text ?? "—"}</p>
       {who.approver ? (
         <div className="mt-2 flex flex-wrap gap-2">
-          <button type="button" className="btn btn-approve !py-1" onClick={() => act({ route: "kernel.knowledge_approve", params: k.proposal_id, body: { reason: "approved for shadow testing in the Console" },
+          <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.knowledge_approve", params: k.proposal_id, body: { reason: "approved for shadow testing in the Console" },
             title: `Approve ${k.item_id}@${k.item_version} for shadow testing`,
             lines: ["Recorded under your Access identity in the audit chain.", "Aether exports it in the approved pack; the XAUUSD shadow arm tests it. No live agent changes.", "Promotion still needs your PR in the XAUUSD repository."],
             done: "Approved for shadow testing.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>
-          <button type="button" className="btn btn-danger !py-1" onClick={() => act({ route: "kernel.knowledge_reject", params: k.proposal_id, body: { reason: "rejected in the Console" },
+          <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.knowledge_reject", params: k.proposal_id, body: { reason: "rejected in the Console" },
             title: `Reject ${k.item_id}@${k.item_version}`, lines: ["The proposal is closed as rejected. Aether does not propose the same version again."],
             done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
         </div>

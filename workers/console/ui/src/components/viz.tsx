@@ -29,13 +29,13 @@ function useTip() {
   const showAt = (el: Element, content: ReactNode) => { const r = el.getBoundingClientRect(); setTip({ x: r.left + r.width / 2, y: r.top, content }); };
   const hide = () => setTip(null);
   const node = tip ? (
-    <div role="tooltip" className="pointer-events-none fixed z-50 max-w-[260px] rounded-lg border border-white/10 bg-[#0b0e14]/95 px-2.5 py-1.5 text-[11px] text-slate-300 shadow-xl"
+    <div role="tooltip" className="pointer-events-none fixed z-50 max-w-[260px] rounded-lg border border-white/10 bg-tv-bg/95 px-2.5 py-1.5 text-[11px] text-slate-300 shadow-xl"
       style={{ left: Math.min(tip.x + 12, window.innerWidth - 270), top: Math.max(tip.y - 12, 8), transform: "translateY(-100%)" }}>{tip.content}</div>
   ) : null;
   return { show, showAt, hide, node };
 }
 const TipRow = ({ color, value, label }: { color: string; value: ReactNode; label: ReactNode }) => (
-  <div className="flex items-center gap-2"><span className="h-[2px] w-3 shrink-0 rounded" style={{ background: color }} /><b className="mono text-slate-100">{value}</b><span className="text-slate-400">{label}</span></div>
+  <div className="flex items-center gap-2"><span className="h-[2px] w-3 shrink-0 rounded-sm" style={{ background: color }} /><b className="mono text-slate-100">{value}</b><span className="text-slate-400">{label}</span></div>
 );
 
 function useWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
@@ -77,10 +77,10 @@ export function StatusBar({ segments, height = 12, unit = "", legend = true, cla
   const shown = segments.filter((s) => s.value > 0);
   return (
     <div className={className}>
-      <div className="flex w-full gap-[2px] overflow-hidden rounded-[4px] bg-white/[0.04]" style={{ height }} role="img"
+      <div className="flex w-full gap-[2px] overflow-hidden rounded-[4px] bg-white/4" style={{ height }} role="img"
         aria-label={segments.map((s) => `${s.label} ${s.value}`).join(", ")}>
         {total === 0 ? null : shown.map((s) => (
-          <div key={s.key} tabIndex={0} className="h-full outline-none transition-[filter] hover:brightness-125 focus-visible:brightness-125"
+          <div key={s.key} tabIndex={0} className="h-full outline-hidden transition-[filter] hover:brightness-125 focus-visible:brightness-125"
             style={{ width: `${(s.value / total) * 100}%`, minWidth: 3, background: s.color }}
             onPointerMove={(e) => tip.show(e, <TipRow color={s.color} value={`${s.value}${unit}`} label={`${s.label} · ${Math.round((s.value / total) * 100)}%`} />)}
             onPointerLeave={tip.hide} onFocus={(e) => tip.showAt(e.currentTarget, <TipRow color={s.color} value={`${s.value}${unit}`} label={s.label} />)} onBlur={tip.hide} />
@@ -128,7 +128,7 @@ export function BarList({ items, max = 10, color = STATUS.info, series, unit = "
               <span className="mono truncate text-slate-300" title={i.label}>{label}</span>
               <div className="flex h-[10px] gap-[2px]" style={{ width: `${Math.max(2, (i.value / top) * 100)}%` }}>
                 {parts.map((p, k) => (
-                  <div key={p.key} tabIndex={0} className={clsx("h-full outline-none hover:brightness-125 focus-visible:brightness-125", k === parts.length - 1 && "rounded-r-[4px]")}
+                  <div key={p.key} tabIndex={0} className={clsx("h-full outline-hidden hover:brightness-125 focus-visible:brightness-125", k === parts.length - 1 && "rounded-r-[4px]")}
                     style={{ flexGrow: p.value, flexBasis: 0, minWidth: 2, background: p.color }}
                     onPointerMove={(e) => tip.show(e, <><div className="mb-0.5 text-slate-400">{i.label}</div>{parts.map((q) => <TipRow key={q.key} color={q.color} value={`${q.value}${unit}`} label={q.label} />)}</>)}
                     onPointerLeave={tip.hide} onFocus={(e) => tip.showAt(e.currentTarget, <TipRow color={p.color} value={`${p.value}${unit}`} label={`${i.label} · ${p.label}`} />)} onBlur={tip.hide} />
@@ -245,7 +245,7 @@ export function Meter({ value, target, label, color = STATUS.info }: { value: nu
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between gap-2 text-[11px]"><span className="text-slate-400">{label}</span><span className="mono text-slate-100">{value}/{target}{done ? " ✓" : ""}</span></div>
-      <div className="h-2 w-full overflow-hidden rounded-[4px] bg-white/[0.05]" role="progressbar" aria-label={label} aria-valuenow={value} aria-valuemin={0} aria-valuemax={target}>
+      <div className="h-2 w-full overflow-hidden rounded-[4px] bg-white/5" role="progressbar" aria-label={label} aria-valuenow={value} aria-valuemin={0} aria-valuemax={target}>
         <div className="h-full rounded-r-[4px]" style={{ width: `${Math.max(pct, value > 0 ? 2 : 0)}%`, background: done ? STATUS.good : color }} />
       </div>
     </div>
@@ -257,7 +257,7 @@ export function VoteBar({ approvals, rejections, eligible }: { approvals: number
   const a = Math.max(0, approvals || 0), r = Math.max(0, rejections || 0), e = Math.max(a + r, eligible || 0), x = e - a - r;
   return (
     <span className="inline-flex items-center gap-2" title={`${a} approve · ${r} reject · ${x} abstain of ${e}`}>
-      <span className="flex h-2 w-16 gap-[2px] overflow-hidden rounded-[3px] bg-white/[0.05]">
+      <span className="flex h-2 w-16 gap-[2px] overflow-hidden rounded-[3px] bg-white/5">
         {a > 0 && <span style={{ flexGrow: a, background: STATUS.good }} />}
         {r > 0 && <span style={{ flexGrow: r, background: STATUS.critical }} />}
         {x > 0 && <span style={{ flexGrow: x, background: STATUS.neutral }} />}
@@ -334,7 +334,7 @@ export function DataTable<T>({ rows, columns, rowKey, onRowClick, expand, maxHei
                 <tr key={k} className={clsx((onRowClick || expand) && "cursor-pointer", isOpen && "is-open")}
                   onClick={() => (expand ? setOpen(isOpen ? null : k) : onRowClick?.(r))}>
                   {expand && (
-                    <td className="w-6 !pr-0">
+                    <td className="w-6 pr-0!">
                       <button type="button" aria-expanded={isOpen} aria-label={isOpen ? "Hide details" : "Show details"} className="text-slate-500 hover:text-cyan-300"
                         onClick={(e) => { e.stopPropagation(); setOpen(isOpen ? null : k); }}>
                         {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}

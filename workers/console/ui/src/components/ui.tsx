@@ -46,7 +46,7 @@ export function Badge({ tone = "slate", children }: { tone?: "green" | "amber" |
     red: "border-rose-400/20 bg-rose-400/10 text-rose-300",
     cyan: "border-cyan-400/20 bg-cyan-400/10 text-cyan-200",
     purple: "border-violet-400/20 bg-violet-400/10 text-violet-200",
-    slate: "border-white/10 bg-white/[0.04] text-slate-300",
+    slate: "border-white/10 bg-white/4 text-slate-300",
   }[tone];
   return <span className={clsx("chip", c)}>{children}</span>;
 }

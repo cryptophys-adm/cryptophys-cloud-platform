@@ -39,7 +39,7 @@ export default function BuildMinutes({ data, loading }: { data: any; loading: bo
           <div>
             <div className="mb-1 flex items-baseline justify-between text-[11px]"><span className="text-slate-400">Used of the free-tier budget</span>
               <span className="mono text-slate-100">{pct}%{projPct !== null ? ` · projected ${projPct}%` : ""}</span></div>
-            <div className="relative h-2 w-full overflow-hidden rounded-[4px] bg-white/[0.05]" role="progressbar" aria-label="build minutes used" aria-valuenow={u.minutes} aria-valuemin={0} aria-valuemax={budget}>
+            <div className="relative h-2 w-full overflow-hidden rounded-[4px] bg-white/5" role="progressbar" aria-label="build minutes used" aria-valuenow={u.minutes} aria-valuemin={0} aria-valuemax={budget}>
               {projPct !== null && <div className="absolute inset-y-0 left-0 rounded-r-[4px] opacity-30" style={{ width: `${projPct}%`, background: barColor }} />}
               <div className="absolute inset-y-0 left-0 rounded-r-[4px]" style={{ width: `${Math.max(pct, u.minutes > 0 ? 1 : 0)}%`, background: barColor }} />
               <div className="absolute inset-y-0 w-px bg-amber-300/70" style={{ left: `${Math.round(u.warn_ratio * 100)}%` }} title="warning threshold" />

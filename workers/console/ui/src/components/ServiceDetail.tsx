@@ -36,7 +36,7 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: Rea
   return (
     <div className="grid grid-cols-[minmax(0,40%)_minmax(0,1fr)] items-baseline gap-2 py-0.5 text-[12px]">
       <span className="text-slate-500">{label}</span>
-      <span className="min-w-0 break-words text-slate-200">{value ?? <Unmeasured />}{sub ? <span className="ml-1 text-[10px] text-slate-500">{sub}</span> : null}</span>
+      <span className="min-w-0 wrap-break-word text-slate-200">{value ?? <Unmeasured />}{sub ? <span className="ml-1 text-[10px] text-slate-500">{sub}</span> : null}</span>
     </div>
   );
 }
@@ -91,10 +91,10 @@ export default function ServiceDetail({ service, drift, onClose }: { service: an
   const changes = listOf(history.data, "observations").slice(0, 5);
 
   return (
-    <div className="fixed inset-0 z-[45]" data-testid="service-detail-layer">
+    <div className="fixed inset-0 z-45" data-testid="service-detail-layer">
       <button type="button" aria-label="Close details" className="absolute inset-0 h-full w-full cursor-default bg-black/60 backdrop-blur-[1px]" onClick={onClose} tabIndex={-1} />
       <aside role="dialog" aria-modal="true" aria-labelledby="service-detail-title" data-testid="service-detail"
-        className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col rounded-t-2xl border border-white/10 bg-[#0b0f18] shadow-[0_-10px_40px_rgba(0,0,0,0.5)]
+        className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col rounded-t-2xl border border-white/10 bg-obsidian-panel shadow-[0_-10px_40px_rgba(0,0,0,0.5)]
           lg:inset-y-0 lg:left-auto lg:right-0 lg:max-h-none lg:w-[480px] lg:rounded-none lg:rounded-l-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-white/5 px-4 py-3">
           <div className="min-w-0">
@@ -150,7 +150,7 @@ export default function ServiceDetail({ service, drift, onClose }: { service: an
                 sub={recorded ? `${ago(recorded.at)} · ${recorded.origin ?? recorded.actor ?? ""}${recorded.previous ? ` · was ${short(recorded.previous)}` : ""}` : "none among the last 100 recorded"} />
               <Row label="Latest request" value={request ? <span><Badge tone={request.status === "succeeded" ? "green" : request.status === "failed" ? "red" : "amber"}>{request.status}</Badge> <span className="mono">{short(request.version)}</span></span> : null}
                 sub={request ? `${ago(request.created_at)} · ${request.origin ?? ""}${request.workflow ? ` · ${request.workflow}` : ""}` : "none among the last 100 requests"} />
-              {request?.note && <p className="break-words text-[11px] text-slate-500">{request.note}</p>}
+              {request?.note && <p className="wrap-break-word text-[11px] text-slate-500">{request.note}</p>}
             </>)}
           </Section>
 
@@ -171,7 +171,7 @@ export default function ServiceDetail({ service, drift, onClose }: { service: an
               <ul className="space-y-1.5">{findings.slice(0, 10).map((f: any) => (
                 <li key={f.finding_id} className="text-[11px]">
                   <div className="flex flex-wrap items-center gap-1.5"><Badge tone={severityTone(f.severity)}>{f.severity}</Badge><span className="mono text-slate-300">{f.metric}</span><span className="text-slate-500">{ago(f.created_at)}</span></div>
-                  <p className="mt-0.5 break-words text-slate-400">{f.detail}</p>
+                  <p className="mt-0.5 wrap-break-word text-slate-400">{f.detail}</p>
                 </li>
               ))}</ul>
             ) : <p className="text-[12px] text-slate-400">None for this Worker in the last 7 days.</p>}

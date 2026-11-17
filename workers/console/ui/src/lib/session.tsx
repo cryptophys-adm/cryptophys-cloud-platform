@@ -54,9 +54,9 @@ export function SessionProvider({ who, children }: { who: Who; children: ReactNo
           {toasts.map((t) => (
             <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
               role={t.tone === "err" ? "alert" : "status"}
-              className={`pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2 text-[12px] backdrop-blur ${t.tone === "err" ? "border-rose-400/30 bg-rose-950/80 text-rose-200" : "border-emerald-400/30 bg-emerald-950/80 text-emerald-200"}`}>
+              className={`pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2 text-[12px] backdrop-blur-sm ${t.tone === "err" ? "border-rose-400/30 bg-rose-950/80 text-rose-200" : "border-emerald-400/30 bg-emerald-950/80 text-emerald-200"}`}>
               {t.tone === "err" ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-              <span className="flex-1 break-words">{t.text}</span>
+              <span className="flex-1 wrap-break-word">{t.text}</span>
               <button type="button" aria-label="Dismiss" className="opacity-60 hover:opacity-100" onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))}><X className="h-3.5 w-3.5" /></button>
             </motion.div>
           ))}

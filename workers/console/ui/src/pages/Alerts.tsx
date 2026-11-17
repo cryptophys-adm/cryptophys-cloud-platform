@@ -46,7 +46,7 @@ function ChannelCard({ c, topics, reload }: { c: any; topics: any[]; reload: () 
     <div className="glass-inner space-y-2 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2 text-[12px]">
         <BellRing className={`h-4 w-4 ${c.enabled ? "text-emerald-300" : "text-slate-500"}`} />
-        <span className="min-w-0 flex-1 break-words text-slate-200">{c.name}</span>
+        <span className="min-w-0 flex-1 wrap-break-word text-slate-200">{c.name}</span>
         <Badge tone={c.enabled ? "green" : "slate"}>{c.enabled ? "enabled" : "disabled"}</Badge>
       </div>
       <div className="text-[11px] text-slate-500">
@@ -58,17 +58,17 @@ function ChannelCard({ c, topics, reload }: { c: any; topics: any[]; reload: () 
       {editing && <TopicPicker topics={isDefault ? topics.filter((t) => !t.relay) : topics} value={editing} onChange={setEditing} />}
       {who.approver ? (
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn !py-1" onClick={() => act({ route: "kernel.alert_update", params: c.channel_id, body: { enabled: !c.enabled }, title: `${c.enabled ? "Disable" : "Enable"} ${c.name}`, done: c.enabled ? "Disabled." : "Enabled.", after: reload })}>
+          <button type="button" className="btn py-1!" onClick={() => act({ route: "kernel.alert_update", params: c.channel_id, body: { enabled: !c.enabled }, title: `${c.enabled ? "Disable" : "Enable"} ${c.name}`, done: c.enabled ? "Disabled." : "Enabled.", after: reload })}>
             {c.enabled ? "Disable" : "Enable"}
           </button>
           {editing ? (
-            <button type="button" className="btn btn-approve !py-1" disabled={!editing.length} onClick={() => act({ route: "kernel.alert_update", params: c.channel_id, body: { topics: editing }, title: `Topics of ${c.name}`, done: "Saved.", after: () => { setEditing(null); reload(); } })}>Save topics</button>
+            <button type="button" className="btn btn-approve py-1!" disabled={!editing.length} onClick={() => act({ route: "kernel.alert_update", params: c.channel_id, body: { topics: editing }, title: `Topics of ${c.name}`, done: "Saved.", after: () => { setEditing(null); reload(); } })}>Save topics</button>
           ) : (
-            <button type="button" className="btn !py-1" onClick={() => setEditing([...c.topics])}>Topics…</button>
+            <button type="button" className="btn py-1!" onClick={() => setEditing([...c.topics])}>Topics…</button>
           )}
-          <button type="button" className="btn !py-1" onClick={() => act({ route: "kernel.alert_test", params: c.channel_id, title: `Test ${c.name}`, done: "Test requested.", after: (r: any) => { if (r?.delivery !== "sent") notify("err", `Test not delivered: ${r?.delivery}`); reload(); } })}><Send className="h-3.5 w-3.5" />Test</button>
+          <button type="button" className="btn py-1!" onClick={() => act({ route: "kernel.alert_test", params: c.channel_id, title: `Test ${c.name}`, done: "Test requested.", after: (r: any) => { if (r?.delivery !== "sent") notify("err", `Test not delivered: ${r?.delivery}`); reload(); } })}><Send className="h-3.5 w-3.5" />Test</button>
           {!isDefault && (
-            <button type="button" className="btn btn-danger !py-1" onClick={() => act({ route: "kernel.alert_delete", params: c.channel_id, title: `Delete ${c.name}`, lines: ["The channel and its bot token are removed. Alerts stop going to this chat.", "The bot itself is not changed in Telegram."], done: "Deleted.", after: reload })}><Trash2 className="h-3.5 w-3.5" />Delete…</button>
+            <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.alert_delete", params: c.channel_id, title: `Delete ${c.name}`, lines: ["The channel and its bot token are removed. Alerts stop going to this chat.", "The bot itself is not changed in Telegram."], done: "Deleted.", after: reload })}><Trash2 className="h-3.5 w-3.5" />Delete…</button>
           )}
         </div>
       ) : <div className="text-[11px] text-slate-500">Only an approver can change alert channels.</div>}

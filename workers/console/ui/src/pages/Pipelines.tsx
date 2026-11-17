@@ -87,7 +87,7 @@ export default function Pipelines() {
             {runningPlans.map((p: any) => (
               <a key={p.plan_id} href={`#/recovery/${p.plan_id}`} className="glass-inner flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2">
                 <Badge tone="amber">recovery</Badge>
-                <span className="min-w-0 flex-1 break-words text-[12px] text-slate-200">{p.title}</span>
+                <span className="min-w-0 flex-1 wrap-break-word text-[12px] text-slate-200">{p.title}</span>
                 <Badge tone="cyan">executing</Badge>
               </a>
             ))}

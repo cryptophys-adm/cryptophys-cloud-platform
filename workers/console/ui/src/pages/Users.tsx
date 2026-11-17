@@ -195,7 +195,7 @@ export default function Users() {
               { key: "updated", header: "changed", sort: (a: any) => Date.parse(a.updated_at) || 0, cell: (a: any) => a.cfg ? <span className="text-slate-600">—</span> : <span className="text-[11px] text-slate-500">by {a.updated_by} · {ago(a.updated_at)}</span> },
               ...(owner ? [{ key: "act", header: "change", cell: (a: any) => a.cfg || a.email === who.actor ? <span className="text-slate-600">—</span> : (
                 <div className="flex flex-wrap gap-1.5">
-                  <select aria-label={`Role of ${a.email}`} className="field !w-auto !py-1 text-[11px]" value={a.status === "active" ? (a.kind === "user" ? "user" : a.privilege) : ""}
+                  <select aria-label={`Role of ${a.email}`} className="field w-auto! py-1! text-[11px]" value={a.status === "active" ? (a.kind === "user" ? "user" : a.privilege) : ""}
                     onChange={(ev) => { const v = ev.target.value; if (!v) return; submit({ email: a.email, note: a.note, kind: v === "user" ? "user" : "admin", privilege: v === "user" ? undefined : v }); }}>
                     {a.status !== "active" && <option value="">re-enable as…</option>}
                     <option value="viewer">admin · viewer</option>
@@ -204,7 +204,7 @@ export default function Users() {
                     <option value="user">user · Nexus only</option>
                   </select>
                   {a.status === "active" && (
-                    <button type="button" className="btn btn-danger !py-1" onClick={() => act({
+                    <button type="button" className="btn btn-danger py-1!" onClick={() => act({
                       route: "registry.account_disable", params: a.email, body: { confirm: "REVOKE" }, title: `Disable ${a.email}`,
                       lines: ["Their control-plane role ends at once. Nexus sign-in removal depends on a successful Access group sync; an existing Access session can last up to 8 hours. If sync fails, the account may still pass Access until you retry Sync sign-in."],
                       done: "Control-plane role disabled. Check the Nexus sign-in status below.", after,

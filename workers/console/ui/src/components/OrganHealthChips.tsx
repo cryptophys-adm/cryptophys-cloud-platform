@@ -47,7 +47,7 @@ export default function OrganHealthChips({ h }: { h: Overview["trading_organ_hea
           const scored = typeof m.n_directional === "number" ? `, scored ${m.n_directional}${m.subject ? ` (${m.subject})` : ""}` : "";
           const title = unexposed ? "not exposed by the source" : unscored ? `no scored decisions yet${m.subject ? ` (${m.subject})` : ""}` : `baseline 7d: ${typeof m.baseline_7d === "number" ? m.baseline_7d : "—"}${scored}`;
           return (
-            <span key={m.metric} title={title} className={`mono inline-flex items-center gap-1.5 rounded-full border bg-white/[0.03] px-2 py-0.5 text-[10px] ${tone}`}>
+            <span key={m.metric} title={title} className={`mono inline-flex items-center gap-1.5 rounded-full border bg-white/3 px-2 py-0.5 text-[10px] ${tone}`}>
               <span className="text-slate-500">{LABELS[m.metric] ?? m.metric}</span>
               <span>{unexposed ? "not exposed" : unscored ? "no data yet" : shown(m.metric, m.value)}</span>
               {z !== null && <span className="text-slate-500">z {z}</span>}

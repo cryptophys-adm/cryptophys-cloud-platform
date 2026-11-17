@@ -47,13 +47,13 @@ export default function Command() {
               <div key={n.topic} className="glass-inner px-3 py-2.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <Dot tone={n.topic === "owner_attention" ? "amber" : "red"} pulse />
-                  <span className="min-w-0 flex-1 break-words text-[12px] text-slate-200">{n.title}</span>
+                  <span className="min-w-0 flex-1 wrap-break-word text-[12px] text-slate-200">{n.title}</span>
                   {/* Owner 2026-11-13: only approvals and critical reports reach the owner; the kernel says which channel each notice uses. */}
                   <Badge tone={n.channel === "owner" ? "amber" : "slate"}>{n.channel === "owner" ? "owner channel" : n.channel === "console" ? "Console only" : "—"}</Badge>
                   <a href={String(n.link ?? "").replace(/^.*#/, "#")} className="text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Open →</a>
                 </div>
                 <ul className="mt-1.5 space-y-1 pl-4 text-[11px] leading-relaxed text-slate-400">
-                  {(Array.isArray(n.lines) ? n.lines : []).slice(0, 8).map((l: string, i: number) => <li key={i} className="list-disc break-words">{l}</li>)}
+                  {(Array.isArray(n.lines) ? n.lines : []).slice(0, 8).map((l: string, i: number) => <li key={i} className="list-disc wrap-break-word">{l}</li>)}
                 </ul>
               </div>
             ))}
@@ -91,7 +91,7 @@ export default function Command() {
             <div className="text-[11px] text-slate-400 mt-0.5">
               Treasury: <strong className={`mono ${mtb.treasury_source === "placeholder" ? "text-slate-500" : "text-emerald-300"}`}>{typeof mtb.treasury_reserve_usd === "number" ? `$${mtb.treasury_reserve_usd.toFixed(2)}${mtb.treasury_source === "placeholder" ? " (placeholder)" : ""}` : "—"}</strong> · Burn: <strong className="mono text-amber-300">{typeof mtb.infra_burn_cost_24h === "number" ? `$${mtb.infra_burn_cost_24h.toFixed(2)}/day` : "—"}</strong> · Runway: <strong className="mono text-cyan-300">{typeof mtb.runway_days === "number" ? `${Math.floor(mtb.runway_days)} Days` : "—"}</strong> · Power: <strong className="mono text-emerald-400">{mtb.power_mode ? String(mtb.power_mode).toUpperCase() : "—"}</strong>
             </div>
-            <div className="text-[11px] text-slate-400 mt-0.5 break-words">
+            <div className="text-[11px] text-slate-400 mt-0.5 wrap-break-word">
               Reason: <span className="text-slate-300">{typeof pm.reason === "string" ? pm.reason : "not measured"}</span> · Blocked in this mode: <strong className="mono text-slate-200">{blocked === null ? "not measured" : blocked.length === 0 ? "no capability" : blocked.join(", ")}</strong>{typeof pm.ai_budget?.ratio === "number" && pm.ai_budget.ratio < 1 ? <> · AI requests at <strong className="mono text-amber-300">{Math.round(pm.ai_budget.ratio * 100)}%</strong></> : null}
             </div>
           </div>

@@ -23,11 +23,11 @@ function MetricRow({ m }: { m: any }) {
         <span className="font-semibold text-slate-200">{m.label}</span>
         <span className="mono text-slate-300">{pct === null ? "—" : `${pct}%`}</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-[4px] bg-white/[0.05]" role="progressbar" aria-label={m.label} aria-valuenow={m.today ?? undefined} aria-valuemin={0} aria-valuemax={m.limit}>
+      <div className="h-2 w-full overflow-hidden rounded-[4px] bg-white/5" role="progressbar" aria-label={m.label} aria-valuenow={m.today ?? undefined} aria-valuemin={0} aria-valuemax={m.limit}>
         {pct !== null && <div className="h-full rounded-r-[4px]" style={{ width: `${Math.min(100, Math.max(pct, m.today > 0 ? 1 : 0))}%`, background: tone(pct) }} />}
       </div>
       {m.error ? (
-        <div className="break-words text-[10px] text-amber-300">not readable: {m.error}</div>
+        <div className="wrap-break-word text-[10px] text-amber-300">not readable: {m.error}</div>
       ) : (
         <div className="mono text-[10px] text-slate-500">{fmt(m.today)} / {fmt(m.limit)} {m.unit} per {m.limit ? "day" : ""}</div>
       )}

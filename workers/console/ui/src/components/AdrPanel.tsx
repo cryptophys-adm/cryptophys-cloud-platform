@@ -24,7 +24,7 @@ function ProgressBar({ e }: { e: any }) {
   if (!seg) return <span className="mono text-[12px] text-slate-500">{MISSING}</span>;
   return (
     <div className="flex min-w-0 items-center gap-2" aria-label={`${seg.percent}% complete, ${seg.proven}% proven, ${seg.asserted}% asserted`}>
-      <div className="flex h-2 w-24 shrink-0 overflow-hidden rounded-full bg-white/[0.06] sm:w-32">
+      <div className="flex h-2 w-24 shrink-0 overflow-hidden rounded-full bg-white/6 sm:w-32">
         <div data-adr-seg="proven" className="h-full bg-emerald-400/80" style={{ width: `${seg.proven}%` }} />
         <div data-adr-seg="asserted" className="adr-hatch h-full" style={{ width: `${seg.asserted}%` }} />
       </div>
@@ -41,7 +41,7 @@ function OwnerActions({ actions }: { actions: any[] }) {
       {actions.map((a, i) => {
         const link = ownerLink(a);
         return (
-          <li key={i} className="break-words">
+          <li key={i} className="wrap-break-word">
             <span className="text-slate-200">{shown(a?.text)}</span>
             <span className="text-slate-500"> · {OWNER_WAITING} → </span>
             {link ? <a className="text-cyan-300 hover:underline" href={link.href}>{link.label}</a>
@@ -59,8 +59,8 @@ function Refs({ refs }: { refs: unknown }) {
   return (
     <span className="flex flex-wrap gap-1">
       {list.slice(0, 6).map((r, i) => r.href
-        ? <a key={i} href={r.href} className="mono break-all rounded border border-white/10 px-1.5 text-[10px] text-cyan-300 hover:border-cyan-400/40">{r.text}</a>
-        : <span key={i} className="mono break-all rounded border border-white/10 px-1.5 text-[10px] text-slate-400">{r.text}</span>)}
+        ? <a key={i} href={r.href} className="mono break-all rounded-sm border border-white/10 px-1.5 text-[10px] text-cyan-300 hover:border-cyan-400/40">{r.text}</a>
+        : <span key={i} className="mono break-all rounded-sm border border-white/10 px-1.5 text-[10px] text-slate-400">{r.text}</span>)}
       {list.length > 6 && <span className="text-[10px] text-slate-500">+{list.length - 6}</span>}
     </span>
   );
@@ -110,8 +110,8 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
                       <span className={clsx("text-[11px]", MARK_TONE[phaseMark(p?.state)])}>{MARK[phaseMark(p?.state)]} {phaseLabel(p?.state)}</span>
                       {p?.drift && <Badge tone="amber">{DRIFT_LABEL}</Badge>}
                     </div>
-                    <div className="mt-0.5 break-words text-[12px] text-slate-300">{shown(p?.title)}</div>
-                    {typeof p?.reason === "string" && p.reason && <div className="mt-0.5 break-words text-[11px] text-slate-500">{p.reason}</div>}
+                    <div className="mt-0.5 wrap-break-word text-[12px] text-slate-300">{shown(p?.title)}</div>
+                    {typeof p?.reason === "string" && p.reason && <div className="mt-0.5 wrap-break-word text-[11px] text-slate-500">{p.reason}</div>}
                     {typeof p?.earliest === "string" && <div className="mt-0.5 text-[11px] text-slate-500">earliest {utcMinute(p.earliest)}</div>}
                     <div className="mt-1"><Refs refs={p?.refs} /></div>
                   </li>
@@ -122,12 +122,12 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
         )}
       </Line>
       <Line label="Blockers">
-        {blockers.length === 0 ? <span className="text-slate-500">{MISSING}</span> : <ul className="list-disc space-y-0.5 pl-4">{blockers.map((b, i) => <li key={i} className="break-words">{String(b)}</li>)}</ul>}
+        {blockers.length === 0 ? <span className="text-slate-500">{MISSING}</span> : <ul className="list-disc space-y-0.5 pl-4">{blockers.map((b, i) => <li key={i} className="wrap-break-word">{String(b)}</li>)}</ul>}
       </Line>
-      <Line label="Next step">{next ? <span className="break-words"><span className="mono text-slate-100">{shown(next.phase)}</span>: {shown(next.text)}</span> : <span className="text-slate-500">{MISSING}</span>}</Line>
+      <Line label="Next step">{next ? <span className="wrap-break-word"><span className="mono text-slate-100">{shown(next.phase)}</span>: {shown(next.text)}</span> : <span className="text-slate-500">{MISSING}</span>}</Line>
       <Line label="Waiting for owner"><OwnerActions actions={arr((d ?? e)?.owner_actions)} /></Line>
       {(d?.stale === true || (!d && e?.stale === true)) && <Line label="Data"><span className="text-amber-200">{staleLabel(d?.stale_sources)}</span></Line>}
-      {arr(d?.drift).length > 0 && <Line label={DRIFT_LABEL}>{arr(d.drift).map((x, i) => <div key={i} className="mono break-words text-[11px] text-amber-200">{shown(x?.phase)} · {shown(x?.kind)} · {shown(x?.doc_ref)}</div>)}</Line>}
+      {arr(d?.drift).length > 0 && <Line label={DRIFT_LABEL}>{arr(d.drift).map((x, i) => <div key={i} className="mono wrap-break-word text-[11px] text-amber-200">{shown(x?.phase)} · {shown(x?.kind)} · {shown(x?.doc_ref)}</div>)}</Line>}
       <Line label="Last change">
         <span className="mono">{lastChange(e)}</span>
         {arr(d?.history).length > 1 && (
@@ -137,7 +137,7 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
         )}
       </Line>
       <Line label={`Explanation (${explanationSource(explanation)})`}>
-        <p className="break-words leading-relaxed">{shown(explanation?.teks)}</p>
+        <p className="wrap-break-word leading-relaxed">{shown(explanation?.teks)}</p>
         <div className="mt-1"><Refs refs={explanation?.rujukan} /></div>
       </Line>
     </div>
@@ -154,7 +154,7 @@ function AdrRow({ e, open }: { e: any; open: boolean }) {
         <div className="flex flex-wrap items-center gap-2">
           {open ? <ChevronDown className="h-3.5 w-3.5 text-slate-500" /> : <ChevronRight className="h-3.5 w-3.5 text-slate-500" />}
           <span className="mono text-[13px] font-semibold text-cyan-200">{shown(e?.adr)}</span>
-          <span className="min-w-0 break-words text-[13px] text-slate-100">{shown(e?.title)}</span>
+          <span className="min-w-0 wrap-break-word text-[13px] text-slate-100">{shown(e?.title)}</span>
           {isDeferred(e) && <Badge tone="amber">deferred</Badge>}
           {drift !== null && drift > 0 && <Badge tone="amber">{DRIFT_LABEL} · {drift}</Badge>}
           {e?.stale === true && <Badge tone="amber">stale data</Badge>}
@@ -162,7 +162,7 @@ function AdrRow({ e, open }: { e: any; open: boolean }) {
         <div className="mt-2 grid gap-2 pl-5 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1.2fr)] sm:items-center sm:gap-4">
           <div><Badge tone={statusTone(e)}>{statusLabel(e)}</Badge></div>
           <ProgressBar e={e} />
-          <div className="min-w-0 break-words text-[12px] text-slate-400">
+          <div className="min-w-0 wrap-break-word text-[12px] text-slate-400">
             <span className="text-[10px] uppercase tracking-widest text-slate-500">Next </span>
             {e?.next_step ? <><span className="mono text-slate-200">{shown(e.next_step.phase)}</span>: {shown(e.next_step.text)}</> : MISSING}
             {waiting > 0 && <span className="ml-2 text-amber-200">· {OWNER_WAITING}: {waiting}</span>}
