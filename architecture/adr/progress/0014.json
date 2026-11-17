@@ -3,8 +3,8 @@
   "adr": "0014",
   "title": "The evolution loop",
   "adr_file": "architecture/adr/0014-evolution-loop.md",
-  "lifecycle": "deferred",
-  "lifecycle_note": "Accepted and deferred by the owner on 2026-11-12 until ADR-0012 phase 5; E1 runs on the Forge since the cut-over.",
+  "lifecycle": "accepted",
+  "lifecycle_note": "Deferred on 2026-11-12 until ADR-0012 phase 5; the owner lifted the deferral on 2026-11-17 (\"aktifkan evolver sekarang termasuk jalur balik\", §11). Build order: docs/design/EVOLVER.md §9.",
   "phases": [
     {
       "id": "E1",
@@ -48,9 +48,44 @@
         "agent_id": "evolver"
       },
       "built": [
-        "workers/control-plane-shared/src/evolution-limits.ts"
+        "workers/control-plane-shared/src/evolution-limits.ts",
+        "workers/ai-kernel/src/evolver.ts",
+        "workers/forge/src/evolution.ts",
+        "docs/design/EVOLVER.md"
       ],
-      "note": "limits only; no evolver agent"
+      "note": "built (EVOLVER.md V4, V5); proven once the owner clicks its register_privileged_agent",
+      "next": "The owner's click on register_privileged_agent evolver"
+    },
+    {
+      "id": "C1",
+      "title": "Council tasks become intents",
+      "depends_on": [
+        "E0"
+      ],
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "evolution.intent_recorded"
+      },
+      "built": [
+        "workers/ai-kernel/src/evolution-intake.ts",
+        "docs/design/EVOLVER.md"
+      ]
+    },
+    {
+      "id": "C2",
+      "title": "Return path to xauusd (council.decisions.read)",
+      "depends_on": [
+        "C1"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no audit record of a council.decisions.read call yet"
+      },
+      "built": [
+        "workers/ai-kernel/src/council-decisions.ts",
+        "docs/design/EVOLVER.md"
+      ],
+      "next": "xauusd declares council.decisions.read for xauusd-moderator"
     },
     {
       "id": "E3",

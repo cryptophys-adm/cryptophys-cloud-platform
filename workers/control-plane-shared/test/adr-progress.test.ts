@@ -197,7 +197,9 @@ test("AP4. the lifecycle agrees with the ADR's Status line", () => {
     assert.equal(m.lifecycle === "superseded", /Superseded/.test(line), `${m.adr}: superseded only when the Status line says "Superseded"`);
     if (m.lifecycle === "accepted" || m.lifecycle === "deferred") assert.match(line, /^- \*\*Status:\*\* Accepted/, `${m.adr}: an accepted ADR`);
   }
-  assert.equal(byId("0014").lifecycle, "deferred");
+  // ADR-0014 was deferred until the owner lifted it on 2026-11-17 (§11, "aktifkan evolver sekarang").
+  assert.equal(byId("0014").lifecycle, "accepted");
+  assert.doesNotMatch(statusLine(byId("0014").adr_file!), /\*\*deferred\*\*/i);
   assert.equal(byId("0002").lifecycle, "accepted");
 });
 
