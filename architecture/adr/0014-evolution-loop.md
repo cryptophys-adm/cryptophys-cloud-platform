@@ -274,7 +274,7 @@ Owner, 2026-11-17: "aktifkan evolver sekarang termasuk jalur balik" (activate th
   - §3, guard paths under unanimous consensus with no owner click ("Tetap §3 lama"). Until E3 is built, the evolver proposes routine paths only (`evolution-limits.ts`), so §3 does not yet come into play.
   - The model (`gpt-oss` on Workers AI only), the diff limits, the quiet conditions, the freeze and every refusal of §3.
 - **New.**
-  - **A kill switch for the evolver alone**, `evolver_controls.mode` (`on` or `off`), which only the owner sets. The platform kill switch and mode `shadow` stop it as well.
+  - **A kill switch for the evolver alone**, `evolver_controls.mode` (`on` or `off`). Only the owner turns it on; any operator may turn it off as a brake. The platform kill switch and mode `shadow` stop it as well.
   - **At most 3 AI calls per cycle.**
   - **Until E3 is built**, a deployed evolution is recorded as deployed but unmeasured. The deploy's health check and automatic rollback stay its protection.
 

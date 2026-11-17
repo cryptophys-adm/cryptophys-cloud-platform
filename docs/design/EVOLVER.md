@@ -56,7 +56,7 @@
 
 **`evolution_updates`**: the return path's log, append-only. One row per state change of a council intent: `update_id`, `intent_id`, `proposal_id`, `state`, `reason`, `refs_json` (evolution, change request, merge, deploy), `created_at`.
 
-**`evolver_controls`**: one row, `mode` = `on` or `off`, with `updated_by` and `updated_at`. Only the owner changes it (§7, the kill switch).
+**`evolver_controls`**: one row, `mode` = `on` or `off`, with `updated_by` and `updated_at`. It is the kill switch (§7): only the owner turns it on; any operator may turn it off as a brake.
 
 ## 4. The intake
 
@@ -71,15 +71,13 @@ The ADR Steward pattern applies: a pass in the AI Kernel reads, validates and re
   - `state` is the accept (`handoff_pending`);
   - `origin.side` is `nexus` and `chosen_by` names the owner;
   - the body has no price field. The kernel drops price fields as `signals.observe` does.
-- **Other kinds.**
-  - A `policy_parameter` is xauusd's own (replay gate, auto-live, auto-rollback). The kernel records only its later state updates for the timeline.
-  - `no_change` is recorded and nothing else.
+- **Other kinds and later states are not intents.** A `policy_parameter` is xauusd's own (replay gate, auto-live, auto-rollback), `no_change` changes nothing, and a later state update of a proposal is not a new task.
 - **Triage**, deterministic:
   - `target_repo` comes from `origin.repo`;
   - the platform repository → `queued`;
   - any other repository → `waiting_external`, with reason `adr_0018_x1_x2` (D2);
   - a spec over 8 KB or a missing title → `rejected`, with reason `invalid_spec`.
-- **Visible.** Each intent is an item in Cerebrum's "Needs you" inbox as information, not as a click. The owner already chose it in Nexus. The Console's Evolution page (§9 V6) lists all intents.
+- **Visible.** `GET /v1/evolution` lists every intent from V2 on. The Console's Evolution page and an information item in Cerebrum's "Needs you" inbox follow in V6. They need no click, because the owner already chose the task in Nexus.
 
 ### 4.2 Platform intents (E0 and the census)
 
@@ -170,7 +168,7 @@ The cycle:
 | **Merge and deploy.** Through the Supervisor, the council and the Policy Engine; a destructive deploy keeps the owner's click | Unchanged |
 | **Cadence.** One in flight, one started per 4 hours, 400 lines, 20 files | `evolution-limits.ts` (D3) |
 | **AI budget.** At most 3 calls per cycle, so at most 18 a day; counted on the Metabolism page | The evolver |
-| **Kill switch.** `evolver_controls.mode`, which only the owner sets: Console Owner page, `POST /v1/evolution/mode`, owner role. The platform kill switch and mode `shadow` also stop it | The evolver checks all three at every alarm |
+| **Kill switch.** `evolver_controls.mode` through `POST /v1/evolution/mode`: `off` is a brake any operator may pull; `on` needs the owner and the confirmation `EVOLVER ON`. The platform kill switch and mode `shadow` also stop it | The evolver checks all three at every alarm |
 | **Audit.** Every intent, attempt, refusal, write, merge, deploy and state update | The audit chain |
 | **No trading, no funds.** An evolution never adds a path to a trading action without the owner's click, and never moves funds | ADR-0014 §3 refusals; ADR-0009; ADR-0020 |
 
@@ -181,7 +179,7 @@ The cycle:
 - **Request:** `{cursor}`.
 - **Response:** `{updates: [typed_proposal.v1 state update], next_cursor}`, at most 20 per call, oldest first. It returns only updates for proposals that the caller's origin handed off.
 - **Each update carries:**
-  - `proposal_id` and `state`. The states are `received`, `queued`, `waiting_external`, `rejected`, `in_progress`, `proposed`, `merged`, `deployed`, `deployed_unmeasured`, `closed`, `refused`, `unfit` and `reverted`;
+  - `proposal_id` and `state`. The states are `queued`, `waiting_external`, `rejected`, `in_progress`, `proposed`, `merged`, `deployed`, `deployed_unmeasured`, `closed`, `refused`, `unfit` and `reverted`;
   - `reason`;
   - `refs`: `intent_id`, `evolution_id`, `cr_id`, `merge_sha`, `deploy_ref`;
   - `at`.
