@@ -41,6 +41,8 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   register_principal: { class: "critical", target: "agent", description: "Register an external agent principal" },
   // ADR-0013 phase 3: self-registration from the DNA census (owner decisions 2026-11-09).
   register_agent: { class: "routine", target: "agent", description: "Register an agent its Worker's DNA declares (no privileged capability)" },
+  // ADR-0014 §11 (docs/design/EVOLVER.md §8, 2026-11-17): the census finding agent_capabilities_changed had no way out.
+  update_agent_capabilities: { class: "routine", target: "agent", description: "Set a registered agent's capabilities to what its Worker's DNA now declares (no privileged capability; within its origin's ceiling)" },
   register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
   // Owner 2026-11-15 ("Aksi retire_engine"): the mirror of register_engine, for an engine its Worker's DNA no longer declares.
   retire_engine: { class: "routine", target: "service", description: "Retire an AI engine (task) its Worker's DNA no longer declares (status retired; no data deleted)" },
@@ -160,6 +162,28 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
       if (over.length || (p.action !== "register_agent" && privileged.length === 0)) return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ") || "privileged registration"}` };
     }
     return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
+  }
+  // update_agent_capabilities: the checks of register_agent on an agent that is already registered on that host. A set
+  // that holds a privileged capability is never routine; it needs a registration the owner clicks (not this action).
+  if (p.action === "update_agent_capabilities") {
+    const agent = e.agents[p.target];
+    if (!agent) return { vote: "reject", reason: "agent is not registered" };
+    const host = String(p.params.service ?? "");
+    if (agent.host_worker !== host) return { vote: "reject", reason: `agent is registered on ${agent.host_worker}, not ${host || "(none)"}` };
+    const reg = e.registry[host];
+    if (!reg || !ACTIVE_SERVICE_STATUSES.has(reg.status)) return { vote: "reject", reason: `host Worker ${host || "(none)"} is not an active registered service` };
+    const caps = Array.isArray(p.params.capabilities) ? p.params.capabilities.map(String) : null;
+    if (!caps || caps.length === 0) return { vote: "reject", reason: "capabilities must be a non-empty list" };
+    const forbidden = forbiddenCapabilities(caps);
+    if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
+    const privileged = privilegedCapabilities(caps);
+    if (privileged.length) return { vote: "reject", reason: `privileged capabilities are never updated as routine: ${privileged.join(", ")}` };
+    const origin = EXTERNAL_ORIGINS.find((o) => o.services.includes(host));
+    if (origin) {
+      const over = externalCeilingViolations({ id: p.target, tier_max: Number(p.params.tier_max), capabilities: caps }, origin);
+      if (over.length) return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ")}` };
+    }
+    return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "capability update is consistent" };
   }
   // retire_engine mirrors register_engine: the same checks every voter can make; the executor proves the DNA side.
   if (p.action === "register_engine" || p.action === "retire_engine") {

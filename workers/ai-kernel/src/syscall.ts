@@ -22,6 +22,7 @@ import { propose as consensusPropose } from "./consensus.ts";
 import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
 import { observeAdr } from "./adr-observe.ts";
+import { readCouncilDecisions } from "./council-decisions.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -839,6 +840,8 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "doctrine.status": (env, input) => doctrineStatus(env.DB, input),
   // ADR Steward (docs/design/ADR-STEWARD.md §4.2): the bundled ADR progress manifests evaluated against D1, read only.
   "adr.observe": (env, input) => observeAdr(env, input),
+  // ADR-0014 §11, docs/design/EVOLVER.md §8: the return path, scoped to the calling agent's origin.
+  "council.decisions.read": (env, input, agentId) => readCouncilDecisions(env, agentId, input),
 };
 
 /**

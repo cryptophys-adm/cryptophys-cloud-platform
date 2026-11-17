@@ -107,6 +107,7 @@ const ACTION_TEXT: Record<string, string> = {
   resume_agent: "resume the agent",
   retire_agent: "dismantle the idle agent",
   register_principal: "register an external agent for",
+  update_agent_capabilities: "set, as its DNA declares, the capabilities of the agent",
   register_agent: "register the new agent",
   register_privileged_agent: "register the new privileged agent",
   register_engine: "register a new AI engine on",

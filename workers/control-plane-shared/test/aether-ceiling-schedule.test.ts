@@ -136,12 +136,17 @@ test("AC2. one step beyond today's grants is refused", () => {
   assert.equal(organs[0].agents.length, 4);
 });
 
-test("AC3. xauusd's ceiling is unchanged; Aether's per-agent grants do not leak to it", () => {
+test("AC3. xauusd's ceiling is EXTERNAL_CEILING for every agent but the moderator (council.decisions.read, 2026-11-17); Aether's grants do not leak to it", () => {
   assert.deepEqual(EXTERNAL_CEILING, { tier_max: 1, capabilities: ["signals.observe", "reports.publish", "memory.recall", "memory.remember"] });
-  assert.equal(XAUUSD.ceiling, undefined);
-  for (const id of [undefined, "hud-prophet", "knowledge-council", "aether-curator"]) {
+  // ADR-0014 §11 (docs/design/EVOLVER.md §8): the return path is the one addition, to one named agent, tier 0 read only.
+  assert.deepEqual(XAUUSD.ceiling!.capabilities, EXTERNAL_CEILING.capabilities);
+  assert.deepEqual(Object.keys(XAUUSD.ceiling!.agents), ["xauusd-moderator"]);
+  assert.deepEqual(Object.keys(XAUUSD.ceiling!.proposals), []);
+  assert.deepEqual(externalCeilingFor(XAUUSD, "xauusd-moderator"), { tier_max: 1, capabilities: [...EXTERNAL_CEILING.capabilities, "council.decisions.read"], proposals: [] });
+  for (const id of [undefined, "hud-prophet", "xauusd-reasoner", "knowledge-council", "aether-curator"]) {
     assert.deepEqual(externalCeilingFor(XAUUSD, id), { tier_max: 1, capabilities: EXTERNAL_CEILING.capabilities, proposals: [] }, String(id));
   }
+  assert.deepEqual(externalCeilingViolations({ id: "hud-prophet", tier_max: 1, voter: false, capabilities: ["council.decisions.read"] }, XAUUSD), ["capability council.decisions.read"], "no other xauusd agent may read the return path");
   const xau = (id: string, capabilities: string[]) => externalCeilingViolations({ id, tier_max: 1, voter: false, capabilities }, XAUUSD);
   assert.deepEqual(xau("hud-x", [...EXTERNAL_CEILING.capabilities]), []);
   assert.deepEqual(xau("knowledge-council", ["consensus.propose", "doctrine.status"]), ["capability consensus.propose", "capability doctrine.status"]);

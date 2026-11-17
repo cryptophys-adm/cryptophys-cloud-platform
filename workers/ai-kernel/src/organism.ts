@@ -140,6 +140,49 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
   return { agent_id: p.target, host_worker: service, capabilities: caps, tier_max: gene.tier_max, privileged, seat: gene.voter ? "asks for a seat: admit_voter follows" : "none" };
 }
 
+/**
+ * ADR-0014 §11 (docs/design/EVOLVER.md §8, 2026-11-17): set a registered agent's capabilities to what its DNA now
+ * declares (census finding agent_capabilities_changed). The gene comes from the latest census, as for a registration;
+ * the host must be unchanged, no capability may be privileged (that needs a registration the owner clicks), and an
+ * external organ's gene is held to its origin's ceiling again here. Status, seat and tier are not touched.
+ */
+async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
+  const census = await currentCensus(env, p.params.main_sha);
+  requireCensusFinding(census, "agent_capabilities_changed", p.target);
+  const declared = findAgentGene(census, p.target);
+  if (!declared || !declared.gene.capabilities || declared.gene.tier_max === undefined) throw new Error("agent_not_in_dna");
+  const { service, gene } = declared;
+  const caps = gene.capabilities!;
+  if (String(p.params.service ?? "") !== service) throw new Error("host_differs_from_dna");
+  if (!Array.isArray(p.params.capabilities) || !sameSet(p.params.capabilities.map(String), caps)) throw new Error("capabilities_differ_from_dna");
+  if (caps.length === 0 || forbiddenCapabilities(caps).length) throw new Error("forbidden_capability");
+  if (privilegedCapabilities(caps).length) throw new Error("privileged_needs_owner");
+  if (declared.origin !== undefined) {
+    const origin = EXTERNAL_ORIGINS.find((o) => o.origin === declared.origin);
+    if (!origin || !origin.services.includes(service)) throw new Error("external_origin_unknown");
+    if (externalCeilingViolations(gene, origin).length) throw new Error("external_ceiling");
+  }
+  const row = await env.DB.prepare("SELECT host_worker, capabilities_json FROM agents WHERE agent_id = ?").bind(p.target).first<{ host_worker: string; capabilities_json: string }>();
+  if (!row) throw new Error("agent_not_registered");
+  if (row.host_worker !== service) throw new Error("host_differs_from_dna");
+  let previous: string[] = [];
+  try { const v = JSON.parse(row.capabilities_json); if (Array.isArray(v)) previous = v.map(String); } catch { previous = []; }
+  if (sameSet(previous, caps)) throw new Error("capabilities_unchanged");
+  await requireActiveHost(env, service);
+  try {
+    await appendAuditEventWithMutation(env.DB, {
+      event_type: "agent.capabilities_updated", actor, subject: `agent:${p.target}`, outcome: "updated",
+      payload: { proposal_id: proposalId, host_worker: service, previous, capabilities: caps, main_sha: census.main_sha },
+    }, () => env.DB.prepare(
+      "UPDATE agents SET capabilities_json = ?, updated_by = ?, updated_at = ? WHERE agent_id = ? AND host_worker = ? AND capabilities_json = ?",
+    ).bind(JSON.stringify(caps), actor, nowIso(), p.target, service, row.capabilities_json));
+  } catch (err) {
+    if (err instanceof AuditMutationConflictError) throw new Error("agent_changed_concurrently");
+    throw err;
+  }
+  return { agent_id: p.target, host_worker: service, previous, capabilities: caps };
+}
+
 async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
   const census = await currentCensus(env, p.params.main_sha);
   const task = String(p.params.task ?? "");
@@ -306,6 +349,8 @@ export async function executeRegistration(
       return registerAgent(env, proposalId, p, actor);
     case "register_engine":
       return registerEngine(env, proposalId, p, actor);
+    case "update_agent_capabilities":
+      return updateAgentCapabilities(env, proposalId, p, actor);
     case "retire_engine":
       return retireEngine(env, proposalId, p, actor);
     case "admit_voter":
@@ -328,6 +373,12 @@ export function proposalFor(
     if (!d?.gene.capabilities) return null;
     const action = privilegedCapabilities(d.gene.capabilities).length ? "register_privileged_agent" : "register_agent";
     return { action, target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
+  }
+  // A capability change that stays routine (no privileged capability); a privileged one waits for the owner as a finding.
+  if (finding.kind === "agent_capabilities_changed") {
+    const d = findAgentGene(census, finding.subject);
+    if (!d?.gene.capabilities || privilegedCapabilities(d.gene.capabilities).length) return null;
+    return { action: "update_agent_capabilities", target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
   }
   if (finding.kind === "unregistered_engine") {
     const i = finding.subject.lastIndexOf(":");

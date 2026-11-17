@@ -57,7 +57,8 @@ export interface Dna {
 const ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const SERVICE = /^(cryptophys|xauusd)-[a-z0-9-]{2,60}$/;
 const BINDING = /^[A-Z][A-Z0-9_]{1,62}$/;
-const CAPABILITY = /^[a-z]+\.[a-z_]+$/;
+// A capability id: two or three dot-separated segments (council.decisions.read, ADR-0014 §11, has three).
+const CAPABILITY = /^[a-z]+\.[a-z_]+(\.[a-z_]+)?$/;
 const TASK = /^[a-z][a-z0-9_]{2,62}$/;
 
 /**
@@ -189,10 +190,26 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
   }),
 });
 
+/**
+ * xauusd's ceiling (ADR-0014 §11, docs/design/EVOLVER.md §8; owner 2026-11-17: "aktifkan evolver sekarang termasuk jalur
+ * balik"). Every xauusd agent keeps exactly EXTERNAL_CEILING. Only the council's moderator, which hands owner-accepted
+ * council tasks to the platform, may also read their state back (council.decisions.read, tier 0, read only). No seat,
+ * no proposal, tier 1, as before.
+ */
+export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
+  tier_max: EXTERNAL_CEILING.tier_max,
+  capabilities: EXTERNAL_CEILING.capabilities,
+  agents: Object.freeze({
+    "xauusd-moderator": Object.freeze([...EXTERNAL_CEILING.capabilities, "council.decisions.read"]),
+  }),
+  proposals: Object.freeze({}),
+});
+
 export const EXTERNAL_ORIGINS: readonly ExternalOrigin[] = Object.freeze([
   Object.freeze({
     origin: "xauusd", schema: "xauusd-organism.v1", binding: "EXT_ORGANISM_XAUUSD",
     services: Object.freeze(["xauusd-ai-trading-assistant", "xauusd-fundamental-news-ingestion", "xauusd-tradingview-pull-adapter", "xauusd-nexus-dashboard", "xauusd-omega"]),
+    ceiling: XAUUSD_CEILING,
   }),
   // Owner 2026-11-14: Aether's DNA, read like xauusd's: cryptophys-aether's OrganismDna.dna() over EXT_ORGANISM_AETHER.
   Object.freeze({

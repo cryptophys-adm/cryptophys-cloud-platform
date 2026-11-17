@@ -65,7 +65,7 @@ async function setPolicyParameter(env: SyscallEnv, proposalId: string, decisionI
 }
 
 /** ADR-0013 phase 3 registrations: routine ones run in phase 2's set, seats and privileged agents after an owner click. */
-const ROUTINE_REGISTRATIONS = ["register_agent", "register_engine", "retire_engine", "set_policy_parameter"];
+const ROUTINE_REGISTRATIONS = ["register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "set_policy_parameter"];
 const CRITICAL_REGISTRATIONS = ["register_privileged_agent", "admit_voter"];
 
 
@@ -174,6 +174,7 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
       if (!env.DRIFT) throw new Error("drift_binding_missing");
       return await env.DRIFT.observeForConsensus(proposalId, decisionId);
     case "register_agent":
+    case "update_agent_capabilities":
     case "register_engine":
     case "retire_engine":
       return await executeRegistration(env, proposalId, decisionId, p, actor, (id) => canVote(env, id));
