@@ -297,3 +297,20 @@ test("V9. wiring: EvolverAgent is bound with migration v6 (additive), FORGE_EVOL
   assert.deepEqual([CAPABILITIES["code.read"].tier, CAPABILITIES["code.propose"].tier], [0, 2]);
   assert.ok(!/child_process|fetch\(/.test(read("workers/ai-kernel/src/evolver.ts")), "no process, no network of its own");
 });
+
+test("V10. the control-plane deploy smoke: the evolver at tier 2 is the one agent allowed above tier 1 (owner 2026-11-17)", async () => {
+  // dep_bd08ef6e (22:53): the smoke required no agent above tier 1, the owner had registered the tier 2 evolver at 22:31,
+  // so the deploy was restored. Owner: "Hanya evolver boleh tier 2". The workflow and the native table say the same.
+  const { SMOKE_TABLE } = await import("../../deployment-orchestrator/src/native-smoke.ts");
+  const probe = SMOKE_TABLE["control-plane"].probes.find((p) => p.id === "control-plane:kernel_supervisor")!;
+  assert.match(probe.jq!, /select\(\.tier_max >= 2 and \(\.agent_id != "evolver" or \.tier_max != 2\)\)\] \| length == 0/);
+  assert.ok(read(".github/workflows/deploy-control-plane.yml").includes(probe.jq!), "the workflow applies the same filter");
+  const sup = { agent_id: "supervisor", tier_max: 1, status: "enabled" };
+  const body = (...extra: unknown[]) => ({ agents_enabled: true, agents: [sup, ...extra] });
+  const ctx = { service: KERNEL, tag: "t", now: NOW };
+  assert.equal(probe.check!(body({ agent_id: "evolver", tier_max: 2, status: "enabled" }), ctx), true);
+  assert.equal(probe.check!(body({ agent_id: "evolver", tier_max: 3 }), ctx), false, "never above tier 2");
+  assert.equal(probe.check!(body({ agent_id: "someone-else", tier_max: 2 }), ctx), false, "no other agent above tier 1");
+  assert.equal(probe.check!(body(), ctx), true);
+  assert.equal(probe.check!({ agents_enabled: true, agents: [] }, ctx), false, "the supervisor is still required");
+});

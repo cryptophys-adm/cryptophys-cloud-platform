@@ -277,7 +277,7 @@ jobs:
             | jq -e '[.result.tools[].name] | index("platform_status") != null and index("set_agents_enabled") != null' >/dev/null \
             || { echo "::error::Kernel MCP tools/list did not answer"; exit 1; }
           api GET "${kernel}/v1/kernel" \
-            | jq -e '.agents_enabled == true and ([.agents[] | select(.agent_id == "supervisor" and .tier_max == 1 and .status == "enabled")] | length == 1) and ([.agents[] | select(.tier_max >= 2)] | length == 0)' >/dev/null \
+            | jq -e '.agents_enabled == true and ([.agents[] | select(.agent_id == "supervisor" and .tier_max == 1 and .status == "enabled")] | length == 1) and ([.agents[] | select(.tier_max >= 2 and (.agent_id != "evolver" or .tier_max != 2))] | length == 0)' >/dev/null \
             || { echo "::error::Supervisor agent is not registered and enabled"; exit 1; }
           # ADR-0009: the consensus engine answers in a known mode (set by a person in the Console), and no
           # execution is stuck: nothing has been "executing" for more than 30 minutes.
