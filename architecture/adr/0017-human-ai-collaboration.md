@@ -9,6 +9,7 @@
   - ADR-0015 (the push hub);
   - ADR-0016 (vision, self-model, Strategist);
   - the Observer.
+- **Design:** `docs/design/HAIC-H0-H1.md` (H0, H1 and H1.5 Call for Councils; owner 2026-11-16: "setuju desain HAIC untuk awal").
 
 ## Context
 
