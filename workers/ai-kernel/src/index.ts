@@ -13,7 +13,7 @@
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata } from "../../control-plane-shared/src/http.ts";
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
-import { accessGate, actorOf, authenticate, identityAllowed, listConfigured, requireApprover, requireOperator } from "../../control-plane-shared/src/access.ts";
+import { accessGate, actorOf, authenticate, identityAllowed, isOwner, listConfigured, requireApprover, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { CAPABILITIES, getActivePrincipalByIdentity, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import {
   addAgentPrincipal, agentStatus, listActions, listAgents, revokeAgentPrincipal,
@@ -38,6 +38,8 @@ import { metabolismView } from "./metabolism-view.ts";
 import { meshView } from "./mesh-view.ts";
 import { visionView } from "./vision-view.ts";
 import { ADR_CACHE_CONTROL, adrDetailView, adrListView, validAdrId } from "./adr-view.ts";
+import { intakeEvolutionIntents } from "./evolution-intake.ts";
+import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-view.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -68,7 +70,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -143,6 +145,20 @@ export default {
         if (!validAdrId(adr[1])) return errorResponse(400, "invalid_request", "an ADR id is four digits");
         const one = await adrDetailView(env, adr[1]);
         return one.ok ? json(one.view, 200, { "cache-control": ADR_CACHE_CONTROL }) : errorResponse(one.status, one.error, one.detail);
+      }
+      // ADR-0014 §11 (docs/design/EVOLVER.md step V2): the evolution intents and the evolver's kill switch. Reading is open
+      // to operators; "off" is a brake any operator may pull; "on" needs the owner.
+      if (path === "/v1/evolution" && request.method === "GET") return json(await evolutionView(env.DB));
+      if (path === "/v1/evolution/mode") {
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        try {
+          return json(await setEvolverMode(env.DB, body.value.mode, operator.actor, isOwner(operator.identity, env), body.value.confirm, body.value.reason));
+        } catch (err) {
+          if (err instanceof EvolverModeError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
       }
       if (path === "/v1/consensus" && request.method === "GET") return json(await listProposals(env, limitParam(url)));
       if (path === "/v1/consensus/mode" && request.method === "POST") {
@@ -341,6 +357,11 @@ export default {
         console.error(JSON.stringify({ service: SERVICE, event: "adr_steward_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
+    // ADR-0014 §11 (docs/design/EVOLVER.md §4, step V2): record council tasks and the platform's own inventory findings
+    // as evolution intents, at every tick. It writes intents and their state updates only; it never acts.
+    ctx.waitUntil(intakeEvolutionIntents(env.DB, event.scheduledTime).then(() => undefined, (err) => {
+      console.error(JSON.stringify({ service: SERVICE, event: "evolution_intake_failed", message: String((err as Error)?.message ?? err) }));
+    }));
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
     let fullPass: Promise<void> = Promise.resolve();
     if (minute === 22 || minute === 52) {

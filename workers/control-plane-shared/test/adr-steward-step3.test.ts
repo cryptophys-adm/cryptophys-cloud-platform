@@ -259,8 +259,11 @@ test("AS5. AdrStewardAgent: bound, its DO migration v5 is additive and planned n
 
 test("AS6. migration 0075 is additive: the next number, two CREATE TABLE IF NOT EXISTS, never destructive, applies twice", () => {
   const files = list("workers/control-plane-migrations/").filter((f) => f.endsWith(".sql")).sort();
-  assert.equal(files.at(-1), MIGRATION, "the newest migration");
-  assert.equal(Number(MIGRATION.slice(0, 4)), Number(files.at(-2)!.slice(0, 4)) + 1, "the next free number");
+  // The newest migration when it merged (0076_evolution.sql followed it on 2026-11-17): the next free number then.
+  const at = files.indexOf(MIGRATION);
+  assert.ok(at > 0, "the migration exists");
+  assert.equal(Number(MIGRATION.slice(0, 4)), Number(files[at - 1].slice(0, 4)) + 1, "the next free number");
+  assert.ok(files.slice(at + 1).every((f) => Number(f.slice(0, 4)) > Number(MIGRATION.slice(0, 4))), "only later migrations follow it");
   const sql = read(`workers/control-plane-migrations/${MIGRATION}`);
   const statements = splitSqlStatements(sql);
   assert.deepEqual(statements.map((s) => /CREATE TABLE IF NOT EXISTS (\w+)/.exec(s)?.[1] ?? s.slice(0, 40)), ["adr_progress", "adr_progress_history"]);
