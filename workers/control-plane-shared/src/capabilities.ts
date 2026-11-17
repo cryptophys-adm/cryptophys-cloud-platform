@@ -33,6 +33,11 @@ export const CAPABILITIES: Record<string, Capability> = {
   // ADR-0014 §11, docs/design/EVOLVER.md §8 (owner 2026-11-17, "aktifkan evolver sekarang termasuk jalur balik"): the return
   // path. Only XAUUSD_CEILING grants it, to the council's moderator; EXTERNAL_CEILING is not widened.
   "council.decisions.read": { tier: 0, reversible: true, description: "Read the state updates of the council proposals the calling agent's origin handed off (read only)" },
+  // ADR-0014 §2 and §11, docs/design/EVOLVER.md §5-§6: the evolver's two capabilities. code.read reads canonical main
+  // (paths in the evolvable scope, bounded); code.propose hands one evolution's edits to the Forge, which re-checks
+  // everything and writes only evo/<id> of platform-work. Tier 2: registering an agent with it needs the owner's click.
+  "code.read": { tier: 0, reversible: true, description: "Read file paths and contents of canonical main in the evolvable scope (workers/, docs/; read only)" },
+  "code.propose": { tier: 2, reversible: true, description: "Hand one evolution's edits to the Forge, which writes one commit to evo/<id> of platform-work after its own checks", max_per_hour: 1 },
   "recovery.propose": { tier: 1, reversible: true, description: "Create a draft recovery plan; a human approver must approve it", max_per_hour: 6 },
   "reports.publish": { tier: 1, reversible: true, description: "Publish an advisory agent report to agent_reports", max_per_hour: 4 },
   "memory.remember": { tier: 1, reversible: true, description: "Store a bounded memory row in D1 and vector in Vectorize (learning: no rate limit)" },

@@ -5,6 +5,8 @@
 // canonical main's head and pushes it to `evo/<evolution_id>` of platform-work, and to no other ref. The work-repository
 // intake then opens `fg-evo-<evolution_id>` like any branch: full checks, guard-path reasons, test guard, consensus merge.
 // The Forge is the authority. Before it writes, in order, it checks:
+//   0. the caller: the evolver agent, with a Policy Engine allow for code.propose of the last five minutes, consumed
+//      here once (verifySyscallDecision, as every tier 1-2 syscall target does);
 //   1. the evolution id and the base SHA, and that the base is canonical main's head now;
 //   2. the switches: the evolver's own (evolver_controls.mode = on), the platform kill switch (agents_enabled) and the
 //      consensus mode (not shadow);
@@ -18,9 +20,10 @@
 // Every outcome is audited: forge.evolution_written (SHA, files, changed lines) or forge.evolution_refused (reasons).
 // Tokens are minted per call with a 120 s TTL, sent only in the Authorization header, never logged or returned.
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
+import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import {
-  EVOLUTION_ID, MAX_IN_FLIGHT, MIN_START_INTERVAL_HOURS, checkEdits, evolutionBranch, type EditedFile,
+  EVOLUTION_ID, EVOLVER_AGENT_ID, MAX_CHANGED_FILES, MAX_FILE_BYTES, MAX_IN_FLIGHT, MIN_START_INTERVAL_HOURS, checkEdits, evolutionBranch, pathRefusal, type EditedFile,
 } from "../../control-plane-shared/src/evolution-limits.ts";
 import type { ArtifactsReader, ArtifactsTreeEntry } from "./checks.ts";
 import { GitBackupError } from "./git-backup.ts";
@@ -179,7 +182,9 @@ async function cadenceRefusal(db: D1Database, nowMs: number): Promise<string | n
 
 // ---------------------------------------------------------------- propose
 
-export async function proposeEvolution(env: EvolutionEnv, input: EvolutionInput, fetchImpl: Fetch = (i, init) => fetch(i, init), nowMs = Date.now()): Promise<EvolutionResult> {
+export async function proposeEvolution(env: EvolutionEnv, agentId: string, decisionId: unknown, input: EvolutionInput, fetchImpl: Fetch = (i, init) => fetch(i, init), nowMs = Date.now()): Promise<EvolutionResult> {
+  if (agentId !== EVOLVER_AGENT_ID) throw new Error("not_the_evolver");
+  await verifySyscallDecision(env.DB, decisionId, agentId, "code.propose", nowMs);
   const evolution_id = typeof input.evolution_id === "string" ? input.evolution_id : "";
   const done = async (r: EvolutionResult): Promise<EvolutionResult> => {
     const { ok, outcome, ...payload } = r;
@@ -268,4 +273,57 @@ export async function proposeEvolution(env: EvolutionEnv, input: EvolutionInput,
     work[Symbol.dispose]?.();
   }
   return done({ ok: true, outcome: "written", evolution_id, branch, cr_id: workChangeId(branch), base_sha: base, head_sha: head, files: files.map((f) => f.path), changed_lines });
+}
+
+// ---------------------------------------------------------------- code.read (tier 0, read only)
+
+/** At most this many paths are listed, and this many files read per call. */
+export const MAX_LISTED_PATHS = 4000;
+export const MAX_READ_FILES = 12;
+
+/**
+ * canonical main's head and the paths of its files that an evolution may touch (pathRefusal null), or with `paths`
+ * the text of up to MAX_READ_FILES of them (null for a missing file; a refused path is never read).
+ */
+export async function readCode(env: EvolutionEnv, input: { paths?: unknown; prefix?: unknown }): Promise<Record<string, unknown>> {
+  if (!env.ARTIFACTS) return { available: false };
+  const repo = await env.ARTIFACTS.get(CANONICAL_REPO);
+  try {
+    const main = await refHead(repo, "main");
+    const commit = main ? await repo.readCommit(main) : null;
+    if (!main || !commit) return { available: false };
+    if (Array.isArray(input.paths)) {
+      const files: Record<string, string | null> = {};
+      const refused: Record<string, string> = {};
+      for (const p of [...new Set(input.paths.filter((x): x is string => typeof x === "string"))].slice(0, MAX_READ_FILES)) {
+        const why = pathRefusal(p);
+        if (why && !why.startsWith("guard_path:")) { refused[p] = why; continue; }
+        try {
+          const text = await readAt(repo, commit.treeHash, p);
+          files[p] = text !== null && new TextEncoder().encode(text).length > MAX_FILE_BYTES ? null : text;
+          if (why) refused[p] = why; // readable for context, never editable
+        } catch (err) {
+          if (err instanceof PathConflict) refused[p] = "path_conflict"; else throw err;
+        }
+      }
+      return { available: true, main_sha: main, files, refused };
+    }
+    const prefix = typeof input.prefix === "string" ? input.prefix.replace(/^\/+|\/+$/g, "") : "";
+    const out: string[] = [];
+    const walk = async (tree: string, at: string): Promise<void> => {
+      for (const e of (await repo.readTree(tree)) ?? []) {
+        if (out.length >= MAX_LISTED_PATHS) return;
+        const path = at ? `${at}/${e.name}` : e.name;
+        if (e.type === "tree") {
+          if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith(".")) continue;
+          if (prefix && !(prefix.startsWith(`${path}/`) || prefix === path || path.startsWith(`${prefix}/`))) continue;
+          await walk(e.hash, path);
+        } else if ((!prefix || path.startsWith(`${prefix}/`)) && pathRefusal(path) === null) out.push(path);
+      }
+    };
+    await walk(commit.treeHash, "");
+    return { available: true, main_sha: main, paths: out, truncated: out.length >= MAX_LISTED_PATHS, max_files_per_change: MAX_CHANGED_FILES };
+  } finally {
+    repo[Symbol.dispose]?.();
+  }
 }

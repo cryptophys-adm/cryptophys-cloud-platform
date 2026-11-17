@@ -12,7 +12,7 @@ import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
 import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
-import { proposeEvolution, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
+import { proposeEvolution, readCode, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
 import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
@@ -70,8 +70,12 @@ export class MergeRpc extends WorkerEntrypoint<Env> {
  * one commit to evo/<evolution_id> of platform-work after every check of evolution.ts; it never writes another ref.
  */
 export class EvolutionRpc extends WorkerEntrypoint<Env> {
-  async propose(input: EvolutionInput): Promise<EvolutionResult> {
-    return proposeEvolution(this.env as never, input && typeof input === "object" ? input : {});
+  async propose(agentId: string, decisionId: string, input: EvolutionInput): Promise<EvolutionResult> {
+    return proposeEvolution(this.env as never, String(agentId), decisionId, input && typeof input === "object" ? input : {});
+  }
+  /** code.read (tier 0): canonical main's evolvable paths, or up to 12 files' text. Read only. */
+  async read(input: { paths?: unknown; prefix?: unknown }): Promise<Record<string, unknown>> {
+    return readCode(this.env as never, input && typeof input === "object" ? input : {});
   }
 }
 

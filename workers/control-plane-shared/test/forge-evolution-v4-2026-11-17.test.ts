@@ -8,7 +8,9 @@ import { migratedDb } from "./harness.ts";
 import { EVOLUTION_ID, MIN_START_INTERVAL_HOURS } from "../src/evolution-limits.ts";
 import { indexPack } from "../../forge/src/bundle-verify.ts";
 import { FLUSH, ZERO_SHA, pktLine, readPktLines } from "../../forge/src/merge.ts";
-import { commitObject, gitObject, packOf, proposeEvolution, treeBody, EVOLVER_AUTHOR } from "../../forge/src/evolution.ts";
+import { commitObject, gitObject, packOf, proposeEvolution, readCode, treeBody, EVOLVER_AUTHOR } from "../../forge/src/evolution.ts";
+import { CAPABILITIES } from "../src/capabilities.ts";
+import { privilegedCapabilities } from "../src/consensus-rules.ts";
 import { WORK_BRANCH, workBranchAllowed, workChangeId } from "../../forge/src/work-repo.ts";
 import type { ArtifactsTreeEntry } from "../../forge/src/checks.ts";
 
@@ -114,7 +116,16 @@ async function setup(o: { mode?: string; evolver?: string; agents?: string } = {
   const work = { info: async () => ({ remote: `${HOST}/platform-work.git` }), createToken: async () => ({ plaintext: "tok_write.secret", expiresAt: 0 }) };
   const binding = { get: async (name: string) => (name === "platform" ? repo.reader : name === "platform-work" ? work : null) };
   const server = gitServer({ "refs/heads/main": "d".repeat(40), "refs/heads/claude/other": "e".repeat(40) });
+  db.raw.prepare(`INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at, voter)
+    VALUES ('evolver', 'Evolver', 'cryptophys-ai-kernel', 'test', 2, '["code.read","code.propose"]', 'enabled', NULL, 'consensus:test', 'x', 'x', 0)`).run();
   return { db, repo, binding, server, env: { DB: db as never, ARTIFACTS: binding as never } };
+}
+/** A Policy Engine allow for the evolver's code.propose at `at`, as the kernel's syscall records it. */
+function allow(db: Db, at = NOW, agent = "evolver", capability = "code.propose"): string {
+  const id = `dec_${crypto.randomUUID()}`;
+  db.raw.prepare("INSERT INTO policy_decisions (decision_id, subject, action, resource, decision, reason, evidence_json, created_at) VALUES (?, ?, 'agent.syscall', ?, 'allow', 'test', '{}', ?)")
+    .run(id, `agent:${agent}`, capability, new Date(at).toISOString());
+  return id;
 }
 const EDITS = [
   { path: "workers/ai-kernel/src/a.ts", find: "export const a = 1;", replace: "export const a = 2;" },
@@ -125,7 +136,7 @@ const audits = (db: Db) => (db.raw.prepare("SELECT event_type, subject, outcome,
 
 test("F3. a valid evolution: one commit on main's head, pushed to evo/<id> after its base, audited; nothing else is written", async () => {
   const s = await setup();
-  const r = await proposeEvolution(s.env, { evolution_id: ID, base_sha: s.repo.main, edits: EDITS, title: "Raise a to 2", description: "Intent int_x: a must be 2." }, s.server.fetchImpl as never, NOW);
+  const r = await proposeEvolution(s.env, "evolver", allow(s.db), { evolution_id: ID, base_sha: s.repo.main, edits: EDITS, title: "Raise a to 2", description: "Intent int_x: a must be 2." }, s.server.fetchImpl as never, NOW);
   assert.equal(r.outcome, "written", JSON.stringify(r));
   assert.deepEqual([r.branch, r.cr_id, r.base_sha, r.files], [`evo/${ID}`, `fg-evo-${ID}`, s.repo.main, ["docs/new/y.md", "workers/ai-kernel/src/a.ts", "workers/control-plane-shared/test/a.test.ts"]]);
   assert.deepEqual(s.server.pushes.map((p) => [p.ref, p.from, p.to]), [[`refs/heads/evo/${ID}`, ZERO_SHA, s.repo.main], [`refs/heads/evo/${ID}`, s.repo.main, r.head_sha]]);
@@ -160,7 +171,9 @@ test("F3. a valid evolution: one commit on main's head, pushed to evo/<id> after
 });
 
 test("F4. the gates refuse before anything is written: id, base, switches, cadence, edits, path conflicts, an existing branch", async () => {
-  const run = async (s: Awaited<ReturnType<typeof setup>>, input: Record<string, unknown>) => proposeEvolution(s.env, { evolution_id: ID, base_sha: s.repo.main, edits: EDITS, title: "t", ...input }, s.server.fetchImpl as never, NOW);
+  // Each call consumes its decision even when the Forge refuses (code.propose: 1 an hour); this test resets the count
+  // so that every gate is reached. F4b covers the limit itself.
+  const run = async (s: Awaited<ReturnType<typeof setup>>, input: Record<string, unknown>) => (s.db.raw.exec("DELETE FROM agent_syscall_consumptions"), proposeEvolution(s.env, "evolver", allow(s.db), { evolution_id: ID, base_sha: s.repo.main, edits: EDITS, title: "t", ...input }, s.server.fetchImpl as never, NOW));
   let s = await setup();
   assert.equal((await run(s, { evolution_id: "evo_nope" })).reason, "invalid_evolution_id");
   assert.equal((await run(s, { base_sha: "x" })).reason, "invalid_base_sha");
@@ -175,11 +188,15 @@ test("F4. the gates refuse before anything is written: id, base, switches, caden
   const conflict = await run(s, { edits: [{ path: "workers/ai-kernel/src", create: "x" }] });
   assert.equal(conflict.reason, "path_conflict");
   assert.equal(s.server.pushes.length, 0);
-  for (const [o, reason] of [[{ evolver: "off" }, "evolver_off"], [{ agents: "0" }, "kill_switch_engaged"], [{ mode: "shadow" }, "consensus_mode_shadow"]] as const) {
+  for (const [o, reason] of [[{ evolver: "off" }, "evolver_off"], [{ mode: "shadow" }, "consensus_mode_shadow"]] as const) {
     s = await setup(o);
     assert.equal((await run(s, {})).reason, reason);
     assert.equal(s.server.pushes.length, 0);
   }
+  // The kill switch stops it one step earlier: the Policy Engine decision is revoked (verifySyscallDecision).
+  s = await setup({ agents: "0" });
+  await assert.rejects(run(s, {}), /policy_decision_revoked: agents_enabled/);
+  assert.equal(s.server.pushes.length, 0);
   // Cadence: an evolution change request open, or one written within MIN_START_INTERVAL_HOURS.
   s = await setup();
   s.db.raw.prepare(`INSERT INTO forge_change_requests (cr_id, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, created_at, updated_at, source, repo)
@@ -187,16 +204,45 @@ test("F4. the gates refuse before anything is written: id, base, switches, caden
   assert.equal((await run(s, {})).reason, "evolution_in_flight");
   s = await setup();
   assert.equal((await run(s, {})).outcome, "written");
-  assert.equal((await proposeEvolution(s.env, { evolution_id: "evo_0123456789ac", base_sha: s.repo.main, edits: EDITS, title: "t" }, s.server.fetchImpl as never, NOW + (MIN_START_INTERVAL_HOURS - 1) * 3_600_000)).reason, "start_interval");
+  const later = NOW + (MIN_START_INTERVAL_HOURS - 1) * 3_600_000; // past code.propose's 1 per hour, inside the 4 hours
+  assert.equal((await proposeEvolution(s.env, "evolver", allow(s.db, later), { evolution_id: "evo_0123456789ac", base_sha: s.repo.main, edits: EDITS, title: "t" }, s.server.fetchImpl as never, later)).reason, "start_interval");
   s = await setup();
   s.server.refs.set(`refs/heads/evo/${ID}`, "2".repeat(40));
   assert.equal((await run(s, {})).reason, "branch_exists");
   assert.ok(audits(s.db).every((a) => a.event_type === "forge.evolution_refused"));
 });
 
+test("F4b. the caller: only the evolver, with a fresh Policy Engine allow for code.propose, consumed once", async () => {
+  const s = await setup();
+  const input = { evolution_id: ID, base_sha: s.repo.main, edits: EDITS, title: "t" };
+  await assert.rejects(proposeEvolution(s.env, "supervisor", allow(s.db, NOW, "supervisor"), input, s.server.fetchImpl as never, NOW), /not_the_evolver/);
+  await assert.rejects(proposeEvolution(s.env, "evolver", "dec_nope", input, s.server.fetchImpl as never, NOW), /policy_decision_required/);
+  await assert.rejects(proposeEvolution(s.env, "evolver", allow(s.db, NOW - 400_000), input, s.server.fetchImpl as never, NOW), /policy_decision_invalid/, "older than five minutes");
+  await assert.rejects(proposeEvolution(s.env, "evolver", allow(s.db, NOW, "evolver", "code.read"), input, s.server.fetchImpl as never, NOW), /policy_decision_invalid/, "another capability");
+  const d = allow(s.db);
+  assert.equal((await proposeEvolution(s.env, "evolver", d, input, s.server.fetchImpl as never, NOW)).outcome, "written");
+  await assert.rejects(proposeEvolution(s.env, "evolver", d, { ...input, evolution_id: "evo_0123456789ad" }, s.server.fetchImpl as never, NOW + 1000), /policy_decision/, "a decision is used once");
+  s.db.raw.prepare("UPDATE agents SET capabilities_json = '[\"code.read\"]' WHERE agent_id = 'evolver'").run();
+  await assert.rejects(proposeEvolution(s.env, "evolver", allow(s.db, NOW + 2 * 3_600_000), { ...input, evolution_id: "evo_0123456789ae" }, s.server.fetchImpl as never, NOW + 2 * 3_600_000), /capability_granted/, "the grant is re-checked live");
+  assert.equal(s.server.pushes.length, 2, "only the one written evolution pushed");
+});
+
+test("F4c. code.read lists the evolvable paths of main and reads up to 12 files; a path outside the scope is never read", async () => {
+  const s = await setup();
+  const list = await readCode(s.env, {});
+  assert.deepEqual([list.available, list.main_sha], [true, s.repo.main]);
+  assert.deepEqual((list.paths as string[]).sort(), ["docs/x.md", "workers/ai-kernel/src/a.ts", "workers/control-plane-shared/test/a.test.ts"]);
+  assert.deepEqual((await readCode(s.env, { prefix: "workers/ai-kernel" })).paths, ["workers/ai-kernel/src/a.ts"]);
+  const read = await readCode(s.env, { paths: ["workers/ai-kernel/src/a.ts", "docs/none.md", ".github/workflows/x.yml", "workers/ai-kernel/src"] });
+  assert.deepEqual(read.files, { "workers/ai-kernel/src/a.ts": "export const a = 1;\n", "docs/none.md": null });
+  assert.deepEqual(read.refused, { ".github/workflows/x.yml": "path_outside_scope", "workers/ai-kernel/src": "path_conflict" });
+  assert.deepEqual([CAPABILITIES["code.read"].tier, CAPABILITIES["code.propose"].tier, CAPABILITIES["code.propose"].max_per_hour], [0, 2, 1]);
+  assert.deepEqual(privilegedCapabilities(["code.propose"]), ["code.propose"], "an agent holding it registers only with the owner's click");
+});
+
 test("F5. wiring: EvolutionRpc is the only caller; the module writes only evo/ branches of platform-work", () => {
   const worker = readFileSync(new URL("../../forge/src/worker.ts", import.meta.url), "utf8");
-  assert.match(worker, /export class EvolutionRpc extends WorkerEntrypoint<Env> \{\n  async propose\(input: EvolutionInput\): Promise<EvolutionResult> \{\n    return proposeEvolution\(/);
+  assert.match(worker, /export class EvolutionRpc extends WorkerEntrypoint<Env> \{\n  async propose\(agentId: string, decisionId: string, input: EvolutionInput\): Promise<EvolutionResult> \{\n    return proposeEvolution\(this\.env as never, String\(agentId\), decisionId,/);
   const src = readFileSync(new URL("../../forge/src/evolution.ts", import.meta.url), "utf8");
   const pushes = [...src.matchAll(/fastForward\(\{ remote: (\w+), token: \w+, branch(?:,| )/g)].map((m) => m[1]);
   assert.deepEqual(pushes, ["workRemote", "workRemote"], "both pushes go to platform-work, on `branch` (evo/<id>)");
