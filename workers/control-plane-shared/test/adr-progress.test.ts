@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import {
-  ADR_PREDICATE_KINDS, ADR_PROGRESS_SCHEMA, ADR_READINGS, MAX_PREDICATE_DEPTH, adrManifestProblems, parseAdrManifest, predicateLeaves,
+  ADR_PREDICATE_KINDS, ADR_PROGRESS_SCHEMA, ADR_READINGS, ADR_REPORT_KINDS, MAX_PREDICATE_DEPTH, adrManifestProblems, parseAdrManifest, predicateLeaves,
   type AdrManifest, type AdrPredicate,
 } from "../src/adr-progress.ts";
 import { CRITICAL_PATHS, criticalPathReason } from "../src/guard-paths.ts";
@@ -122,6 +122,25 @@ test("AP2. broken manifests are refused, each with a problem that names where it
   fails(ev({ kind: "consensus_executed", action: "Merge Change" }), /\.action: must be a consensus action name/);
   fails(ev({ kind: "consensus_executed", action: "merge_change", owner_approved: "yes" }), /\.owner_approved: must be a boolean/);
   fails(ev({ kind: "agent_registered", agent_id: "ADR Steward" }), /\.agent_id/);
+  // agent_report (ADR-0020's xauusd evidence): a report kind, an agent, a body schema; body paths and item fields bounded.
+  const rep = { kind: "agent_report", report_kind: "xauusd_digest", agent_id: "xauusd-risk-manager", body_schema: "strategy_arm.v1" };
+  fails(ev({ ...rep, report_kind: "trade_order" }), /\.report_kind: must be one of/);
+  fails(ev({ ...rep, agent_id: undefined }), /\.agent_id: (required|must be an agent id)/);
+  fails(ev({ ...rep, agent_id: "xauusd-*" }), /\.agent_id: must be an agent id/);
+  fails(ev({ ...rep, body_schema: "strategy arm" }), /\.body_schema: must be a body schema/);
+  fails(ev({ ...rep, origin: "Xauusd Repo!" }), /\.origin: must be a repository or service name/);
+  fails(ev({ ...rep, body: { mode: "auto" } }), /\.body\.mode: must be a JSON path/);
+  fails(ev({ ...rep, body: { "$.schema": "x" } }), /\.body\.\$\.schema: use body_schema or origin/);
+  fails(ev({ ...rep, body: { "$.a": 1, "$.b": 2, "$.c": 3, "$.d": 4 } }), /\.body: must hold 1–3 paths/);
+  fails(ev({ ...rep, body: { "$.mode": ["auto"] } }), /\.body\.\$\.mode: must be a string, number or boolean/);
+  fails(ev({ ...rep, item: { "$.event": "armed" } }), /\.item\.\$\.event: must be a field name/);
+  fails(ev({ ...rep, item: { event: [] } }), /\.item\.event: must be a string, number or boolean, or a list of 1–4/);
+  fails(ev({ ...rep, item: { event: ["a", "b", "c", "d", "e"] } }), /\.item\.event: must be/);
+  fails(ev({ ...rep, item: { event: { $ne: 1 } } }), /\.item\.event: must be/);
+  fails(ev({ ...rep, since: "yesterday" }), /\.since: must be an ISO date/);
+  fails(ev({ ...rep, sql: "1=1" }), /\.sql: unknown field/);
+  assert.deepEqual(problemsOf(ev({ ...rep, origin: "xauusd-ai-trading-assistant", body: { "$.mode": "auto" }, item: { event: ["armed", "disarmed"], reason: "owner" }, since: "2026-11-17" })), []);
+  assert.deepEqual([...ADR_REPORT_KINDS].sort(), ["audit_digest", "hud_digest", "knowledge_audit", "platform_digest", "signal_digest", "xauusd_digest"]);
   fails(ev({ kind: "reading", name: "everything_fine" }), /\.name: must be one of/);
   fails(ev({ kind: "doc_asserted", ref: "docs/SSOT.md", quote: "short" }), /\.quote: must be 6–200/);
   fails(ev({ kind: "doc_asserted", ref: "../outside.md", quote: "long enough" }), /\.ref: must be a repository-relative path/);
@@ -136,7 +155,7 @@ test("AP2. broken manifests are refused, each with a problem that names where it
   assert.deepEqual(problemsOf(ev(nested(MAX_PREDICATE_DEPTH))), []);
   fails(ev(nested(MAX_PREDICATE_DEPTH + 1)), /nesting deeper than 3 levels/);
   // Every kind of §3 is known, and every reading of §3 is in the fixed list.
-  assert.deepEqual([...ADR_PREDICATE_KINDS].sort(), ["agent_registered", "all_of", "any_of", "audit_event", "census_clean", "consensus_executed", "deploy_step",
+  assert.deepEqual([...ADR_PREDICATE_KINDS].sort(), ["agent_registered", "agent_report", "all_of", "any_of", "audit_event", "census_clean", "consensus_executed", "deploy_step",
     "doc_asserted", "external_asserted", "kpi_threshold", "merged_and_deployed", "migration_applied", "not_measurable_yet", "observer", "quiet_window", "reading", "sequence"]);
   assert.equal(ADR_READINGS.length, 8);
   assert.equal(parseAdrManifest({}), null);
@@ -232,6 +251,7 @@ test("AP8. the evidence names real things: migrations, audit events, consensus a
     if (p.kind === "migration_applied") assert.ok(migrations.has(p.name as string), `${at}: migration ${p.name} is not in workers/control-plane-migrations/`);
     if (p.kind === "audit_event") events.push(p.event_type as string);
     if (p.kind === "quiet_window") events.push(p.success_type as string, ...(p.fail_types as string[]));
+    if (p.kind === "agent_report") assert.ok(list("workers/control-plane-migrations/").some((f) => f.endsWith(".sql") && read(`workers/control-plane-migrations/${f}`).includes(`'${p.agent_id}'`)), `${at}: agent ${p.agent_id} is not registered by a migration`);
     if (p.kind === "consensus_executed") assert.ok((p.action as string) in CONSENSUS_ACTIONS, `${at}: ${p.action} is not a consensus action`);
     if (p.kind === "deploy_step" && p.executor) assert.ok(literals.has(p.executor as string), `${at}: executor ${p.executor} is not in the source`);
     if (p.kind === "audit_event" && p.payload) for (const v of Object.values(p.payload as Record<string, unknown>)) {
@@ -274,12 +294,23 @@ test("AP10. the seed is honest: what the platform cannot see is open with a reas
   const s = (id: string) => byId("0012").phases.find((ph) => ph.id === id)!;
   for (const id of ["S6", "S7"]) assert.ok(predicateLeaves(s(id).evidence).some((p) => p.kind === "not_measurable_yet"), id);
   assert.equal(byId("0012").phases.length, 26);
-  // ADR-0020: accepted, nothing built on the platform side; its implementation is the xauusd repository's RFC.
+  // ADR-0020: accepted, nothing built on the platform side; its implementation is the xauusd repository's RFC, measured
+  // by the strategy_arm.v1 reports xauusd's Risk Manager publishes (2026-11-17): documents and those reports only.
   const a20 = byId("0020");
   assert.equal(a20.lifecycle, "accepted");
   assert.ok(a20.phases.every((ph) => !ph.built));
-  assert.ok(a20.phases.flatMap((ph) => predicateLeaves(ph.evidence)).every((p) => p.kind === "doc_asserted" || p.kind === "not_measurable_yet"));
+  assert.ok(a20.phases.flatMap((ph) => predicateLeaves(ph.evidence)).every((p) => p.kind === "doc_asserted" || p.kind === "agent_report"));
   assert.match(a20.lifecycle_note ?? "", /RFC_STRATEGY_RECOMMENDATION/);
+  const report = { kind: "agent_report", report_kind: "xauusd_digest", agent_id: "xauusd-risk-manager", body_schema: "strategy_arm.v1", origin: "xauusd-ai-trading-assistant" };
+  const p20 = (id: string) => a20.phases.find((ph) => ph.id === id)!;
+  assert.deepEqual(p20("N").evidence, { ...report, item: { event: ["armed", "disarmed"], reason: "owner" } }, "N: an owner's arm or disarm click, mirrored");
+  assert.deepEqual(p20("R").evidence, report, "R: any strategy_arm.v1 report");
+  assert.deepEqual(p20("R").depends_on, ["N"]);
+  assert.deepEqual(predicateLeaves(p20("A1").evidence).map((p) => p.kind), ["agent_report", "doc_asserted"], "A1: proven by a mode auto report, else the document");
+  assert.deepEqual(predicateLeaves(p20("A1").evidence)[0], { ...report, body: { "$.mode": "auto" } });
+  assert.equal(p20("D").evidence.kind, "doc_asserted");
+  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "N", "R"]);
+  assert.equal(criticalPathReason(`${PROGRESS}0020.json`), null, "0020.json is not a guard path");
   // ADR-0018: the registry migration 0074 is on main now, so X3 measures it.
   assert.ok(predicateLeaves(byId("0018").phases.find((ph) => ph.id === "X3")!.evidence).some((p) => p.kind === "migration_applied" && p.name === "0074_register_cta.sql"));
 });

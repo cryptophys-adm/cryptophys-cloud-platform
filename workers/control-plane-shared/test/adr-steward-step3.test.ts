@@ -296,7 +296,7 @@ const history = (db: Db) => rows(db, "SELECT adr_id, revision, status, percent F
 /** The cycle's summary finding (the last one; a failed write or an unreadable store adds its own before it). */
 const passOf = (r: { findings: Record<string, unknown>[] }) => r.findings.filter((f) => f.kind === "adr").at(-1) as Record<string, any>;
 
-test("AS7. a full pass writes one document per ADR, with its history row, its audit event and the Indonesian sentence", async () => {
+test("AS7. a full pass writes one document per ADR, with its history row, its audit event and the deterministic sentence, in English", async () => {
   const { db, cycle } = stewardDb();
   const r = await cycle("scheduled");
   const pass = passOf(r);
@@ -325,11 +325,11 @@ test("AS7. a full pass writes one document per ADR, with its history row, its au
   }
   // The planned ADR-0019 has no phases; the held ADR-0018 says so.
   const byId = Object.fromEntries(all.map((d) => [d.adr_id, d]));
-  assert.equal(JSON.parse(byId["0019"].explanation_json).teks, "0019 (direncanakan): belum ada fase yang diukur.");
-  assert.match(JSON.parse(byId["0018"].explanation_json).teks, /^0018 \(ditahan\): \d+ dari \d+ fase lengkap/);
+  assert.equal(JSON.parse(byId["0019"].explanation_json).teks, "0019 (planned): no phases measured yet.");
+  assert.match(JSON.parse(byId["0018"].explanation_json).teks, /^0018 \(held\): \d+ of \d+ phases complete/);
   // On an empty platform nothing is proven but the migrations and the registrations; the documents assert the rest.
   const s12 = JSON.parse(byId["0012"].explanation_json).teks;
-  assert.match(s12, /^0012: \d+ dari 26 fase lengkap \(\d+ terbukti, \d+ dinyatakan dokumen\)\. Terbuka: /);
+  assert.match(s12, /^0012: \d+ of 26 phases complete \(\d+ proven, \d+ asserted by document\)\. Open: /);
   // ADR-0016 T1 reads adr_index_live: the Steward is now registered and every ADR has its row.
   const t1 = await observeAdr({ DB: db }, { now: NOW, adrs: ["0016"] });
   const leaf = (t1.evaluations as any[])[0].phases.find((p: any) => p.id === "T1");
@@ -432,7 +432,7 @@ test("AS10. a source that cannot be read keeps the stored state and marks the do
   assert.deepEqual([doc.stale, doc.stale_sources], [true, ["forge_change_requests"]]);
   assert.deepEqual([g6().state, g6().reason, g6().refs, g6().kept], [stored.state, stored.reason, stored.refs, true], "never reopened or changed by a database hiccup");
   assert.equal(stored.kept, undefined);
-  assert.match(JSON.parse(docs(db).find((d) => d.adr_id === "0012")!.explanation_json).teks, /Data lama: forge_change_requests tidak terbaca\.$/);
+  assert.match(JSON.parse(docs(db).find((d) => d.adr_id === "0012")!.explanation_json).teks, /Stale data: forge_change_requests unreadable\.$/);
   // Readable again: the document is fresh, and the phase is computed as before.
   const fresh = passOf(await cycle("operator", NOW + MIN));
   assert.ok(fresh.written.includes("0012"));
@@ -510,12 +510,12 @@ test("AS11. a drift episode opens and closes as audit events; an invalid manifes
 test("AS12. the AI task is declared for the DNA's engine; its validator rejects invented numbers and refs (step 6 runs it, adr-explanation-step6)", () => {
   const task = draftAdrExplanationTask({ status: "in_progress", refs: ["ev:platform/audit/evt_1"], text: '{"phases_complete":18,"phases_total":26}' });
   assert.equal(task.name, "draft_adr_explanation");
-  assert.deepEqual(task.validate({ teks: "18 dari 26 fase lengkap.", rujukan: ["ev:platform/audit/evt_1"] }), { teks: "18 dari 26 fase lengkap.", rujukan: ["ev:platform/audit/evt_1"] });
-  assert.equal(task.validate({ teks: "19 dari 26 fase lengkap.", rujukan: ["ev:platform/audit/evt_1"] }), null, "a number not in the input");
-  assert.equal(task.validate({ teks: "18 dari 26 fase.", rujukan: ["ev:platform/audit/evt_9"] }), null, "a ref not in the input");
-  assert.equal(task.validate({ teks: "ADR ini selesai.", rujukan: ["ev:platform/audit/evt_1"] }), null, "selesai while in progress");
-  assert.ok(task.validate({ teks: "ADR ini belum selesai.", rujukan: ["ev:platform/audit/evt_1"] }));
-  assert.equal(task.validate({ teks: "ADR ini belum selesai.", rujukan: [] }), null, "step 6: a draft must cite the stored document's evidence");
+  assert.deepEqual(task.validate({ teks: "18 of 26 phases complete.", rujukan: ["ev:platform/audit/evt_1"] }), { teks: "18 of 26 phases complete.", rujukan: ["ev:platform/audit/evt_1"] });
+  assert.equal(task.validate({ teks: "19 of 26 phases complete.", rujukan: ["ev:platform/audit/evt_1"] }), null, "a number not in the input");
+  assert.equal(task.validate({ teks: "18 of 26 phases.", rujukan: ["ev:platform/audit/evt_9"] }), null, "a ref not in the input");
+  assert.equal(task.validate({ teks: "This ADR is done.", rujukan: ["ev:platform/audit/evt_1"] }), null, "done while in progress");
+  assert.ok(task.validate({ teks: "This ADR is not done yet.", rujukan: ["ev:platform/audit/evt_1"] }));
+  assert.equal(task.validate({ teks: "This ADR is not done.", rujukan: [] }), null, "step 6: a draft must cite the stored document's evidence");
   assert.equal(task.validate({ teks: "x".repeat(401), rujukan: ["ev:platform/audit/evt_1"] }), null);
   // Step 6: the Steward's one AI call is the explanation of a status change, inside explainStatusChange.
   const src = read("workers/ai-kernel/src/adr-steward.ts");

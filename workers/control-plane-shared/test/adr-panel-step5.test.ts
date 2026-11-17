@@ -4,6 +4,7 @@
 // #/vision/adr/<id> opens that row; and it shows only what the API served (AGENTS.md, console-truthfulness.test.ts):
 // "—" for a missing value, no bar without phases, no green mark for a status not proven. The render smoke test
 // (console/ui/scripts/render-smoke.mjs) renders it filled, opened, empty, unavailable, unregistered and suspended.
+// English since the owner's "all in english please" (2026-11-17): no Indonesian label is left on the panel.
 // Plain fs reads relative to the repository root, so the Forge runner can bundle it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,7 +25,7 @@ const design = () => read("docs/design/ADR-STEWARD.md");
 /** §6.3's table, key -> label, with the backticks of the key and the label removed. */
 function labels(): Map<string, string> {
   const d = design();
-  const section = d.slice(d.indexOf("### 6.3 Labels (Indonesian)"), d.indexOf("### 6.4 Sketch"));
+  const section = d.slice(d.indexOf("### 6.3 Labels (English)"), d.indexOf("### 6.4 Sketch"));
   const out = new Map<string, string>();
   for (const m of section.matchAll(/^\| ([^|\n]+?) \| ([^|\n]+?) \|$/gm)) if (m[1] !== "Key" && !/^-+$/.test(m[1])) out.set(m[1].replace(/`/g, ""), m[2]);
   return out;
@@ -33,48 +34,64 @@ const ENTRY_0012 = { adr: "0012", status: "in_progress", lifecycle: "accepted", 
 
 test("AV1. the panel's wording is §6.3's: the owner's title, the statuses, the phases, the owner actions, drift, stale and the explanation source", () => {
   const l = labels();
-  assert.equal(ADR_PANEL_TITLE, "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)", "the owner's exact title");
+  assert.equal(ADR_PANEL_TITLE, "ADR — Architecture Decision Records", "the owner's exact title, in English (2026-11-17)");
   assert.equal(l.get("Panel title"), ADR_PANEL_TITLE);
-  assert.match(design(), /\*\*Panel title \(owner\):\*\* "ADR — Architecture Decision Records \(Catatan Keputusan Arsitektur\)"/);
+  assert.match(design(), /\*\*Panel title \(owner\):\*\* "ADR — Architecture Decision Records"\./);
   assert.equal(statusLabel({ status: "not_started" }), l.get("Status not_started"));
-  assert.equal(l.get("Status in_progress"), "berjalan (X dari Y fase)");
-  assert.equal(statusLabel(ENTRY_0012), "berjalan (18 dari 26 fase)", "X counts the complete phases, proven and asserted, as the sketch does");
+  assert.equal(l.get("Status in_progress"), "in progress (X of Y phases)");
+  assert.equal(statusLabel(ENTRY_0012), "in progress (18 of 26 phases)", "X counts the complete phases, proven and asserted, as the sketch does");
   assert.equal(statusLabel({ status: "done" }), l.get("Status done"));
-  assert.equal(l.get("Status superseded"), "digantikan oleh ADR-NNNN");
-  assert.equal(statusLabel({ status: "superseded", superseded_by: "0021" }), "digantikan oleh ADR-0021");
+  assert.equal(l.get("Status superseded"), "superseded by ADR-NNNN");
+  assert.equal(statusLabel({ status: "superseded", superseded_by: "0021" }), "superseded by ADR-0021");
   assert.equal(statusLabel({ status: "held" }), l.get("Status held"));
   assert.equal(statusLabel({ status: "planned" }), l.get("Status planned"));
-  assert.equal(statusLabel({ status: "held", phases_total: 5, phases_proven: 0, phases_asserted: 1 }), "ditahan (1 dari 5 fase)", "as the sketch's 0018 row");
-  assert.equal(l.get("Badge deferred"), "ditunda");
-  assert.match(read("workers/console/ui/src/components/AdrPanel.tsx"), /\{isDeferred\(e\) && <Badge tone="amber">ditunda<\/Badge>\}/);
+  assert.equal(statusLabel({ status: "held", phases_total: 5, phases_proven: 0, phases_asserted: 1 }), "held (1 of 5 phases)", "as the sketch's 0018 row");
+  assert.equal(l.get("Badge deferred"), "deferred");
+  assert.match(read("workers/console/ui/src/components/AdrPanel.tsx"), /\{isDeferred\(e\) && <Badge tone="amber">deferred<\/Badge>\}/);
   assert.equal(phaseLabel("proven"), l.get("Phase proven"));
-  assert.equal(l.get("Phase asserted"), `dinyatakan dokumen (eksternal: "dinyatakan sumber luar")`);
-  assert.equal(phaseLabel("doc_asserted"), "dinyatakan dokumen");
-  assert.equal(phaseLabel("external_asserted"), "dinyatakan sumber luar");
+  assert.equal(l.get("Phase asserted"), `asserted by document (external: "asserted by external source")`);
+  assert.equal(phaseLabel("doc_asserted"), "asserted by document");
+  assert.equal(phaseLabel("external_asserted"), "asserted by external source");
   assert.equal(phaseLabel("open"), l.get("Phase open"));
-  assert.equal(l.get("Stale"), "data lama: <source> tidak terbaca");
-  assert.equal(staleLabel(["outcome_scores"]), "data lama: outcome_scores tidak terbaca");
+  assert.deepEqual([phaseLabel("not_measurable_yet"), phaseLabel("unknown")], ["not measurable yet", "unreadable"], "the two states §6.3 does not name");
+  assert.equal(l.get("Stale"), "stale data: <source> unreadable");
+  assert.equal(staleLabel(["outcome_scores"]), "stale data: outcome_scores unreadable");
   assert.equal(DRIFT_LABEL, l.get("Drift"));
-  assert.equal(l.get("Explanation source"), `dijelaskan AI · teks otomatis`);
-  assert.deepEqual([explanationSource({ source: "ai" }), explanationSource({ source: "template" })], ["dijelaskan AI", "teks otomatis"]);
+  assert.equal(l.get("Explanation source"), `explained by AI · automatic text`);
+  assert.deepEqual([explanationSource({ source: "ai" }), explanationSource({ source: "template" })], ["explained by AI", "automatic text"]);
   assert.equal(MISSING, l.get("Missing value"));
   const owner = l.get("Owner action")!;
   for (const w of [OWNER_WAITING, OWNER_LINK["#/owner"], OWNER_LINK["#/consensus"], OUTSIDE_PLATFORM]) assert.ok(owner.includes(w), w);
   assert.deepEqual(Object.keys(OWNER_LINK).sort(), [...OWNER_ACTION_HREFS].sort(), "a link for every href a manifest may name, and no other");
   const right = l.get("Right of title")!.replace(" <time>", "");
-  assert.equal(right, "baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui");
+  assert.equal(right, "read-only · computed from evidence, not AI guesses · updated");
   const panel = read("workers/console/ui/src/components/AdrPanel.tsx");
   assert.ok(panel.includes(`<span>${right} {utcMinute(steward?.last_pass_at)}</span>`), "right of the title, with the last pass's time");
-  // Every column of §6.3 after Status is a label on the row or its open detail (Kemajuan is the bar).
-  for (const col of l.get("Columns")!.split(" · ").slice(1)) assert.ok(panel.includes(col === "Kemajuan" ? "% terbukti" : col), col);
+  // Every column of §6.3 after Status is a label on the row or its open detail (Progress is the bar).
+  for (const col of l.get("Columns")!.split(" · ").slice(1)) assert.ok(panel.includes(col === "Progress" ? "% proven" : col), col);
+});
+
+test("AV1b. all in English (owner 2026-11-17): no Indonesian word is left in the panel, its wording, the server's sentence or the render smoke", () => {
+  // Words of the Indonesian labels of 2026-11-16 and of common Indonesian prose. Quoted owner words in comments are
+  // historical records, so only code is scanned: comments are stripped first.
+  const INDONESIAN = /\b(belum|tidak|bukan|sudah|selesai|berjalan|ditunda|ditahan|direncanakan|digantikan|terbukti|dinyatakan|terbuka|terbaca|diukur|dokumen|bukti|pemilik|menunggu|berikutnya|langkah|penghambat|penjelasan|perubahan|terakhir|kemajuan|fase|lengkap|tersimpan|tersedia|dikenali|pembaruan|gagal|aktif|ditangguhkan|dimatikan|terdaftar|otomatis|dijelaskan|hari ini|batas harian|baca-saja|dihitung|tebakan|diperbarui|halaman|buka|luar platform|paling cepat|yang|dengan|untuk|dari|oleh|lainnya|catatan|keputusan|arsitektur|sumber|data lama|rincian|tutup)\b/i;
+  const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
+  for (const f of ["workers/console/ui/src/components/AdrPanel.tsx", "workers/console/ui/src/lib/adr.ts", "workers/console/ui/scripts/render-smoke.mjs",
+    "workers/ai-kernel/src/adr-steward.ts", "workers/ai-kernel/src/adr-view.ts", "workers/control-plane-shared/src/ai-engine.ts"]) {
+    // The stored explanation's keys (teks, rujukan) are data, not wording: they are left out of the scan.
+    const m = INDONESIAN.exec(code(read(f)).replace(/\b(teks|rujukan)\b/g, ""));
+    assert.equal(m, null, `${f}: Indonesian left: ${m?.[0]}`);
+  }
+  for (const [k, v] of labels()) assert.doesNotMatch(v, INDONESIAN, `§6.3 ${k}`);
+  for (const s of [...Object.values(STEWARD_LABEL), ...Object.values(OWNER_LINK), OWNER_WAITING, OUTSIDE_PLATFORM, DRIFT_LABEL, ADR_PANEL_TITLE]) assert.doesNotMatch(s, INDONESIAN, s);
 });
 
 test("AV2. truthfulness: a missing value is \"—\", a bar only with phases and both percentages, green only for proven, the Steward's four states as served", () => {
   assert.deepEqual([shown(null), shown(undefined), shown(""), shown(0), shown("x")], [MISSING, MISSING, MISSING, "0", "x"], "0 is a value, never a default");
   assert.equal(statusLabel({}), MISSING, "no default status");
   assert.equal(statusLabel({ status: "something_new" }), "something_new", "an unknown status is shown as served");
-  assert.equal(statusLabel({ status: "in_progress" }), "berjalan", "no count without the counts");
-  assert.equal(statusLabel({ status: "superseded" }), "digantikan", "no ADR number without superseded_by");
+  assert.equal(statusLabel({ status: "in_progress" }), "in progress", "no count without the counts");
+  assert.equal(statusLabel({ status: "superseded" }), "superseded", "no ADR number without superseded_by");
   // Proven solid, asserted hatched, both from the response.
   assert.deepEqual(progressSegments(ENTRY_0012), { proven: 46, asserted: 23, percent: 69 });
   assert.equal(progressSegments({ status: "planned", phases_total: 0, percent: 0, percent_proven: 0 }), null, "a planned ADR without phases has no bar");
@@ -93,7 +110,7 @@ test("AV2. truthfulness: a missing value is \"—\", a bar only with phases and 
   // The Steward's states (adr-view.ts StewardStatus), each in words; only enabled is green.
   const states: StewardStatus[] = ["enabled", "suspended", "agents_disabled", "not_registered"];
   assert.deepEqual(Object.keys(STEWARD_LABEL).sort(), [...states].sort());
-  assert.deepEqual(states.map(stewardLabel), ["aktif", "ditangguhkan", "dimatikan (kill switch agen)", "belum terdaftar"]);
+  assert.deepEqual(states.map(stewardLabel), ["active", "suspended", "disabled (agent kill switch)", "not registered"]);
   assert.deepEqual(states.map(stewardTone), ["green", "red", "red", "amber"]);
   assert.equal(stewardLabel(undefined), MISSING);
   assert.equal(UI_VIEW_SCHEMA, ADR_VIEW_SCHEMA, "the panel recognizes exactly the kernel's view");
@@ -101,7 +118,7 @@ test("AV2. truthfulness: a missing value is \"—\", a bar only with phases and 
   assert.deepEqual([lastChange(ENTRY_0012), lastChange({})], ["rev 14 · 2026-11-17 21:56 UTC", `${MISSING} · ${MISSING}`]);
   assert.equal(explanationSource(null), MISSING);
   // Only the platform's own pages are linked; anything else in a document is shown, never followed.
-  assert.deepEqual(ownerLink({ href: "#/owner" }), { href: "#/owner", label: "Buka halaman Owner" });
+  assert.deepEqual(ownerLink({ href: "#/owner" }), { href: "#/owner", label: "Open the Owner page" });
   for (const href of ["javascript:alert(1)", "https://example.com", "#/ledger", null]) assert.equal(ownerLink({ href }), null, String(href));
   assert.deepEqual(evidenceLink("ev:platform/consensus/cns_1"), { text: "ev:consensus/cns_1", href: "#/consensus" });
   assert.equal(evidenceLink("ev:platform/audit/evt_1@2026-11-17#x")?.href, "#/ledger");
@@ -130,15 +147,15 @@ test("AV3. the panel reads kernel.adr every five minutes while visible and an op
   // The open row's document is read when it opens and again only when the list shows a new revision.
   assert.match(panel, /usePoll\(\(\) => call\("kernel\.adr_one", id\), 0, \[id, rev\]\)/);
   // Honest states (§4.9): no table yet, no pass yet, the Steward not running, an unknown response.
-  assert.match(panel, /data\.available === false\) body = <Empty>Steward belum berjalan: data ADR belum tersedia/);
-  assert.match(panel, /adrs\.length === 0\) body = <Empty>Belum ada pass Steward/);
+  assert.match(panel, /data\.available === false\) body = <Empty>The Steward has not run yet: no ADR data is available/);
+  assert.match(panel, /adrs\.length === 0\) body = <Empty>No Steward pass yet/);
   assert.match(panel, /known && status !== "enabled" &&/);
-  assert.match(panel, /!known\) body = <Empty>Respons GET \/v1\/adr tidak dikenali/);
+  assert.match(panel, /!known\) body = <Empty>The GET \/v1\/adr response is not recognized/);
   // No default number, no hardcoded percentage, no default status.
   for (const [name, s] of [["AdrPanel.tsx", panel], ["adr.ts", lib]] as const) {
     assert.doesNotMatch(s, /\?\? 0\b|\|\| 0\b|\?\? 100\b/, `${name}: no default number`);
     assert.doesNotMatch(s, /["'`]\d+ ?%/, `${name}: no percentage written into the UI`);
-    assert.doesNotMatch(s, /\?\? "(done|in_progress|enabled|selesai|aktif)"/, `${name}: no default status`);
+    assert.doesNotMatch(s, /\?\? "(done|in_progress|enabled|active|in progress)"/, `${name}: no default status`);
   }
   // The bar: proven solid, asserted hatched (index.css .adr-hatch).
   assert.match(panel, /data-adr-seg="proven"[^>]*bg-emerald-400/);
@@ -162,7 +179,7 @@ test("AV4. routing: #/vision/adr scrolls to the panel and #/vision/adr/<id> open
   assert.match(smoke, /MOCK\["\/api\/kernel\/v1\/adr\/0012"\]/);
   for (const name of ["filled", "open row", "no pass yet", "unavailable", "not registered", "suspended", "no vision"]) assert.match(smoke, new RegExp(`\\{ name: "${name}", hash: "vision`), name);
   assert.match(smoke, /hash: "vision\/adr\/0012", override: \{\}, open: "0012"/);
-  assert.match(smoke, /const ADR_PANEL_TITLE = "ADR — Architecture Decision Records \(Catatan Keputusan Arsitektur\)";/);
+  assert.match(smoke, /const ADR_PANEL_TITLE = "ADR — Architecture Decision Records";/);
   assert.match(smoke, /a number without a document/, "an empty or unavailable list shows no number");
   assert.match(smoke, /repeating-linear-gradient/, "the asserted share is checked as hatched");
   assert.match(smoke, /the held and planned rows are not drawn apart/);
@@ -176,7 +193,8 @@ test("AV5. no guard path is touched; docs/SSOT.md records step 5 and the panel o
     "workers/control-plane-shared/test/adr-api-step4.test.ts", "workers/control-plane-shared/test/vision-telos-0016.test.ts", "docs/SSOT.md", "docs/design/ADR-STEWARD.md"]) assert.equal(criticalPathReason(p), null, p);
   const ssot = read("docs/SSOT.md");
   assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 5, the Vision page's ADR panel: [^()]*`#\/vision\/adr\/<id>`[^()]*; ADR Steward step 4, the read-only API: /);
-  assert.match(ssot, /The Console's Vision page \(`#\/vision`\) shows it\.[^\n]*\n  - [^\n]*ADR — Architecture Decision Records \(Catatan Keputusan Arsitektur\)/);
+  assert.match(ssot, /The Console's Vision page \(`#\/vision`\) shows it\.[^\n]*\n  - [^\n]*"ADR — Architecture Decision Records"/);
+  assert.doesNotMatch(ssot, /Catatan Keputusan Arsitektur/, "the Indonesian title is gone from the SSOT");
   assert.doesNotMatch(ssot, /the Vision page's ADR panel is not built yet/);
   assert.match(design(), /\| 5 \| The Vision panel: [^\n]*\*\*Built 2026-11-17\*\*/);
 });

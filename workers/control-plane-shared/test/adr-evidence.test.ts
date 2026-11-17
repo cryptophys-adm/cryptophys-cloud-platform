@@ -200,6 +200,45 @@ test("AE1. every predicate kind is proven on matching rows and open without them
   await check({ ...kv, value: 2 }, "open");
   await check({ ...kv, kind_filter: "d1" }, "open");
 
+  // agent_report: a report an agent published (ADR-0020: xauusd's strategy_arm.v1 digests), by kind, agent and body
+  // schema, optionally its origin, top-level body fields and one matching element of body.items; a past event.
+  const arm = { kind: "agent_report", report_kind: "xauusd_digest", agent_id: "xauusd-risk-manager", body_schema: "strategy_arm.v1", origin: "xauusd-ai-trading-assistant" } as AdrPredicate;
+  const ownerClick = { ...arm, item: { event: ["armed", "disarmed"], reason: "owner" } } as AdrPredicate;
+  const auto = { ...arm, body: { "$.mode": "auto" } } as AdrPredicate;
+  await check(arm, "open");
+  const xr = db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES (?, ?, ?, 'info', 's', ?, 'ok', NULL, ?)");
+  const armBody = (o: Record<string, unknown>) => JSON.stringify({ schema: "strategy_arm.v1", mode: "armed", armed: [], armed_count: 0, max: 3, items: [], source: "xauusd-ai-trading-assistant", ...o });
+  xr.run("rpt_other_schema", "xauusd-risk-manager", "xauusd_digest", JSON.stringify({ schema: "risk_digest.v1", source: "xauusd-ai-trading-assistant" }), ago(9));
+  xr.run("rpt_other_agent", "xauusd-moderator", "xauusd_digest", armBody({}), ago(9));
+  xr.run("rpt_other_kind", "xauusd-risk-manager", "platform_digest", armBody({}), ago(9));
+  xr.run("rpt_other_origin", "xauusd-risk-manager", "xauusd_digest", armBody({ source: "somewhere-else" }), ago(9));
+  await check(arm, "open");
+  // A strategy_arm.v1 report whose only item is the system's auto-disarm: R holds, N does not.
+  xr.run("rpt_auto_disarm", "xauusd-risk-manager", "xauusd_digest", armBody({ items: [{ event: "disarmed", strategy_id: "zone_pullback", reason: "auto_disarm" }, { event: "picked", mode: "auto" }] }), ago(8));
+  const any = await check(arm, "proven");
+  assert.deepEqual([any.refs, any.at, any.live], [[`ev:platform/report/rpt_auto_disarm@${ago(8)}#schema`], ago(8), false]);
+  assert.match((await check(ownerClick, "open")).reason!, /^no strategy_arm\.v1 xauusd_digest report by xauusd-risk-manager from xauusd-ai-trading-assistant with an item event = armed or disarmed, reason = owner$/);
+  await check(auto, "open");
+  // The owner's clicks, as production's rpt_2541a17b (armed) and rpt_fd9da96b (mode auto, disarmed) carry them.
+  xr.run("rpt_owner_armed", "xauusd-risk-manager", "xauusd_digest", armBody({ armed_count: 3, items: [{ event: "armed", strategy_id: "sweep_reversal", reason: "owner", armed_count: 1 }] }), ago(7));
+  const click = await check(ownerClick, "proven");
+  assert.deepEqual(click.refs, [`ev:platform/report/rpt_owner_armed@${ago(7)}#items`]);
+  await check({ ...ownerClick, item: { event: "disarmed", reason: "owner" } } as AdrPredicate, "open");
+  await check(auto, "open");
+  xr.run("rpt_owner_auto", "xauusd-risk-manager", "xauusd_digest", armBody({ mode: "auto", items: [{ event: "disarmed", strategy_id: "zone_pullback", reason: "owner" }] }), ago(6));
+  assert.deepEqual((await check(auto, "proven")).refs, [`ev:platform/report/rpt_owner_auto@${ago(6)}#schema`]);
+  assert.deepEqual((await check(ownerClick, "proven")).refs, [`ev:platform/report/rpt_owner_auto@${ago(6)}#items`], "the newest match");
+  await check({ ...ownerClick, item: { event: "disarmed", reason: "owner" } } as AdrPredicate, "proven");
+  await check({ ...arm, since: ago(5) } as AdrPredicate, "open");
+  assert.deepEqual((await check({ ...arm, origin: "somewhere-else" } as AdrPredicate, "proven")).refs, [`ev:platform/report/rpt_other_origin@${ago(9)}#schema`], "the origin is the body's source");
+  await check({ ...ownerClick, origin: "somewhere-else" } as AdrPredicate, "open");
+  // In a sequence an agent_report is looked up after the previous step: the oldest match after it.
+  const chain = await check({ kind: "sequence", of: [{ kind: "audit_event", event_type: "test.ae_arm_anchor" }, ownerClick] } as AdrPredicate, "open");
+  assert.match(chain.reason!, /^step 1 of 2/);
+  audit(db, "test.ae_arm_anchor", ago(6.5));
+  const after = await check({ kind: "sequence", of: [{ kind: "audit_event", event_type: "test.ae_arm_anchor" }, ownerClick] } as AdrPredicate, "proven");
+  assert.ok(after.refs.includes(`ev:platform/report/rpt_owner_auto@${ago(6)}#items`), JSON.stringify(after.refs));
+
   // consensus_executed: executed, optionally owner-approved; a pending_owner match is reported as waiting for the click.
   const merge = { kind: "consensus_executed", action: "merge_change" } as AdrPredicate;
   await check(merge, "open");
@@ -468,6 +507,41 @@ function seed0012(db: Db): void {
   // S4, S5 and G13 read the ledger, which migratedDb() records.
 }
 
+
+test("AE8. ADR-0020 from xauusd's strategy_arm.v1 reports: N by an owner's click, R by any report, A1 by mode auto; bounded and indexed", async () => {
+  const db = migratedDb();
+  const s = spy(db);
+  const m20 = manifests().find((m) => m.adr === "0020")!;
+  const states = (e: AdrEvaluation) => Object.fromEntries(e.phases.map((p) => [p.id, p.state]));
+  // No report yet: N and R are open (no longer not measurable), A1 rests on the document, D is the document.
+  const before = await evaluateAdrManifest(m20, deps(s.db)) as AdrEvaluation;
+  assert.deepEqual(states(before), { D: "doc_asserted", A1: "doc_asserted", N: "open", R: "open" });
+  assert.deepEqual(before.next_step?.phase, "N");
+  assert.ok(before.blockers.includes("R: depends on N"), JSON.stringify(before.blockers));
+  // The two reports production D1 holds (2026-11-17), in their shape: owner arms at 11:02, mode auto with owner disarms at 12:02.
+  const xr = db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES (?, 'xauusd-risk-manager', 'xauusd_digest', 'info', 'Strategy arm audit', ?, 'ok', NULL, ?)");
+  const at1 = "2026-11-17T11:02:25.155Z", at2 = "2026-11-17T12:02:22.969Z";
+  xr.run("rpt_2541a17b", JSON.stringify({ schema: "strategy_arm.v1", mode: "armed", armed: ["sweep_reversal", "pattern_event", "zone_pullback"], armed_count: 3, max: 3,
+    items: [{ event: "armed", strategy_id: "sweep_reversal", reason: "owner", armed_count: 1, at: "2026-11-17T09:26:54.241Z", audit_ref: 1 }], source: "xauusd-ai-trading-assistant" }), at1);
+  const armedOnly = await evaluateAdrManifest(m20, deps(s.db, { now: Date.parse(at1) + HOUR })) as AdrEvaluation;
+  assert.deepEqual(states(armedOnly), { D: "doc_asserted", A1: "doc_asserted", N: "proven", R: "proven" }, "no mode auto report yet");
+  assert.deepEqual(armedOnly.phases.find((p) => p.id === "N")!.refs, [`ev:platform/report/rpt_2541a17b@${at1}#items`]);
+  xr.run("rpt_fd9da96b", JSON.stringify({ schema: "strategy_arm.v1", mode: "auto", armed: [], armed_count: 0, max: 3,
+    items: [{ event: "disarmed", strategy_id: "zone_pullback", reason: "owner", armed_count: 2 }, { event: "picked", mode: "auto", strategy_id: "zone_pullback", confidence: 0.85 }],
+    source: "xauusd-ai-trading-assistant" }), at2);
+  const e = await evaluateAdrManifest(m20, deps(s.db, { now: Date.parse(at2) + HOUR })) as AdrEvaluation;
+  assert.deepEqual(states(e), { D: "doc_asserted", A1: "proven", N: "proven", R: "proven" });
+  const ref = (id: string) => e.phases.find((p) => p.id === id)!.refs;
+  assert.deepEqual([ref("A1"), ref("N"), ref("R")], [[`ev:platform/report/rpt_fd9da96b@${at2}#schema`], [`ev:platform/report/rpt_fd9da96b@${at2}#items`], [`ev:platform/report/rpt_fd9da96b@${at2}#schema`]]);
+  assert.deepEqual([e.status, e.phases_complete, e.phases_total, e.phases_proven, e.phases_doc_asserted, e.percent, e.percent_proven], ["done", 4, 4, 3, 1, 100, 75]);
+  for (const p of e.phases) p.refs.forEach((r) => assert.match(r, EV_REF, `${p.id}: ${r}`));
+  assertBoundedAndIndexed(db.raw, s.seen);
+  assert.ok(s.seen.some((q) => /FROM agent_reports r WHERE r\.agent_id = \? AND r\.kind = \?/.test(q.sql)));
+  for (const q of s.seen.filter((x) => /agent_reports/.test(x.sql))) {
+    const plan = (db.raw.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...(q.args as (string | number | null)[])) as { detail: string }[]).map((r) => r.detail).join(" | ");
+    assert.match(plan, /agent_reports_agent_created/, `the (agent_id, created_at) index: ${plan}`);
+  }
+});
 
 test("AE5. the 0012 seed reads 18 of 26 (12 proven, 6 asserted) on matching evidence, and every query is a bounded, indexed SELECT", async () => {
   const db = migratedDb();

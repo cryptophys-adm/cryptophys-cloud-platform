@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendment 1 (AUTO when nothing is armed, a risk-reducing Position Manager) 2026-11-17. Nothing is built on the platform side; the implementation is the xauusd repository's RFC_STRATEGY_RECOMMENDATION.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendment 1 (AUTO when nothing is armed, a risk-reducing Position Manager) 2026-11-17. Nothing is built on the platform side; the implementation is the xauusd repository's RFC_STRATEGY_RECOMMENDATION, measured by its strategy_arm.v1 reports.",
   "phases": [
     {
       "id": "D",
@@ -20,19 +20,45 @@
       "id": "A1",
       "title": "Amendment 1 recorded: AUTO under Omega's live arm when nothing is armed; the Position Manager only reduces risk",
       "evidence": {
-        "kind": "doc_asserted",
-        "ref": "organism/vision.json",
-        "quote": "as Omega's live arm for AUTO selection of the single best strategy"
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "agent_report",
+            "report_kind": "xauusd_digest",
+            "agent_id": "xauusd-risk-manager",
+            "body_schema": "strategy_arm.v1",
+            "origin": "xauusd-ai-trading-assistant",
+            "body": {
+              "$.mode": "auto"
+            }
+          },
+          {
+            "kind": "doc_asserted",
+            "ref": "organism/vision.json",
+            "quote": "as Omega's live arm for AUTO selection of the single best strategy"
+          }
+        ]
       },
-      "note": "a documented decision, not a build"
+      "note": "proven once a strategy_arm.v1 report shows mode auto (AUTO running with nothing armed); until then, the documented decision"
     },
     {
       "id": "N",
       "title": "Arm and disarm in Nexus: cap of 3, auto-disarm, Decision Engine veto",
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "lives in the xauusd repository (RFC_STRATEGY_RECOMMENDATION); the platform has no xauusd evidence source yet"
-      }
+        "kind": "agent_report",
+        "report_kind": "xauusd_digest",
+        "agent_id": "xauusd-risk-manager",
+        "body_schema": "strategy_arm.v1",
+        "origin": "xauusd-ai-trading-assistant",
+        "item": {
+          "event": [
+            "armed",
+            "disarmed"
+          ],
+          "reason": "owner"
+        }
+      },
+      "note": "proven by a strategy_arm.v1 report that mirrors an owner's arm or disarm click in Nexus"
     },
     {
       "id": "R",
@@ -41,9 +67,13 @@
         "N"
       ],
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "recommended to xauusd; no reading of strategy_arm.v1 reports exists yet"
-      }
+        "kind": "agent_report",
+        "report_kind": "xauusd_digest",
+        "agent_id": "xauusd-risk-manager",
+        "body_schema": "strategy_arm.v1",
+        "origin": "xauusd-ai-trading-assistant"
+      },
+      "note": "proven by any strategy_arm.v1 report of xauusd-risk-manager in agent_reports"
     }
   ]
 }
