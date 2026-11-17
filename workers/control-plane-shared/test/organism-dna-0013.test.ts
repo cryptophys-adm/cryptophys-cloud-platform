@@ -115,9 +115,16 @@ test("O8. every service the DNA declares has a plain-English name, and every DNA
   // is listed (harness.ts CONSENSUS_REGISTERED), declared on its host, routine (register_agent passes the council
   // without the owner: no privileged or forbidden capability, tier_max 1) and seeded by no migration.
   const byConsensus = new Map(CONSENSUS_REGISTERED.agents.map((a) => [a.agent_id, a.service]));
+  const privileged = new Set(CONSENSUS_REGISTERED.agents.filter((a) => a.privileged).map((a) => a.agent_id));
   for (const d of genome.values()) for (const a of d.agents) {
     if (byConsensus.get(a.id) === d.service) {
       assert.ok(!seeded(a.id, d.service), `agent ${a.id} is registered by consensus, not seeded`);
+      if (privileged.has(a.id)) {
+        // A privileged agent (the evolver, ADR-0014 §11) registers only through register_privileged_agent: the owner's click.
+        assert.ok(privilegedCapabilities(a.capabilities).length > 0, `agent ${a.id} is listed as privileged`);
+        assert.deepEqual([forbiddenCapabilities(a.capabilities), a.tier_max <= 2, a.voter], [[], true, false], `agent ${a.id}: no forbidden capability, tier 2 at most, no seat`);
+        continue;
+      }
       assert.deepEqual([privilegedCapabilities(a.capabilities), forbiddenCapabilities(a.capabilities), a.tier_max <= 1], [[], [], true], `agent ${a.id} registers as routine`);
       continue;
     }

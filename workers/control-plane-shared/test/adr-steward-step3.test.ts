@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeAi, migratedDb, registeredDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeAi, migratedDb, registeredByConsensus, registeredDb, req } from "./harness.ts";
 import { appendAuditEvent } from "../src/audit.ts";
 import { CAPABILITIES, verifySyscallDecision } from "../src/capabilities.ts";
 import { KERNEL_AGENTS, castVote, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
@@ -136,6 +136,11 @@ test("AS2. the census finds the gene and the engine, and consensus registers bot
   const db = migratedDb();
   const { env } = kernelEnv(db);
   set(db, "UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'");
+  // The evolver (declared since 2026-11-17, a privileged registration with the owner's click) is registered here, so the
+  // census shows only the Steward's gene and engine (evolver-v5-2026-11-17 covers the evolver's own registration).
+  registeredByConsensus(db);
+  set(db, "DELETE FROM agents WHERE agent_id = 'adr-steward'");
+  set(db, "DELETE FROM engines WHERE task = 'draft_adr_explanation'");
   await censusTick(db as never, repoWith(realDna()), NOW);
   const census = (await latestCensusRow({ DB: db } as never))!;
   assert.deepEqual(census.findings.map((f) => `${f.kind} ${f.subject}`), ["unregistered_agent adr-steward", `unregistered_engine ${KERNEL}:draft_adr_explanation`]);
@@ -225,9 +230,13 @@ test("AS4. the kernel bundles exactly the manifests of the directory, and a chan
 });
 
 test("AS5. AdrStewardAgent: bound, its DO migration v5 is additive and planned natively, the scheduled hook and the wake id", async () => {
-  const toml = read("workers/ai-kernel/wrangler.toml");
-  const tags = [...toml.matchAll(/\[\[migrations\]\]\ntag = "(v\d+)"\nnew_sqlite_classes = \["([A-Za-z]+)"\]/g)].map((m) => `${m[1]}:${m[2]}`);
-  assert.deepEqual(tags, ["v1:SupervisorAgent", "v2:SignalAnalystAgent", "v3:AuditorAgent", "v4:AlertVault", "v5:AdrStewardAgent"]);
+  const full = read("workers/ai-kernel/wrangler.toml");
+  const tags = [...full.matchAll(/\[\[migrations\]\]\ntag = "(v\d+)"\nnew_sqlite_classes = \["([A-Za-z]+)"\]/g)].map((m) => `${m[1]}:${m[2]}`);
+  assert.deepEqual(tags, ["v1:SupervisorAgent", "v2:SignalAnalystAgent", "v3:AuditorAgent", "v4:AlertVault", "v5:AdrStewardAgent", "v6:EvolverAgent"]);
+  // The config as this step left it: before the evolver's binding and migration v6 (2026-11-17, evolver-v5 E1).
+  const toml = full.replace(/\n# The evolver[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "EVOLVER"\nclass_name = "EvolverAgent"\n/, "\n")
+    .replace(/\n\[\[migrations\]\]\ntag = "v6"\nnew_sqlite_classes = \["EvolverAgent"\]\n/, "\n");
+  assert.notEqual(toml, full);
   assert.match(toml, /\[\[durable_objects\.bindings\]\]\nname = "ADR_STEWARD"\nclass_name = "AdrStewardAgent"/);
   assert.match(read("workers/ai-kernel/src/worker.ts"), /export class AdrStewardAgent extends DurableObject<Env>/);
   // Against the config before this step, the native deploy plans an additive migration v4 -> v5 (gate 4 part B).

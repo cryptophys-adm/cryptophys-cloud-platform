@@ -90,10 +90,15 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
  * live registries applies them with registeredByConsensus(): the registries once consensus has registered what main
  * declares. organism-dna-0013 O8 checks each is declared, routine (no privileged capability) and seeded by no migration.
  */
-export const CONSENSUS_REGISTERED: { agents: ReadonlyArray<{ service: string; agent_id: string }>; engines: ReadonlyArray<{ service: string; task: string }> } = {
-  // ADR Steward (docs/design/ADR-STEWARD.md §4.1, step 3).
-  agents: [{ service: "cryptophys-ai-kernel", agent_id: "adr-steward" }],
-  engines: [{ service: "cryptophys-ai-kernel", task: "draft_adr_explanation" }],
+export const CONSENSUS_REGISTERED: { agents: ReadonlyArray<{ service: string; agent_id: string; privileged?: true }>; engines: ReadonlyArray<{ service: string; task: string }> } = {
+  // ADR Steward (docs/design/ADR-STEWARD.md §4.1, step 3). The evolver (ADR-0014 §11, docs/design/EVOLVER.md step V5)
+  // holds code.propose (tier 2): register_privileged_agent, consensus and then the owner's click.
+  agents: [{ service: "cryptophys-ai-kernel", agent_id: "adr-steward" }, { service: "cryptophys-ai-kernel", agent_id: "evolver", privileged: true }],
+  engines: [
+    { service: "cryptophys-ai-kernel", task: "draft_adr_explanation" },
+    { service: "cryptophys-ai-kernel", task: "evolve_plan" },
+    { service: "cryptophys-ai-kernel", task: "evolve_write" },
+  ],
 };
 
 /** Write the CONSENSUS_REGISTERED rows as the registration executors do (ai-kernel/src/organism.ts), each gene from its DNA. */

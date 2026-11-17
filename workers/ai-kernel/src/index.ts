@@ -25,6 +25,7 @@ import { AlertChannelError, createChannel, deleteChannel, listChannels, testChan
 import { REPORT_ID_RE, ReportAcknowledgeError, acknowledgeReport, listReports } from "./reports.ts";
 import { AUDITOR_ID } from "./auditor.ts";
 import { ADR_STEWARD_ID } from "./adr-steward.ts";
+import { EVOLVER_ID } from "./evolver.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { pruneSyscallConsumptions } from "./retention.ts";
 import { AGENT_ID } from "./supervisor.ts";
@@ -316,7 +317,7 @@ export default {
       if (verb === "actions") return request.method === "GET" ? json(await listActions(env, agentId, limitParam(url))) : errorResponse(405, "method_not_allowed");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       if (verb === "wake") {
-        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID && agentId !== AUDITOR_ID && agentId !== ADR_STEWARD_ID) return errorResponse(404, "not_found");
+        if (agentId !== AGENT_ID && agentId !== SIGNAL_ANALYST_ID && agentId !== AUDITOR_ID && agentId !== ADR_STEWARD_ID && agentId !== EVOLVER_ID) return errorResponse(404, "not_found");
         return json(await wakeAgent(env, agentId));
       }
       if (verb === "suspend") {
@@ -362,6 +363,13 @@ export default {
     ctx.waitUntil(intakeEvolutionIntents(env.DB, event.scheduledTime).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "evolution_intake_failed", message: String((err as Error)?.message ?? err) }));
     }));
+    // The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): every tick; a tick is a few indexed reads unless every gate
+    // holds (on, no kill switch, not shadow, nothing in flight, 4 hours since the last start, quiet, not frozen).
+    if (env.EVOLVER) {
+      ctx.waitUntil(env.EVOLVER.get(env.EVOLVER.idFromName(EVOLVER_ID)).cycle("scheduled").then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "evolver_cycle_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
     let fullPass: Promise<void> = Promise.resolve();
     if (minute === 22 || minute === 52) {

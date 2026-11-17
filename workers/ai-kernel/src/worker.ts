@@ -7,6 +7,7 @@ import worker, { type Env } from "./index.ts";
 import { runAuditCycle, AuditorCycleQueue } from "./auditor.ts";
 import { AdrStewardCycleQueue, runAdrStewardCycle, stewardState, type StewardState } from "./adr-steward.ts";
 import { runSignalCycle, SignalAnalystCycleQueue } from "./signal-analyst.ts";
+import { EvolverCycleQueue, runEvolverCycle, type EvolverReport } from "./evolver.ts";
 import { runCycle, SerialCycleQueue, type CycleReport } from "./supervisor.ts";
 import { observe } from "./syscall.ts";
 import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
@@ -96,6 +97,18 @@ export class AdrStewardAgent extends DurableObject<Env> {
   }
   async state(): Promise<StewardState> {
     return stewardState(this.ctx.storage);
+  }
+}
+
+/** The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): one evolution at a time; its last cycle lives here. */
+export class EvolverAgent extends DurableObject<Env> {
+  private readonly cycles = new EvolverCycleQueue();
+
+  async cycle(_trigger: "scheduled" | "operator"): Promise<EvolverReport> {
+    return this.cycles.run(() => runEvolverCycle(this.env as never, this.ctx.storage));
+  }
+  async status(): Promise<EvolverReport | null> {
+    return (await this.ctx.storage.get<EvolverReport>("last_cycle")) ?? null;
   }
 }
 

@@ -367,6 +367,8 @@ test("AE8. an invalid draft or an AI error keeps the sentence (invalid_output, u
 
 test("AE9. one Steward cycle: an executed merge_change moves ADR-0014 from not started; the AI explains it once; the counter is in the Durable Object", async () => {
   const db = registeredDb();
+  // Before the evolver is registered (E2 would be proven by its registration alone).
+  db.raw.prepare("DELETE FROM agents WHERE agent_id = 'evolver'").run();
   const ai = answeringAi();
   const mem = memory();
   const env: Record<string, unknown> = {

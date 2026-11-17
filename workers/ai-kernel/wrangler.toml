@@ -86,6 +86,13 @@ binding = "FORGE_MERGE"
 service = "cryptophys-forge"
 entrypoint = "MergeRpc"
 
+# ADR-0014 §11 (docs/design/EVOLVER.md §6): the evolver's only path to the repository. The Forge verifies the
+# Policy Engine decision for code.propose itself and writes only evo/<id> of platform-work (forge/src/evolution.ts).
+[[services]]
+binding = "FORGE_EVOLUTION"
+service = "cryptophys-forge"
+entrypoint = "EvolutionRpc"
+
 # Wave C (C1): each control-plane Worker casts its own consensus vote (VoteRpc).
 [[services]]
 binding = "VOTE_PLATFORM_API"
@@ -164,6 +171,11 @@ class_name = "AlertVault"
 name = "ADR_STEWARD"
 class_name = "AdrStewardAgent"
 
+# The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): one evolution at a time; cycles serialized here.
+[[durable_objects.bindings]]
+name = "EVOLVER"
+class_name = "EvolverAgent"
+
 [[vectorize]]
 binding = "MEMORY"
 index_name = "cryptophys-agent-memory"
@@ -187,6 +199,10 @@ new_sqlite_classes = ["AlertVault"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["AdrStewardAgent"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["EvolverAgent"]
 
 # No shared secrets: /v1 and /mcp are authorized by the verified Cloudflare Access identity.
 # The deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.

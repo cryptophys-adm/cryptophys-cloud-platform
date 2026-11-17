@@ -11,6 +11,7 @@ import { AGENT_ID, type CycleReport, type KernelEnv } from "./supervisor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { AUDITOR_ID } from "./auditor.ts";
 import { ADR_STEWARD_ID } from "./adr-steward.ts";
+import { EVOLVER_ID } from "./evolver.ts";
 
 export interface SupervisorStub { cycle(trigger: "scheduled" | "operator"): Promise<CycleReport>; status(): Promise<CycleReport | null> }
 export interface SupervisorNamespace { idFromName(name: string): unknown; get(id: unknown): SupervisorStub }
@@ -21,6 +22,8 @@ export interface KernelHttpEnv extends KernelEnv {
   AUDITOR?: SupervisorNamespace;
   /** ADR Steward (docs/design/ADR-STEWARD.md §4.1): the AdrStewardAgent Durable Object. */
   ADR_STEWARD?: SupervisorNamespace;
+  /** The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): the EvolverAgent Durable Object. */
+  EVOLVER?: SupervisorNamespace;
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
   OWNER_EMAIL?: SendEmailBinding;
@@ -174,11 +177,17 @@ const adrSteward = (env: KernelHttpEnv) => {
   return env.ADR_STEWARD.get(env.ADR_STEWARD.idFromName(ADR_STEWARD_ID));
 };
 
+const evolver = (env: KernelHttpEnv) => {
+  if (!env.EVOLVER) throw new Error("evolver_binding_missing");
+  return env.EVOLVER.get(env.EVOLVER.idFromName(EVOLVER_ID));
+};
+
 export async function wakeAgent(env: KernelHttpEnv, agentId: string): Promise<CycleReport | JsonObject> {
   if (agentId === AGENT_ID) return supervisor(env).cycle("operator");
   if (agentId === SIGNAL_ANALYST_ID) return signalAnalyst(env).cycle("operator");
   if (agentId === AUDITOR_ID) return auditor(env).cycle("operator");
   if (agentId === ADR_STEWARD_ID) return adrSteward(env).cycle("operator");
+  if (agentId === EVOLVER_ID) return evolver(env).cycle("operator") as unknown as JsonObject;
   throw new Error("unknown runnable agent");
 }
 
@@ -193,6 +202,8 @@ export async function agentStatus(env: KernelHttpEnv, agentId: string): Promise<
         ? await auditor(env).status()
         : agentId === ADR_STEWARD_ID && env.ADR_STEWARD
           ? await adrSteward(env).status()
+          : agentId === EVOLVER_ID && env.EVOLVER
+          ? await evolver(env).status() as unknown as CycleReport
           : null;
   const principals = await listAgentPrincipals(env, agentId);
   return {

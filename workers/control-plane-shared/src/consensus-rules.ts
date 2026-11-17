@@ -104,7 +104,7 @@ export const VOTERS = [
 export type Voter = string;
 
 /** The agents the AI Kernel hosts (its DNA; organism-dna-0013 O6 keeps them equal): consensus never suspends or retires one. */
-export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor", "adr-steward"]);
+export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor", "adr-steward", "evolver"]);
 /**
  * Hosts whose agents are never retired for idleness (owner 2026-11-11):
  *  - xauusd-ai-trading-assistant: its agents speak in its own rooms and report to the kernel only on a

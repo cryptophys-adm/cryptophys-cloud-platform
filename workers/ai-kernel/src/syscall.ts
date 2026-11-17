@@ -62,6 +62,11 @@ export interface SyscallEnv extends BaseEnv {
   /** ADR-0013 §3 (#262): the Forge's head of canonical main, read from Artifacts at call time. */
   CANONICAL_MAIN?: { mainHead(): Promise<{ main_sha: string | null }> };
   /** ADR-0012 G3b: the Forge's change-request state for a merge vote, and the merge executor (MergeRpc). */
+  /** ADR-0014 §11 (EVOLVER.md §6): the Forge's EvolutionRpc, the evolver's only read and write path to the repository. */
+  FORGE_EVOLUTION?: {
+    read(input: { paths?: unknown; prefix?: unknown }): Promise<Record<string, unknown>>;
+    propose(agentId: string, decisionId: string, input: JsonObject): Promise<Record<string, unknown>>;
+  };
   FORGE_MERGE?: {
     changeState(crId: string): Promise<import("../../control-plane-shared/src/merge-path.ts").ChangeEvidence | null>;
     mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<JsonObject>;
@@ -840,6 +845,11 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "doctrine.status": (env, input) => doctrineStatus(env.DB, input),
   // ADR Steward (docs/design/ADR-STEWARD.md §4.2): the bundled ADR progress manifests evaluated against D1, read only.
   "adr.observe": (env, input) => observeAdr(env, input),
+  // ADR-0014 §11, docs/design/EVOLVER.md §5: the evolver reads canonical main through the Forge (evolvable paths only).
+  "code.read": async (env, input) => {
+    if (!env.FORGE_EVOLUTION) return { available: false, reason: "forge_evolution_binding_missing" };
+    return await env.FORGE_EVOLUTION.read({ paths: input.paths, prefix: input.prefix }) as JsonObject;
+  },
   // ADR-0014 §11, docs/design/EVOLVER.md §8: the return path, scoped to the calling agent's origin.
   "council.decisions.read": (env, input, agentId) => readCouncilDecisions(env, agentId, input),
 };
@@ -869,6 +879,11 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
     case "consensus.propose": return { proposal: await consensusPropose(env, agentId, decisionId, input) };
     case "knowledge.propose": return { proposal: await proposeKnowledge(env.DB, agentId, decisionId, input) };
+    // ADR-0014 §11 (EVOLVER.md §6): the Forge verifies and consumes the decision, re-checks everything, writes evo/<id>.
+    case "code.propose": {
+      if (!env.FORGE_EVOLUTION) throw new Error("forge_evolution_binding_missing");
+      return { evolution: await env.FORGE_EVOLUTION.propose(agentId, decisionId, input) as JsonObject };
+    }
     default: throw new Error("capability_not_dispatchable");
   }
 }

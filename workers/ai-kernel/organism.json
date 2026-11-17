@@ -34,6 +34,16 @@
       "voter": true
     },
     {
+      "id": "evolver",
+      "display_name": "Evolver",
+      "capabilities": [
+        "code.read",
+        "code.propose"
+      ],
+      "tier_max": 2,
+      "voter": false
+    },
+    {
       "id": "signal-analyst",
       "display_name": "Signal Analyst",
       "capabilities": [
@@ -68,6 +78,12 @@
     },
     {
       "task": "draft_recovery_proposal"
+    },
+    {
+      "task": "evolve_plan"
+    },
+    {
+      "task": "evolve_write"
     }
   ]
 }

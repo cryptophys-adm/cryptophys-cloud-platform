@@ -13,7 +13,7 @@ const OUTCOMES = [
   { key: "failed", label: "failed", color: STATUS.critical },
 ];
 
-const KERNEL_AGENTS = ["supervisor", "signal-analyst", "auditor", "adr-steward"];
+const KERNEL_AGENTS = ["supervisor", "signal-analyst", "auditor", "adr-steward", "evolver"];
 
 export default function AgentDetail({ id }: { id: string }) {
   const { who, act, notify } = useSession();
