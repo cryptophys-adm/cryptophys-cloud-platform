@@ -540,6 +540,40 @@ export class AdrEvidenceContext {
       return r.status === want ? proven(at, refs, true) : open(`agent ${r.agent_id} is ${r.status}, not ${want}`, { refs });
     },
 
+    agent_report: async (p, after) => {
+      // One report an agent published (agent_reports), found through its (agent_id, created_at) index; the body is
+      // filtered by fixed JSON expressions whose paths and values are bound, never written into the SQL text.
+      const where = ["r.agent_id = ?", "r.kind = ?"];
+      const args: unknown[] = [p.agent_id, p.report_kind];
+      if (typeof p.since === "string") { where.push("r.created_at >= ?"); args.push(p.since); }
+      if (after) { where.push("r.created_at > ?"); args.push(after); }
+      where.push("json_valid(r.body_json)", "json_extract(r.body_json, '$.schema') = ?");
+      args.push(p.body_schema);
+      if (typeof p.origin === "string") { where.push("json_extract(r.body_json, '$.source') = ?"); args.push(p.origin); }
+      const sqlValue = (v: unknown) => (typeof v === "boolean" ? (v ? 1 : 0) : v);
+      const body = (p.body ?? {}) as Record<string, string | number | boolean>;
+      for (const [path, value] of Object.entries(body)) { where.push("json_extract(r.body_json, ?) = ?"); args.push(path, sqlValue(value)); }
+      const item = Object.entries((p.item ?? {}) as Record<string, unknown>).map(([field, v]) => [field, Array.isArray(v) ? v : [v]] as const);
+      if (item.length) {
+        const conds = item.map(([field, values]) => {
+          args.push(`$.${field}`, ...values.map(sqlValue));
+          return `json_extract(i.value, ?) IN (${values.map(() => "?").join(", ")})`;
+        });
+        where.push(`EXISTS (SELECT 1 FROM json_each(r.body_json, '$.items') i WHERE ${conds.join(" AND ")})`);
+      }
+      const r = await this.row<{ report_id: string; created_at: string }>("agent_reports",
+        `SELECT r.report_id, r.created_at FROM agent_reports r WHERE ${where.join(" AND ")} ORDER BY r.created_at ${after ? "ASC" : "DESC"} LIMIT 1`, args);
+      const cond = [
+        typeof p.origin === "string" ? `from ${p.origin}` : "",
+        ...Object.entries(body).map(([k, v]) => `with ${k.slice(2)} = ${v}`),
+        item.length ? `with an item ${item.map(([k, v]) => `${k} = ${v.join(" or ")}`).join(", ")}` : "",
+        typeof p.since === "string" ? `since ${p.since}` : "",
+      ].filter(Boolean).join(" ");
+      if (!r) return open(`no ${String(p.body_schema)} ${String(p.report_kind)} report by ${String(p.agent_id)}${cond ? ` ${cond}` : ""}${afterText(after)}`, { live: false });
+      const at = isoTime(r.created_at);
+      return proven(at, [evRef("report", r.report_id, at, item.length ? "items" : "schema")], false);
+    },
+
     reading: async (p, after) => {
       const name = p.name as (typeof ADR_READINGS)[number];
       return this.readings[name](after);

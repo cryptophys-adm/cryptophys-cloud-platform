@@ -23,13 +23,13 @@ function ProgressBar({ e }: { e: any }) {
   const seg = progressSegments(e);
   if (!seg) return <span className="mono text-[12px] text-slate-500">{MISSING}</span>;
   return (
-    <div className="flex min-w-0 items-center gap-2" aria-label={`${seg.percent}% lengkap, ${seg.proven}% terbukti, ${seg.asserted}% dinyatakan`}>
+    <div className="flex min-w-0 items-center gap-2" aria-label={`${seg.percent}% complete, ${seg.proven}% proven, ${seg.asserted}% asserted`}>
       <div className="flex h-2 w-24 shrink-0 overflow-hidden rounded-full bg-white/[0.06] sm:w-32">
         <div data-adr-seg="proven" className="h-full bg-emerald-400/80" style={{ width: `${seg.proven}%` }} />
         <div data-adr-seg="asserted" className="adr-hatch h-full" style={{ width: `${seg.asserted}%` }} />
       </div>
       <span className="mono whitespace-nowrap text-[12px] text-slate-200">{seg.percent}%</span>
-      <span className="mono whitespace-nowrap text-[10px] text-slate-500">{seg.proven}% terbukti</span>
+      <span className="mono whitespace-nowrap text-[10px] text-slate-500">{seg.proven}% proven</span>
     </div>
   );
 }
@@ -87,8 +87,8 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
   const next = (d ?? e)?.next_step;
   return (
     <div className="mt-3 space-y-2.5 border-t border-white/5 pt-3" data-testid={`adr-detail-${id}`}>
-      <Line label="Fase">
-        {loading && !d ? <Skeleton rows={1} /> : error && !d ? <span className="text-rose-300">Dokumen ADR-{id} tidak dapat dibaca: {error}</span> : phases.length === 0 ? <span className="text-slate-500">{MISSING}</span> : (
+      <Line label="Phases">
+        {loading && !d ? <Skeleton rows={1} /> : error && !d ? <span className="text-rose-300">The ADR-{id} document could not be read: {error}</span> : phases.length === 0 ? <span className="text-slate-500">{MISSING}</span> : (
           <div className="space-y-1.5">
             <button type="button" className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-left" aria-expanded={phasesOpen} onClick={() => setPhasesOpen((o) => !o)}>
               {phases.map((p) => (
@@ -96,7 +96,7 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
                   <span className="text-slate-200">{shown(p?.id)}</span> <span className={MARK_TONE[phaseMark(p?.state)]}>{MARK[phaseMark(p?.state)]}</span>
                 </span>
               ))}
-              <span className="text-[10px] uppercase tracking-widest text-cyan-300">{phasesOpen ? "tutup" : "rincian"}</span>
+              <span className="text-[10px] uppercase tracking-widest text-cyan-300">{phasesOpen ? "close" : "details"}</span>
             </button>
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
               {MARK_LEGEND.map(([m, label]) => <span key={m}><span className={MARK_TONE[m]}>{MARK[m]}</span> {label}</span>)}
@@ -112,7 +112,7 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
                     </div>
                     <div className="mt-0.5 break-words text-[12px] text-slate-300">{shown(p?.title)}</div>
                     {typeof p?.reason === "string" && p.reason && <div className="mt-0.5 break-words text-[11px] text-slate-500">{p.reason}</div>}
-                    {typeof p?.earliest === "string" && <div className="mt-0.5 text-[11px] text-slate-500">paling cepat {utcMinute(p.earliest)}</div>}
+                    {typeof p?.earliest === "string" && <div className="mt-0.5 text-[11px] text-slate-500">earliest {utcMinute(p.earliest)}</div>}
                     <div className="mt-1"><Refs refs={p?.refs} /></div>
                   </li>
                 ))}
@@ -121,14 +121,14 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
           </div>
         )}
       </Line>
-      <Line label="Penghambat">
+      <Line label="Blockers">
         {blockers.length === 0 ? <span className="text-slate-500">{MISSING}</span> : <ul className="list-disc space-y-0.5 pl-4">{blockers.map((b, i) => <li key={i} className="break-words">{String(b)}</li>)}</ul>}
       </Line>
-      <Line label="Langkah berikutnya">{next ? <span className="break-words"><span className="mono text-slate-100">{shown(next.phase)}</span>: {shown(next.text)}</span> : <span className="text-slate-500">{MISSING}</span>}</Line>
-      <Line label="Menunggu pemilik"><OwnerActions actions={arr((d ?? e)?.owner_actions)} /></Line>
+      <Line label="Next step">{next ? <span className="break-words"><span className="mono text-slate-100">{shown(next.phase)}</span>: {shown(next.text)}</span> : <span className="text-slate-500">{MISSING}</span>}</Line>
+      <Line label="Waiting for owner"><OwnerActions actions={arr((d ?? e)?.owner_actions)} /></Line>
       {(d?.stale === true || (!d && e?.stale === true)) && <Line label="Data"><span className="text-amber-200">{staleLabel(d?.stale_sources)}</span></Line>}
       {arr(d?.drift).length > 0 && <Line label={DRIFT_LABEL}>{arr(d.drift).map((x, i) => <div key={i} className="mono break-words text-[11px] text-amber-200">{shown(x?.phase)} · {shown(x?.kind)} · {shown(x?.doc_ref)}</div>)}</Line>}
-      <Line label="Perubahan terakhir">
+      <Line label="Last change">
         <span className="mono">{lastChange(e)}</span>
         {arr(d?.history).length > 1 && (
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
@@ -136,7 +136,7 @@ function AdrDetail({ e, id }: { e: any; id: string }) {
           </div>
         )}
       </Line>
-      <Line label={`Penjelasan (${explanationSource(explanation)})`}>
+      <Line label={`Explanation (${explanationSource(explanation)})`}>
         <p className="break-words leading-relaxed">{shown(explanation?.teks)}</p>
         <div className="mt-1"><Refs refs={explanation?.rujukan} /></div>
       </Line>
@@ -155,15 +155,15 @@ function AdrRow({ e, open }: { e: any; open: boolean }) {
           {open ? <ChevronDown className="h-3.5 w-3.5 text-slate-500" /> : <ChevronRight className="h-3.5 w-3.5 text-slate-500" />}
           <span className="mono text-[13px] font-semibold text-cyan-200">{shown(e?.adr)}</span>
           <span className="min-w-0 break-words text-[13px] text-slate-100">{shown(e?.title)}</span>
-          {isDeferred(e) && <Badge tone="amber">ditunda</Badge>}
+          {isDeferred(e) && <Badge tone="amber">deferred</Badge>}
           {drift !== null && drift > 0 && <Badge tone="amber">{DRIFT_LABEL} · {drift}</Badge>}
-          {e?.stale === true && <Badge tone="amber">data lama</Badge>}
+          {e?.stale === true && <Badge tone="amber">stale data</Badge>}
         </div>
         <div className="mt-2 grid gap-2 pl-5 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1.2fr)] sm:items-center sm:gap-4">
           <div><Badge tone={statusTone(e)}>{statusLabel(e)}</Badge></div>
           <ProgressBar e={e} />
           <div className="min-w-0 break-words text-[12px] text-slate-400">
-            <span className="text-[10px] uppercase tracking-widest text-slate-500">Berikutnya </span>
+            <span className="text-[10px] uppercase tracking-widest text-slate-500">Next </span>
             {e?.next_step ? <><span className="mono text-slate-200">{shown(e.next_step.phase)}</span>: {shown(e.next_step.text)}</> : MISSING}
             {waiting > 0 && <span className="ml-2 text-amber-200">· {OWNER_WAITING}: {waiting}</span>}
           </div>
@@ -191,27 +191,27 @@ export default function AdrPanel({ focus, openId }: { focus: boolean; openId: st
   const status = steward?.status;
   const right = (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] uppercase tracking-widest text-slate-600">
-      <span>baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui {utcMinute(steward?.last_pass_at)}</span>
+      <span>read-only · computed from evidence, not AI guesses · updated {utcMinute(steward?.last_pass_at)}</span>
       {known && <Badge tone={stewardTone(status)}>Steward: {stewardLabel(status)}</Badge>}
-      {known && <span title="penjelasan AI hari ini / batas harian">AI hari ini: {aiTodayLabel(steward)}</span>}
+      {known && <span title="AI explanations today / daily cap">AI today: {aiTodayLabel(steward)}</span>}
     </span>
   );
   let body;
   if (loading && !data) body = <Skeleton rows={3} />;
-  else if (error && !data) body = <Empty>Data ADR tidak dapat dibaca: {error}</Empty>;
-  else if (!known) body = <Empty>Respons GET /v1/adr tidak dikenali; tidak ada data ADR yang ditampilkan.</Empty>;
-  else if (data.available === false) body = <Empty>Steward belum berjalan: data ADR belum tersedia (tabel adr_progress belum ada).</Empty>;
-  else if (adrs.length === 0) body = <Empty>Belum ada pass Steward: belum ada dokumen ADR yang tersimpan.</Empty>;
+  else if (error && !data) body = <Empty>The ADR data could not be read: {error}</Empty>;
+  else if (!known) body = <Empty>The GET /v1/adr response is not recognized; no ADR data is shown.</Empty>;
+  else if (data.available === false) body = <Empty>The Steward has not run yet: no ADR data is available (the adr_progress table does not exist yet).</Empty>;
+  else if (adrs.length === 0) body = <Empty>No Steward pass yet: no ADR document is stored yet.</Empty>;
   else body = <ul className="space-y-2">{adrs.map((e) => <AdrRow key={String(e?.adr)} e={e} open={openId === e?.adr} />)}</ul>;
   return (
     <div ref={ref} className="scroll-mt-4" data-testid="adr-panel">
       <Panel title={<span className="normal-case tracking-normal">{ADR_PANEL_TITLE}</span>} icon={<ScrollText className="h-3.5 w-3.5 text-cyan-300" />} right={right}>
         {known && status !== "enabled" && (
           <p className="mb-2 text-[12px] text-amber-200">
-            Steward {stewardLabel(status)}: tidak ada pass baru{adrs.length > 0 ? `; yang tampil adalah dokumen tersimpan terakhir (pass terakhir ${utcMinute(steward?.last_pass_at)})` : ""}.
+            Steward {stewardLabel(status)}: no new pass runs{adrs.length > 0 ? `; the last stored documents are shown (last pass ${utcMinute(steward?.last_pass_at)})` : ""}.
           </p>
         )}
-        {error && data && <p className="mb-2 text-[11px] text-rose-300">Pembaruan terakhir gagal: {error}</p>}
+        {error && data && <p className="mb-2 text-[11px] text-rose-300">The last update failed: {error}</p>}
         {body}
       </Panel>
     </div>

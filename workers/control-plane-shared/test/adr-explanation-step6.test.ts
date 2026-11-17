@@ -3,15 +3,17 @@
 // status changes, through the kernel's AI engine (the model allow-list, the kernel's daily limit and
 // AI_ACCOUNT_DAILY_REQUEST_LIMIT), within the Durable Object's caps: 6 a UTC day, 1 per ADR a day, 2 a cycle, none in
 // survival mode. Its deterministic validator keeps only a draft that cites the stored document's evidence; otherwise
-// the template sentence stays and adr.explanation_skipped says why. ai-engine.ts's per-task style: this task alone is
-// Indonesian, every other task stays plain English. GET /v1/adr's steward.ai_today counts it. A fake AI only (harness
+// the template sentence stays and adr.explanation_skipped says why. Every task, this one included, is plain English
+// (owner 2026-11-17, "all in english please", which removed the per-task Indonesian style of step 6). GET /v1/adr's
+// steward.ai_today counts it. A fake AI only (harness
 // fakeAi), never a model. Plain fs reads relative to the repository root, so the Forge runner can bundle it. One
 // migratedDb() per test at most (sql.js under the Forge).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fakeAi, migratedDb, registeredDb } from "./harness.ts";
-import { AiEngine, ALLOWED_TEXT_MODELS, DEFAULT_MODEL, INDONESIAN_STYLE_TASKS, PLAIN_ENGLISH_STYLE, PLAIN_INDONESIAN_STYLE, taskStyle, utcDay, type AiTask } from "../src/ai-engine.ts";
+import * as aiEngine from "../src/ai-engine.ts";
+import { AiEngine, ALLOWED_TEXT_MODELS, DEFAULT_MODEL, PLAIN_ENGLISH_STYLE, utcDay, type AiTask } from "../src/ai-engine.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import { isComplete, type AdrEvaluation, type AdrEvidenceState } from "../src/adr-evidence.ts";
 import { draftAuditDigestTask } from "../../ai-kernel/src/auditor.ts";
@@ -21,7 +23,7 @@ import { overviewTask } from "../../platform-api/src/index.ts";
 import { tagTask } from "../../platform-registry/src/index.ts";
 import { adrListView } from "../../ai-kernel/src/adr-view.ts";
 import {
-  ADR_AI_DAILY_CAP, ADR_AI_PER_ADR_DAILY, ADR_AI_PER_CYCLE, ADR_STATUS_WORDS, ADR_STEWARD_ID, applyObservation, buildAdrDoc, checkAdrExplanation,
+  ADR_AI_DAILY_CAP, ADR_AI_PER_ADR_DAILY, ADR_AI_PER_CYCLE, ADR_DEFERRED_WORD, ADR_STATUS_WORDS, ADR_STEWARD_ID, applyObservation, buildAdrDoc, checkAdrExplanation,
   draftAdrExplanationTask, explanationInput, runAdrStewardCycle, stewardState, templateSentence, type AdrObservation, type AdrProgressDoc, type StewardState,
 } from "../../ai-kernel/src/adr-steward.ts";
 
@@ -63,7 +65,7 @@ const pair = (adr: string, proven: boolean) => evaluation(adr, [
 /** The harness's fakeAi, answering each call from its input: by default a valid draft citing the input's first ref. */
 type Input = { adr: string; counts: Record<string, number>; changed: { refs: string[] }[]; evidence: { ref: string }[]; from: string; to: string };
 const firstRef = (i: Input) => [...i.changed.flatMap((c) => c.refs), ...i.evidence.map((e) => e.ref)][0];
-function answeringAi(make: (i: Input) => unknown = (i) => ({ teks: `${i.counts.phases_complete} dari ${i.counts.phases_total} fase lengkap.`, rujukan: [firstRef(i)] })) {
+function answeringAi(make: (i: Input) => unknown = (i) => ({ teks: `${i.counts.phases_complete} of ${i.counts.phases_total} phases complete.`, rujukan: [firstRef(i)] })) {
   const ai = fakeAi();
   const run = ai.run.bind(ai);
   ai.run = async (model: string, input: any) => {
@@ -92,44 +94,40 @@ function steward(ai: unknown = answeringAi(), extra: Record<string, unknown> = {
   return { db, env, state, pass };
 }
 
-// ================================================================ the per-task style (ai-engine.ts)
+// ================================================================ every task is plain English (ai-engine.ts)
 
-test("AE1. the per-task style: draft_adr_explanation alone is Indonesian; every other task, and any task that only asks, stays plain English", async () => {
-  assert.deepEqual([...INDONESIAN_STYLE_TASKS], ["draft_adr_explanation"], "the one opt-in (owner Q5: this panel only)");
-  assert.match(PLAIN_INDONESIAN_STYLE, /bahasa Indonesia/);
-  assert.match(PLAIN_INDONESIAN_STYLE, /Nomor ADR, kode fase, angka/, "identifiers and numbers stay as they are");
+test("AE1. every task is plain English: the ADR explanation too (owner 2026-11-17, \"all in english please\"); no per-task style is left", async () => {
+  // The Indonesian exception is gone with its mechanism: no per-task style, no opt-in list, no Indonesian style line.
+  for (const name of ["INDONESIAN_STYLE_TASKS", "PLAIN_INDONESIAN_STYLE", "taskStyle"]) assert.equal(name in aiEngine, false, `ai-engine.ts no longer exports ${name}`);
   const adrTask = draftAdrExplanationTask({ status: "in_progress", refs: ["ev:platform/audit/evt_1"], text: "{}" });
-  assert.equal(adrTask.style, "plain_indonesian");
-  assert.equal(taskStyle(adrTask), PLAIN_INDONESIAN_STYLE);
-  // The opt-in is explicit: the same name without it, or another name with it, is English.
-  assert.equal(taskStyle({ name: "draft_adr_explanation" }), PLAIN_ENGLISH_STYLE);
-  assert.equal(taskStyle({ name: "draft_audit_digest", style: "plain_indonesian" }), PLAIN_ENGLISH_STYLE);
-  // Every other task the platform runs keeps PLAIN_ENGLISH_STYLE.
-  const others: AiTask<unknown>[] = [draftAuditDigestTask({ denials: undefined } as never), supervisorDraftTask, riskTask, overviewTask, tagTask] as AiTask<unknown>[];
-  for (const t of others) {
-    assert.equal(t.style, undefined, t.name);
-    assert.equal(taskStyle(t), PLAIN_ENGLISH_STYLE, t.name);
-  }
-  // In the system message the engine sends: one engine, three tasks.
+  assert.equal("style" in adrTask, false, "the ADR explanation asks for no style of its own");
+  assert.match(adrTask.instructions, /^Write a short explanation of one ADR's status change/);
+  assert.match(adrTask.instructions, /ADR numbers and phase ids stay as they are/, "identifiers and numbers stay as they are");
+  // Every task the platform runs, the ADR explanation included, gets PLAIN_ENGLISH_STYLE in the system message.
+  const tasks: AiTask<unknown>[] = [adrTask, draftAuditDigestTask({ denials: undefined } as never), supervisorDraftTask, riskTask, overviewTask, tagTask] as AiTask<unknown>[];
+  for (const t of tasks) assert.equal("style" in t, false, t.name);
   const ai = fakeAi({ response: '{"teks":"x","rujukan":[]}' });
-  const e = new AiEngine({ service: "cryptophys-ai-kernel", ai, db: migratedDb() as never, allowedModels: ALLOWED_TEXT_MODELS, allowedTasks: ["draft_adr_explanation", "draft_audit_digest", "t"] });
-  const plain = (name: string, style?: "plain_indonesian"): AiTask<unknown> => ({ name, instructions: "x", maxInputChars: 1000, maxOutputTokens: 50, ...(style ? { style } : {}), validate: (o) => o });
-  await e.run(adrTask, { a: 1 }, "c1");
-  await e.run(plain("draft_audit_digest", "plain_indonesian"), { a: 1 }, "c2");
-  await e.run(plain("t"), { a: 1 }, "c3");
+  const e = new AiEngine({ service: "cryptophys-ai-kernel", ai, db: migratedDb() as never, allowedModels: ALLOWED_TEXT_MODELS, allowedTasks: tasks.map((t) => t.name) });
+  for (const [i, t] of tasks.entries()) await e.run({ ...t, maxInputChars: 100_000 }, { a: 1 }, `c${i}`);
   const system = ai.calls.map((c) => String((c.input as any).messages[0].content));
-  assert.ok(system[0].includes(PLAIN_INDONESIAN_STYLE) && !system[0].includes(PLAIN_ENGLISH_STYLE), "the ADR explanation is Indonesian");
-  for (const s of system.slice(1)) assert.ok(s.includes(PLAIN_ENGLISH_STYLE) && !s.includes(PLAIN_INDONESIAN_STYLE), "every other task is English");
+  assert.equal(system.length, tasks.length);
+  for (const [i, s] of system.entries()) {
+    assert.ok(s.startsWith(`${tasks[i].instructions}\n${PLAIN_ENGLISH_STYLE}\n`), `${tasks[i].name}: the plain-English style follows the instructions`);
+    assert.doesNotMatch(s, /bahasa Indonesia|Indonesian/i, tasks[i].name);
+  }
+  // Even a task that asks for a style gets plain English: the engine reads no style field.
+  await e.run({ ...tasks[1], style: "plain_indonesian" } as AiTask<unknown>, { a: 1 }, "c-style");
+  assert.ok(String((ai.calls.at(-1)!.input as any).messages[0].content).includes(PLAIN_ENGLISH_STYLE));
   assert.equal(DEFAULT_MODEL, GEMMA, "no new model");
-  // No other source opts in: the Indonesian style appears in the engine and the Steward only.
+  // No source asks for an Indonesian style any more.
   const workers = new URL("workers/", ROOT);
   const walk = (rel: string): string[] => (readdirSync(new URL(rel, workers)) as string[]).flatMap((n) => {
     if (n === "node_modules" || n === "dist") return [];
     const f = `${rel}${n}`;
     return statSync(new URL(f, workers)).isDirectory() ? walk(`${f}/`) : [f];
   });
-  const users = walk("").filter((f) => /\/src\/.*\.tsx?$/.test(`/${f}`)).filter((f) => /style:\s*["']plain_indonesian["']|PLAIN_INDONESIAN_STYLE/.test(readFileSync(new URL(f, workers), "utf8")));
-  assert.deepEqual(users.sort(), ["ai-kernel/src/adr-steward.ts", "control-plane-shared/src/ai-engine.ts"]);
+  const users = walk("").filter((f) => /\/src\/.*\.tsx?$/.test(`/${f}`)).filter((f) => /plain_indonesian|PLAIN_INDONESIAN_STYLE|INDONESIAN_STYLE_TASKS|taskStyle/.test(readFileSync(new URL(f, workers), "utf8")));
+  assert.deepEqual(users, []);
 });
 
 // ================================================================ the validator and the input (§4.5)
@@ -140,40 +138,52 @@ test("AE2. the validator: refs only from the stored document (at least one), num
   const check = (teks: unknown, rujukan: unknown = [refs[0]], o: { status?: any; deferred?: boolean } = {}) =>
     checkAdrExplanation({ status: o.status ?? "in_progress", deferred: o.deferred, refs, text }, { teks, rujukan });
   const fail = (r: ReturnType<typeof check>) => ("fail" in r ? r.fail : "ok");
-  assert.deepEqual(check("0012: 18 dari 26 fase lengkap, 69%. Masih berjalan."), { ok: { teks: "0012: 18 dari 26 fase lengkap, 69%. Masih berjalan.", rujukan: [refs[0]] } });
-  assert.equal(fail(check("18 dari 26 fase lengkap.", refs)), "ok", "up to six refs, each from the input");
+  assert.deepEqual(check("0012: 18 of 26 phases complete, 69%. Still in progress."), { ok: { teks: "0012: 18 of 26 phases complete, 69%. Still in progress.", rujukan: [refs[0]] } });
+  assert.equal(fail(check("18 of 26 phases complete.", refs)), "ok", "up to six refs, each from the input");
   // Refs.
-  assert.equal(fail(check("18 dari 26.", [])), "rujukan_missing", "it must cite evidence");
-  assert.equal(fail(check("18 dari 26.", "ev:x")), "rujukan_missing");
-  assert.equal(fail(check("18 dari 26.", ["ev:platform/audit/evt_zzz"])), "ref_not_in_input");
-  assert.equal(fail(check("18 dari 26.", [refs[0], refs[0]])), "rujukan_bounds", "no ref twice");
-  assert.equal(fail(check("18 dari 26.", Array(7).fill(refs[0]))), "rujukan_bounds");
+  assert.equal(fail(check("18 of 26.", [])), "rujukan_missing", "it must cite evidence");
+  assert.equal(fail(check("18 of 26.", "ev:x")), "rujukan_missing");
+  assert.equal(fail(check("18 of 26.", ["ev:platform/audit/evt_zzz"])), "ref_not_in_input");
+  assert.equal(fail(check("18 of 26.", [refs[0], refs[0]])), "rujukan_bounds", "no ref twice");
+  assert.equal(fail(check("18 of 26.", Array(7).fill(refs[0]))), "rujukan_bounds");
   // Numbers: every one occurs in the input as a number, not as a digit inside one.
-  assert.equal(fail(check("19 dari 26 fase lengkap.")), "number_not_in_input");
-  assert.equal(fail(check("8 fase masih terbuka.")), "number_not_in_input", "no arithmetic the input does not state");
-  assert.equal(fail(check("1 fase berubah.")), "number_not_in_input", "1 is in 18, but not a number of the input");
-  // Status words (§6.3): only the computed status's, never negated.
-  assert.equal(fail(check("ADR ini selesai.")), "status_contradiction");
-  assert.equal(fail(check("ADR ini ditahan.")), "status_contradiction");
-  assert.equal(fail(check("ADR ini belum dimulai.")), "status_contradiction");
-  assert.equal(fail(check("ADR ini ditunda.")), "status_contradiction", "ditunda only for a deferred ADR");
-  assert.equal(fail(check("ADR ini ditunda dan berjalan.", [refs[0]], { deferred: true })), "ok");
-  assert.equal(fail(check("ADR ini belum selesai.")), "ok", "a negated other status is not a claim");
-  assert.equal(fail(check("ADR ini tidak berjalan.")), "status_contradiction", "the computed status negated");
-  assert.equal(fail(check("ADR ini selesai.", [refs[0]], { status: "done" })), "ok");
-  assert.equal(fail(check("ADR ini belum selesai.", [refs[0]], { status: "done" })), "status_contradiction");
-  assert.equal(fail(check("Berjalan.", [refs[0]], { status: "done" })), "status_contradiction");
+  assert.equal(fail(check("19 of 26 phases complete.")), "number_not_in_input");
+  assert.equal(fail(check("8 phases are still open.")), "number_not_in_input", "no arithmetic the input does not state");
+  assert.equal(fail(check("1 phase changed.")), "number_not_in_input", "1 is in 18, but not a number of the input");
+  // Status words (§6.3, English): only the computed status's, never negated.
+  assert.deepEqual({ ...ADR_STATUS_WORDS }, { not_started: "not started", in_progress: "in progress", done: "done", superseded: "superseded", held: "held", planned: "planned" });
+  assert.equal(ADR_DEFERRED_WORD, "deferred");
+  assert.equal(fail(check("This ADR is done.")), "status_contradiction");
+  assert.equal(fail(check("This ADR is held.")), "status_contradiction");
+  assert.equal(fail(check("This ADR is planned.")), "status_contradiction");
+  assert.equal(fail(check("This ADR is superseded.")), "status_contradiction");
+  assert.equal(fail(check("This ADR is not started.")), "status_contradiction");
+  assert.equal(fail(check("This ADR is deferred.")), "status_contradiction", "deferred only for a deferred ADR");
+  assert.equal(fail(check("This ADR is deferred and in progress.", [refs[0]], { deferred: true })), "ok");
+  assert.equal(fail(check("This ADR is not done.")), "ok", "a negated other status is not a claim");
+  assert.equal(fail(check("This ADR is not yet done.")), "ok");
+  assert.equal(fail(check("This ADR isn't done.")), "ok");
+  assert.equal(fail(check("This ADR is not deferred.")), "ok", "a negated deferred badge is not a claim");
+  assert.equal(fail(check("This ADR is not in progress.")), "status_contradiction", "the computed status negated");
+  assert.equal(fail(check("This ADR is no longer in progress.")), "status_contradiction");
+  assert.equal(fail(check("This ADR isn't in  progress.")), "status_contradiction", "whitespace inside the words does not hide them");
+  assert.equal(fail(check("This ADR is done.", [refs[0]], { status: "done" })), "ok");
+  assert.equal(fail(check("This ADR is not done.", [refs[0]], { status: "done" })), "status_contradiction");
+  assert.equal(fail(check("This ADR has not been done.", [refs[0]], { status: "done" })), "status_contradiction");
+  assert.equal(fail(check("This ADR is never done.", [refs[0]], { status: "done" })), "status_contradiction");
+  assert.equal(fail(check("In progress.", [refs[0]], { status: "done" })), "status_contradiction");
+  assert.equal(fail(check("This ADR is not started.", [refs[0]], { status: "not_started" })), "ok", "not started is the computed status's own word");
   assert.deepEqual(Object.keys(ADR_STATUS_WORDS).sort(), ["done", "held", "in_progress", "not_started", "planned", "superseded"]);
   // Bounds, sentences, advisory language, shape.
   assert.equal(fail(check("x".repeat(401))), "teks_bounds");
   assert.equal(fail(check("   ")), "teks_bounds");
-  assert.equal(fail(check("Satu. Dua. Tiga. Empat.")), "too_many_sentences");
+  assert.equal(fail(check("One. Two. Three. Four.")), "too_many_sentences");
   assert.equal(fail(check("You should buy now at 26.")), "advisory_language");
   assert.equal(fail(checkAdrExplanation({ status: "done", refs, text }, ["x"])), "not_object");
   // The task wraps it, and names the failed rule for ai_failures (never output content).
   const task = draftAdrExplanationTask({ status: "in_progress", refs, text });
-  assert.equal(task.validate({ teks: "19 dari 26.", rujukan: [refs[0]] }), null);
-  assert.equal(task.diagnose!({ teks: "19 dari 26.", rujukan: [refs[0]] }), "number_not_in_input");
+  assert.equal(task.validate({ teks: "19 of 26.", rujukan: [refs[0]] }), null);
+  assert.equal(task.diagnose!({ teks: "19 of 26.", rujukan: [refs[0]] }), "number_not_in_input");
   assert.equal(task.maxInputChars, 4_000);
   assert.equal(task.maxOutputTokens, 300);
 });
@@ -210,7 +220,7 @@ test("AE4. the AI explains a status change only, cites the stored document, keep
   // A change under the same status (a reason moved) is written, but not explained, and is not a skip.
   const same = await pass([single("0901", false), evaluation("0902", [{ id: "A", state: "open", reason: "another reason" }, { id: "B", state: "open" }])], NOW + MIN);
   assert.deepEqual([same.pass.written, same.pass.explained, ai.calls.length], [["0902"], [], 0]);
-  // 0901 not_started -> done: one call, the model of the allow-list, the Indonesian style, the bounded input.
+  // 0901 not_started -> done: one call, the model of the allow-list, the plain-English style, the bounded input.
   const r = await pass([single("0901", true), evaluation("0902", [{ id: "A", state: "open", reason: "another reason" }, { id: "B", state: "open" }])], NOW + 2 * MIN);
   assert.deepEqual([r.pass.written, r.pass.explained, r.pass.explanation_skipped], [["0901"], ["0901"], []]);
   assert.equal(ai.calls.length, 1);
@@ -218,13 +228,13 @@ test("AE4. the AI explains a status change only, cites the stored document, keep
   assert.equal(call.model, GEMMA);
   assert.ok(ALLOWED_TEXT_MODELS.includes(call.model));
   assert.equal(call.input.max_tokens, 300);
-  assert.ok(String(call.input.messages[0].content).includes(PLAIN_INDONESIAN_STYLE));
+  assert.ok(String(call.input.messages[0].content).includes(PLAIN_ENGLISH_STYLE));
   const sent = JSON.parse(call.input.messages[1].content);
   assert.ok(call.input.messages[1].content.length <= 4_000);
   assert.deepEqual([sent.adr, sent.from, sent.to, sent.changed.map((c: any) => c.id)], ["0901", "not_started", "done", ["P1"]]);
   const doc = bodyOf(db, "0901");
   const expl = explanationOfRow(db, "0901");
-  assert.deepEqual(expl, { schema: "adr.explanation.v1", source: "ai", teks: "1 dari 1 fase lengkap.", rujukan: [doc.phases[0].refs[0]], template: templateSentence(doc) });
+  assert.deepEqual(expl, { schema: "adr.explanation.v1", source: "ai", teks: "1 of 1 phases complete.", rujukan: [doc.phases[0].refs[0]], template: templateSentence(doc) });
   assert.ok(expl.rujukan.every((x: string) => doc.phases.some((p) => p.refs.includes(x))), "every cited ref is in the stored document");
   const hist = rows(db, "SELECT explanation_json FROM adr_progress_history WHERE adr_id = '0901' ORDER BY revision DESC LIMIT 1")[0];
   assert.deepEqual(JSON.parse(hist.explanation_json), expl, "the history row holds the same explanation");
@@ -328,7 +338,7 @@ test("AE7. the engine's budgets and allow-list: the account cap (budget), a mode
 
 test("AE8. an invalid draft or an AI error keeps the sentence (invalid_output, unavailable) and counts the request; nothing to cite, no call", async () => {
   let mode: "invented" | "foreign_ref" | "throw" = "invented" as "invented" | "foreign_ref" | "throw";
-  const ai = answeringAi((i) => (mode === "invented" ? { teks: "7 dari 9 fase lengkap.", rujukan: [firstRef(i)] } : { teks: "1 dari 1 fase lengkap.", rujukan: ["ev:platform/audit/evt_not_in_the_document"] }));
+  const ai = answeringAi((i) => (mode === "invented" ? { teks: "7 of 9 phases complete.", rujukan: [firstRef(i)] } : { teks: "1 of 1 phases complete.", rujukan: ["ev:platform/audit/evt_not_in_the_document"] }));
   const { db, state, pass } = steward(ai);
   await pass([single("0941", false), single("0942", false), single("0943", false), single("0944", true)]);
   const a = await pass([single("0941", true), single("0942", false), single("0943", false), single("0944", true)], NOW + MIN);
@@ -394,7 +404,7 @@ test("AE9. one Steward cycle: an executed merge_change moves ADR-0014 from not s
 
 // ================================================================ guard paths and the record
 
-test("AE10. no guard path is touched; docs/SSOT.md records step 6 and the Indonesian exception; the design marks step 6 built", () => {
+test("AE10. no guard path is touched; docs/SSOT.md records step 6 and that every AI text is plain English; the design marks step 6 built and the reversal", () => {
   for (const p of [
     "workers/control-plane-shared/src/ai-engine.ts", "workers/ai-kernel/src/adr-steward.ts", "workers/ai-kernel/src/adr-view.ts",
     "workers/console/ui/src/lib/adr.ts", "workers/console/ui/src/components/AdrPanel.tsx", "workers/console/ui/scripts/render-smoke.mjs",
@@ -405,6 +415,11 @@ test("AE10. no guard path is touched; docs/SSOT.md records step 6 and the Indone
   assert.equal(criticalPathReason("workers/control-plane-shared/src/power-mode.ts"), "learning_mandate", "power-mode.ts is a guard path, and step 6 only reads it");
   const ssot = read("docs/SSOT.md");
   assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 6, the AI explanation: [^()]*`draft_adr_explanation`[^()]*`adr\.explanation_skipped`[^()]*; ADR Steward step 5, the Vision page's ADR panel: /);
-  assert.match(ssot, /\*\*Workers AI\.\*\*[^\n]*\n(?:  - [^\n]*\n)*  - [^\n]*plain English[^\n]*ADR panel's explanation[^\n]*Indonesian/);
-  assert.match(read("docs/design/ADR-STEWARD.md"), /\| 6 \| The explanation: [^\n]*\*\*Built 2026-11-17\*\*/);
+  assert.match(ssot, /\*\*Workers AI\.\*\*[^\n]*\n(?:  - [^\n]*\n)*  - Every AI text is plain English for operators[^\n]*without exception[^\n]*all in english please/);
+  assert.doesNotMatch(ssot, /explanation[^\n]*\bin Indonesian\b|Indonesian exception/, "the SSOT no longer says the explanation is Indonesian");
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*all in english please[^()]*INDONESIAN_STYLE_TASKS[^()]*; /);
+  const design = read("docs/design/ADR-STEWARD.md");
+  assert.match(design, /\| 6 \| The explanation: [^\n]*\*\*Built 2026-11-17\*\*/);
+  assert.match(design, /\*\*Q5\. [^\n]*\*\*Superseded 2026-11-17\*\* by the owner's "all in english please"/);
+  assert.match(design, /\*\*Reversal \(2026-11-17, "all in english please"\)\.\*\*/);
 });

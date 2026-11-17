@@ -11,7 +11,7 @@ Every "exists" claim below names a file. A claim that something is new says so.
 
 **Goals**
 - One ranked list of everything that waits on the owner, in metric form, with deep links (H0).
-- A read-only Indonesian chat that answers from measured state and cites its evidence (H1).
+- A read-only English chat that answers from measured state and cites its evidence (H1). English since 2026-11-17 (owner: "all in englihs, hanya percakapan owner dengan sesi claude yang bahasa indonesia").
 - Structured, evidence-bound councils of agents on one topic. The owner can join live. Each council ends in a ranked list of options, and the owner's pick becomes a typed proposal (H1.5, handing off to H2).
 - A shared council contract that Cerebrum and Nexus (xauusd) each implement.
 
@@ -157,7 +157,7 @@ Needs you                                   mode: deploy · 4 items · updated 1
   - `GET /v1/conversations` and `GET /v1/conversations/{id}` read.
   - Three new Console allow-list rows.
   - Live updates use the push hub (§4.5) once it exists. Until then, the streamed POST is enough for one asker.
-- **UI.** A new Console page `#/ask` with an Indonesian chat. Every answer ends with its evidence chips (`ev:` refs, each linking to its Console page). A turn can be rated (thumbs up or down) and the rating is stored. In H3, ratings become labelled knowledge.
+- **UI.** A new Console page `#/ask` with an English chat. Every answer ends with its evidence chips (`ev:` refs, each linking to its Console page). A turn can be rated (thumbs up or down) and the rating is stored. In H3, ratings become labelled knowledge.
 
 ### 3.2 Read-only tools and what each wraps
 
@@ -218,7 +218,7 @@ Each event is written with `appendAuditEvent` (`control-plane-shared/src/audit.t
   - The evolver's model is pinned in `EVOLVER_MODEL` (`evolution-limits.ts`).
 - **H1:**
   - `CHAT_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017"` (the ADR-0017 default), added to the allow-list;
-  - the Indonesian instructions are the chat's own, because `PLAIN_ENGLISH_STYLE` is for reports;
+  - the chat uses the platform's `PLAIN_ENGLISH_STYLE`, like every other AI text (owner 2026-11-17);
   - the model id and its price are checked again against the Workers AI catalog at build time, as ADR-0016 requires for T2.
 - **A minimal chat arena** (H1, shadow):
   - Once a week, the rated turns are replayed against one alternative (`@cf/zai-org/glm-5.3`, named in ADR-0016) with the same tool outputs.
@@ -519,7 +519,7 @@ ADR-0019 is not drafted. A search of this repository, the xauusd repository and 
 | 3 | H0c: Owner page ranked list and `#/owner/<item_id>`; H0d: Telegram top-5 lines with deep links, no-action-URL test | 1.5 d |
 | 4 | H1a: read-only Forge docs RPC; `PolicyRpc.dryRun()` | 1.5–2 d |
 | 5 | H1b: `ConversationAgent` DO (Agents SDK), the tool layer over the existing readers, redaction, citation check, audit, budget, `CHAT_MODEL` on the allow-list | 4–5 d |
-| 6 | H1c: Console `#/ask`, three allow-list rows, streamed turns, ratings; an Indonesian evaluation set of 30 questions with expected refs | 2–3 d |
+| 6 | H1c: Console `#/ask`, three allow-list rows, streamed turns, ratings; an English evaluation set of 30 questions with expected refs | 2–3 d |
 | 7 | `ConsoleHub` slice (ADR-0015 phase 1, the Console only) | 3–4 d |
 | 8 | H1.5: `council.v1` schemas, fixtures and resolvers; the Cerebrum council DO; `#/councils`; handoff to inbox drafts. The contract goes to the xauusd session | 5–7 d |
 | 9 | The chat arena (weekly shadow replay) | 1–2 d |

@@ -29,6 +29,9 @@ export const ADR_READINGS = [
   "orchestrator_github_fallback_absent",
 ] as const;
 
+/** The `kind` values of agent_reports (migration 0053's CHECK; agents.ts ReportKind) an `agent_report` predicate may name. */
+export const ADR_REPORT_KINDS = ["platform_digest", "signal_digest", "audit_digest", "xauusd_digest", "hud_digest", "knowledge_audit"] as const;
+
 export const ADR_ID = /^[0-9]{4}$/;
 export const ADR_FILE = /^architecture\/adr\/[0-9]{4}-[a-z0-9-]+\.md$/;
 export const PHASE_ID = /^[A-Za-z0-9][A-Za-z0-9.-]{0,23}$/;
@@ -38,6 +41,9 @@ export const FITS = /^[0-9]{4}(:[A-Za-z0-9.-]+)?$/;
 export const BUILT_PATH = /^(workers|organism|docs|architecture)\//;
 export const MIGRATION_FILE = /^[0-9]{4}_[a-z0-9_]+\.sql$/;
 export const EVENT_TYPE = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/;
+const JSON_PATH = /^\$\.[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
+const ITEM_FIELD = /^[A-Za-z0-9_]+$/;
+const BODY_SCHEMA = /^[a-z0-9_.-]+\.v[0-9]+$/;
 const DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,3})?)?Z)?$/;
 const EXTERNAL_SOURCE = /^(xauusd|aether|github|branch:[A-Za-z0-9._/-]+)$/;
 const COMBINATORS = ["all_of", "any_of", "sequence"] as const;
@@ -56,6 +62,7 @@ export const PREDICATE_FIELDS: Readonly<Record<string, { required: readonly stri
   kpi_threshold: { required: ["source", "metric", "op", "value", "max_age_h"], optional: ["agent_id", "body_schema", "subject", "kind_filter"] },
   consensus_executed: { required: ["action"], optional: ["target", "since", "owner_approved"] },
   agent_registered: { required: ["agent_id"], optional: ["status"] },
+  agent_report: { required: ["report_kind", "agent_id", "body_schema"], optional: ["origin", "body", "item", "since"] },
   reading: { required: ["name"], optional: [] },
   doc_asserted: { required: ["ref", "quote"], optional: [] },
   external_asserted: { required: ["source", "ref", "as_of"], optional: [] },
@@ -203,6 +210,42 @@ function kindFieldProblems(p: Record<string, unknown>, kind: string, at: string,
       if (typeof p.agent_id !== "string" || !/^[a-z0-9-]+$/.test(p.agent_id)) out.push(`${at}.agent_id: must be an agent id`);
       if ("status" in p && !isText(p.status)) out.push(`${at}.status: must be a non-empty string`);
       break;
+    case "agent_report": {
+      // A report an agent published (agent_reports): its kind, agent and body.schema, optionally the body's origin
+      // (`source`), 1–3 top-level body fields, and one element of `body.items` matching 1–3 fields (any of a list).
+      if (!(ADR_REPORT_KINDS as readonly unknown[]).includes(p.report_kind)) out.push(`${at}.report_kind: must be one of ${ADR_REPORT_KINDS.join(", ")}`);
+      if (typeof p.agent_id !== "string" || !/^[a-z0-9-]+$/.test(p.agent_id)) out.push(`${at}.agent_id: must be an agent id`);
+      if (typeof p.body_schema !== "string" || !BODY_SCHEMA.test(p.body_schema)) out.push(`${at}.body_schema: must be a body schema like strategy_arm.v1`);
+      if ("origin" in p && (typeof p.origin !== "string" || !/^[a-z0-9-]{1,64}$/.test(p.origin))) out.push(`${at}.origin: must be a repository or service name`);
+      if ("since" in p) date(p.since, `${at}.since`, out);
+      const scalar = (v: unknown) => ["string", "number", "boolean"].includes(typeof v);
+      if ("body" in p) {
+        if (!isObject(p.body)) out.push(`${at}.body: must be an object of JSON paths`);
+        else {
+          const keys = Object.keys(p.body);
+          if (keys.length === 0 || keys.length > 3) out.push(`${at}.body: must hold 1–3 paths`);
+          for (const k of keys) {
+            if (!JSON_PATH.test(k)) out.push(`${at}.body.${k}: must be a JSON path like $.mode`);
+            else if (k === "$.schema" || k === "$.source") out.push(`${at}.body.${k}: use body_schema or origin`);
+            if (!scalar(p.body[k])) out.push(`${at}.body.${k}: must be a string, number or boolean`);
+          }
+        }
+      }
+      if ("item" in p) {
+        if (!isObject(p.item)) out.push(`${at}.item: must be an object of item fields`);
+        else {
+          const keys = Object.keys(p.item);
+          if (keys.length === 0 || keys.length > 3) out.push(`${at}.item: must hold 1–3 fields`);
+          for (const k of keys) {
+            const v = p.item[k];
+            if (!ITEM_FIELD.test(k)) out.push(`${at}.item.${k}: must be a field name like event`);
+            const list = Array.isArray(v) ? v : [v];
+            if (list.length === 0 || list.length > 4 || !list.every(scalar)) out.push(`${at}.item.${k}: must be a string, number or boolean, or a list of 1–4 of them`);
+          }
+        }
+      }
+      break;
+    }
     case "reading":
       if (!(ADR_READINGS as readonly unknown[]).includes(p.name)) out.push(`${at}.name: must be one of ${ADR_READINGS.join(", ")}`);
       break;

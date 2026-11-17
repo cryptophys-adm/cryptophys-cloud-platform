@@ -9,6 +9,7 @@
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { KernelHttpEnv } from "./kernel.ts";
 import { executionHosts } from "./execution-hosts.ts";
+import { ADR_STEWARD_ID } from "./adr-steward.ts";
 
 const REGISTRATION_ACTIONS = ["register_agent", "register_engine", "retire_engine", "register_privileged_agent", "admit_voter"];
 
@@ -16,7 +17,22 @@ async function rows<T>(run: () => Promise<{ results: T[] }>): Promise<T[]> {
   try { return (await run()).results ?? []; } catch { return []; }
 }
 
-interface Liveness { actions_24h: number; last_action_at: string | null; last_capability: string | null; last_outcome: string | null; votes_24h: number; last_vote_at: string | null; reports_24h: number; last_report_at: string | null }
+interface Liveness { actions_24h: number; last_action_at: string | null; last_capability: string | null; last_outcome: string | null; votes_24h: number; last_vote_at: string | null; reports_24h: number; last_report_at: string | null; last_run_at?: string | null }
+
+/**
+ * The ADR Steward's last pass (2026-11-17, owner "why is adr-steward still idle?"): it reads with the tier 0
+ * capability adr.observe, which records no agent_actions row, and writes only when an ADR changes, so actions, votes
+ * and reports alone showed it idle while it ran every kernel tick. Its Durable Object's state() is the evidence of a
+ * run. Unreadable or absent: null, never guessed.
+ */
+async function stewardLastRun(env: KernelHttpEnv): Promise<string | null> {
+  const ns = (env as { ADR_STEWARD?: { idFromName(n: string): unknown; get(id: unknown): unknown } }).ADR_STEWARD;
+  if (!ns) return null;
+  try {
+    const stub = ns.get(ns.idFromName(ADR_STEWARD_ID)) as { state?: () => Promise<{ last_pass_at?: string | null }> };
+    return typeof stub.state === "function" ? ((await stub.state())?.last_pass_at ?? null) : null;
+  } catch { return null; }
+}
 
 export async function meshView(env: KernelHttpEnv, now = Date.now()): Promise<JsonObject> {
   const since = new Date(now - 24 * 3_600_000).toISOString();
@@ -49,7 +65,9 @@ export async function meshView(env: KernelHttpEnv, now = Date.now()): Promise<Js
   for (const v of votes) { const l = get(v.agent_id); l.votes_24h = Number(v.n) || 0; l.last_vote_at = v.last_at; }
   for (const r of reports) { const l = get(r.agent_id); l.reports_24h = Number(r.n) || 0; l.last_report_at = r.last_at; }
 
-  const lastSeen = (l: Liveness) => [l.last_action_at, l.last_vote_at, l.last_report_at].filter(Boolean).sort().pop() ?? null;
+  const stewardRun = await stewardLastRun(env);
+  if (stewardRun) get(ADR_STEWARD_ID).last_run_at = stewardRun;
+  const lastSeen = (l: Liveness) => [l.last_action_at, l.last_vote_at, l.last_report_at, l.last_run_at ?? null].filter(Boolean).sort().pop() ?? null;
   const mesh = agents.map((a) => {
     const l = live.get(a.agent_id) ?? get(a.agent_id);
     const seen = lastSeen(l);

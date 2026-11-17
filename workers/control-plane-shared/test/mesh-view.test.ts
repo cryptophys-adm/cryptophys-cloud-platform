@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { migratedDb } from "./harness.ts";
+import { migratedDb, registeredDb } from "./harness.ts";
 import { meshView } from "../../ai-kernel/src/mesh-view.ts";
 
 const NOW = Date.UTC(2026, 10, 11, 1, 0, 0);
@@ -104,4 +104,21 @@ test("M5. the AI Mesh page shows the execution hosts read-only, with a dash for 
   assert.doesNotMatch(c, /call\(|fetch\(|method: "POST"|onClick/, "no control and no own data path on this panel");
   const toml = readFileSync(new URL("../../ai-kernel/wrangler.toml", import.meta.url), "utf8");
   assert.match(toml, /binding = "XAUUSD_OMEGA_HEALTH"\nservice = "xauusd-ai-trading-assistant"\nentrypoint = "OmegaHealth"/);
+});
+
+test("M6. the ADR Steward's last pass counts as activity: a tier 0 reader that writes only on change is not shown idle (2026-11-17)", async () => {
+  const db = registeredDb();
+  db.raw.prepare("UPDATE agents SET created_at = ? WHERE agent_id = 'adr-steward'").run(iso(60 * 48));
+  const steward = (lastPass: string | null, fail = false) => ({ idFromName: (n: string) => n, get: () => ({ state: async () => { if (fail) throw new Error("down"); return { last_pass_at: lastPass }; } }) });
+  let v: any = await meshView({ DB: db, ADR_STEWARD: steward(iso(7)) } as never, NOW);
+  let a = v.agents.find((x: any) => x.agent_id === "adr-steward");
+  assert.deepEqual([a.liveness, a.last_run_at, a.last_seen_at], ["active", iso(7), iso(7)]);
+  v = await meshView({ DB: db, ADR_STEWARD: steward(iso(60 * 5)) } as never, NOW);
+  assert.equal(v.agents.find((x: any) => x.agent_id === "adr-steward").liveness, "recent");
+  // No binding or an unreadable state: no evidence of a run, so the old rule applies.
+  for (const env of [{ DB: db }, { DB: db, ADR_STEWARD: steward(null, true) }]) {
+    v = await meshView(env as never, NOW);
+    a = v.agents.find((x: any) => x.agent_id === "adr-steward");
+    assert.equal(a.liveness, "idle");
+  }
 });

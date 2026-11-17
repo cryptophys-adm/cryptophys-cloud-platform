@@ -59,7 +59,7 @@ export interface AdrListEntry {
   title: string | null;
   lifecycle: string;
   deferred: boolean | null;
-  /** The ADR that replaces this one, for the panel's "digantikan oleh ADR-NNNN" (step 5); null when none is named. */
+  /** The ADR that replaces this one, for the panel's "superseded by ADR-NNNN" (step 5); null when none is named. */
   superseded_by: string | null;
   status: string;
   phases_total: number;

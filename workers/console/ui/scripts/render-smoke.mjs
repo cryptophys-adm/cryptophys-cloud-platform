@@ -301,13 +301,13 @@ MOCK["/api/kernel/v1/vision"] = { schema: "organism.vision-view.v1", source: "or
 const ADR_STEWARD = { agent_id: "adr-steward", status: "enabled", last_pass_at: "2026-11-17T22:37:00.000Z", last_full_pass_at: "2026-11-17T22:37:00.000Z", deployed_commit: "abc1234def56", ai_today: { used: null, cap: null } };
 const adrEntry = (o) => ({ title: null, lifecycle: "accepted", deferred: false, superseded_by: null, status: "in_progress", phases_total: 0, phases_proven: 0, phases_asserted: 0, percent: 0, percent_proven: 0,
   next_step: null, blockers: [], owner_actions: [], drift_count: 0, stale: false, revision: 1, changed_at: "2026-11-17T08:00:00.000Z",
-  explanation: { schema: "adr.explanation.v1", source: "template", teks: `${o.adr}: teks otomatis.`, rujukan: [] }, ...o });
+  explanation: { schema: "adr.explanation.v1", source: "template", teks: `${o.adr}: automatic text.`, rujukan: [] }, ...o });
 const ADR_ROWS = [
   adrEntry({ adr: "0001", title: "Cloudflare-native runtime", status: "done", phases_total: 1, phases_proven: 1, percent: 100, percent_proven: 100 }),
   adrEntry({ adr: "0012", title: "Leave GitHub — the Forge, with a title long enough to wrap on a phone screen", status: "in_progress", phases_total: 26, phases_proven: 12, phases_asserted: 6, percent: 69, percent_proven: 46,
     next_step: { phase: "G4B", text: "First live run of a part B path" }, blockers: ["G4B: built, not yet run live", "G10: built, not yet run live", "W24: earliest 2026-11-17T14:12Z"],
     owner_actions: [{ phase: "G10", text: "Approve the first native retirement when one is proposed", href: "#/owner", outside_platform: false, proposal_id: null }], revision: 14, changed_at: "2026-11-17T21:56:00.000Z",
-    explanation: { schema: "adr.explanation.v1", source: "template", teks: "0012: 18 dari 26 fase lengkap (12 terbukti, 6 dinyatakan dokumen). Terbuka: G4B, G10, W24 (paling cepat 2026-11-17 14:12 UTC). Berikutnya: G4B.", rujukan: [] } }),
+    explanation: { schema: "adr.explanation.v1", source: "template", teks: "0012: 18 of 26 phases complete (12 proven, 6 asserted by document). Open: G4B, G10, W24 (earliest 2026-11-17 14:12 UTC). Next: G4B.", rujukan: [] } }),
   adrEntry({ adr: "0014", title: "Evolution loop", lifecycle: "deferred", deferred: true, status: "in_progress", phases_total: 9, phases_proven: 1, percent: 11, percent_proven: 11, next_step: { phase: "E0", text: "intents" } }),
   adrEntry({ adr: "0018", title: "External organs", lifecycle: "held", status: "held", phases_total: 5, phases_proven: 0, phases_asserted: 1, percent: 20, percent_proven: 0, next_step: { phase: "X3", text: "registry CR" } }),
   adrEntry({ adr: "0019", title: "AI Mesh program", lifecycle: "planned", status: "planned" }),
@@ -468,30 +468,31 @@ for (const width of [390, 1440]) {
 // ADR Steward step 5 (docs/design/ADR-STEWARD.md §6): the Vision page's ADR panel, filled, with a row opened by
 // #/vision/adr/0012, and its honest states: no pass yet (an empty list), no table yet (available: false), and the
 // Steward not registered or suspended. The proven share of a bar is solid and the asserted share hatched; a planned
-// ADR without phases draws no bar; an empty or unavailable list shows no number at all.
-const ADR_PANEL_TITLE = "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)";
+// ADR without phases draws no bar; an empty or unavailable list shows no number at all. In English (owner 2026-11-17,
+// "all in english please").
+const ADR_PANEL_TITLE = "ADR — Architecture Decision Records";
 const adrList = (o) => ({ schema: "adr.progress-view.v1", available: true, steward: ADR_STEWARD, adrs: ADR_ROWS, ...o });
 const ADR_CHECKS = [
   // Step 6: the AI explanations of the day against the cap, from steward.ai_today; "—" while the kernel cannot read them.
   { name: "filled", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, ai_today: { used: 2, cap: 6 } } }) },
-    want: [ADR_PANEL_TITLE, "baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui 2026-11-17 22:37 UTC", "Steward: aktif", "AI hari ini: 2/6", "selesai", "berjalan (18 dari 26 fase)", "69%", "46% terbukti",
-      "ditunda", "ditahan (1 dari 5 fase)", "direncanakan", "Menunggu klik pemilik: 1", "First live run of a part B path"],
-    not: ["Belum ada pass Steward", "Steward belum berjalan", "tidak dikenali"], numbers: true },
+    want: [ADR_PANEL_TITLE, "read-only · computed from evidence, not AI guesses · updated 2026-11-17 22:37 UTC", "Steward: active", "AI today: 2/6", "done", "in progress (18 of 26 phases)", "69%", "46% proven",
+      "deferred", "held (1 of 5 phases)", "planned", "Waiting for the owner's click: 1", "First live run of a part B path"],
+    not: ["No Steward pass yet", "The Steward has not run yet", "not recognized"], numbers: true },
   { name: "open row", hash: "vision/adr/0012", override: {}, open: "0012",
-    want: [ADR_PANEL_TITLE, "Fase", "G1 ◆", "G2 ●", "G4B ○", "terbukti", "dinyatakan dokumen", "terbuka", "Penghambat", "GB: the GitHub side is not dated", "Langkah berikutnya", "Menunggu klik pemilik → Buka halaman Owner",
-      "di luar platform", "rev 14 · 2026-11-17 21:56 UTC", "rev 13 · berjalan · 65%", "Penjelasan (teks otomatis)", "0012: 18 dari 26 fase lengkap", "paling cepat 2026-11-17 14:12 UTC", "ev:consensus/cns_00000000…", "Gate 4 part B"],
-    not: ["tidak dapat dibaca"], numbers: true },
+    want: [ADR_PANEL_TITLE, "Phases", "G1 ◆", "G2 ●", "G4B ○", "proven", "asserted by document", "open", "Blockers", "GB: the GitHub side is not dated", "Next step", "Waiting for the owner's click → Open the Owner page",
+      "outside the platform", "rev 14 · 2026-11-17 21:56 UTC", "rev 13 · in progress · 65%", "Explanation (automatic text)", "0012: 18 of 26 phases complete", "earliest 2026-11-17 14:12 UTC", "ev:consensus/cns_00000000…", "Gate 4 part B"],
+    not: ["could not be read"], numbers: true },
   { name: "no pass yet", hash: "vision/adr", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
-    want: [ADR_PANEL_TITLE, "Belum ada pass Steward", "diperbarui —", "Steward: aktif", "AI hari ini: —"], not: ["selesai", "berjalan", "terbukti", "0012"] },
+    want: [ADR_PANEL_TITLE, "No Steward pass yet", "updated —", "Steward: active", "AI today: —"], not: ["done", "in progress", "proven", "0012"] },
   { name: "unavailable", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ available: false, steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
-    want: [ADR_PANEL_TITLE, "Steward belum berjalan", "Steward: belum terdaftar", "Steward belum terdaftar: tidak ada pass baru."], not: ["Belum ada pass Steward", "selesai", "berjalan (", "terbukti", "Steward: aktif"] },
+    want: [ADR_PANEL_TITLE, "The Steward has not run yet", "Steward: not registered", "Steward not registered: no new pass runs."], not: ["No Steward pass yet", "done", "in progress (", "proven", "Steward: active"] },
   { name: "not registered", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
-    want: ["Belum ada pass Steward", "Steward: belum terdaftar"], not: ["Steward: aktif", "Steward belum berjalan"] },
+    want: ["No Steward pass yet", "Steward: not registered"], not: ["Steward: active", "The Steward has not run yet"] },
   { name: "suspended", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "suspended" } }) },
-    want: ["Steward: ditangguhkan", "Steward ditangguhkan: tidak ada pass baru; yang tampil adalah dokumen tersimpan terakhir (pass terakhir 2026-11-17 22:37 UTC)", "berjalan (18 dari 26 fase)"], not: ["Steward: aktif"], numbers: true },
+    want: ["Steward: suspended", "Steward suspended: no new pass runs; the last stored documents are shown (last pass 2026-11-17 22:37 UTC)", "in progress (18 of 26 phases)"], not: ["Steward: active"], numbers: true },
   // The Vision page's own panels fail to load: the ADR panel still renders (§6.2).
   { name: "no vision", hash: "vision", override: { "/api/kernel/v1/vision": { schema: "organism.vision-view.v1", status: "invalid", vision: null, problems: ["vision.schema: x"] } },
-    want: [ADR_PANEL_TITLE, "berjalan (18 dari 26 fase)"], not: [], numbers: true },
+    want: [ADR_PANEL_TITLE, "in progress (18 of 26 phases)"], not: [], numbers: true },
 ];
 for (const width of [390, 1440]) {
   for (const check of ADR_CHECKS) {
@@ -523,7 +524,7 @@ for (const width of [390, 1440]) {
       if (panel.proven !== 4 || panel.asserted !== 4 || panel.hatched !== 4) problems.push(`${width}px adr ${check.name}: bars ${panel.proven} solid / ${panel.asserted} asserted (${panel.hatched} hatched), expected 4 bars, the planned ADR without one`);
       if (panel.dashed !== 2) problems.push(`${width}px adr ${check.name}: the held and planned rows are not drawn apart (${panel.dashed} of 2)`);
       if (panel.planned === null || !panel.planned.includes("—") || /\d%/.test(panel.planned)) problems.push(`${width}px adr ${check.name}: the planned ADR shows a number: ${panel.planned}`);
-    } else if (/\d+ ?%|\d+ dari \d+/.test(panel.text)) problems.push(`${width}px adr ${check.name}: a number without a document: ${panel.text.slice(0, 160)}`);
+    } else if (/\d+ ?%|\d+ of \d+/.test(panel.text)) problems.push(`${width}px adr ${check.name}: a number without a document: ${panel.text.slice(0, 160)}`);
     if (!requested.some((u) => u.endsWith("/api/kernel/v1/adr"))) problems.push(`${width}px adr ${check.name}: GET /v1/adr was not read`);
     if (check.open && !requested.some((u) => u.endsWith(`/api/kernel/v1/adr/${check.open}`))) problems.push(`${width}px adr ${check.name}: GET /v1/adr/${check.open} was not read`);
     if (!check.open && requested.some((u) => /\/api\/kernel\/v1\/adr\/\d{4}$/.test(u))) problems.push(`${width}px adr ${check.name}: a closed panel read a detail`);

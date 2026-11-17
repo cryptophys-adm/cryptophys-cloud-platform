@@ -2,7 +2,8 @@
 
 - **Status:** design (2026-11-16), reviewed by the owner: the open questions are answered in §10 and the build may start in the order of §11. Steps 1 to 6 are built (2026-11-17); steps 7–8 are not.
 - **Owner request (2026-11-16, confirmed "ya steward"):** "buatkan Agent monitoring ADR yang akan selalu dinamis update progress, detail, penjelasan, dan selalu diupdate di panel Vision sebagai panel ADR (sebutkan singkatannya)" (build an agent that monitors the ADRs, always updates their progress, detail and explanation, and shows them on the Vision page as an ADR panel, with the abbreviation spelled out).
-- **Panel title (owner):** "ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)".
+- **Panel title (owner):** "ADR — Architecture Decision Records". The owner's first title (2026-11-16) added an Indonesian gloss, "(Catatan Keputusan Arsitektur)"; on 2026-11-17 the owner asked "all in english please", so the panel, its labels and its explanation are English (§6.3, §10 "Reversal").
+- **Owner reversal (2026-11-17, "all in english please"):** the whole Cerebrum Console is English. This supersedes Q5 (the Indonesian explanation, §10) and the Indonesian title and labels: §6.3 is the English wording, `draft_adr_explanation` is plain English like every other AI task (`ai-engine.ts` has no per-task style any more), and the validator's status words and negations are English (§4.5).
 - **Reads with:** ADR-0007 (AI Worker OS: agents, capabilities, syscalls), ADR-0009 (consensus, the owner's click), ADR-0012 and `docs/GITHUB-CUTOVER.md` (the cut-over gates), ADR-0013 (DNA and census), ADR-0015 (documents, push to the senses), ADR-0016 (Telos: the Vision page, the self-model), ADR-0017 (the "Needs you" inbox, "Ask the organism"), `docs/SSOT.md`.
 - **Base:** canonical main 4ac34f6. Every "exists" claim below names a file on that commit. Everything else is marked **new**.
 
@@ -12,7 +13,7 @@
 
 1. **Progress from evidence, not from guessing.** Each ADR's phases and gates are declared once, each with an evidence predicate that code evaluates against D1. A phase is **proven** only when its predicate holds. A phase that rests on a document only is **doc-asserted** and is shown differently. Anything else is **open**, with its blocker named.
 2. **One agent keeps it current.** The ADR Steward (new) wakes on merges, deploys and other relevant audit events, and once a day. It recomputes every ADR and writes one compact document per ADR, only when something changed.
-3. **A short explanation in Indonesian.** Metric-first, citing its evidence. The AI writes it only when a status changes, within a small daily cap. A deterministic Indonesian sentence is always there, so the panel never depends on the AI.
+3. **A short explanation in plain English** (Indonesian until the owner's reversal of 2026-11-17). Metric-first, citing its evidence. The AI writes it only when a status changes, within a small daily cap. A deterministic sentence is always there, so the panel never depends on the AI.
 4. **The Vision page shows it.** A panel titled as the owner asked lists ADR-0001 to ADR-0017, the held ADR-0018 and the planned ADR-0019, each with status, a progress bar, its phases, blockers, the next step, what waits for the owner (with links to `#/owner` and `#/consensus`), the last change and the explanation.
 5. **Fit the plans already made.** The Steward's documents are the "Memory: ADR index" of the ADR-0016 T1 self-model, a read-only tool for ADR-0017 H1 ("Ask the organism"), and part of ADR-0019 P0 (assumption, §1.3).
 
@@ -125,7 +126,7 @@ The manifests are reviewed in ordinary change requests. Whether the manifests of
       "properties": {
         "kind": { "enum": [
           "migration_applied", "audit_event", "quiet_window", "deploy_step", "merged_and_deployed",
-          "census_clean", "observer", "kpi_threshold", "consensus_executed", "agent_registered",
+          "census_clean", "observer", "kpi_threshold", "consensus_executed", "agent_registered", "agent_report",
           "reading", "doc_asserted", "external_asserted", "not_measurable_yet",
           "all_of", "any_of", "sequence"
         ] },
@@ -185,6 +186,7 @@ Each evaluation returns `{ state, at, refs, reason }`:
 | `kpi_threshold` | `source`: `report_metric` or `observer_vitals`; `metric`, `op` (`>=`, `<=`, `==`), `value`, `max_age_h`; for `report_metric` also `agent_id`, `body_schema` | `agent_reports.body_json` metrics (for example the Signal Analyst's `trading_organ_health.v1`, `docs/SSOT.md` "Trading organ health"); `observer_vitals` (migration 0063) | Report: the newest reports of `agent_id` (`LIMIT 20`), the first whose `body.schema` matches, then `metrics[]` by name. Vitals: `SELECT <named column> FROM observer_vitals WHERE subject = ? AND kind = ? AND hour >= ?`, the column picked from a fixed list in code. Vision KPIs join here once T1 measures them (every baseline in `organism/vision.json` is `null` today). | `agent_reports_agent_created`; vitals primary key |
 | `consensus_executed` | `action`, optional `target`, `since`, `owner_approved` (`true` for "an owner click") | `consensus_proposals` (migration 0023), `consensus_owner_decisions` (migration 0024) | `SELECT p.proposal_id, p.decided_at FROM consensus_proposals p [JOIN consensus_owner_decisions d ON d.proposal_id = p.proposal_id AND d.decision = 'approve'] WHERE p.action = ? AND p.status = 'executed' [AND p.target = ?] ORDER BY p.decided_at DESC LIMIT 1` | `idx_consensus_proposals_action_decided` |
 | `agent_registered` | `agent_id`, optional `status` (default `enabled`) | `agents` (migration 0010) | `SELECT status FROM agents WHERE agent_id = ?` | primary key |
+| `agent_report` (added 2026-11-17, for ADR-0020) | `report_kind` (an `agent_reports.kind`), `agent_id`, `body_schema`; optional `origin` (the body's `source`), `body` (1–3 JSON paths of the body with a value, for example `{"$.mode": "auto"}`), `item` (1–3 fields that one element of `body.items` matches, each a value or a list of up to 4, for example `{"event": ["armed", "disarmed"], "reason": "owner"}`), `since` | `agent_reports` (migration 0012 and later): what an agent published, for example the xauusd Risk Manager's `strategy_arm.v1` digests | `SELECT r.report_id, r.created_at FROM agent_reports r WHERE r.agent_id = ? AND r.kind = ? AND json_valid(r.body_json) AND json_extract(r.body_json, '$.schema') = ? [AND json_extract(r.body_json, '$.source') = ?] [AND json_extract(r.body_json, ?) = ?] [AND EXISTS (SELECT 1 FROM json_each(r.body_json, '$.items') i WHERE json_extract(i.value, ?) IN (?, …))] ORDER BY r.created_at DESC LIMIT 1`, every path and value bound. A past event (a report is never edited), so proven is sticky; the ref is `ev:platform/report/<report_id>@<created_at>#schema` (`#items` with an item condition): the row is in the platform's D1. | `agent_reports_agent_created` |
 | `reading` | `name`, one of a fixed list in code | See the list below | A named query. New readings are added in code, never in a manifest. | per reading |
 | `doc_asserted` | `ref` (a file on main), `quote` | The file itself; the CI test proves the quote is there on the same commit | No query. State `asserted`, never `proven`. | none |
 | `external_asserted` | `source` (`xauusd`, `aether`, `branch:<name>`), `ref`, `as_of` | Text CI cannot read: another repository, or a branch not on main | No query. State `asserted`, labelled "eksternal" on the panel. | none |
@@ -271,29 +273,29 @@ Latency: a merge on the Forge tick (:04, :19, :34, :49) is seen on the kernel ti
       - "depends on <phase>" for an open dependency;
       - "earliest <time UTC>" for an open `quiet_window`.
    5. **Next step.** The first open phase, in manifest order, whose dependencies are complete. Its text is the phase's `next`, or else its title.
-   6. **Owner actions.** `pendingApprovals()` from `ai-kernel/src/owner-inbox.ts` (exists; the Owner page and the owner notices use the same reading). A `pending_owner` proposal whose action and target match an open phase's `consensus_executed` predicate is linked to that phase. A manifest `owner_action` adds an action the platform cannot see, such as archiving the GitHub repository, marked "di luar platform". Links: `#/owner`, and `#/consensus` for consensus items. Both routes exist in `workers/console/ui/src/App.tsx`; there is no per-proposal route today.
+   6. **Owner actions.** `pendingApprovals()` from `ai-kernel/src/owner-inbox.ts` (exists; the Owner page and the owner notices use the same reading). A `pending_owner` proposal whose action and target match an open phase's `consensus_executed` predicate is linked to that phase. A manifest `owner_action` adds an action the platform cannot see, such as archiving the GitHub repository, marked "outside the platform". Links: `#/owner`, and `#/consensus` for consensus items. Both routes exist in `workers/console/ui/src/App.tsx`; there is no per-proposal route today.
    7. **Drift.** Compare each phase's `doc_claim.state` with its computed state (§4.8).
    8. **Document.** Build the document (§4.6) and hash it with sha256, leaving out the explanation and the times.
 6. **Write only on change.** If the hash equals the stored `body_sha256`, write nothing. Otherwise:
    - upsert the `adr_progress` row with `revision + 1`;
    - insert one `adr_progress_history` row;
    - append one `adr.status_changed` audit event.
-7. **Explanation.** For each ADR whose status or any phase state changed, ask the AI for a short Indonesian explanation, within the caps of §7.
+7. **Explanation.** For each ADR whose status or any phase state changed, ask the AI for a short plain-English explanation, within the caps of §7.
    - It is written into the same row as `explanation_json`, which does not change the body hash.
-   - Without the AI (budget, survival mode, invalid output) the deterministic Indonesian sentence (§6.3) stays, labelled "teks otomatis".
+   - Without the AI (budget, survival mode, invalid output) the deterministic sentence (§6.3) stays, labelled "automatic text".
 8. **Advance.** Store the cursor (the newest watched event's `created_at`), the pass time and the version id in the DO.
 
 ### 4.5 The explanation task (`draft_adr_explanation`, new)
 
 - **Input** (at most 4,000 characters): the ADR id and title; old and new status; the counts; the phases that changed, with their state, reason and evidence refs; the next step; and the owner actions. The input never contains ADR prose. Repository text is data, never instructions (ADR-0017 guards).
-- **Output:** `{ "teks": string ≤ 400 chars, "rujukan": string[] ≤ 6 }`, in Indonesian, metric-first, at most three sentences.
+- **Output:** `{ "teks": string ≤ 400 chars, "rujukan": string[] ≤ 6 }`, in plain English, metric-first, at most three sentences. The two keys (the text and its refs) keep their first names: they are the stored `adr.explanation.v1` schema, not shown in the panel.
 - **Validator** (deterministic). Any failure rejects the output, and the template stays:
   - every ref in `rujukan` is one of the input refs;
   - every number in `teks` occurs in the input (no invented figures);
-  - no status word contradicts the computed status, for example "selesai" when the status is not `done`;
+  - no status word contradicts the computed status, for example "done" when the status is not `done`, and the computed status's word is not negated ("not done", "isn't in progress", "not yet done");
   - `violatesAdvisoryLanguage()` is false (`control-plane-shared/src/ai-engine.ts`);
   - the length bounds hold.
-- **Language.** `AiEngine` appends `PLAIN_ENGLISH_STYLE` to every task's instructions (`ai-engine.ts`, the system message built in `run`). An Indonesian task needs a small, reviewed change: a per-task style option, with an Indonesian plain-language style line for this task only. The comment above `DEFAULT_MODEL` in that file records an earlier owner rule, "reports in English" (2026-11-07). Q5 asks the owner to confirm that the panel's explanation is in Indonesian.
+- **Language.** `AiEngine` appends `PLAIN_ENGLISH_STYLE` to every task's instructions (`ai-engine.ts`, the system message built in `run`). Step 6 first added a per-task style option with an Indonesian style line for this task only (Q5). The owner reversed Q5 on 2026-11-17 ("all in english please"): the option is removed, and this task is plain English like every other, under the owner's rule of 2026-11-07, "reports in English" (the comment above `DEFAULT_MODEL` in that file).
 - **Model.** The kernel's configured text model (`AI_MODEL` in `workers/ai-kernel/wrangler.toml`, within `ALLOWED_TEXT_MODELS` of `ai-engine.ts`). No new model and no model outside Workers AI.
 - **Not a learning call.** It never passes `purpose: "learning"`, so the per-service and account budgets apply to it (`power-mode.ts`, `ai-engine.ts` `reserve`).
 
@@ -403,8 +405,8 @@ Every tier-0 syscall the Steward makes is also recorded the way the kernel recor
 |---|---|---|
 | Kill switch off, or agent suspended | No cycles | The API serves the last documents with `steward.status` (`suspended` or `agents_disabled`) and the age of the last pass. The panel shows the age. Nothing is invented. |
 | D1 read error on a predicate | `unknown` | The last state is kept, the document is marked `stale` with the source, and nothing is reopened. |
-| Manifest invalid at runtime | That ADR is not computed | The row shows "manifest tidak valid" with its problems, plus one audit event per hash. CI normally stops this before a deploy. |
-| AI budget exhausted, survival mode, invalid output | No AI text | The deterministic Indonesian sentence stays, plus `adr.explanation_skipped`. |
+| Manifest invalid at runtime | That ADR is not computed | The row shows "manifest invalid" with its problems, plus one audit event per hash. CI normally stops this before a deploy. |
+| AI budget exhausted, survival mode, invalid output | No AI text | The deterministic sentence stays, plus `adr.explanation_skipped`. |
 | An event storm (many deploys) | Many passes | At most one full pass per tick, because the DO serializes cycles. Writes happen only on change. |
 | The cursor misses an event | A late update | The daily 02:52 pass recomputes everything. |
 | A manifest change lands | New phases | The version-id check runs a full pass on the first tick after the deploy. |
@@ -436,50 +438,52 @@ Both routes are **new** and read-only, on the AI Kernel, after `requireOperator`
 - The panel goes below "Goals and KPIs", and it renders even when the vision is invalid. Today the lower panels render only when `v` is set; the ADR panel does not depend on the vision.
 - `#/vision/adr` scrolls to the panel, and `#/vision/adr/0012` opens that row. This is new: `App.tsx` passes `id` to some pages but not to Vision today.
 
-### 6.3 Labels (Indonesian)
+### 6.3 Labels (English)
+
+English since the owner's "all in english please" (2026-11-17), which replaced the Indonesian labels of 2026-11-16.
 
 | Key | Label |
 |---|---|
-| Panel title | ADR — Architecture Decision Records (Catatan Keputusan Arsitektur) |
-| Right of title | baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui <time> |
-| Status `not_started` | belum dimulai |
-| Status `in_progress` | berjalan (X dari Y fase) |
-| Status `done` | selesai |
-| Status `superseded` | digantikan oleh ADR-NNNN |
-| Status `held` | ditahan |
-| Status `planned` | direncanakan |
-| Badge `deferred` | ditunda |
-| Phase `proven` | terbukti |
-| Phase `asserted` | dinyatakan dokumen (eksternal: "dinyatakan sumber luar") |
-| Phase `open` | terbuka |
-| Stale | data lama: <source> tidak terbaca |
-| Columns | Status · Kemajuan · Fase · Penghambat · Langkah berikutnya · Menunggu pemilik · Perubahan terakhir · Penjelasan |
-| Owner action | Menunggu klik pemilik → Buka halaman Owner (`#/owner`) / Buka Consensus (`#/consensus`); di luar platform |
-| Drift | Dokumen tidak sesuai bukti |
-| Explanation source | dijelaskan AI · teks otomatis |
+| Panel title | ADR — Architecture Decision Records |
+| Right of title | read-only · computed from evidence, not AI guesses · updated <time> |
+| Status `not_started` | not started |
+| Status `in_progress` | in progress (X of Y phases) |
+| Status `done` | done |
+| Status `superseded` | superseded by ADR-NNNN |
+| Status `held` | held |
+| Status `planned` | planned |
+| Badge `deferred` | deferred |
+| Phase `proven` | proven |
+| Phase `asserted` | asserted by document (external: "asserted by external source") |
+| Phase `open` | open |
+| Stale | stale data: <source> unreadable |
+| Columns | Status · Progress · Phases · Blockers · Next step · Waiting for owner · Last change · Explanation |
+| Owner action | Waiting for the owner's click → Open the Owner page (`#/owner`) / Open Consensus (`#/consensus`); outside the platform |
+| Drift | Document does not match evidence |
+| Explanation source | explained by AI · automatic text |
 | Missing value | — |
 
-**Deterministic sentence (always present).** For example: "0012: 18 dari 26 fase lengkap (12 terbukti, 6 dinyatakan dokumen). Terbuka: G4B, G4D, G10, GB, W24 (paling cepat 2026-11-17 14:12 UTC). Berikutnya: G4B."
+**Deterministic sentence (always present).** For example: "0012: 18 of 26 phases complete (12 proven, 6 asserted by document). Open: G4B, G4D, G10, GB, W24 (earliest 2026-11-17 14:12 UTC). Next: G4B."
 
 ### 6.4 Sketch
 
 ```
-ADR — Architecture Decision Records (Catatan Keputusan Arsitektur)
-baca-saja · dihitung dari bukti, bukan tebakan AI · diperbarui 22:37 UTC · Steward: aktif
+ADR — Architecture Decision Records
+read-only · computed from evidence, not AI guesses · updated 22:37 UTC · Steward: active
 
-ADR    Judul                         Status                       Kemajuan              Berikutnya
-0001   Cloudflare-native runtime     selesai                      ██████████ 100%       —
+ADR    Title                         Status                          Progress              Next
+0001   Cloudflare-native runtime     done                            ██████████ 100%       —
  …
-0012   Leave GitHub (the Forge)      berjalan (18 dari 26 fase)   ███████░░░  69%       G4B: first live run
-       Fase:  G1 ◆  G2 ●  G3 ●  G4A ●  G4B ○  G4D ○  G5 ●  …  W24 ○ (paling cepat 17-11 14:12)
-       ● terbukti   ◆ dinyatakan dokumen   ○ terbuka
-       Penghambat: G4B built, not run live · G10 built, not run live · W24 window
-       Menunggu pemilik: 1 → Owner        Perubahan terakhir: rev 14 · 21:56 UTC
-       Penjelasan (teks otomatis): 0012: 18 dari 26 fase lengkap …            [ev:…] [ev:…]
-0014   Evolution loop  [ditunda]     berjalan (1 dari 9 fase)     █░░░░░░░░░  11%       E0: intents
-0016   Telos                         berjalan (1 dari 6 fase)     ██░░░░░░░░  17%       T1: self-model
-0018   External organs               ditahan  (1 dari 5 fase)     ██░░░░░░░░  20%       X3: registry CR
-0019   AI Mesh program               direncanakan                 —                     —
+0012   Leave GitHub (the Forge)      in progress (18 of 26 phases)   ███████░░░  69%       G4B: first live run
+       Phases:  G1 ◆  G2 ●  G3 ●  G4A ●  G4B ○  G4D ○  G5 ●  …  W24 ○ (earliest 17-11 14:12)
+       ● proven   ◆ asserted by document   ○ open
+       Blockers: G4B built, not run live · G10 built, not run live · W24 window
+       Waiting for owner: 1 → Owner        Last change: rev 14 · 21:56 UTC
+       Explanation (automatic text): 0012: 18 of 26 phases complete …            [ev:…] [ev:…]
+0014   Evolution loop  [deferred]    in progress (1 of 9 phases)     █░░░░░░░░░  11%       E0: intents
+0016   Telos                         in progress (1 of 6 phases)     ██░░░░░░░░  17%       T1: self-model
+0018   External organs               held  (1 of 5 phases)           ██░░░░░░░░  20%       X3: registry CR
+0019   AI Mesh program               planned                         —                     —
 ```
 
 The figures in the sketch are the expected first-pass values from §8, not measurements.
@@ -635,7 +639,7 @@ Notes:
 
 ### 8.2 ADR-0014 (E0–E5, A1–A3)
 
-Expected: 1 of 9, 11 %, status `in_progress`, badge `ditunda`.
+Expected: 1 of 9, 11 %, status `in_progress`, badge `deferred`.
 
 ```json
 {
@@ -705,7 +709,7 @@ The full manifest extends §2.4 with:
 |---|---|---|
 | R1 | A manifest is edited so that a gate reads as met with weaker evidence (for example, swapped for `doc_asserted`) | Manifests change only by reviewed change requests. Each manifest change is a full pass with an `adr.status_changed` event naming the phases that moved. The panel shows asserted phases hatched. Q2 proposes guard paths for the guarded ADRs' manifests. |
 | R2 | The CI quote check makes document edits fail when a quoted phrase changes | Quotes are short. The test's message names the manifest and phase to update. Editing the doc and its claim together is the point. |
-| R3 | "Proven" is mistaken for "safe": an event proves something happened once, not that it still works | Live predicates (`census_clean`, `quiet_window`, readings) where it matters. The panel says "terbukti" (evidenced), never "aman". |
+| R3 | "Proven" is mistaken for "safe": an event proves something happened once, not that it still works | Live predicates (`census_clean`, `quiet_window`, readings) where it matters. The panel says "proven" (evidenced), never "safe". |
 | R4 | The new `AdrStewardAgent` class needs an additive DO migration (`new_sqlite_classes`, tag v5). On the native path that is a gate 4 part B case that has not run live yet. | Ship it while the GitHub workflow fallback still exists (before cut-over step 6). If it succeeds, it is also part B's first live proof. Otherwise, run the Steward without a DO (Q4). |
 | R5 | AI text says something the evidence does not | The validator: refs from the input only, numbers from the input only, no contradicting status word. The template remains on failure. |
 | R6 | Evidence semantics drift when code changes event names or step names | The CI test cross-checks the manifests' event types against the event names in the source, as the identity and gate tests already read source files. A renamed event fails CI. |
@@ -718,9 +722,9 @@ The full manifest extends §2.4 with:
 2. **Q2. Make the manifests of the guarded ADRs (0009, 0012, 0014) guard paths too?** Recommended: **yes**. Their gates are the owner's decisions, the files change only when a gate is redefined, and one rule in `guard-paths.ts` covers it.
 3. **Q3. A new tier-0 capability `adr.observe`, rather than widening `platform.observe`?** Recommended: **yes, new**. Least privilege, and a clear audit line. It rides in the same owner-click change request as the DNA.
 4. **Q4. Run the Steward as its own Durable Object (`AdrStewardAgent`)?** Recommended: **yes**, shipped before cut-over step 6. It matches the other agents and serializes cycles, and the risk of the DO migration is covered while the GitHub fallback still exists.
-5. **Q5. Write the panel's explanation in Indonesian, overriding "reports in English" (2026-11-07) for this panel only?** Recommended: **yes**. You asked for "penjelasan" on the Vision panel. Identifiers and numbers stay as they are.
+5. **Q5. Write the panel's explanation in Indonesian, overriding "reports in English" (2026-11-07) for this panel only?** **Superseded 2026-11-17** by the owner's "all in english please": the panel and its explanation are English (see "Reversal" below). Recommended at the time: **yes**. You asked for "penjelasan" on the Vision panel. Identifiers and numbers stay as they are.
 6. **Q6. AI cap: at most 6 explanations a day, 1 per ADR, none in survival mode?** Recommended: **yes**. About 150 neurons and 8 % of the 75-request account cap at most, and the template covers the rest.
-7. **Q7. Count doc-asserted phases toward "selesai" and the percentage, but draw them hatched and count them separately?** Recommended: **yes**. Otherwise ADR-0001 to ADR-0011 never read as done, and the separate count keeps it honest.
+7. **Q7. Count doc-asserted phases toward "done" (then "selesai") and the percentage, but draw them hatched and count them separately?** Recommended: **yes**. Otherwise ADR-0001 to ADR-0011 never read as done, and the separate count keeps it honest.
 8. **Q8. For the older ADRs (0001, 0002, 0005, 0008), accept doc-asserted as their evidence?** Recommended: **yes**, for now. They predate the audit chain's coverage. Upgrade them only when a cheap machine predicate appears.
 9. **Q9. Reuse the `ev:` evidence-ref format from the HAIC design for the panel and the Steward?** Recommended: **yes**. One citation format for the inbox, the chat and this panel.
 10. **Q10. Place the Steward in ADR-0019 P0, and track ADR-0019 as "planned" until it is drafted?** Recommended: **yes**. It is the organism's knowledge of its own plans, and it is the first thing P0 needs to measure itself.
@@ -730,7 +734,9 @@ The full manifest extends §2.4 with:
 **Owner answers (2026-11-16, "ya semua, sesuai rekomendasimu").** Every recommendation above is accepted:
 - Q1 to Q10 and Q12 are yes.
 - Q11 is later: the xauusd RFCs come in after the platform panel has run for a week.
-- The build may start in the order of §11. Step 3 registers the agent and touches two guard paths, `capabilities.ts` and `workers/ai-kernel/organism.json`, so it still needs the owner's click through `merge_owner_change`. Step 1 does too, because the manifests of 0009, 0012 and 0014 are guard paths (Q2).
+- The build may start in the order of §11.
+
+**Reversal (2026-11-17, "all in english please").** The owner asked for the whole Cerebrum Console in English. This supersedes the answer to Q5 and the Indonesian part of the panel title: the panel's title is "ADR — Architecture Decision Records", its labels are §6.3's English ones, the deterministic sentence is English, and `draft_adr_explanation` runs with `PLAIN_ENGLISH_STYLE`, like every other AI task; the per-task Indonesian style (`INDONESIAN_STYLE_TASKS`, `taskStyle`) is removed from `ai-engine.ts`. The validator's status words and negations are English. The stored explanation keeps its keys `teks` and `rujukan`, which are data, not text the panel shows. Step 3 registers the agent and touches two guard paths, `capabilities.ts` and `workers/ai-kernel/organism.json`, so it still needs the owner's click through `merge_owner_change`. Step 1 does too, because the manifests of 0009, 0012 and 0014 are guard paths (Q2).
 
 ## 11. Implementation order
 
@@ -742,8 +748,8 @@ Each step is one change request. The effort is rough and assumes the session tha
 | 2 | `control-plane-shared/src/adr-evidence.ts`: the predicate evaluator and the readings, pure over a D1 interface, with tests on `node:sqlite` fixtures built from the real migrations (the test runner already uses `--experimental-sqlite`). **Built 2026-11-17**, with `test/adr-evidence.test.ts`. As built: `asserted` is split into `doc_asserted` and `external_asserted`, and `not_measurable_yet` is its own state; a `sequence` looks each event up after the previous one, so the first chain counts; a `quiet_window` starts at the newest failure, or at the first success when there was none; `merged_and_deployed.branch` matches `source_branch`; `dependency_audit_fresh_48h` needs a completed (`ok`) audit; `adr_index_live` is not measurable until step 3 adds `adr_progress`, and `orchestrator_github_fallback_absent` until a read-only `DeployRpc` method exists. Every query has a LIMIT and an index, checked with query plans in the test. | No | 1.5 days |
 | 3 | The agent: the DNA entry and engine in `workers/ai-kernel/organism.json`; `adr.observe` in `capabilities.ts` and its handler in `syscall.ts`; `AdrStewardAgent` with the wrangler migration v5; the D1 migration for `adr_progress` and `adr_progress_history`; the scheduled hook and the wake id; the audit events; `architecture/adr/progress/` added to the Control Plane unit's paths in `deploy-units.ts`. Then the census registers the agent and the engine by consensus. **Built 2026-11-17**, with migration `0075_adr_progress.sql`, `ai-kernel/src/adr-steward.ts`, `ai-kernel/src/adr-observe.ts` and `test/adr-steward-step3.test.ts`. As built: the gene and engine are registered by the census (migration 0041: new agents and engines only by consensus), so the tests that compare main's DNA with the registries apply them as consensus would (`test/harness.ts` `CONSENSUS_REGISTERED`); `adr-steward` joins `KERNEL_AGENTS` in `consensus-rules.ts`, a third guard path, because the DNA test requires that list to equal the kernel's agents; the kernel bundles the manifests and `organism/vision.json`, and for the Markdown the quotes the manifests anchor, which `adr-progress.test.ts` AP5 proves on the same commit, because a Text module rule would be refused by the native deploy as `build_rules_changed`; `draft_adr_explanation` is declared with its deterministic validator, as the DNA test requires of a declared engine, and never run before step 6; the body hash leaves out the evidence refs and the deploy commit, so a newer event proving the same thing rewrites nothing; drift opens and closes as `adr.drift_detected` and `adr.drift_resolved` audit events, and the reports stay step 7; a failed write is tried again an hour later; `adr_index_live` counts the rows, so the second pass rewrites 0016 once. | Yes (`organism.json`, `capabilities.ts`, and `consensus-rules.ts` for `KERNEL_AGENTS`): one owner click | 2 days |
 | 4 | API: `GET /v1/adr` and `GET /v1/adr/{id}` on the kernel; the two allow-list rows and the two UI routes; tests like `vision-telos-0016.test.ts` V4. **Built 2026-11-17**, with `ai-kernel/src/adr-view.ts` and `test/adr-api-step4.test.ts`. As built: the two UI routes are the `UI_ROUTES` rows `kernel.adr` and `kernel.adr_one` of §5; the hash routes `#/vision/adr` and `#/vision/adr/<id>` belong to step 5, and no Console page changed; `steward.status` is `enabled`, `suspended`, `agents_disabled` or `not_registered`, from the agents table and the kill switch; `last_pass_at` comes from the Durable Object's `state()` RPC, and `last_full_pass_at` equals it, because every pass as built in step 3 evaluates every manifest; `deployed_commit` is the kernel's `CF_VERSION_METADATA.tag`; `ai_today` is `{ used: null, cap: null }` until step 6, since nothing measures it yet; a state RPC that fails leaves the pass times null; the detail is the stored body with the row's `revision` and `changed_at`, its `explanation` and `history`, newest first; an id that is not four digits is 400 `invalid_request`, an ADR without a document 404, any method but GET 405, and without the table the list is `available: false` and the detail 503 `not_available`; the kernel sends `Cache-Control: private, max-age=60`, and the Console proxy, unchanged, replaces it with its own `no-store` as for every forwarded route; the step 3 test's SSOT check now admits newer ADR Steward segments before step 3's. | No | 0.5 day |
-| 5 | The Vision panel: the component, the labels of §6.3, the `#/vision/adr/<id>` routing, the render smoke test and truthfulness assertions. **Built 2026-11-17**, with `console/ui/src/components/AdrPanel.tsx`, `console/ui/src/lib/adr.ts` (the §6.3 wording and the panel's arithmetic, pure, so the Node test runs the same functions) and `test/adr-panel-step5.test.ts`. As built: the panel is its own component on `pages/Vision.tsx`, so the page itself still makes one read; `App.tsx` passes the hash's second and third segments, `#/vision/adr` scrolls to the panel and `#/vision/adr/<id>` opens that row, and a row opens and closes through the hash; the list polls every 5 minutes (`ADR_POLL_MS`), and the open row reads `kernel.adr_one` when it opens and when the list shows a new revision, not on a timer; the list has no phases, so the phase marks, the full blockers, the drift per phase, the stale sources and the history come from the open row's document; `GET /v1/adr` now carries `superseded_by`, so the list says digantikan oleh ADR-NNNN without a second read; held and planned rows have a dashed border, and an ADR without phases (0019) shows "—" instead of a bar; a status is green only when done with every phase proven; `not_measurable_yet` and `unknown`, which §6.3 does not name, read "belum dapat diukur" and "tidak terbaca" and are marked open; the Steward's states read aktif, ditangguhkan, dimatikan (kill switch agen) and belum terdaftar, and anything but aktif adds a line that no new pass runs and, with stored rows, when the last one ran; an unknown response is said to be unknown rather than drawn; evidence refs link to Consensus, Ledger, Code or Organism by their source, and owner actions only to the manifests' allowed pages. The render smoke checks seven cases at both widths: filled, a row opened, no pass yet, no table, not registered, suspended, and an invalid vision. | No | 1 day |
-| 6 | The explanation: the `draft_adr_explanation` task, the per-task style option in `ai-engine.ts`, the validator, the caps in the DO and `adr.explanation_skipped`. **Built 2026-11-17**, in `ai-kernel/src/adr-steward.ts`, `control-plane-shared/src/ai-engine.ts`, `ai-kernel/src/adr-view.ts` and the panel's header, with `test/adr-explanation-step6.test.ts`. As built: the AI is asked only when an ADR's stored status changes (the owner's build instruction, narrower than §4.4 step 7's "status or any phase state"); a first document, or a change under the same status, keeps the sentence and is not a skip. The call goes through `engineFor` like the Supervisor's and the Auditor's drafts, so `ALLOWED_TEXT_MODELS`, the kernel's `AI_DAILY_REQUEST_LIMIT` and `AI_ACCOUNT_DAILY_REQUEST_LIMIT` apply, and it is made before the row is written, so the row is written once. The caps are 6 a UTC day, 1 per ADR a day and 2 a cycle, checked in that order after survival; survival is read from `metabolism_controls` as `AiEngine.reserve` reads it (the owner's override first), and an unreadable mode is not survival there either, the engine's budgets still applying. A request counts against the caps when the engine reserved it: an answer, an invalid answer, a timeout or an inference failure. `adr.explanation_skipped` carries `revision`, `from`, `to`, `reason`, `detail` (the engine's reason, such as `daily_budget_exhausted` or `schema:number_not_in_input`) and `cap`; the three caps share the reason `daily_cap`, told apart by `cap` (`day`, `adr` or `cycle`). The validator is stricter than §4.5: a draft must cite at least one ref, none twice; numbers are compared as whole numbers, so a 1 inside 18 is not in the input; only the computed status's §6.3 word may appear, never negated, and ditunda only for a deferred ADR. A status change whose document has no evidence ref to cite makes no call and is skipped as `unavailable` with `no_evidence_refs`. The input carries the changed phases first and the first ref of other complete phases, trimmed to 4,000 characters as the engine serializes it. An AI explanation is stored as `source: "ai"` with the deterministic sentence kept in `template`. `steward.ai_today` is the Durable Object counter for the current UTC day against the cap of 6, both null when the Steward's state cannot be read; the panel shows it as "AI hari ini: X/6", or "—". The neuron rates in `ai-engine.ts` are unchanged, so §7's figures hold. `power-mode.ts` is only read. | No | 1 day |
+| 5 | The Vision panel: the component, the labels of §6.3, the `#/vision/adr/<id>` routing, the render smoke test and truthfulness assertions. **Built 2026-11-17**, with `console/ui/src/components/AdrPanel.tsx`, `console/ui/src/lib/adr.ts` (the §6.3 wording and the panel's arithmetic, pure, so the Node test runs the same functions) and `test/adr-panel-step5.test.ts`. As built: the panel is its own component on `pages/Vision.tsx`, so the page itself still makes one read; `App.tsx` passes the hash's second and third segments, `#/vision/adr` scrolls to the panel and `#/vision/adr/<id>` opens that row, and a row opens and closes through the hash; the list polls every 5 minutes (`ADR_POLL_MS`), and the open row reads `kernel.adr_one` when it opens and when the list shows a new revision, not on a timer; the list has no phases, so the phase marks, the full blockers, the drift per phase, the stale sources and the history come from the open row's document; `GET /v1/adr` now carries `superseded_by`, so the list says superseded by ADR-NNNN without a second read; held and planned rows have a dashed border, and an ADR without phases (0019) shows "—" instead of a bar; a status is green only when done with every phase proven; `not_measurable_yet` and `unknown`, which §6.3 does not name, read "not measurable yet" and "unreadable" and are marked open; the Steward's states read active, suspended, disabled (agent kill switch) and not registered, and anything but active adds a line that no new pass runs and, with stored rows, when the last one ran; an unknown response is said to be unknown rather than drawn; evidence refs link to Consensus, Ledger, Code or Organism by their source, and owner actions only to the manifests' allowed pages. The render smoke checks seven cases at both widths: filled, a row opened, no pass yet, no table, not registered, suspended, and an invalid vision. The labels were Indonesian when built and are English since 2026-11-17 (the owner's reversal, §10); the labels quoted here are the English ones. | No | 1 day |
+| 6 | The explanation: the `draft_adr_explanation` task, the per-task style option in `ai-engine.ts` (removed 2026-11-17), the validator, the caps in the DO and `adr.explanation_skipped`. **Built 2026-11-17**, in `ai-kernel/src/adr-steward.ts`, `control-plane-shared/src/ai-engine.ts`, `ai-kernel/src/adr-view.ts` and the panel's header, with `test/adr-explanation-step6.test.ts`. As built: the AI is asked only when an ADR's stored status changes (the owner's build instruction, narrower than §4.4 step 7's "status or any phase state"); a first document, or a change under the same status, keeps the sentence and is not a skip. The call goes through `engineFor` like the Supervisor's and the Auditor's drafts, so `ALLOWED_TEXT_MODELS`, the kernel's `AI_DAILY_REQUEST_LIMIT` and `AI_ACCOUNT_DAILY_REQUEST_LIMIT` apply, and it is made before the row is written, so the row is written once. The caps are 6 a UTC day, 1 per ADR a day and 2 a cycle, checked in that order after survival; survival is read from `metabolism_controls` as `AiEngine.reserve` reads it (the owner's override first), and an unreadable mode is not survival there either, the engine's budgets still applying. A request counts against the caps when the engine reserved it: an answer, an invalid answer, a timeout or an inference failure. `adr.explanation_skipped` carries `revision`, `from`, `to`, `reason`, `detail` (the engine's reason, such as `daily_budget_exhausted` or `schema:number_not_in_input`) and `cap`; the three caps share the reason `daily_cap`, told apart by `cap` (`day`, `adr` or `cycle`). The validator is stricter than §4.5: a draft must cite at least one ref, none twice; numbers are compared as whole numbers, so a 1 inside 18 is not in the input; only the computed status's §6.3 word may appear, never negated, and deferred only for a deferred ADR. A status change whose document has no evidence ref to cite makes no call and is skipped as `unavailable` with `no_evidence_refs`. The input carries the changed phases first and the first ref of other complete phases, trimmed to 4,000 characters as the engine serializes it. An AI explanation is stored as `source: "ai"` with the deterministic sentence kept in `template`. `steward.ai_today` is the Durable Object counter for the current UTC day against the cap of 6, both null when the Steward's state cannot be read; the panel shows it as "AI today: X/6", or "—". The neuron rates in `ai-engine.ts` are unchanged, so §7's figures hold. `power-mode.ts` is only read. **Changed 2026-11-17** (owner, "all in english please"): the explanation and the sentence are plain English, the per-task style option and `INDONESIAN_STYLE_TASKS` are removed, so every task gets `PLAIN_ENGLISH_STYLE`, and the validator's status words are English (not started, in progress, done, superseded, held, planned; deferred), negated by not, never, no longer or a contraction such as isn't, optionally with yet and been. | No | 1 day |
 | 7 | Drift: `adr_drift.v1` reports with `alert_key` episodes, and the drift display on the panel. **Built 2026-11-17**, with `ai-kernel/src/adr-drift.ts`, the hook in `ai-kernel/src/adr-steward.ts` and `test/adr-drift-step7.test.ts`. As built: the episodes are read from the documents as stored in `adr_progress`, so a report names the drift the panel shows; an episode is one (ADR, phase, kind) drift, published once through `reports.publish` as a `platform_digest` **warning** with `body.schema = "adr_drift.v1"`, `state: "open"` and `alert_key = adr_drift:<adr>:<phase>`, carrying for each episode the phase and its title, the file, the quote the manifest anchors, the doc and computed states, up to 3 evidence refs, the manifest path, the panel link and a suggested fix in plain English (an operator report, so not Indonesian); an alert closes, once every episode it listed has closed, with a `Resolved:` **info** report with the same `alert_key` and `state: "resolved"`, which `resolvedLaterSql` reads as resolved, so the reports overview stops listing it; the open alerts are read back from `agent_reports` (the newest report of a key decides), so a restart reports nothing twice; the 4 `reports.publish` calls an hour are counted in the Durable Object: when the episodes to open and the alerts to close need more calls than are left, the new episodes go into one report (at most 12, under 14 KB) keyed `adr_drift:batch:<12 hex of their sha256>`, which closes when all of them have, and what is left is published on the next tick without a pass; a Policy Engine refusal (its own hourly count) is not counted and leaves the work pending; the report is never critical and is not sent to Telegram: the owner notices change nothing for it and the report relay does not qualify it (test AD3); the panel already showed the drift count and each phase's drift (step 5), so it is unchanged. In the same change, `docs/GITHUB-CUTOVER.md` records gate 4 part B's first live run (2026-11-17, `dep_3b2b298a-8d3d-40e7-8317-f1ba610bde17`), and the 0012 manifest's G4B `doc_claim` moves to `done` with the new quote, a guard path (`merge_owner_change`). | Yes (`architecture/adr/progress/0012.json`) | 0.5 day |
 | 8 | Later: the `adr` channel on the `ConsoleHub` (with the HAIC hub slice); T1 self-model reads `adr_progress`; an H1 tool; the xauusd RFC manifests (Q11) | — | — |
 
