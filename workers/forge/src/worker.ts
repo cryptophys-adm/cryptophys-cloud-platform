@@ -13,6 +13,7 @@ import { typecheckStep } from "./typecheck.ts";
 import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
 import { proposeEvolution, readCode, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
+import { readDocs } from "./docs-index.ts";
 import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
@@ -76,6 +77,17 @@ export class EvolutionRpc extends WorkerEntrypoint<Env> {
   /** code.read (tier 0): canonical main's evolvable paths, or up to 12 files' text. Read only. */
   async read(input: { paths?: unknown; prefix?: unknown }): Promise<Record<string, unknown>> {
     return readCode(this.env as never, input && typeof input === "object" ? input : {});
+  }
+}
+
+/**
+ * HAIC H1a (docs/design/HAIC-H0-H1.md §3.2, `docs_index`): canonical main's documents (architecture/adr and docs, *.md),
+ * split by heading, for the read-only "Ask the organism" chat. Read only: the index, one document's sections, or a
+ * word search; each section with its `ev:platform/doc/...` ref. No write and no ref but main.
+ */
+export class DocsRpc extends WorkerEntrypoint<Env> {
+  async read(input: { path?: unknown; section?: unknown; query?: unknown; limit?: unknown }): Promise<Record<string, unknown>> {
+    return readDocs(this.env as never, input && typeof input === "object" ? input : {});
   }
 }
 
