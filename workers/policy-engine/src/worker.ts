@@ -3,7 +3,7 @@
 // platform Workers use the RPC entrypoints below through service bindings; they are not
 // reachable over HTTP, so internal calls need no bearer token and no hostname exception.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { decide, parsePolicyRequest, type Env, type PolicyDecision } from "./index.ts";
+import worker, { decide, dryRun, parsePolicyRequest, type Env, type PolicyDecision, type PolicyDryRun } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import type { Evidence, Proposal, Vote } from "../../control-plane-shared/src/consensus-rules.ts";
@@ -16,12 +16,18 @@ export class HealthRpc extends WorkerEntrypoint<Env> {
   }
 }
 
-/** Deterministic policy decisions for other Workers (e.g. the Recovery Manager). Persisted and audited. */
+/** Deterministic policy decisions for other Workers (e.g. the Recovery Manager). evaluate() is persisted and audited; dryRun() is not. */
 export class PolicyRpc extends WorkerEntrypoint<Env> {
   async evaluate(input: Record<string, unknown>): Promise<PolicyDecision> {
     const parsed = parsePolicyRequest(input ?? {});
     if (parsed instanceof Error) throw new Error(`invalid_request: ${parsed.message}`);
     return decide(this.env, parsed);
+  }
+  /** HAIC H1a: the same checks as evaluate(), recorded nowhere (index.ts dryRun). For the read-only chat's policy_dry_run tool. */
+  async dryRun(input: Record<string, unknown>): Promise<PolicyDryRun> {
+    const parsed = parsePolicyRequest(input ?? {});
+    if (parsed instanceof Error) throw new Error(`invalid_request: ${parsed.message}`);
+    return dryRun(this.env, parsed);
   }
 }
 
