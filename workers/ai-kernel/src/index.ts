@@ -41,6 +41,7 @@ import { visionView } from "./vision-view.ts";
 import { ADR_CACHE_CONTROL, adrDetailView, adrListView, validAdrId } from "./adr-view.ts";
 import { intakeEvolutionIntents } from "./evolution-intake.ts";
 import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-view.ts";
+import { listConversations } from "./conversation.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -71,7 +72,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -146,6 +147,30 @@ export default {
         if (!validAdrId(adr[1])) return errorResponse(400, "invalid_request", "an ADR id is four digits");
         const one = await adrDetailView(env, adr[1]);
         return one.ok ? json(one.view, 200, { "cache-control": ADR_CACHE_CONTROL }) : errorResponse(one.status, one.error, one.detail);
+      }
+      // HAIC H1b (docs/design/HAIC-H0-H1.md §3.1, §3.7; owner Q1 2026-11-16): "Ask the organism", owners only. Each
+      // conversation is a Durable Object named "<actor>:<id>"; nothing here writes outside the chat's own records.
+      if (path === "/v1/conversations" || path.startsWith("/v1/conversations/")) {
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "the chat is for owners only");
+        if (path === "/v1/conversations") {
+          return request.method === "GET" ? json(await listConversations(env, operator.actor)) : errorResponse(405, "method_not_allowed");
+        }
+        const m = /^\/v1\/conversations\/(cnv_[0-9a-f]{16})(\/turns(?:\/([1-9][0-9]{0,5})\/rating)?)?$/.exec(path);
+        if (!m) return errorResponse(404, "not_found");
+        if (!env.CONVERSATION) return errorResponse(503, "not_available", "the conversation binding is not configured");
+        const stub = env.CONVERSATION.get(env.CONVERSATION.idFromName(`${operator.actor}:${m[1]}`));
+        let out: unknown;
+        if (!m[2]) {
+          if (request.method !== "GET") return errorResponse(405, "method_not_allowed");
+          out = await stub.read(operator.actor, m[1]);
+        } else {
+          if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+          const body = await readJsonObject(request);
+          if (!body.ok) return body.response;
+          out = m[3] ? await stub.rate(operator.actor, m[1], Number(m[3]), body.value.rating) : await stub.turn(operator.actor, m[1], body.value.question);
+        }
+        const r = out as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
+        return r.ok ? json(r.value) : errorResponse(r.status ?? 500, r.code ?? "internal_error", r.message);
       }
       // ADR-0014 §11 (docs/design/EVOLVER.md step V2): the evolution intents and the evolver's kill switch. Reading is open
       // to operators; "off" is a brake any operator may pull; "on" needs the owner.

@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, registeredDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, registeredDb, req, withoutConversation } from "./harness.ts";
 import { CAPABILITIES, verifySyscallDecision } from "../src/capabilities.ts";
 import { KERNEL_AGENTS, privilegedCapabilities } from "../src/consensus-rules.ts";
 import { EVOLVER_MODEL, MIN_START_INTERVAL_HOURS } from "../src/evolution-limits.ts";
@@ -273,7 +273,8 @@ test("V8. the council path end to end: a platform council task from the intake i
 });
 
 test("V9. wiring: EvolverAgent is bound with migration v6 (additive), FORGE_EVOLUTION targets EvolutionRpc, the tick and the wake route reach it", async () => {
-  const toml = read("workers/ai-kernel/wrangler.toml");
+  // As this step left it: without the chat's ConversationAgent and migration v7 (HAIC H1b).
+  const toml = withoutConversation(read("workers/ai-kernel/wrangler.toml"));
   assert.match(toml, /\[\[durable_objects\.bindings\]\]\nname = "EVOLVER"\nclass_name = "EvolverAgent"/);
   assert.match(toml, /\[\[services\]\]\nbinding = "FORGE_EVOLUTION"\nservice = "cryptophys-forge"\nentrypoint = "EvolutionRpc"/);
   const before = toml.replace(/\n# The evolver[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "EVOLVER"\nclass_name = "EvolverAgent"\n/, "\n")
