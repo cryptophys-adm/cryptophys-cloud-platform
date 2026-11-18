@@ -4,6 +4,7 @@ import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { CriticalReportList } from "../components/CriticalReports";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
+import { useDebounced, useHub } from "../lib/hub";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
 import { ago, navigate } from "../lib/format";
@@ -259,6 +260,8 @@ export default function Owner({ item }: { item?: string }) {
   const { refresh: refreshOverview } = useOverview();
   const { data, loading, error, refresh } = usePoll(() => call("kernel.owner_inbox"), 60_000);
   const reload = () => { void refresh(); void refreshOverview(); };
+  // HAIC push hub (§4.5): the inbox's change signal reloads at once; the 60 s poll stays as the fallback.
+  useHub(["inbox"], useDebounced(reload));
   const plans = arr(data?.approvals?.recovery_plans);
   const proposals = arr(data?.approvals?.consensus);
   const knowledge = arr(data?.approvals?.knowledge);

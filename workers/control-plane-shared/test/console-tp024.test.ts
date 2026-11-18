@@ -87,6 +87,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.council_dismiss", "kernel", "POST", "/v1/councils/{id}/dismiss", true, "DISMISS {id13}"],
   // HAIC H1.5d: the owner begins a proposed council (a typed phrase: it spends model calls).
   ["kernel.council_begin", "kernel", "POST", "/v1/councils/{id}/start", true, "CONVENE {id13}"],
+  // HAIC push hub: the Console's WebSocket of change signals.
+  ["kernel.hub", "kernel", "GET", "/v1/hub", false, null],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
   ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
   // Owner 2026-11-13: the Alerts page (Telegram alert channels), approvers only.
@@ -148,7 +150,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 83 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 84 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
   // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
@@ -157,7 +159,8 @@ test("1. route table: exactly the 83 ids with those fields, matching allow-list 
   // + kernel.conversations, kernel.conversation, kernel.conversation_turn, kernel.conversation_rate (HAIC H1c).
   // + kernel.councils, kernel.council, kernel.council_start, kernel.council_message, kernel.council_pick, kernel.council_dismiss (HAIC H1.5c).
   // + kernel.council_begin (HAIC H1.5d).
-  assert.equal(UI_ROUTES.length, 83);
+  // + kernel.hub (HAIC push hub).
+  assert.equal(UI_ROUTES.length, 84);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -166,7 +169,7 @@ test("1. route table: exactly the 83 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 83);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 84);
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
   assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
   assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
@@ -274,8 +277,8 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the registry's GET and POST /v1/identities (owner 2026-11-16).
   // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4).
   // + the kernel's four chat rows (HAIC H1c).
-  // + the kernel's six council rows (HAIC H1.5c) and its start row (HAIC H1.5d).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 81);
+  // + the kernel's six council rows (HAIC H1.5c), its start row (HAIC H1.5d) and the hub (HAIC push hub).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 82);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
