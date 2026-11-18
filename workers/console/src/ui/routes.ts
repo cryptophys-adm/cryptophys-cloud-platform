@@ -63,6 +63,12 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.council_begin", "kernel", "POST", "/v1/councils/{id}/start", true, "CONVENE {id13}"),
   // HAIC push hub (§4.5): the Console's WebSocket of change signals (inbox, councils, a council). Read only, operators.
   r("kernel.hub", "kernel", "GET", "/v1/hub", false, null),
+  // HAIC H2 (owner 2026-11-18): typed proposals. Operators read; the owner confirms (then it is handed off by kind) or
+  // rejects a draft, each with a typed phrase. The kernel checks the owner.
+  r("kernel.proposals", "kernel", "GET", "/v1/proposals", false, null),
+  r("kernel.proposal", "kernel", "GET", "/v1/proposals/{id}", false, null),
+  r("kernel.proposal_confirm", "kernel", "POST", "/v1/proposals/{id}/confirm", true, "CONFIRM {id13}"),
+  r("kernel.proposal_reject", "kernel", "POST", "/v1/proposals/{id}/reject", true, "REJECT {id13}"),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
