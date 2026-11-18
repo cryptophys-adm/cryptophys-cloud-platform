@@ -229,6 +229,7 @@ function ItemDetail({ id, items, sections, mode, reload }: { id: string; items: 
   else if (it.source === "knowledge") { const x = sections.knowledge.find((q) => q.proposal_id === ref); if (x) action = <KnowledgeItem k={x} reload={reload} />; }
   else if (it.source === "critical_report") { const x = sections.reports.find((q) => q.report_id === ref); if (x) action = <CriticalReportList rows={[x]} reload={reload} empty="—" />; }
   else if (it.source === "production_problem") { const x = sections.problems.find((q) => `${q.code}:${q.subject}` === ref); if (x) action = <ProblemItem p={x} />; }
+  else if (it.source === "proposal") action = <a className="btn py-1!" href={`#/proposals/${ref}`}>Open the proposal to confirm or reject it</a>;
   else if (it.source === "council") {
     const x = sections.councils.find((q) => q.session_id === ref);
     const y = sections.councilProposals.find((q) => q.session_id === ref);
@@ -269,10 +270,11 @@ export default function Owner({ item }: { item?: string }) {
   const problems = arr(data?.production_problems);
   const councils = arr(data?.councils);
   const councilProposals = arr(data?.council_proposals);
+  const drafts = arr(data?.typed_proposals);
   const approvals = plans.length + proposals.length + knowledge.length;
   const mode: string | null = typeof data?.consensus_mode === "string" ? data.consensus_mode : null;
   const items = arr(data?.items);
-  const nothing = Boolean(data) && approvals === 0 && reports.length === 0 && problems.length === 0 && councils.length === 0 && councilProposals.length === 0;
+  const nothing = Boolean(data) && approvals === 0 && reports.length === 0 && problems.length === 0 && councils.length === 0 && councilProposals.length === 0 && drafts.length === 0;
 
   return (
     <div className="flex flex-col gap-3">
@@ -310,6 +312,20 @@ export default function Owner({ item }: { item?: string }) {
               right={<Badge tone="amber">{count(data?.counts?.councils)}</Badge>}>
               <p className="mb-2 text-[11px] text-slate-500">A council ended in ranked options. Pick one or dismiss it on its page; with no pick it expires after 72 hours and nothing changes.</p>
               <div className="space-y-2">{councils.map((c) => <CouncilItem key={c.session_id} c={c} />)}</div>
+            </Panel>
+          )}
+          {drafts.length > 0 && (
+            <Panel title="Proposals waiting for your confirmation" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />}
+              right={<Badge tone="amber">{count(data?.counts?.typed_proposals)}</Badge>}>
+              <p className="mb-2 text-[11px] text-slate-500">A council's pick became a typed proposal. Nothing happens until you confirm it; unconfirmed, it expires after 7 days.</p>
+              <div className="space-y-2">{drafts.map((d) => (
+                <div key={d.proposal_id} className="glass-inner flex flex-wrap items-center gap-2 px-3 py-2 text-[12px]">
+                  <Badge tone="purple">{String(d.kind).replace(/_/g, " ")}</Badge>
+                  <span className="flex-1 wrap-break-word text-slate-200">{d.title}</span>
+                  <span className="text-slate-500" title={d.deadline}>expires {until(d.deadline)}</span>
+                  <a className="btn py-1!" href={`#/proposals/${d.proposal_id}`}>Open</a>
+                </div>
+              ))}</div>
             </Panel>
           )}
           {councilProposals.length > 0 && (
