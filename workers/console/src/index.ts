@@ -82,7 +82,7 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   // Owner 2026-11-15: no registry write of a service record or desired version is forwarded any more (the
   // Infrastructure page is read only); the deploy workflows record versions on the Registry directly.
   ...rows("policy", "GET", ["/v1/decisions", "/v1/decisions/{id}"]),
-  ...rows("policy", "POST", ["/v1/evaluate"]),
+  // HAIC H0a (ADR-0017 Decision 5, owner 2026-11-15): the Policy page only reads; POST /v1/evaluate is no longer forwarded.
   ...rows("drift", "GET", ["/v1/drift", "/v1/drift/{id}"]),
   ...rows("drift", "POST", ["/v1/observe"]),
   ...rows("audit", "GET", ["/v1/events", "/v1/events/{id}", "/v1/verify"]),
