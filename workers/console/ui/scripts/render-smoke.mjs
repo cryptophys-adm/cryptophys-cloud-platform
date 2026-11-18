@@ -405,6 +405,9 @@ const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mo
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
 let OVERRIDE = {};
+/** HAIC push hub check: serve index.html with the Console's own CSP, so a same-origin WebSocket is proven allowed by it. */
+let CSP_ON = false;
+const CONSOLE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png" };
 
@@ -420,6 +423,7 @@ const server = http.createServer((req, res) => {
   const file = path.join(dist, u === "/" ? "index.html" : u);
   if (!file.startsWith(dist) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end(); }
   res.setHeader("content-type", TYPES[path.extname(file)] ?? "application/octet-stream");
+  if (CSP_ON && path.extname(file) === ".html") res.setHeader("content-security-policy", CONSOLE_CSP);
   res.end(fs.readFileSync(file));
 });
 
@@ -595,6 +599,39 @@ for (const width of [390, 1440]) {
     await page.close();
   }
 }
+// HAIC push hub: under the Console's CSP, the council page opens one same-origin WebSocket, subscribes to its council,
+// shows "live", and reloads the council when the hub signals a change; the Owner page subscribes to the inbox.
+{
+  CSP_ON = true;
+  OVERRIDE = {};
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const csp = [];
+  page.on("console", (m) => { if (/Content Security Policy|Refused to connect/i.test(m.text())) csp.push(m.text()); });
+  page.on("pageerror", (e) => problems.push(`hub page error: ${e.message}`));
+  const subscribed = [];
+  let hubSocket = null;
+  await page.routeWebSocket(/\/console\/api\/kernel\/v1\/hub$/, (ws) => {
+    hubSocket = ws;
+    ws.onMessage((m) => { try { const o = JSON.parse(String(m)); subscribed.push(`${o.op} ${o.channel}`); ws.send(JSON.stringify({ kind: "subscribed", channel: o.channel })); } catch { /* not ours */ } });
+  });
+  let detailGets = 0;
+  page.on("request", (r) => { if (r.url().endsWith(`/api/kernel/v1/councils/${CS}`)) detailGets += 1; });
+  await page.goto(`${base}#/councils/${CS}`);
+  await page.waitForTimeout(900);
+  const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+  if (!main.includes("live")) problems.push(`hub: the council page does not show "live"`);
+  if (!subscribed.includes(`subscribe council:${CS}`) || !subscribed.includes("subscribe councils")) problems.push(`hub: subscriptions were ${JSON.stringify(subscribed)}`);
+  const before = detailGets;
+  hubSocket?.send(JSON.stringify({ channel: `council:${CS}`, seq: 1, at: at(0), kind: "council_changed", data: { session_id: CS, state: "awaiting_owner", messages: 5 } }));
+  await page.waitForTimeout(1500);
+  if (detailGets <= before) problems.push(`hub: a change signal did not reload the council (${before} -> ${detailGets})`);
+  await page.goto(`${base}#/owner`);
+  await page.waitForTimeout(900);
+  if (!subscribed.includes("subscribe inbox")) problems.push(`hub: the Owner page did not subscribe to the inbox (${JSON.stringify(subscribed)})`);
+  if (csp.length) problems.push(`hub: CSP refused: ${csp.join(" | ")}`);
+  await page.close();
+  CSP_ON = false;
+}
 for (const width of [390, 1440]) {
   for (const check of OWNER_CHECKS) {
     OVERRIDE = check.override;
@@ -750,4 +787,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Councils page (${COUNCIL_CHECKS.length} cases), the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);

@@ -6,6 +6,7 @@ import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, navigate } from "../lib/format";
 import { refPage } from "./Ask";
+import { hubLabel, useDebounced, useHub } from "../lib/hub";
 
 /**
  * HAIC H1.5c (ADR-0017, docs/design/HAIC-H0-H1.md §4): Call for Councils in Cerebrum. A council is a bounded,
@@ -13,8 +14,9 @@ import { refPage } from "./Ask";
  * while it deliberates, and picks an option or dismisses it here (Q6: picks in Cerebrum only). A pick becomes a proposal
  * draft for the owner to confirm (H2 performs the translation); "no change" closes the council. Operators read.
  *
- * There is no push hub yet (§4.5), so the page reloads every 5 minutes (ADR-0015 §3: polling only as a slow fallback)
- * and on Refresh; every owner click reloads at once.
+ * The push hub (§4.5) signals each change of a council and of the list, and the page reloads at once; without it the
+ * page reloads every 5 minutes (ADR-0015 §3: polling only as a slow fallback) and on Refresh; every owner click
+ * reloads at once.
  *
  * H1.5d (Q9): agents may propose a council from the evidence (an Observer cluster, a KPI regression, a persistent census
  * finding). A proposal waits here and in the owner's inbox; only the owner begins it ("CONVENE <id13>") or dismisses it.
@@ -154,6 +156,7 @@ function Detail({ id, limits }: { id: string; limits: any }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const reload = () => { void refresh(); };
+  const live = useHub([`council:${id}`], useDebounced(reload));
   const back = <a href="#/councils" className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline"><ArrowLeft className="h-3 w-3" />All councils</a>;
   if (loading && !data) return <Panel title="Council" right={back}><Skeleton rows={5} /></Panel>;
   if (error && !data) return <Panel title="Council" right={back}><Empty>{error}</Empty></Panel>;
@@ -203,6 +206,7 @@ function Detail({ id, limits }: { id: string; limits: any }) {
           {s.transcript_sha256 && <><span>·</span><span className="mono" title={s.transcript_sha256}>sha256 {s.transcript_sha256.slice(0, 12)}</span></>}
           {s.transcript_sha256 && <><span>·</span><span title="the closed council's transcript in R2 (cryptophys-council-transcripts), its sha256 the one above">{s.transcript_key ? <>R2 <span className="mono">{s.transcript_key}</span></> : "R2: not stored yet"}</span></>}
           <span className="ml-auto flex items-center gap-2">
+            <span className={live === "live" ? "text-emerald-300" : "text-slate-500"} title="push hub">{hubLabel(live)}</span>
             <button type="button" className="btn py-1!" onClick={reload} aria-label="Refresh"><RefreshCw className="h-3.5 w-3.5" />Refresh</button>
             {owner && open && <button type="button" className="btn btn-danger py-1!" onClick={dismiss}><X className="h-3.5 w-3.5" />{running ? "Stop…" : "Dismiss…"}</button>}
           </span>
@@ -276,6 +280,7 @@ export default function Councils({ council }: { council?: string }) {
   const owner = who.owner === true;
   const { data, loading, error, refresh } = usePoll(() => call("kernel.councils"), POLL_MS);
   const id = council && ID.test(council) ? council : null;
+  const live = useHub(["councils"], useDebounced(() => void refresh()));
   const rows = arr(data?.councils);
   const limits = data?.limits;
   useEffect(() => { if (council && !id) navigate("#/councils"); }, [council, id]);
@@ -285,7 +290,7 @@ export default function Councils({ council }: { council?: string }) {
       {id && <Detail id={id} limits={limits} />}
       {!id && owner && data?.available !== false && <StartForm reload={() => void refresh()} limits={limits} />}
       <Panel title="Councils" icon={<Users className="h-3.5 w-3.5 text-cyan-300" />}
-        right={<span className="text-[10px] text-slate-500">a council deliberates on evidence and ends in options; it never acts</span>}>
+        right={<span className="text-[10px] text-slate-500">a council deliberates on evidence and ends in options; it never acts · <span className={live === "live" ? "text-emerald-300" : ""}>{hubLabel(live)}</span></span>}>
         {loading && !data ? <Skeleton rows={3} /> : error && !data ? <Empty>{error}</Empty> : data?.available === false ? (
           <Empty>Councils are not available yet: their table is not migrated.</Empty>
         ) : rows.length === 0 ? <Empty>No council yet.{owner ? " Call one above." : ""}</Empty> : (

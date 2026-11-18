@@ -116,7 +116,9 @@ test("3. allow-list: every row forwards to the right binding; everything else is
   for (const rule of CONSOLE_ALLOW_LIST) {
     const { env, recorders, total } = consoleEnv();
     const path = concrete(rule.path);
-    const res = await run(env, creq(rule.method, `/api/${rule.service}${path}`, rule.method === "GET" ? {} : { body: "{}", type: "application/json" }));
+    // HAIC push hub: GET /v1/hub is forwarded only as a same-origin WebSocket upgrade (push-hub.test.ts P6 covers the refusals).
+    const hub = rule.service === "kernel" && rule.path === "/v1/hub" ? { headers: { upgrade: "websocket", origin: ORIGIN } } : {};
+    const res = await run(env, creq(rule.method, `/api/${rule.service}${path}`, rule.method === "GET" ? hub : { body: "{}", type: "application/json" }));
     assert.equal(res.status, 200, `${rule.method} ${rule.service}${rule.path}`);
     assert.equal(total(), 1);
     const [forwarded] = recorders[rule.service].calls;
@@ -272,9 +274,10 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   // + the kernel's GET /v1/councils, GET /v1/councils/{id}, POST /v1/councils, POST .../messages, .../pick and .../dismiss
   //   (HAIC H1.5c: Call for Councils; the kernel checks the owner on every POST).
   // + the kernel's POST /v1/councils/{id}/start (HAIC H1.5d: the owner begins a council an agent proposed).
-  assert.equal(keys.length, 81);
+  // + the kernel's GET /v1/hub (HAIC push hub: a WebSocket of change signals, same-origin only).
+  assert.equal(keys.length, 82);
   const expected = [
-    ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}", "/v1/conversations", "/v1/conversations/{id}", "/v1/councils", "/v1/councils/{id}"].map((p) => `kernel GET ${p}`),
+    ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}", "/v1/conversations", "/v1/conversations/{id}", "/v1/councils", "/v1/councils/{id}", "/v1/hub"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test", "/v1/conversations/{id}/turns", "/v1/conversations/{id}/turns/{id}/rating", "/v1/councils", "/v1/councils/{id}/messages", "/v1/councils/{id}/pick", "/v1/councils/{id}/dismiss", "/v1/councils/{id}/start"].map((p) => `kernel POST ${p}`),
     "kernel DELETE /v1/agents/{id}/principals/{id}", "kernel DELETE /v1/alerts/{id}",
     ...["/v1/plans", "/v1/plans/{id}"].map((p) => `recovery GET ${p}`),
