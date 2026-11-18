@@ -14,6 +14,7 @@ import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
 import { healthBody, type HealthBody, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { vaultOn } from "./alert-channels.ts";
 import { ConversationError, rateTurn, readConversation, runTurn, type ConversationStore } from "./conversation.ts";
+import { CouncilError, dismissCouncil, needsAlarm, ownerMessage, pickOption, readCouncil, startCouncil, stepCouncil, type CouncilStore, type Session } from "./council.ts";
 
 export default worker;
 
@@ -147,4 +148,38 @@ export class ConversationAgent extends DurableObject<Env> {
   async rate(actor: string, conversationId: string, turn: unknown, rating: unknown) {
     return this.settle(() => this.turns.run(() => rateTurn(this.env as never, this.store, actor, conversationId, turn, rating)));
   }
+}
+
+/**
+ * HAIC H1.5b (docs/design/HAIC-H0-H1.md §4): one Call for Councils session, named by its session id. Its alarm runs one
+ * phase at a time (convene, positions, rebuttals, synthesis) and, while it waits for the owner, wakes at the end of the
+ * owner window to expire it. The transcript lives in this object's storage; D1 holds the index row, the audit chain the
+ * hashes. Operations are serialized; a CouncilError crosses the RPC boundary as a value.
+ */
+export class CouncilAgent extends DurableObject<Env> {
+  private readonly ops = new SerialCycleQueue();
+  private get store(): CouncilStore { return this.ctx.storage as unknown as CouncilStore; }
+  private async schedule(s: Session | null): Promise<void> {
+    if (!needsAlarm(s)) return;
+    // The runtime's Durable Object storage has setAlarm; the repository's minimal type shim does not declare it.
+    const storage = this.ctx.storage as unknown as { setAlarm(at: number): Promise<void> };
+    await storage.setAlarm(s!.state === "awaiting_owner" ? Date.parse(s!.deadline) + 1_000 : Date.now() + 1_000);
+  }
+  private async settle<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; status: number; code: string; message: string }> {
+    try { return { ok: true, value: await this.ops.run(op) }; } catch (err) {
+      if (err instanceof CouncilError) return { ok: false, status: err.status, code: err.code, message: err.message };
+      throw err;
+    }
+  }
+  async start(actor: string, sessionId: string, topic: unknown, question: unknown) {
+    return this.settle(async () => { const s = await startCouncil(this.env as never, this.store, { actor, session_id: sessionId, topic, question }); await this.schedule(s); return s; });
+  }
+  async alarm(): Promise<void> {
+    const s = await this.ops.run(() => stepCouncil(this.env as never, this.store));
+    await this.schedule(s);
+  }
+  async read() { return this.settle(() => readCouncil(this.store)); }
+  async message(actor: string, text: unknown) { return this.settle(() => ownerMessage(this.env as never, this.store, actor, text)); }
+  async pick(actor: string, optionId: unknown, note: unknown) { return this.settle(() => pickOption(this.env as never, this.store, actor, optionId, note)); }
+  async dismiss(actor: string) { return this.settle(() => dismissCouncil(this.env as never, this.store, actor)); }
 }

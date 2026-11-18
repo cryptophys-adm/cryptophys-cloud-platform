@@ -77,6 +77,15 @@
       "task": "chat_plan"
     },
     {
+      "task": "council_position"
+    },
+    {
+      "task": "council_rebuttal"
+    },
+    {
+      "task": "council_synthesis"
+    },
+    {
       "task": "draft_adr_explanation"
     },
     {
