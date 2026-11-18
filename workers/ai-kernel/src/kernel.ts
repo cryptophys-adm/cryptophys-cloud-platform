@@ -16,6 +16,11 @@ import { EVOLVER_ID } from "./evolver.ts";
 export interface SupervisorStub { cycle(trigger: "scheduled" | "operator"): Promise<CycleReport>; status(): Promise<CycleReport | null> }
 export interface SupervisorNamespace { idFromName(name: string): unknown; get(id: unknown): SupervisorStub }
 
+export interface ConversationStub {
+  turn(actor: string, conversationId: string, question: unknown): Promise<unknown>;
+  read(actor: string, conversationId: string): Promise<unknown>;
+  rate(actor: string, conversationId: string, turn: unknown, rating: unknown): Promise<unknown>;
+}
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
   SIGNAL_ANALYST?: SupervisorNamespace;
@@ -24,6 +29,10 @@ export interface KernelHttpEnv extends KernelEnv {
   ADR_STEWARD?: SupervisorNamespace;
   /** The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): the EvolverAgent Durable Object. */
   EVOLVER?: SupervisorNamespace;
+  /** HAIC H1b: the ConversationAgent Durable Object (the chat) and the Forge's read-only documents. */
+  CONVERSATION?: { idFromName(name: string): unknown; get(id: unknown): ConversationStub };
+  FORGE_DOCS?: { read(input: Record<string, unknown>): Promise<Record<string, unknown>> };
+  CHAT_DAILY_TURN_LIMIT?: string;
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
   OWNER_EMAIL?: SendEmailBinding;

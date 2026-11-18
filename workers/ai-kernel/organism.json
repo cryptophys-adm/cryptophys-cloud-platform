@@ -71,6 +71,12 @@
   ],
   "engines": [
     {
+      "task": "chat_answer"
+    },
+    {
+      "task": "chat_plan"
+    },
+    {
       "task": "draft_adr_explanation"
     },
     {
