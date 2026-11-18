@@ -24,6 +24,8 @@ import {
 } from "../../control-plane-shared/src/council.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { runTool, type ToolEnv } from "./conversation-tools.ts";
+import { draftFromCouncil, newProposalId } from "../../control-plane-shared/src/typed-proposal.ts";
+import { insertDraft } from "./proposals.ts";
 
 export const COUNCIL_TASKS = ["council_position", "council_rebuttal", "council_synthesis"] as const;
 /** §4.2: who sits on a Cerebrum council, each with its role card. */
@@ -60,6 +62,8 @@ export interface Session {
   decision: unknown | null; transcript_sha256: string | null; created_by: string; reason: string | null; messages: number;
   /** H1.5d: an agent's proposal (who proposed it, its evidence refs, what the detector saw); absent for the owner's councils. */
   proposal?: { proposed_by: string; refs: string[]; detail: string } | null;
+  /** H2: the typed proposal draft the owner's pick made (or why it could not be made). */
+  typed_proposal?: { proposal_id: string | null; errors: string[] } | null;
   /** H1.5e: where the closed council's transcript is in R2 (councils/<session id>.json), once stored. */
   transcript_key?: string | null;
 }
@@ -424,7 +428,11 @@ export async function pickOption(env: CouncilEnv, store: CouncilStore, actor: st
   s.decision = decision;
   await move(env.DB, store, s, "decided", now);
   await audit(env.DB, "option_chosen", actor, s.session_id, opt.change.type, { option_id: opt.option_id });
-  await audit(env.DB, "proposal_drafted", actor, s.session_id, "drafted", { kind: opt.change.type, requires: decision.proposal_draft.requires });
+  // HAIC H2: the pick becomes a typed_proposal.v1 draft that waits for the owner's confirmation (proposals.ts).
+  const made = await insertDraft(env.DB, draftFromCouncil(newProposalId(), s.session_id, opt, decision.proposal_draft as never), `owner:${actor}`, now);
+  s.typed_proposal = made.ok ? { proposal_id: made.proposal_id, errors: [] } : { proposal_id: null, errors: made.errors };
+  await save(env.DB, store, s, now);
+  await audit(env.DB, "proposal_drafted", actor, s.session_id, made.ok ? "drafted" : "draft_invalid", { kind: opt.change.type, requires: decision.proposal_draft.requires, proposal_id: made.ok ? made.proposal_id : null });
   return s;
 }
 

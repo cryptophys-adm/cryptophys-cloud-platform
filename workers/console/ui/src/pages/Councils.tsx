@@ -142,7 +142,10 @@ function Options({ synth, session, reload }: { synth: any; session: any; reload:
         <div className="mt-3 rounded-lg border border-emerald-400/20 bg-emerald-500/5 px-3 py-2 text-[12px] text-slate-300">
           <div className="mb-1 flex items-center gap-1.5 text-emerald-200"><CheckCircle2 className="h-3.5 w-3.5" />Proposal draft</div>
           <div><span className="text-slate-500">kind</span> <span className="mono">{session.decision.proposal_draft.kind}</span> · <span className="text-slate-500">requires</span> <span className="mono">{arr(session.decision.proposal_draft.requires).join(", ")}</span></div>
-          <div className="mt-1 text-[11px] text-slate-500">Confirming the draft and handing it to its path (a consensus action, a repository task or a shadow arm) arrives with H2; until then nothing runs from it.</div>
+          <div className="mt-1 text-[11px] text-slate-500">{session.typed_proposal?.proposal_id
+            ? <>It waits for your confirmation as <a className="text-cyan-300 hover:underline" href={`#/proposals/${session.typed_proposal.proposal_id}`}>typed proposal {session.typed_proposal.proposal_id}</a>; nothing runs from it before that.</>
+            : arr(session.typed_proposal?.errors).length ? <>It could not become a typed proposal: {arr(session.typed_proposal?.errors).join(", ")}.</>
+            : "Nothing runs from it before your confirmation."}</div>
         </div>
       )}
     </Panel>

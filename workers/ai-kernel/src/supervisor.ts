@@ -26,6 +26,7 @@ import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
 import { DESTRUCTIVE_DEPLOY_ACTION, DESTRUCTIVE_DEPLOY_UNIT, destructiveChanges } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { observerCycle } from "./observer-watch.ts";
 import { proposeIdentityRedeploys } from "./identity-redeploy.ts";
+import { nextPolicyHandoff, recordPolicyHandoff } from "./proposals.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
@@ -703,6 +704,26 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       }
     } catch (err) {
       report.findings.push({ kind: "merge", action: "none", why: `merge proposals unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
+    }
+  }
+
+  // HAIC H2 (owner 2026-11-18: "Konsensus rutin"): a policy_parameter typed proposal the owner confirmed is proposed to
+  // consensus as set_policy_parameter, one per cycle; the owner's confirmation was the click. The proposal records the
+  // consensus proposal id, or why it failed (a full rate window leaves it waiting for the next cycle).
+  if (trigger !== "operator") {
+    try {
+      const next = await nextPolicyHandoff(env.DB);
+      if (next) {
+        const r = await proposeConsensus({ action: "set_policy_parameter", target: next.target, params: { value: next.value, typed_proposal: next.proposal_id } });
+        if (r) {
+          report.actions.push(r);
+          const consensusId = r.outcome === "succeeded" && typeof (r.result as { proposal_id?: unknown }).proposal_id === "string" ? (r.result as { proposal_id: string }).proposal_id : null;
+          await recordPolicyHandoff(env.DB, next.proposal_id, consensusId ? { ok: true, consensus_id: consensusId } : { ok: false, reason: r.outcome === "succeeded" ? "no consensus proposal id" : r.reason });
+          report.findings.push({ kind: "typed_proposal", service_id: next.proposal_id, action: "consensus.propose", outcome: r.outcome });
+        }
+      }
+    } catch (err) {
+      report.findings.push({ kind: "typed_proposal", action: "none", why: `typed proposal hand-off unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
   }
 

@@ -32,6 +32,7 @@ import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-s
 import { latestGitBackupVerify } from "../../control-plane-shared/src/git-backup.ts";
 import { readIdentitySource } from "../../control-plane-shared/src/identity-source.ts";
 import { RANKING, rankInbox } from "../../control-plane-shared/src/owner-inbox-rank.ts";
+import { draftsAwaitingOwner } from "./proposals.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -196,6 +197,7 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
   const problems = await unhandledProblems(db, now);
   const councils = await councilsAwaitingOwner(db, now);
   const proposals = await councilProposals(db, now);
+  const drafts = await draftsAwaitingOwner(db, now);
   let mode: string | null = null;
   try { mode = (await db.prepare("SELECT value FROM consensus_controls WHERE control = 'mode'").first<{ value: string }>())?.value ?? null; } catch { mode = null; }
   const n = approvals.recovery_plans.length + approvals.consensus.length + approvals.knowledge.length;
@@ -211,9 +213,11 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
     councils,
     // HAIC H1.5d: councils agents proposed, for the owner to begin or dismiss.
     council_proposals: proposals,
-    counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length, councils: councils.length, council_proposals: proposals.length },
+    // HAIC H2: typed proposal drafts that wait for the owner's confirmation.
+    typed_proposals: drafts,
+    counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length, councils: councils.length, council_proposals: proposals.length, typed_proposals: drafts.length },
     // HAIC H0b (docs/design/HAIC-H0-H1.md §2.4): the same items, ranked, additively; the sections above are unchanged.
-    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems, councils, council_proposals: proposals }, now),
+    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems, councils, council_proposals: proposals, typed_proposals: drafts }, now),
     ranking: RANKING,
   };
 }
