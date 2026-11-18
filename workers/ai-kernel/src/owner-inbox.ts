@@ -43,6 +43,13 @@ export const CRITICAL_WINDOW_MS = 24 * 3_600_000;
  * heartbeat service_registry.updated_at, which every run sets; drift rows are recorded only on change (0061).
  */
 export const STALE_MS = 45 * 60_000;
+/**
+ * A heartbeat or observation time may be this far after `now` and still count as current (2026-11-18): `now` is the
+ * cron's scheduledTime, and a pass that ran for minutes read the Drift Detector's newer writes as "in the future", so
+ * all 17 services were reported stale at 16:30 (a false alarm). One Drift Detector period (every 15 min); a time further ahead,
+ * or unreadable, still fails closed.
+ */
+export const FUTURE_SKEW_MS = 15 * 60_000;
 /** The Workers the Supervisor never plans for: itself (supervisor.ts skips SERVICE) and the observer of every drift. */
 export const SELF_SERVICES: readonly string[] = ["cryptophys-ai-kernel", "cryptophys-drift-detector"];
 /**
@@ -296,8 +303,9 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     if (reasons.includes("disabled")) continue;
     const latestAt = Date.parse(obs[0].observed_at);
     const seenAt = Date.parse(String(s.updated_at ?? ""));
-    if (!Number.isFinite(latestAt) || latestAt > now || !Number.isFinite(seenAt) || seenAt > now || now - seenAt > STALE_MS) {
-      const seen = Number.isFinite(latestAt) && latestAt <= now ? s.updated_at : obs[0].observed_at;
+    const ahead = now + FUTURE_SKEW_MS;
+    if (!Number.isFinite(latestAt) || latestAt > ahead || !Number.isFinite(seenAt) || seenAt > ahead || now - seenAt > STALE_MS) {
+      const seen = Number.isFinite(latestAt) && latestAt <= ahead ? s.updated_at : obs[0].observed_at;
       stale.push({ code: "observations_stale", subject: s.service_id, detail: `${name}: not observed since ${seen}; the Drift Detector may have stopped`, since: seen, link: "#/infrastructure" });
       continue;
     }
