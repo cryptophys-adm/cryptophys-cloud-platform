@@ -190,6 +190,11 @@ class_name = "EvolverAgent"
 name = "CONVERSATION"
 class_name = "ConversationAgent"
 
+# HAIC H1.5b (docs/design/HAIC-H0-H1.md §4): one Call for Councils session per object, named by its session id.
+[[durable_objects.bindings]]
+name = "COUNCIL"
+class_name = "CouncilAgent"
+
 [[vectorize]]
 binding = "MEMORY"
 index_name = "cryptophys-agent-memory"
@@ -221,6 +226,10 @@ new_sqlite_classes = ["EvolverAgent"]
 [[migrations]]
 tag = "v7"
 new_sqlite_classes = ["ConversationAgent"]
+
+[[migrations]]
+tag = "v8"
+new_sqlite_classes = ["CouncilAgent"]
 
 # No shared secrets: /v1 and /mcp are authorized by the verified Cloudflare Access identity.
 # The deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.
