@@ -267,7 +267,8 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   //   tidak berfungsi": the Infrastructure page is read only).
   // + the registry's GET and POST /v1/identities (owner 2026-11-16: the deploy-time identity lists on the Users page).
   // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4: the Vision page's ADR panel).
-  assert.equal(keys.length, 70);
+  // - the policy's POST /v1/evaluate (HAIC H0a, ADR-0017 Decision 5: the Policy page only reads).
+  assert.equal(keys.length, 69);
   const expected = [
     ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}"].map((p) => `kernel GET ${p}`),
     ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test"].map((p) => `kernel POST ${p}`),
@@ -277,7 +278,6 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
     ...["/v1/services", "/v1/services/{id}", "/v1/accounts", "/v1/identities"].map((p) => `registry GET ${p}`),
     ...["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable", "/v1/identities"].map((p) => `registry POST ${p}`),
     ...["/v1/decisions", "/v1/decisions/{id}"].map((p) => `policy GET ${p}`),
-    "policy POST /v1/evaluate",
     ...["/v1/drift", "/v1/drift/{id}"].map((p) => `drift GET ${p}`),
     "drift POST /v1/observe",
     ...["/v1/events", "/v1/events/{id}", "/v1/verify"].map((p) => `audit GET ${p}`),
@@ -298,6 +298,7 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   ];
   assert.deepEqual([...keys].sort(), [...expected].sort());
   assert.ok(!keys.some((k) => k.includes("mcp")));
+  assert.ok(!keys.includes("policy POST /v1/evaluate"), "the Console no longer forwards a manual policy evaluation (HAIC H0a)");
   assert.ok(!keys.includes("audit POST /v1/events"));
   assert.ok(!keys.includes("orchestrator POST /v1/deployments"), "the manual deploy is not forwarded (owner 2026-11-14)");
   assert.ok(!keys.includes("registry PUT /v1/services/{id}"), "a service record is not written through the Console (owner 2026-11-15)");
