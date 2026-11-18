@@ -201,6 +201,7 @@ function Detail({ id, limits }: { id: string; limits: any }) {
           <span title={s.deadline}>{s.state === "awaiting_owner" ? `expires ${until(s.deadline)}` : `window ends ${until(s.deadline)}`}</span>
           {s.reason && <><span>·</span><span>reason <span className="mono">{s.reason}</span></span></>}
           {s.transcript_sha256 && <><span>·</span><span className="mono" title={s.transcript_sha256}>sha256 {s.transcript_sha256.slice(0, 12)}</span></>}
+          {s.transcript_sha256 && <><span>·</span><span title="the closed council's transcript in R2 (cryptophys-council-transcripts), its sha256 the one above">{s.transcript_key ? <>R2 <span className="mono">{s.transcript_key}</span></> : "R2: not stored yet"}</span></>}
           <span className="ml-auto flex items-center gap-2">
             <button type="button" className="btn py-1!" onClick={reload} aria-label="Refresh"><RefreshCw className="h-3.5 w-3.5" />Refresh</button>
             {owner && open && <button type="button" className="btn btn-danger py-1!" onClick={dismiss}><X className="h-3.5 w-3.5" />{running ? "Stop…" : "Dismiss…"}</button>}
