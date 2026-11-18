@@ -13,6 +13,7 @@ import { observe } from "./syscall.ts";
 import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
 import { healthBody, type HealthBody, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { vaultOn } from "./alert-channels.ts";
+import { ConversationError, rateTurn, readConversation, runTurn, type ConversationStore } from "./conversation.ts";
 
 export default worker;
 
@@ -121,5 +122,29 @@ export class AuditorAgent extends DurableObject<Env> {
   }
   async status(): Promise<CycleReport | null> {
     return (await this.ctx.storage.get<CycleReport>("last_cycle")) ?? null;
+  }
+}
+
+/**
+ * HAIC H1b (docs/design/HAIC-H0-H1.md §3.1): one owner's conversation, named "<actor>:<conversation id>". Its turns live
+ * in this object's storage (Q4: 90 days, then R2, later); D1 holds only ids and counts, the audit chain only hashes.
+ * Turns are serialized; every call names the actor, and an object answers only the actor it was started by.
+ */
+export class ConversationAgent extends DurableObject<Env> {
+  private readonly turns = new SerialCycleQueue();
+  private get store(): ConversationStore { return this.ctx.storage as unknown as ConversationStore; }
+  // A ConversationError crosses the RPC boundary as a value (a thrown class loses its fields there).
+  private async settle<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; status: number; code: string; message: string }> {
+    try { return { ok: true, value: await op() }; } catch (err) {
+      if (err instanceof ConversationError) return { ok: false, status: err.status, code: err.code, message: err.message };
+      throw err;
+    }
+  }
+  async turn(actor: string, conversationId: string, question: unknown) {
+    return this.settle(() => this.turns.run(() => runTurn(this.env as never, this.store, { actor, conversation_id: conversationId, question })));
+  }
+  async read(actor: string, conversationId: string) { return this.settle(() => readConversation(this.store, actor, conversationId)); }
+  async rate(actor: string, conversationId: string, turn: unknown, rating: unknown) {
+    return this.settle(() => this.turns.run(() => rateTurn(this.env as never, this.store, actor, conversationId, turn, rating)));
   }
 }

@@ -39,10 +39,13 @@ export const PLAIN_ENGLISH_STYLE =
   "hash values or abbreviations; describe them in words (for example \"the Policy Engine refused it because the same service was " +
   "changed less than an hour ago\", not \"failed: target_rate_limit\"). Keep names of services and products as they are.";
 export const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-small-en-v1.5";
+
 export const EMBEDDING_DIMENSIONS = 384;
 
+/** Token counts a model reports (OpenAI-style `usage`), when it reports them. */
+export interface AiUsage { input: number; cached: number; output: number }
 export type AiOutcome<T> =
-  | { status: "ok"; data: T; model: string; correlation_id: string }
+  | { status: "ok"; data: T; model: string; correlation_id: string; usage?: AiUsage }
   | { status: "unavailable"; reason: string; correlation_id: string }
   | { status: "invalid_output"; reason: string; correlation_id: string };
 
@@ -71,6 +74,23 @@ export interface AiEngineOptions {
   dailyLimit?: number;
   accountDailyLimit?: number;
   timeoutMs?: number;
+  /**
+   * HAIC H1 (docs/design/HAIC-H0-H1.md §3.6, owner Q2 2026-11-16): a budget of the caller's own instead of ai_usage. The
+   * chat reserves its calls against its daily turn budget (conversation.ts): it neither counts toward nor is refused by
+   * the platform's per-service and account-wide caps, so it cannot starve the agents and they cannot starve it.
+   */
+  ownBudget?: (day: string) => Promise<boolean>;
+}
+
+/** The token counts of a completion (OpenAI-style `usage`), or null when the model reported none. */
+export function usageOf(completion: unknown): AiUsage | null {
+  const u = (completion as { usage?: Record<string, unknown> } | null)?.usage;
+  if (!u || typeof u !== "object") return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : 0);
+  const details = u.prompt_tokens_details as { cached_tokens?: unknown } | undefined;
+  const input = n(u.prompt_tokens ?? u.input_tokens), output = n(u.completion_tokens ?? u.output_tokens);
+  if (!input && !output) return null;
+  return { input, cached: n(details?.cached_tokens), output };
 }
 
 export function utcDay(date = new Date()): string {
@@ -162,6 +182,7 @@ export class AiEngine {
   private readonly dailyLimit: number;
   private readonly accountDailyLimit: number;
   private readonly timeoutMs: number;
+  private readonly ownBudget?: (day: string) => Promise<boolean>;
 
   constructor(options: AiEngineOptions) {
     this.service = options.service;
@@ -173,6 +194,7 @@ export class AiEngine {
     this.dailyLimit = options.dailyLimit && options.dailyLimit > 0 ? options.dailyLimit : 200;
     this.accountDailyLimit = options.accountDailyLimit && options.accountDailyLimit > 0 ? options.accountDailyLimit : 1000;
     this.timeoutMs = options.timeoutMs ?? 8000;
+    this.ownBudget = options.ownBudget;
   }
 
   configured(): boolean {
@@ -184,6 +206,7 @@ export class AiEngine {
    * ai_usage row counts it) but never refused: the learning mandate (power-mode.ts).
    */
   private async reserve(day: string, purpose?: AiPurpose): Promise<boolean> {
+    if (this.ownBudget) return this.ownBudget(day);
     if (isLearningAiPurpose(purpose)) {
       // Also counted in learning_requests (migration 0070), so the Console can show learning's own AI use.
       try {
@@ -301,6 +324,8 @@ export class AiEngine {
           temperature: 0.1,
           // Gemma 4: no thinking tokens (cost, latency, and a clean JSON answer). Other models ignore it.
           ...(this.model.includes("gemma-4") ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+          // DeepSeek V4.x reasons at "high" by default; the chat's JSON tasks need little of it (cost, latency).
+          ...(this.model.includes("deepseek-v4") ? { reasoning_effort: "low" } : {}),
         }),
         timeout,
       ]);
@@ -348,7 +373,8 @@ export class AiEngine {
             await this.recordFailureCategory(day, task.name, "schema:advisory_language");
             return { status: "invalid_output", reason: "schema:advisory_language", correlation_id: correlationId };
           }
-          return { status: "ok", data, model: this.model, correlation_id: correlationId };
+          const usage = usageOf(completion);
+          return { status: "ok", data, model: this.model, correlation_id: correlationId, ...(usage ? { usage } : {}) };
         }
         if (task.diagnose) {
           const raw = String(task.diagnose(parsed)).toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 48);

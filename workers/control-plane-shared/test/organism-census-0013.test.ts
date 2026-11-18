@@ -58,8 +58,9 @@ test("C1. the repository's own DNA matches the migrated registries plus what con
   assert.deepEqual(await censusTick(db as never, repo), { outcome: "recorded", main_sha: MAIN, status: "consistent", findings: 0 });
   assert.equal((await censusTick(db as never, repo)).outcome, "up_to_date", "once per main commit");
   const row = (await latestCensus(db as never)).census[0];
-  // 12 agents and 12 engines since 2026-11-17: the evolver and its two engines (ADR-0014 §11, EVOLVER.md step V5).
-  assert.deepEqual([row.status, row.organs, row.agents, row.voters, row.engines], ["consistent", 12, 12, 9, 12]);
+  // 12 agents and 12 engines since 2026-11-17: the evolver and its two engines (ADR-0014 §11, EVOLVER.md step V5);
+  // 14 engines since HAIC H1b (2026-11-18): the chat's chat_plan and chat_answer.
+  assert.deepEqual([row.status, row.organs, row.agents, row.voters, row.engines], ["consistent", 12, 12, 9, 14]);
 });
 
 test("C2. findings: an unregistered organ and agent (with its council request), an undeclared agent, host and capability changes", async () => {
