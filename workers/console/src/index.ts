@@ -74,8 +74,8 @@ export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   // HAIC H1c: the chat (GET /v1/conversations, /v1/conversations/{id}; POST .../turns, .../turns/{id}/rating), owners only.
   // HAIC H1.5c: councils (GET /v1/councils, /v1/councils/{id}: operators; POST /v1/councils and .../messages, .../pick,
   // .../dismiss and, since H1.5d, .../start for a council an agent proposed: the owner, checked by the kernel). A council
-  // never acts; a pick is a draft for the owner to confirm.
-  ...rows("kernel", "GET", ["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}", "/v1/conversations", "/v1/conversations/{id}", "/v1/councils", "/v1/councils/{id}"]),
+  // never acts; a pick is a draft for the owner to confirm. HAIC push hub: GET /v1/hub, a WebSocket upgrade only (hubForward).
+  ...rows("kernel", "GET", ["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}", "/v1/conversations", "/v1/conversations/{id}", "/v1/councils", "/v1/councils/{id}", "/v1/hub"]),
   ...rows("kernel", "POST", ["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test", "/v1/conversations/{id}/turns", "/v1/conversations/{id}/turns/{id}/rating", "/v1/councils", "/v1/councils/{id}/messages", "/v1/councils/{id}/pick", "/v1/councils/{id}/dismiss", "/v1/councils/{id}/start"]),
   ...rows("kernel", "DELETE", ["/v1/agents/{id}/principals/{id}", "/v1/alerts/{id}"]),
   ...rows("recovery", "GET", ["/v1/plans", "/v1/plans/{id}"]),
@@ -247,6 +247,25 @@ async function forward(request: Request, env: Env, url: URL, innerPath: string, 
 }
 
 /**
+ * HAIC push hub (docs/design/HAIC-H0-H1.md §4.5): the one upgrade path. It runs after the Access gate like every API
+ * call, and, because a browser sends its cookies on a cross-site WebSocket too, only for a same-origin page: the Origin
+ * must be the Console's own (no cross-site WebSocket hijacking). The kernel admits operators; the 101 response and its
+ * socket pass through unchanged (a Response with a webSocket cannot be re-wrapped).
+ */
+async function hubForward(request: Request, env: Env, url: URL, jwt: string): Promise<Response> {
+  if ((request.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") return json({ error: "upgrade_required" }, 426);
+  if (request.headers.get("origin") !== url.origin) return json({ error: "csrf" }, 403);
+  const binding = env[SERVICE_BINDINGS.kernel] as ServiceBinding | undefined;
+  if (!binding) return json({ error: "upstream_unavailable", service: "kernel" }, 502);
+  let upstream: Response;
+  try { upstream = await binding.fetch(new Request("https://console.internal/v1/hub", { headers: { "cf-access-jwt-assertion": jwt, upgrade: "websocket" } })); } catch {
+    return json({ error: "upstream_unavailable", service: "kernel" }, 502);
+  }
+  console.log(JSON.stringify({ event: "console_forward", service: "kernel", method: "GET", route: "/v1/hub", status: upstream.status }));
+  return upstream.status === 101 ? upstream : withSecurity(new Response(upstream.body, { status: upstream.status, headers: { "content-type": JSON_TYPE } }));
+}
+
+/**
  * ADR-0010 (single subdomain): requests arrive either on the Nexus host under /console/ (a Workers
  * route on nexus.cryptophys.work/console*), on workers.dev (with or without the prefix), or on a
  * retired hostname, which is redirected to the Nexus mount. Returns the path inside the Console,
@@ -335,11 +354,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  if (rule.service === "kernel" && rule.path === "/v1/hub") return hubForward(request, env, url, request.headers.get("cf-access-jwt-assertion") as string);
   return forward(request, env, url, path, request.headers.get("cf-access-jwt-assertion") as string, rule);
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    return withSecurity(await handle(request, env));
+    const res = await handle(request, env);
+    // The push hub's 101 carries its socket; it is passed on as it came (hubForward). Everything else gets the headers.
+    return res.status === 101 ? res : withSecurity(res);
   },
 };

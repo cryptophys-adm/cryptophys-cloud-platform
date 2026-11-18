@@ -90,8 +90,10 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
  * live registries applies them with registeredByConsensus(): the registries once consensus has registered what main
  * declares. organism-dna-0013 O8 checks each is declared, routine (no privileged capability) and seeded by no migration.
  */
-/** The kernel's wrangler.toml without the ConversationAgent (HAIC H1b) and the CouncilAgent (H1.5b): what the earlier steps' wiring tests compare. */
+/** The kernel's wrangler.toml without the ConversationAgent (HAIC H1b), the CouncilAgent (H1.5b), the ConsoleHub (push hub) and the transcripts bucket (H1.5e): what the earlier steps' wiring tests compare. */
 export const withoutConversation = (toml: string): string => toml
+  .replace(/\n# HAIC push hub \(docs\/design\/HAIC-H0-H1\.md §4\.5[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "HUB"\nclass_name = "ConsoleHub"\n/, "\n")
+  .replace(/\n\[\[migrations\]\]\ntag = "v9"\nnew_sqlite_classes = \["ConsoleHub"\]\n/, "\n")
   .replace(/\n# HAIC H1\.5b \(docs\/design\/HAIC-H0-H1\.md §4\)[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "COUNCIL"\nclass_name = "CouncilAgent"\n/, "\n")
   .replace(/\n\[\[migrations\]\]\ntag = "v8"\nnew_sqlite_classes = \["CouncilAgent"\]\n/, "\n")
   .replace(/\n# HAIC H1b \(docs\/design\/HAIC-H0-H1\.md §3\.1\)[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "CONVERSATION"\nclass_name = "ConversationAgent"\n/, "\n")

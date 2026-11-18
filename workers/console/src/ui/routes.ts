@@ -61,6 +61,8 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.council_dismiss", "kernel", "POST", "/v1/councils/{id}/dismiss", true, "DISMISS {id13}"),
   // HAIC H1.5d (Q9): the owner begins a council an agent proposed (it then spends model calls, like convening one).
   r("kernel.council_begin", "kernel", "POST", "/v1/councils/{id}/start", true, "CONVENE {id13}"),
+  // HAIC push hub (§4.5): the Console's WebSocket of change signals (inbox, councils, a council). Read only, operators.
+  r("kernel.hub", "kernel", "GET", "/v1/hub", false, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
