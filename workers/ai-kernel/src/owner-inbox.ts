@@ -31,6 +31,7 @@ import { resolvedLaterSql } from "./syscall.ts";
 import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 import { latestGitBackupVerify } from "../../control-plane-shared/src/git-backup.ts";
 import { readIdentitySource } from "../../control-plane-shared/src/identity-source.ts";
+import { RANKING, rankInbox } from "../../control-plane-shared/src/owner-inbox-rank.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
@@ -153,7 +154,7 @@ export async function openCriticalReportRows(db: D1Database, now = Date.now(), l
   return rows.results.map((r) => ({ report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: "critical", subject: r.subject, created_at: r.created_at }));
 }
 
-/** GET /v1/owner/inbox: the Owner page's two sections, from D1 only. Operators may read it; only approvers act. */
+/** GET /v1/owner/inbox: the Owner page's sections and their ranked items (HAIC H0b), from D1 only. Operators may read it; only approvers act. */
 export async function ownerInbox(db: D1Database, now = Date.now()) {
   const approvals = await pendingApprovals(db);
   const critical = await openCriticalReportRows(db, now, INBOX_LIMIT);
@@ -170,6 +171,9 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
     critical_reports: critical,
     production_problems: problems,
     counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length },
+    // HAIC H0b (docs/design/HAIC-H0-H1.md §2.4): the same items, ranked, additively; the sections above are unchanged.
+    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems }, now),
+    ranking: RANKING,
   };
 }
 
