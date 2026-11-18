@@ -17,6 +17,8 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^workers\/deployment-orchestrator\/src\/deploy-vars\.ts$/, "auth_access"],
   [/^workers\/policy-engine\//, "policy_engine"],
   [/^workers\/control-plane-shared\/src\/consensus-(rules|exec|vote)\.ts$/, "consensus_kill_switch"],
+  // HAIC H4 (owner 2026-11-18): the autonomy dial lowers what consensus may execute; its rules are the consensus's own.
+  [/^workers\/control-plane-shared\/src\/autonomy-dial\.ts$/, "consensus_kill_switch"],
   [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
   [/^workers\/control-plane-shared\/src\/secrets\.ts$/, "secrets"],
   [/^architecture\/adr\/00(09|12)-/, "adr_0009_0012"],

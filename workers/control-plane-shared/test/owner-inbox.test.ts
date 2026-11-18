@@ -69,8 +69,8 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   // HAIC H1.5c: councils waiting for the owner's pick are counted additively (none here; council-h15c covers them).
   // HAIC H1.5d: councils agents proposed are counted additively too (none here; council-h15d covers them).
   // HAIC H2: typed proposal drafts are counted additively too (none here; typed-proposals-h2a covers them).
-  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length, councils: 0, council_proposals: 0, typed_proposals: 0 });
-  assert.deepEqual([b.councils, b.council_proposals, b.typed_proposals], [[], [], []]);
+  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length, councils: 0, council_proposals: 0, typed_proposals: 0, autonomy: 0 });
+  assert.deepEqual([b.councils, b.council_proposals, b.typed_proposals, b.autonomy], [[], [], [], []]);
   assert.equal(events(), before, "reading the inbox writes nothing");
   assert.deepEqual((db.raw.prepare("SELECT DISTINCT status FROM knowledge_proposals").all() as { status: string }[]).map((r) => r.status), ["pending"]);
 

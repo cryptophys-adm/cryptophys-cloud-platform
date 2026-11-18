@@ -48,6 +48,7 @@ import { storeMissingTranscripts } from "./council-archive.ts";
 import { publishHub } from "./hub.ts";
 import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTypedProposal } from "./proposals.ts";
 import { DirectiveError, draftFromDirective } from "./directives.ts";
+import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -78,7 +79,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/hub (WebSocket; operators)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -185,6 +186,25 @@ export default {
         if ((request.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") return errorResponse(426, "upgrade_required", "the hub is a WebSocket");
         if (!env.HUB) return errorResponse(503, "not_available", "the hub binding is not configured");
         return env.HUB.get(env.HUB.idFromName("console")).fetch(new Request("https://hub.internal/connect", { headers: { upgrade: "websocket", "x-hub-actor": operator.actor } }));
+      }
+      // HAIC H4 (ADR-0017 §5; owner 2026-11-18): the autonomy dial. Operators read; only the owner sets a group's level,
+      // and only up to its ADR-0009 class. The dial is enforced where consensus executes (consensus.ts, consensus-exec.ts).
+      if (path === "/v1/autonomy" || path.startsWith("/v1/autonomy/")) {
+        if (path === "/v1/autonomy") return request.method === "GET" ? json(await autonomyView(env.DB)) : errorResponse(405, "method_not_allowed");
+        const m = /^\/v1\/autonomy\/([a-z]{3,16})$/.exec(path);
+        if (!m) return errorResponse(404, "not_found");
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner sets the autonomy dial");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        try {
+          const out = await setAutonomyLevel(env.DB, operator.actor, m[1], body.value.level, body.value.confirmation, body.value.reason);
+          await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "autonomy" } }]);
+          return json(out);
+        } catch (err) {
+          if (err instanceof AutonomyError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
       }
       // HAIC H2 (ADR-0017 H2; owner 2026-11-18): typed proposals. Operators read; only the owner confirms (then it is handed
       // off by kind) or rejects a draft. Nothing is executed here: consensus, the evolver, the orchestrator or xauusd act.
@@ -468,6 +488,13 @@ export default {
         console.error(JSON.stringify({ service: SERVICE, event: "evolver_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
+    // HAIC H4: every tick, a fresh regression of a group (a rollback after a deploy, three failed executions in a row)
+    // lowers that group's autonomy one level; only the owner raises it again.
+    ctx.waitUntil(autoDowngrade(env.DB, event.scheduledTime).then(async (lowered) => {
+      if (lowered.length) await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "autonomy" } }]);
+    }, (err) => {
+      console.error(JSON.stringify({ service: SERVICE, event: "autonomy_downgrade_failed", message: String((err as Error)?.message ?? err) }));
+    }));
     // HAIC H1.5d (Q9): once an hour, agents propose councils from the evidence (an Observer cluster, a KPI regression, a
     // persistent census finding), deduplicated and capped; each waits in the owner's inbox until the owner begins it.
     let proposals: Promise<void> = Promise.resolve();

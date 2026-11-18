@@ -71,6 +71,10 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.proposal_reject", "kernel", "POST", "/v1/proposals/{id}/reject", true, "REJECT {id13}"),
   // HAIC H2b: the owner's chat directive into a draft. No typed phrase: it makes only a draft, which needs CONFIRM.
   r("kernel.proposal_draft", "kernel", "POST", "/v1/proposals", true, null),
+  // HAIC H4 (owner 2026-11-18): the autonomy dial. Operators read; the owner sets a group's level with a typed phrase
+  // naming the group (the body names the level, and the kernel checks the owner and the ceiling).
+  r("kernel.autonomy", "kernel", "GET", "/v1/autonomy", false, null),
+  r("kernel.autonomy_set", "kernel", "POST", "/v1/autonomy/{id}", true, "SET {id}"),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
