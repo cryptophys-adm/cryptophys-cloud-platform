@@ -390,6 +390,17 @@ MOCK[`/api/kernel/v1/councils/${CS2}`] = {
       proposal_draft: { schema: "council.proposal_draft.v1", kind: "repository_task", origin: { council: CS2, option: "opt_1" }, target: "deployment-orchestrator", params: {}, measurement: {}, requires: ["owner_confirm", "owner_click_to_promote"] } } },
   messages: [{ ...msg(4, "synthesis", "moderator", "agent:auditor", "One option was picked.", { options: OPTIONS }), session_id: CS2 }],
 };
+// HAIC H1.5d: a council the Signal Analyst proposed from a KPI regression, waiting for the owner to begin it.
+const CS4 = "cs_00000000-0000-4000-8000-0000000000c4";
+MOCK["/api/kernel/v1/councils"].councils.unshift({ session_id: CS4, side: "cerebrum", topic: "Trading organ KPI regression: decisions_24h", state: "proposed", owner_present: 0, created_by: "agent:signal-analyst",
+  spent_calls: 0, spent_usd: 0, reason: null, transcript_sha256: null, created_at: at(30), updated_at: at(30), deadline: at(-60 * 24 * 6), trigger_kind: "kpi_regression", started_at: null });
+MOCK[`/api/kernel/v1/councils/${CS4}`] = {
+  session: { ...MOCK[`/api/kernel/v1/councils/${CS}`].session, session_id: CS4, topic: "Trading organ KPI regression: decisions_24h", question: "The trading organ's decisions_24h moved away from its usual range. What explains it, and should anything change?",
+    trigger: { kind: "kpi_regression", ref: "ev:platform/report/rpt_s1#metrics" }, state: "proposed", owner_present: false, deadline: at(-60 * 24 * 6), created_by: "agent:signal-analyst",
+    spent: { calls: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, usd_est: 0 }, messages: 1, decision: null,
+    proposal: { proposed_by: "agent:signal-analyst", refs: ["ev:platform/report/rpt_s1#metrics"], detail: "decisions_24h is 2 against a 7-day baseline of 40 (z -3.4)." } },
+  messages: [{ ...msg(1, "system", "system", "agent:signal-analyst", "Proposed by signal-analyst: decisions_24h is 2 against a 7-day baseline of 40 (z -3.4)."), session_id: CS4 }],
+};
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -520,6 +531,12 @@ const OWNER_CHECKS = [
       counts: { ...EMPTY_INBOX.counts, councils: 1 },
       items: [{ item_id: `council:${CS}`, source: "council", kind: "council_awaiting_pick", what: "Council waits for your pick: Native deploys fail more often after a migration", metric: null, evidence_refs: [`ev:platform/council/${CS}`], risk: null, blocks: [], deadline: at(-60 * 71), created_at: at(60), urgency: "normal", score: 42, score_parts: { U: 0.4, B: 1, A: 1.04, D: 1 }, action: { kind: "pick", route: "kernel.council_pick", approver_only: true }, page: `#/councils/${CS}`, deep_link: `#/owner/council:${CS}` }] } },
     want: ["Councils waiting for your pick", "Open the options", "Council waits for your pick", "council_awaiting_pick", "All items"], not: ["Nothing needs you", "no longer waits"] },
+  // HAIC H1.5d: a council an agent proposed is listed, and its item opens a link to the proposal.
+  { name: "council-proposed", hash: `#/owner/council:${CS4}`, override: { "/api/kernel/v1/owner/inbox": { ...EMPTY_INBOX,
+      council_proposals: [{ session_id: CS4, topic: "Trading organ KPI regression: decisions_24h", proposed_by: "agent:signal-analyst", trigger_kind: "kpi_regression", refs: ["ev:platform/report/rpt_s1#metrics"], since: at(30), deadline: at(-60 * 24 * 6) }],
+      counts: { ...EMPTY_INBOX.counts, council_proposals: 1 },
+      items: [{ item_id: `council:${CS4}`, source: "council", kind: "council_proposed", what: "Council proposed by signal-analyst: Trading organ KPI regression: decisions_24h", metric: null, evidence_refs: [`ev:platform/council/${CS4}`], risk: null, blocks: [], deadline: at(-60 * 24 * 6), created_at: at(30), urgency: "low", score: 21, score_parts: { U: 0.2, B: 1, A: 1.02, D: 1 }, action: { kind: "start", route: "kernel.council_begin", approver_only: true }, page: `#/councils/${CS4}`, deep_link: `#/owner/council:${CS4}` }] } },
+    want: ["Councils proposed by agents", "Open the proposal", "Council proposed by signal-analyst", "council_proposed", "by signal-analyst"], not: ["Nothing needs you", "no longer waits"] },
 ];
 const ASK_CHECKS = [
   { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English"], not: ["owners only"] },
@@ -554,6 +571,8 @@ const COUNCIL_CHECKS = [
   { name: "awaiting", hash: `#/councils/${CS}`, override: {}, want: ["Is the migration the cause", "persona of supervisor", "verified", "unverified", "n = 25", "Keep the destructive migration gate", "answers #1",
     "Options", "Run destructive-migration deploys through the workflow first", "62%", "recovery-manager: the sample is small", "repository task", "no change", "Pick…", "Dismiss…", "11 of 16 model calls", "$0.024 of $0.100"], not: ["Proposal draft", "Call a council"] },
   { name: "decided", hash: `#/councils/${CS2}`, override: {}, want: ["Proposal draft", "owner_confirm, owner_click_to_promote", "your pick", "arrives with H2", "sha256 aaaaaaaaaaaa"], not: ["Pick…", "Dismiss…"] },
+  { name: "proposed", hash: `#/councils/${CS4}`, override: {}, want: ["Proposed by an agent", "signal-analyst", "a KPI regression", "z -3.4", "report/rpt_s1#metrics", "Begin…", "Dismiss…", "proposed, waits for you", "only you begin it"], not: ["Pick…", "Options"] },
+  { name: "proposed-operator", hash: `#/councils/${CS4}`, override: { "/api/whoami": OPERATOR }, want: ["Proposed by an agent"], not: ["Begin…", "Dismiss…"] },
   { name: "operator", hash: `#/councils/${CS}`, override: { "/api/whoami": OPERATOR }, want: ["Options", "Run destructive-migration deploys through the workflow first"], not: ["Pick…", "Dismiss…", "Call a council", "Send to the council"] },
 ];
 for (const width of [390, 1440]) {

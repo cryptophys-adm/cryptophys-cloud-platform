@@ -15,6 +15,10 @@ import { refPage } from "./Ask";
  *
  * There is no push hub yet (§4.5), so the page reloads every 5 minutes (ADR-0015 §3: polling only as a slow fallback)
  * and on Refresh; every owner click reloads at once.
+ *
+ * H1.5d (Q9): agents may propose a council from the evidence (an Observer cluster, a KPI regression, a persistent census
+ * finding). A proposal waits here and in the owner's inbox; only the owner begins it ("CONVENE <id13>") or dismisses it.
+ * Unbegun, it is dismissed as expired after 7 days. Nothing deliberates and no model is called before the owner's click.
  */
 
 const ID = /^cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -22,10 +26,11 @@ const POLL_MS = 5 * 60_000;
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
 const RUNNING = ["convening", "positions", "rebuttals", "synthesis"];
 const STATE_TONE: Record<string, "cyan" | "amber" | "green" | "slate" | "red" | "purple"> = {
-  proposed: "slate", convening: "cyan", positions: "cyan", rebuttals: "cyan", synthesis: "cyan",
+  proposed: "amber", convening: "cyan", positions: "cyan", rebuttals: "cyan", synthesis: "cyan",
   awaiting_owner: "amber", decided: "green", handed_off: "green", dismissed: "slate", aborted: "red", expired: "slate",
 };
-const STATE_LABEL: Record<string, string> = { awaiting_owner: "waits for your pick", handed_off: "handed off" };
+const STATE_LABEL: Record<string, string> = { awaiting_owner: "waits for your pick", handed_off: "handed off", proposed: "proposed, waits for you" };
+const TRIGGER_LABEL: Record<string, string> = { owner: "the owner", finding: "a finding", kpi_regression: "a KPI regression" };
 const stateBadge = (s: unknown) => <Badge tone={STATE_TONE[String(s)] ?? "slate"}>{STATE_LABEL[String(s)] ?? String(s ?? "—")}</Badge>;
 const usd = (v: unknown) => (typeof v === "number" ? `$${v.toFixed(3)}` : "—");
 const pct = (v: unknown) => (typeof v === "number" ? `${Math.round(v * 100)}%` : "—");
@@ -168,6 +173,15 @@ function Detail({ id, limits }: { id: string; limits: any }) {
       .catch((e) => notify("err", e.message))
       .finally(() => setSending(false));
   };
+  const begin = () => act({
+    route: "kernel.council_begin", params: s.session_id, body: {},
+    title: "Begin this proposed council",
+    lines: [
+      `It deliberates from now on: at most ${s.budget?.max_calls ?? 16} model calls and about ${usd(s.budget?.max_usd)}; it counts toward the councils of today.`,
+      "It ends in ranked options for your pick and never acts. This is audited under your Access identity.",
+    ],
+    done: "Begun.", after: reload,
+  });
   const dismiss = () => act({
     route: "kernel.council_dismiss", params: s.session_id, body: {},
     title: running ? "Stop this council" : "Dismiss this council",
@@ -193,6 +207,18 @@ function Detail({ id, limits }: { id: string; limits: any }) {
           </span>
         </div>
       </Panel>
+      {s.proposal && (
+        <Panel title="Proposed by an agent" icon={<Users className="h-3.5 w-3.5 text-amber-300" />}
+          right={<span className="text-[10px] text-slate-500">only you begin it · unbegun, it expires {s.state === "proposed" ? until(s.deadline) : "—"}</span>}>
+          <div className="text-[12px] text-slate-300">
+            <span className="mono">{String(s.proposal.proposed_by ?? "—").replace(/^agent:/, "")}</span> proposed it on {TRIGGER_LABEL[s.trigger?.kind] ?? "evidence"}: {s.proposal.detail ?? "—"}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">{arr(s.proposal.refs).slice(0, 10).map((r: string) => <RefChip key={r} r={r} />)}</div>
+          {owner && s.state === "proposed" && (
+            <div className="mt-2 flex justify-end"><button type="button" className="btn btn-approve py-1!" onClick={begin}><Users className="h-3.5 w-3.5" />Begin…</button></div>
+          )}
+        </Panel>
+      )}
       {synth && arr(synth.options).length > 0 && <Options synth={synth} session={s} reload={reload} />}
       <Panel title="Transcript" right={<span className="text-[10px] text-slate-500">{messages.length} message{messages.length === 1 ? "" : "s"} · every post is a persona of its agent, labelled</span>}>
         {messages.length === 0 ? <Empty>{running ? "The council is convening: positions appear within about 10 minutes." : "No message."}</Empty> : (
@@ -268,9 +294,10 @@ export default function Councils({ council }: { council?: string }) {
                 <a href={`#/councils/${c.session_id}`} className={`flex flex-wrap items-center gap-2 px-1 py-2 text-[12px] hover:bg-white/5 ${c.session_id === id ? "bg-white/5" : ""}`}>
                   {stateBadge(c.state)}
                   <span className="flex-1 wrap-break-word text-slate-200">{c.topic}</span>
+                  {c.trigger_kind && c.trigger_kind !== "owner" && <span className="text-slate-500">by <span className="mono">{String(c.created_by ?? "").replace(/^agent:/, "")}</span></span>}
                   <span className="text-slate-500">{c.spent_calls ?? "—"} calls · {usd(c.spent_usd)}</span>
                   <span className="text-slate-500" title={c.created_at}>{c.created_at ? ago(c.created_at) : "—"}</span>
-                  {c.state === "awaiting_owner" && <span className="text-amber-300" title={c.deadline}>expires {until(c.deadline)}</span>}
+                  {(c.state === "awaiting_owner" || c.state === "proposed") && <span className="text-amber-300" title={c.deadline}>expires {until(c.deadline)}</span>}
                 </a>
               </li>
             ))}

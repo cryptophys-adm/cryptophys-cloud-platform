@@ -6,8 +6,10 @@
 // an unverified one adds no confidence. A council never acts: a pick becomes a typed_proposal.v1 draft that still needs
 // the owner's confirmation, a shadow window for a strategy change, and the owner's click to promote (H2 translates it).
 //
-// Deviations from the design, each smaller than what it replaces: councils are started by the owner only for now (agent
-// proposals, Q9, come with their inbox items); the transcript stays in this object with its sha256 in D1 and the audit
+// Since H1.5d (Q9) agents may also propose a council (council-proposals.ts): it waits in state "proposed" as an owner
+// inbox item and deliberates only once the owner begins it; a proposal not begun in 7 days is dismissed as expired.
+//
+// Deviations from the design, each smaller than what it replaces: the transcript stays in this object with its sha256 in D1 and the audit
 // chain (the kernel has no R2 binding yet); no push hub yet: the Console polls (§4.5 fallback); a pick of "no change"
 // closes the council as dismissed by the owner's choice, with no draft.
 import { AiEngine, type AiTask, type AiUsage } from "../../control-plane-shared/src/ai-engine.ts";
@@ -16,7 +18,7 @@ import { agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
 import { CHAT_MODEL, CHAT_MODELS, injectionFlags, redactText, secretInText, toolText, type PlannedCall } from "../../control-plane-shared/src/conversation.ts";
 import {
   COUNCIL_LIMITS, COUNCIL_SCHEMAS, TERMINAL_STATES, canTransition, capConfidence, parseRef, refCarriesPrice, validateDecision, validateMessage, validateOption,
-  verifyClaim, widensAutonomy, type Claim, type CouncilOption, type CouncilState, type Resolver,
+  topicKey, verifyClaim, widensAutonomy, type Claim, type CouncilOption, type CouncilState, type Resolver,
 } from "../../control-plane-shared/src/council.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { runTool, type ToolEnv } from "./conversation-tools.ts";
@@ -48,11 +50,14 @@ export class CouncilError extends Error {
 }
 
 export interface Session {
-  schema: string; session_id: string; side: "cerebrum"; topic: string; question: string; trigger: { kind: "owner"; ref: null };
+  schema: string; session_id: string; side: "cerebrum"; topic: string; question: string; trigger: { kind: TriggerKind; ref: string | null };
   convened: string[]; state: CouncilState; owner_present: boolean; created_at: string; deadline: string; phase_deadline: string | null;
   budget: { max_calls: number; max_usd: number }; spent: { calls: number; tokens_in: number; tokens_cached: number; tokens_out: number; usd_est: number };
   decision: unknown | null; transcript_sha256: string | null; created_by: string; reason: string | null; messages: number;
+  /** H1.5d: an agent's proposal (who proposed it, its evidence refs, what the detector saw); absent for the owner's councils. */
+  proposal?: { proposed_by: string; refs: string[]; detail: string } | null;
 }
+export type TriggerKind = "owner" | "finding" | "kpi_regression";
 export interface Message {
   schema: string; session_id: string; seq: number; at: string; phase: "position" | "rebuttal" | "owner" | "synthesis" | "system";
   role: "participant" | "moderator" | "owner" | "system"; author: string; reply_to: number[]; stance: string | null; claims: Claim[];
@@ -148,22 +153,87 @@ export async function startCouncil(env: CouncilEnv, store: CouncilStore, input: 
   if (await store.get("session")) throw new CouncilError(409, "exists", "this council already exists");
   const db = env.DB;
   if (!(await agentsEnabled(db))) throw new CouncilError(409, "agents_disabled", "councils are agent activity; the agents' kill switch is on");
-  const open = (await db.prepare(`SELECT COUNT(*) AS n FROM councils WHERE state NOT IN (${TERMINAL_STATES.map(() => "?").join(",")}, 'decided')`).bind(...TERMINAL_STATES).first<{ n: number }>())?.n ?? 0;
-  if (open >= COUNCIL_LIMITS.max_open_sessions) throw new CouncilError(429, "too_many_open", `at most ${COUNCIL_LIMITS.max_open_sessions} councils open at once`);
-  const today = iso(now).slice(0, 10);
-  const started = (await db.prepare("SELECT COUNT(*) AS n FROM councils WHERE substr(created_at, 1, 10) = ?").bind(today).first<{ n: number }>())?.n ?? 0;
-  if (started >= COUNCIL_LIMITS.max_started_per_utc_day) throw new CouncilError(429, "daily_limit", `at most ${COUNCIL_LIMITS.max_started_per_utc_day} councils a UTC day`);
+  await checkLimits(db, now);
   const s: Session = {
     schema: COUNCIL_SCHEMAS.session, session_id: id, side: "cerebrum", topic: input.topic.trim(), question: input.question.trim(), trigger: { kind: "owner", ref: null },
     convened: PERSONAS.map((p) => `agent:${p.agent}`), state: "convening", owner_present: true, created_at: iso(now),
-    deadline: iso(now + COUNCIL_LIMITS.positions_ms + COUNCIL_LIMITS.rebuttals_ms + COUNCIL_LIMITS.synthesis_ms + COUNCIL_LIMITS.owner_window_ms), phase_deadline: null,
+    deadline: deliberationDeadline(now), phase_deadline: null,
     budget: { max_calls: COUNCIL_LIMITS.max_model_calls, max_usd: COUNCIL_LIMITS.max_usd }, spent: { calls: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, usd_est: 0 },
     decision: null, transcript_sha256: null, created_by: actor, reason: null, messages: 0,
   };
-  await db.prepare("INSERT INTO councils (session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, created_at, updated_at, deadline) VALUES (?, 'cerebrum', ?, 'convening', 1, ?, 0, 0, NULL, NULL, ?, ?, ?)")
-    .bind(id, s.topic.slice(0, 200), actor, s.created_at, s.created_at, s.deadline).run();
+  await db.prepare(`INSERT INTO councils (session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, created_at, updated_at, deadline,
+    trigger_kind, topic_key, evidence_refs_json, started_at) VALUES (?, 'cerebrum', ?, 'convening', 1, ?, 0, 0, NULL, NULL, ?, ?, ?, 'owner', ?, NULL, ?)`)
+    .bind(id, s.topic.slice(0, 200), actor, s.created_at, s.created_at, s.deadline, topicKey(s.topic, s.question), s.created_at).run();
   await store.put("session", s);
   await audit(db, "started", actor, id, "convening", { topic_sha256: await sha256Hex(s.topic), question_sha256: await sha256Hex(s.question), convened: s.convened });
+  return s;
+}
+
+/**
+ * The limits of §4.6: at most 2 councils deliberating or waiting at once, and 4 begun a UTC day. A proposal (H1.5d)
+ * counts toward neither until the owner begins it; a council from before migration 0080 counts by its creation day.
+ */
+async function checkLimits(db: D1Database, now: number): Promise<void> {
+  const open = (await db.prepare(`SELECT COUNT(*) AS n FROM councils WHERE state NOT IN (${TERMINAL_STATES.map(() => "?").join(",")}, 'decided', 'proposed')`).bind(...TERMINAL_STATES).first<{ n: number }>())?.n ?? 0;
+  if (open >= COUNCIL_LIMITS.max_open_sessions) throw new CouncilError(429, "too_many_open", `at most ${COUNCIL_LIMITS.max_open_sessions} councils open at once`);
+  const started = (await db.prepare("SELECT COUNT(*) AS n FROM councils WHERE substr(coalesce(started_at, CASE WHEN trigger_kind = 'owner' THEN created_at END), 1, 10) = ?")
+    .bind(iso(now).slice(0, 10)).first<{ n: number }>())?.n ?? 0;
+  if (started >= COUNCIL_LIMITS.max_started_per_utc_day) throw new CouncilError(429, "daily_limit", `at most ${COUNCIL_LIMITS.max_started_per_utc_day} councils a UTC day`);
+}
+const deliberationDeadline = (now: number) => iso(now + COUNCIL_LIMITS.positions_ms + COUNCIL_LIMITS.rebuttals_ms + COUNCIL_LIMITS.synthesis_ms + COUNCIL_LIMITS.owner_window_ms);
+
+/** H1.5d (Q9): what a detector proposes. The topic and question are the detector's own text, with no secret and no price. */
+export interface ProposalInput {
+  session_id: string; proposed_by: string; trigger_kind: Exclude<TriggerKind, "owner">; topic: string; question: string; refs: string[]; detail: string;
+}
+
+/**
+ * An agent proposes a council (Q9): it waits in "proposed" as an owner inbox item until the owner begins it, or is
+ * dismissed as expired after the 7-day proposal window. Nothing deliberates and no model is called until then.
+ */
+export async function proposeCouncil(env: CouncilEnv, store: CouncilStore, input: ProposalInput, now = Date.now()): Promise<Session> {
+  const { session_id: id } = input;
+  if (!SESSION_ID.test(id)) throw new CouncilError(400, "invalid_request", "a session id is cs_ and a UUID");
+  if (!/^agent:[a-z0-9][a-z0-9-]{1,62}$/.test(input.proposed_by)) throw new CouncilError(400, "invalid_request", "a proposal is made by an agent");
+  if (!["finding", "kpi_regression"].includes(input.trigger_kind)) throw new CouncilError(400, "invalid_request", "an unknown trigger");
+  if (!input.topic.trim() || input.topic.length > 200 || !input.question.trim() || input.question.length > 1_000 || input.detail.length > 1_200) throw new CouncilError(400, "invalid_request", "a proposal's text is too long or empty");
+  if (secretInText(input.topic) || secretInText(input.question) || secretInText(input.detail)) throw new CouncilError(400, "secret_refused", "a proposal's text looks like it carries a secret");
+  const refs = [...new Set(input.refs)].slice(0, 10);
+  if (!refs.length || refs.some((r) => { const p = parseRef(r); return !p || refCarriesPrice(p); })) throw new CouncilError(400, "invalid_request", "a proposal needs evidence refs, none carrying a price");
+  if (await store.get("session")) throw new CouncilError(409, "exists", "this council already exists");
+  const db = env.DB;
+  if (!(await agentsEnabled(db))) throw new CouncilError(409, "agents_disabled", "proposing a council is agent activity; the agents' kill switch is on");
+  const s: Session = {
+    schema: COUNCIL_SCHEMAS.session, session_id: id, side: "cerebrum", topic: input.topic.trim(), question: input.question.trim(), trigger: { kind: input.trigger_kind, ref: refs[0] },
+    convened: PERSONAS.map((p) => `agent:${p.agent}`), state: "proposed", owner_present: false, created_at: iso(now),
+    deadline: iso(now + COUNCIL_LIMITS.proposal_cooldown_ms), phase_deadline: null,
+    budget: { max_calls: COUNCIL_LIMITS.max_model_calls, max_usd: COUNCIL_LIMITS.max_usd }, spent: { calls: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, usd_est: 0 },
+    decision: null, transcript_sha256: null, created_by: input.proposed_by, reason: null, messages: 0,
+    proposal: { proposed_by: input.proposed_by, refs, detail: input.detail },
+  };
+  await post(store, s, { at: iso(now), phase: "system", role: "system", author: input.proposed_by, reply_to: [], stance: null, claims: [], text: `Proposed by ${input.proposed_by.slice(6)}: ${input.detail}`, options: null, model: null, tokens: { in: 0, cached: 0, out: 0 } });
+  await db.prepare(`INSERT INTO councils (session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, created_at, updated_at, deadline,
+    trigger_kind, topic_key, evidence_refs_json, started_at) VALUES (?, 'cerebrum', ?, 'proposed', 0, ?, 0, 0, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL)`)
+    .bind(id, s.topic.slice(0, 200), input.proposed_by, s.created_at, s.created_at, s.deadline, input.trigger_kind, topicKey(s.topic, s.question), JSON.stringify(refs)).run();
+  await store.put("session", s);
+  await audit(db, "proposed", input.proposed_by, id, "proposed", { trigger: input.trigger_kind, refs, topic_sha256: await sha256Hex(s.topic), question_sha256: await sha256Hex(s.question) });
+  return s;
+}
+
+/** The owner begins a proposed council (Q9): the same limits as a council the owner opens; it then deliberates. */
+export async function beginCouncil(env: CouncilEnv, store: CouncilStore, actor: string, now = Date.now()): Promise<Session> {
+  const s = await store.get<Session>("session");
+  if (!s) throw new CouncilError(404, "not_found", "no such council");
+  if (s.state !== "proposed") throw new CouncilError(409, "not_proposed", "only a proposed council is begun");
+  if (now > Date.parse(s.deadline)) throw new CouncilError(409, "proposal_expired", "the proposal's 7-day window has passed");
+  const db = env.DB;
+  if (!(await agentsEnabled(db))) throw new CouncilError(409, "agents_disabled", "councils are agent activity; the agents' kill switch is on");
+  await checkLimits(db, now);
+  s.owner_present = true;
+  s.deadline = deliberationDeadline(now);
+  await move(db, store, s, "convening", now);
+  await db.prepare("UPDATE councils SET started_at = ? WHERE session_id = ?").bind(iso(now), s.session_id).run();
+  await audit(db, "started", actor, s.session_id, "convening", { trigger: s.trigger.kind, proposed_by: s.proposal?.proposed_by ?? null, convened: s.convened });
   return s;
 }
 
@@ -174,6 +244,11 @@ export async function stepCouncil(env: CouncilEnv, store: CouncilStore, now = Da
   const db = env.DB;
   if (s.state === "awaiting_owner") {
     if (now > Date.parse(s.deadline)) { await move(db, store, s, "expired", now, "owner_window_passed"); await audit(db, "expired", "system:council", s.session_id, "expired", {}); }
+    return s;
+  }
+  // H1.5d: a proposal waits for the owner; past its 7-day window it is dismissed (the lifecycle has no proposed -> expired).
+  if (s.state === "proposed") {
+    if (now > Date.parse(s.deadline)) { await move(db, store, s, "dismissed", now, "proposal_expired"); await audit(db, "dismissed", "system:council", s.session_id, "dismissed", { reason: "proposal_expired" }); }
     return s;
   }
   if (!(await agentsEnabled(db))) { await move(db, store, s, "aborted", now, "kill_switch"); await audit(db, "aborted", "system:council", s.session_id, "aborted", { reason: "kill_switch" }); return s; }
@@ -367,7 +442,7 @@ export async function readCouncil(store: CouncilStore): Promise<{ session: Sessi
 /** GET /v1/councils: every council's index row (no text but the topic), newest first. */
 export async function listCouncils(db: D1Database) {
   try {
-    const rows = (await db.prepare("SELECT session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, created_at, updated_at, deadline FROM councils ORDER BY created_at DESC LIMIT 50").all()).results ?? [];
+    const rows = (await db.prepare("SELECT session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, created_at, updated_at, deadline, trigger_kind, started_at FROM councils ORDER BY created_at DESC LIMIT 50").all()).results ?? [];
     return { schema: "councils.v1", available: true, limits: COUNCIL_LIMITS, councils: rows };
   } catch (err) {
     if (/no such table/i.test(String((err as Error)?.message ?? err))) return { schema: "councils.v1", available: false, limits: COUNCIL_LIMITS, councils: [] };

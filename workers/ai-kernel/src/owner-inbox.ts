@@ -170,12 +170,32 @@ export async function councilsAwaitingOwner(db: D1Database, now = Date.now()): P
   }
 }
 
+/**
+ * HAIC H1.5d (Q9): the councils agents proposed that wait for the owner to begin them, soonest deadline first (a
+ * proposal is dismissed as expired after 7 days). Before migration 0080 there are none.
+ */
+export async function councilProposals(db: D1Database, now = Date.now()): Promise<{ session_id: string; topic: string; proposed_by: string; trigger_kind: string; refs: string[]; since: string; deadline: string }[]> {
+  try {
+    const rows = await db.prepare("SELECT session_id, topic, created_by, trigger_kind, evidence_refs_json, created_at, deadline FROM councils WHERE state = 'proposed' AND deadline > ? ORDER BY deadline LIMIT ?")
+      .bind(iso(now), INBOX_LIMIT).all<{ session_id: string; topic: string; created_by: string; trigger_kind: string; evidence_refs_json: string | null; created_at: string; deadline: string }>();
+    return rows.results.map((r) => {
+      let refs: string[] = [];
+      try { const a = JSON.parse(r.evidence_refs_json ?? "[]"); refs = Array.isArray(a) ? a.filter((x): x is string => typeof x === "string").slice(0, 10) : []; } catch { refs = []; }
+      return { session_id: r.session_id, topic: r.topic, proposed_by: r.created_by, trigger_kind: r.trigger_kind, refs, since: r.created_at, deadline: r.deadline };
+    });
+  } catch (err) {
+    if (/no such (table|column)/i.test(String((err as Error)?.message ?? err))) return [];
+    throw err;
+  }
+}
+
 /** GET /v1/owner/inbox: the Owner page's sections and their ranked items (HAIC H0b), from D1 only. Operators may read it; only approvers act. */
 export async function ownerInbox(db: D1Database, now = Date.now()) {
   const approvals = await pendingApprovals(db);
   const critical = await openCriticalReportRows(db, now, INBOX_LIMIT);
   const problems = await unhandledProblems(db, now);
   const councils = await councilsAwaitingOwner(db, now);
+  const proposals = await councilProposals(db, now);
   let mode: string | null = null;
   try { mode = (await db.prepare("SELECT value FROM consensus_controls WHERE control = 'mode'").first<{ value: string }>())?.value ?? null; } catch { mode = null; }
   const n = approvals.recovery_plans.length + approvals.consensus.length + approvals.knowledge.length;
@@ -189,9 +209,11 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
     production_problems: problems,
     // HAIC H1.5c: additive, like items[]; the three sections above are unchanged.
     councils,
-    counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length, councils: councils.length },
+    // HAIC H1.5d: councils agents proposed, for the owner to begin or dismiss.
+    council_proposals: proposals,
+    counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length, councils: councils.length, council_proposals: proposals.length },
     // HAIC H0b (docs/design/HAIC-H0-H1.md §2.4): the same items, ranked, additively; the sections above are unchanged.
-    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems, councils }, now),
+    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems, councils, council_proposals: proposals }, now),
     ranking: RANKING,
   };
 }
