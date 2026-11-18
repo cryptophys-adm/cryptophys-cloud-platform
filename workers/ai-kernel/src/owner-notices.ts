@@ -38,7 +38,7 @@ import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audi
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
-import { STALE_MS, councilProposals, councilsAwaitingOwner, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
+import { FUTURE_SKEW_MS, STALE_MS, councilProposals, councilsAwaitingOwner, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
 import { rankInbox, type InboxItem, type RankInput } from "../../control-plane-shared/src/owner-inbox-rank.ts";
 import { draftsAwaitingOwner } from "./proposals.ts";
 import { autonomyNotices } from "./autonomy.ts";
@@ -167,8 +167,10 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     if (reasons.includes("disabled")) continue;
     const observedAt = Date.parse(o.observed_at);
     const seenAt = Date.parse(s.updated_at);
-    if (!Number.isFinite(observedAt) || observedAt > now || !Number.isFinite(seenAt) || seenAt > now) {
-      const bad = !Number.isFinite(observedAt) || observedAt > now ? o.observed_at : s.updated_at;
+    // A time a little after `now` (the cron's scheduledTime) is a write made while this pass ran (FUTURE_SKEW_MS).
+    const ahead = now + FUTURE_SKEW_MS;
+    if (!Number.isFinite(observedAt) || observedAt > ahead || !Number.isFinite(seenAt) || seenAt > ahead) {
+      const bad = !Number.isFinite(observedAt) || observedAt > ahead ? o.observed_at : s.updated_at;
       problems.push({ service: s.service_id, code: "invalid_observation_time", line: `${serviceName(s.service_id)}: invalid observation timestamp ${bad}` });
     } else if (now - seenAt > STALE_MS) {
       problems.push({ service: s.service_id, code: "stale_observation", line: `${serviceName(s.service_id)}: not observed since ${s.updated_at} (check the Drift Detector cron)` });

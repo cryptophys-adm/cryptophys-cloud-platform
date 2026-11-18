@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { migratedDb } from "./harness.ts";
-import { HANDLING_GRACE_MS, STALE_MS, unhandledProblems } from "../../ai-kernel/src/owner-inbox.ts";
+import { FUTURE_SKEW_MS, HANDLING_GRACE_MS, STALE_MS, unhandledProblems } from "../../ai-kernel/src/owner-inbox.ts";
 import { OWNER_CHANNEL_TOPICS, OWNER_PANEL_URL, channelOf, collectNotices, reconcileNotices } from "../../ai-kernel/src/owner-notices.ts";
 
 type Db = ReturnType<typeof migratedDb>;
@@ -86,6 +86,19 @@ test("P2. condition 2: observations stale or missing for STALE_MS: the Drift Det
   const p = (await unhandledProblems(db as never, NOW)).find((x) => x.subject === "cryptophys-policy-engine")!;
   assert.match(p.detail, /not observed since .*the Drift Detector may have stopped/);
   assert.equal(p.since, at(STALE_MS + 10 * MIN), "since is the heartbeat");
+});
+
+test("P2b. condition 2: a heartbeat written while the pass ran (after its scheduled time, within FUTURE_SKEW_MS) is fresh; further ahead or unreadable is not (2026-11-18 false alarm)", async () => {
+  const db = migratedDb();
+  healthy(db);
+  // 16:22 pass, read at 16:30: the Drift Detector had written every heartbeat 8 minutes after the pass's `now`.
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE status != 'disabled'").run(at(-8 * MIN));
+  assert.deepEqual(await codes(db), [], "8 minutes ahead of the scheduled time is a write made during the pass, not a stopped Drift Detector");
+  assert.equal(FUTURE_SKEW_MS, 15 * MIN);
+  // Fail closed: a heartbeat two hours ahead, or one that is not a time, is still reported.
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = 'cryptophys-console'").run(at(-2 * H));
+  db.raw.prepare("UPDATE service_registry SET updated_at = 'not a time' WHERE service_id = 'cryptophys-policy-engine'").run();
+  assert.deepEqual(await codes(db), ["observations_stale:cryptophys-console", "observations_stale:cryptophys-policy-engine"]);
 });
 
 test("P3. condition 3: a persistent drift with agents off, or with no plan and no deploy under way, past the Supervisor's grace", async () => {
