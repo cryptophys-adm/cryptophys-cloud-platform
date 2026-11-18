@@ -21,6 +21,13 @@ export interface ConversationStub {
   read(actor: string, conversationId: string): Promise<unknown>;
   rate(actor: string, conversationId: string, turn: unknown, rating: unknown): Promise<unknown>;
 }
+export interface CouncilStub {
+  start(actor: string, sessionId: string, topic: unknown, question: unknown): Promise<unknown>;
+  read(): Promise<unknown>;
+  message(actor: string, text: unknown): Promise<unknown>;
+  pick(actor: string, optionId: unknown, note: unknown): Promise<unknown>;
+  dismiss(actor: string): Promise<unknown>;
+}
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
   SIGNAL_ANALYST?: SupervisorNamespace;
@@ -32,6 +39,8 @@ export interface KernelHttpEnv extends KernelEnv {
   /** HAIC H1b: the ConversationAgent Durable Object (the chat) and the Forge's read-only documents. */
   CONVERSATION?: { idFromName(name: string): unknown; get(id: unknown): ConversationStub };
   FORGE_DOCS?: { read(input: Record<string, unknown>): Promise<Record<string, unknown>> };
+  /** HAIC H1.5b: the CouncilAgent Durable Object (Call for Councils), one per session id. */
+  COUNCIL?: { idFromName(name: string): unknown; get(id: unknown): CouncilStub };
   CHAT_DAILY_TURN_LIMIT?: string;
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */

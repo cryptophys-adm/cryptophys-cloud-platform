@@ -232,7 +232,7 @@ test("AS4. the kernel bundles exactly the manifests of the directory, and a chan
 test("AS5. AdrStewardAgent: bound, its DO migration v5 is additive and planned natively, the scheduled hook and the wake id", async () => {
   const full = read("workers/ai-kernel/wrangler.toml");
   const tags = [...full.matchAll(/\[\[migrations\]\]\ntag = "(v\d+)"\nnew_sqlite_classes = \["([A-Za-z]+)"\]/g)].map((m) => `${m[1]}:${m[2]}`);
-  assert.deepEqual(tags, ["v1:SupervisorAgent", "v2:SignalAnalystAgent", "v3:AuditorAgent", "v4:AlertVault", "v5:AdrStewardAgent", "v6:EvolverAgent", "v7:ConversationAgent"]);
+  assert.deepEqual(tags, ["v1:SupervisorAgent", "v2:SignalAnalystAgent", "v3:AuditorAgent", "v4:AlertVault", "v5:AdrStewardAgent", "v6:EvolverAgent", "v7:ConversationAgent", "v8:CouncilAgent"]);
   // The config as this step left it: before the evolver's binding and migration v6 (2026-11-17, evolver-v5 E1) and the
   // chat's v7 (HAIC H1b).
   const toml = withoutConversation(full).replace(/\n# The evolver[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "EVOLVER"\nclass_name = "EvolverAgent"\n/, "\n")

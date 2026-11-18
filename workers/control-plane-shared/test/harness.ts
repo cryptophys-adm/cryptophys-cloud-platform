@@ -90,8 +90,10 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
  * live registries applies them with registeredByConsensus(): the registries once consensus has registered what main
  * declares. organism-dna-0013 O8 checks each is declared, routine (no privileged capability) and seeded by no migration.
  */
-/** The kernel's wrangler.toml without the ConversationAgent (HAIC H1b): what the earlier steps' wiring tests compare. */
+/** The kernel's wrangler.toml without the ConversationAgent (HAIC H1b) and the CouncilAgent (H1.5b): what the earlier steps' wiring tests compare. */
 export const withoutConversation = (toml: string): string => toml
+  .replace(/\n# HAIC H1\.5b \(docs\/design\/HAIC-H0-H1\.md §4\)[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "COUNCIL"\nclass_name = "CouncilAgent"\n/, "\n")
+  .replace(/\n\[\[migrations\]\]\ntag = "v8"\nnew_sqlite_classes = \["CouncilAgent"\]\n/, "\n")
   .replace(/\n# HAIC H1b \(docs\/design\/HAIC-H0-H1\.md §3\.1\)[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "CONVERSATION"\nclass_name = "ConversationAgent"\n/, "\n")
   .replace(/\n\[\[migrations\]\]\ntag = "v7"\nnew_sqlite_classes = \["ConversationAgent"\]\n/, "\n");
 
@@ -106,6 +108,10 @@ export const CONSENSUS_REGISTERED: { agents: ReadonlyArray<{ service: string; ag
     // HAIC H1b (docs/design/HAIC-H0-H1.md §3): the chat's two model tasks, registered by consensus after the deploy.
     { service: "cryptophys-ai-kernel", task: "chat_plan" },
     { service: "cryptophys-ai-kernel", task: "chat_answer" },
+    // HAIC H1.5b (docs/design/HAIC-H0-H1.md §4): the council's three model tasks.
+    { service: "cryptophys-ai-kernel", task: "council_position" },
+    { service: "cryptophys-ai-kernel", task: "council_rebuttal" },
+    { service: "cryptophys-ai-kernel", task: "council_synthesis" },
   ],
 };
 
