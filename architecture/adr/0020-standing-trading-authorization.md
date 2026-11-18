@@ -38,7 +38,7 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **One to three armed.** Only the armed strategies are eligible, as decided on 2026-11-16. AUTO does not apply.
 - **Omega's live arm off** means nothing opens, armed or not. Turning it on or off is the owner's click.
 - **The 5-minute Position Manager** (xauusd #412) acts on open positions under the same standing arm, and only to reduce risk:
-  - it may close a position, tighten a stop loss, or move a take profit outward once, to TP2;
+  - it may close a position, tighten a stop loss, or move a take profit outward once, to TP2 (Amendment 4 of 2026-11-18 allows further moves once the stop locks a profit, and partial closes);
   - it never opens, adds to, reverses or hedges a position, and never widens a stop loss.
 - **Kept:** the Decision Engine veto; auto-disarm on the trading kill switch and on the daily loss limit, which also stops AUTO and switches Omega's live arm off until the owner turns it on again; no fund movement, ever; the xauusd external ceiling and the platform's trading capability rules unchanged.
 - **The constitution's line now reads:** "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed) or, with none armed, as Omega's live arm for AUTO selection of the single best strategy by measured confidence and confluence; auto-disarm on the kill switch or the daily loss limit, Decision Engine veto kept."
@@ -90,6 +90,21 @@ The constitution's line now reads: "Never move funds; a trading action needs the
   - the xauusd external ceiling and the platform's trading capability rules.
 - **The constitution's line is unchanged.** A profile sets how much a trade may risk, not who may open it, so `organism/vision.json` is not amended.
 - **Order of events.** Until this amendment is merged, an upgrade is the owner's click only. Autonomous downgrades may run from the start.
+
+## Amendment 4 (owner, 2026-11-18): the Position Manager's take-profit ladder and partial closes
+
+- **Origin.** The owner decided on a live take-profit ladder with progressive partial profit-taking for the xauusd Position Manager ("a, langsung live, termasuk agent juga bisa dinamis mengatur TP sebagian secara progresive"; relayed by the orchestrator). The owner confirmed it directly to the platform session on 2026-11-18 ("Ya, benar, tulis Amendment 4"). It replaces Amendment 1's "move a take profit outward once, to TP2".
+- **Take profit outward, more than once.** The Position Manager may move a position's take profit outward again and again, but only while its stop loss already locks a profit: the stop sits at TP1, or further in the trade's favour. From then on no move can turn the position into a loss. Before that lock, Amendment 1's single move to TP2 still applies.
+- **Partial closes.** At a take-profit level the Position Manager may close a bounded part of the position (xauusd sets the fraction, for example 25–50%). A partial close only reduces risk. The part left open is never below the broker's `volume_min`, and nothing is added or reopened.
+- **The ladder** (xauusd's design, for the record): when price passes TPx by the configured distance, the stop is locked to TPx−1, and the take profit moves outward to TPx+1 if momentum holds; otherwise the position is closed, wholly or in part. Intraday and Swing use it; Scalp does not. The distances and fractions are xauusd parameters, within the rules above.
+- **Unchanged:**
+  - the stop loss only tightens: never widened;
+  - the Position Manager never opens, adds to, reverses or hedges a position;
+  - the Decision Engine veto, auto-disarm, and Omega's live arm;
+  - funds are never moved;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** These are risk rules of the Position Manager under the existing standing arm, not a new trading authority.
+- **Order of events.** xauusd builds the stop lock and the partial closes now (both already within Amendment 1). The multi-step take-profit moves go live after this amendment is merged.
 
 ## Guards
 
