@@ -183,7 +183,11 @@ test("R5. council.decisions.read returns the caller origin's updates, oldest fir
   assert.equal(r1.updates.length, MAX_UPDATES);
   assert.deepEqual(Object.keys(r1.updates[0]).sort(), ["at", "proposal_id", "reason", "refs", "schema", "state"]);
   assert.ok(r1.updates.every((u: any) => ["queued", "waiting_external"].includes(u.state) && typeof u.refs.intent_id === "string"));
-  assert.ok(!JSON.stringify(r1).includes("2650"), "never a price");
+  // The planted price must not appear as a value or a word. A bare substring check also matched random UUIDs
+  // (intent_id, proposal_id) that happen to contain "2650", which failed canonical main 7cbc789 once.
+  const r1Text = JSON.stringify(r1);
+  assert.ok(!/(?<![0-9A-Za-z-])2650(?![0-9A-Za-z-])/.test(r1Text), `never a price: ${r1Text}`);
+  assert.ok(!/"price"/.test(r1Text), "never a price field");
   const second = (await syscall(env as never, MOD, READ, { cursor: r1.next_cursor }) as any).result;
   assert.equal(second.updates.length, 3);
   const seen = [...r1.updates, ...second.updates].map((u: any) => u.proposal_id);
