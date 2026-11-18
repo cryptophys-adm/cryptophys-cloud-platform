@@ -44,6 +44,7 @@ import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-vie
 import { listConversations } from "./conversation.ts";
 import { listCouncils } from "./council.ts";
 import { proposeCouncils } from "./council-proposals.ts";
+import { storeMissingTranscripts } from "./council-archive.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -427,6 +428,10 @@ export default {
     if (minute === 7 && env.COUNCIL) {
       ctx.waitUntil(proposals = proposeCouncils(env as never, event.scheduledTime).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "council_proposals_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+      // HAIC H1.5e: a closed council whose transcript is not in R2 yet is asked to store it again (5 an hour).
+      ctx.waitUntil(storeMissingTranscripts(env as never).then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "council_transcripts_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).

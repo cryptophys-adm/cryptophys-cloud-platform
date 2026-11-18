@@ -195,6 +195,12 @@ class_name = "ConversationAgent"
 name = "COUNCIL"
 class_name = "CouncilAgent"
 
+# HAIC H1.5e (docs/design/HAIC-H0-H1.md §4.4): each closed council's transcript is one object in this bucket, at
+# councils/<session id>.json, its sha256 the one in D1 and the audit chain. Created 2026-11-18 (owner: "Buat bucket baru").
+[[r2_buckets]]
+binding = "TRANSCRIPTS"
+bucket_name = "cryptophys-council-transcripts"
+
 [[vectorize]]
 binding = "MEMORY"
 index_name = "cryptophys-agent-memory"
