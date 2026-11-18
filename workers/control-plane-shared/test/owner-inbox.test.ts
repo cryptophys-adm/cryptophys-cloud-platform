@@ -67,8 +67,9 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   // production_unhandled); the conditions themselves are tested one by one in production-unhandled.test.ts.
   assert.ok(b.production_problems.length > 0 && b.production_problems.every((p: any) => p.code === "observations_stale"));
   // HAIC H1.5c: councils waiting for the owner's pick are counted additively (none here; council-h15c covers them).
-  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length, councils: 0 });
-  assert.deepEqual(b.councils, []);
+  // HAIC H1.5d: councils agents proposed are counted additively too (none here; council-h15d covers them).
+  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length, councils: 0, council_proposals: 0 });
+  assert.deepEqual([b.councils, b.council_proposals], [[], []]);
   assert.equal(events(), before, "reading the inbox writes nothing");
   assert.deepEqual((db.raw.prepare("SELECT DISTINCT status FROM knowledge_proposals").all() as { status: string }[]).map((r) => r.status), ["pending"]);
 

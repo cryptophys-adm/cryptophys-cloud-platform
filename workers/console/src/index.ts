@@ -73,9 +73,10 @@ const rows = (service: ConsoleService, method: string, paths: string[]): AllowRu
 export const CONSOLE_ALLOW_LIST: readonly AllowRule[] = [
   // HAIC H1c: the chat (GET /v1/conversations, /v1/conversations/{id}; POST .../turns, .../turns/{id}/rating), owners only.
   // HAIC H1.5c: councils (GET /v1/councils, /v1/councils/{id}: operators; POST /v1/councils and .../messages, .../pick,
-  // .../dismiss: the owner, checked by the kernel). A council never acts; a pick is a draft for the owner to confirm.
+  // .../dismiss and, since H1.5d, .../start for a council an agent proposed: the owner, checked by the kernel). A council
+  // never acts; a pick is a draft for the owner to confirm.
   ...rows("kernel", "GET", ["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}", "/v1/conversations", "/v1/conversations/{id}", "/v1/councils", "/v1/councils/{id}"]),
-  ...rows("kernel", "POST", ["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test", "/v1/conversations/{id}/turns", "/v1/conversations/{id}/turns/{id}/rating", "/v1/councils", "/v1/councils/{id}/messages", "/v1/councils/{id}/pick", "/v1/councils/{id}/dismiss"]),
+  ...rows("kernel", "POST", ["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test", "/v1/conversations/{id}/turns", "/v1/conversations/{id}/turns/{id}/rating", "/v1/councils", "/v1/councils/{id}/messages", "/v1/councils/{id}/pick", "/v1/councils/{id}/dismiss", "/v1/councils/{id}/start"]),
   ...rows("kernel", "DELETE", ["/v1/agents/{id}/principals/{id}", "/v1/alerts/{id}"]),
   ...rows("recovery", "GET", ["/v1/plans", "/v1/plans/{id}"]),
   // Hardening 2026-11-08: manual START/FINISH of executions left the Console; the AI runs approved plans.
