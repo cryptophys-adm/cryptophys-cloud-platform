@@ -693,13 +693,28 @@ export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" |
   };
 }
 
+// Gold's trading week runs on New York time: it opens Sunday 18:00 and closes Friday 17:00 America/New_York
+// (COMEX/Globex hours; spot XAUUSD brokers follow the same week). In UTC that moves with US daylight saving:
+// the close is Friday 21:00 UTC in summer (EDT) and 22:00 UTC in winter (EST), the open Sunday 22:00 UTC in
+// summer and 23:00 UTC in winter. The fixed 22:00 UTC used before was an hour off on one side in each season.
+// The daily 17:00–18:00 maintenance break is not a closure here: the metabolism reacts to the weekend only.
+const NEW_YORK_CLOCK = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hourCycle: "h23" });
+const WEEKDAYS: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+/** The weekday (0 = Sunday) and hour (0–23) of an instant on the New York wall clock. */
+export function newYorkWeekdayHour(now: number): { day: number; hour: number } {
+  const parts = NEW_YORK_CLOCK.formatToParts(new Date(now));
+  const day = WEEKDAYS[parts.find((p) => p.type === "weekday")?.value ?? ""];
+  const hour = Number(parts.find((p) => p.type === "hour")?.value);
+  if (day === undefined || !Number.isInteger(hour)) throw new Error("new_york_clock_unavailable");
+  return { day, hour };
+}
+
 export function computeMarketStatus(now = Date.now()): "open" | "closed" | "holiday" {
-  const date = new Date(now);
-  const day = date.getUTCDay();
-  const hour = date.getUTCHours();
+  const { day, hour } = newYorkWeekdayHour(now);
   if (day === 6) return "closed";
-  if (day === 5 && hour >= 22) return "closed";
-  if (day === 0 && hour < 22) return "closed";
+  if (day === 5 && hour >= 17) return "closed";
+  if (day === 0 && hour < 18) return "closed";
   return "open";
 }
 

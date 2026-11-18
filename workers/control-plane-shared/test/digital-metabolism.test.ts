@@ -21,6 +21,30 @@ test("P2-M4 computeMarketStatus accurately detects gold market schedule", () => 
   assert.equal(computeMarketStatus(Date.UTC(2026, 10, 10, 14, 0, 0)), "open");
 });
 
+test("market clock: gold's week follows New York time, so the UTC close and open move with US daylight saving", () => {
+  const at = (y: number, m: number, d: number, h: number, min = 0) => computeMarketStatus(Date.UTC(y, m - 1, d, h, min));
+  // Winter (EST, UTC-5): Friday 2026-11-13 closes at 22:00 UTC, Sunday 2026-11-15 opens at 23:00 UTC.
+  assert.equal(at(2026, 11, 13, 21, 59), "open");
+  assert.equal(at(2026, 11, 13, 22, 0), "closed");
+  assert.equal(at(2026, 11, 15, 22, 30), "closed", "Sunday 17:30 New York: not open yet (the fixed 22:00 UTC said open)");
+  assert.equal(at(2026, 11, 15, 23, 0), "open");
+  // Summer (EDT, UTC-4): Friday 2026-07-10 closes at 21:00 UTC, Sunday 2026-07-12 opens at 22:00 UTC.
+  assert.equal(at(2026, 7, 10, 20, 59), "open");
+  assert.equal(at(2026, 7, 10, 21, 30), "closed", "Friday 17:30 New York: closed (the fixed 22:00 UTC said open)");
+  assert.equal(at(2026, 7, 12, 21, 59), "closed");
+  assert.equal(at(2026, 7, 12, 22, 0), "open");
+  // The transition Sundays: DST starts 2026-03-08 (open at 22:00 UTC), ends 2026-11-01 (open at 23:00 UTC).
+  assert.equal(at(2026, 3, 8, 21, 59), "closed");
+  assert.equal(at(2026, 3, 8, 22, 0), "open");
+  assert.equal(at(2026, 11, 1, 22, 30), "closed");
+  assert.equal(at(2026, 11, 1, 23, 0), "open");
+  // The daily 17:00–18:00 New York break is not a closure: Wednesday 2026-11-11 22:30 UTC is open.
+  assert.equal(at(2026, 11, 11, 22, 30), "open");
+  // Saturday is closed all day on both clocks.
+  assert.equal(at(2026, 7, 11, 3, 0), "closed");
+  assert.equal(at(2026, 7, 11, 23, 0), "closed");
+});
+
 test("P2-M4 observeMetabolism returns treasury balance, burn rate, and ratio", async () => {
   const db = migratedDb();
   const mockXauusd = {
