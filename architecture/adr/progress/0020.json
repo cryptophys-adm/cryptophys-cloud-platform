@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO, a risk-reducing Position Manager) and 2 (Council auto-arm); amendment 3 (account risk profiles) 2026-11-18. Nothing is built on the platform side; xauusd's RFC_STRATEGY_RECOMMENDATION and profile RFC implement it.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO, a risk-reducing Position Manager) and 2 (Council auto-arm); amendments 3 (risk profiles) and 4 (TP ladder) 2026-11-18. Nothing is built on the platform side; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
   "phases": [
     {
       "id": "D",
@@ -60,6 +60,16 @@
         "quote": "The highest profile the agent may reach is set only by the owner"
       },
       "note": "a documented decision, not a build: xauusd builds the profiles and the profile agent"
+    },
+    {
+      "id": "A4",
+      "title": "Amendment 4 recorded: the Position Manager's TP ladder and partial closes, only once the stop locks a profit",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "but only while its stop loss already locks a profit"
+      },
+      "note": "a documented decision, not a build: xauusd builds the ladder and the partial closes"
     },
     {
       "id": "N",
