@@ -311,7 +311,8 @@ test("AP10. the seed is honest: what the platform cannot see is open with a reas
   assert.deepEqual(predicateLeaves(p20("A1").evidence).map((p) => p.kind), ["agent_report", "doc_asserted"], "A1: proven by a mode auto report, else the document");
   assert.deepEqual(predicateLeaves(p20("A1").evidence)[0], { ...report, body: { "$.mode": "auto" } });
   assert.equal(p20("D").evidence.kind, "doc_asserted");
-  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "A2", "N", "R"]);
+  assert.deepEqual(p20("A3").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "The highest profile the agent may reach is set only by the owner" }, "A3: the owner-set ceiling, recorded in the ADR");
+  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "A2", "A3", "N", "R"]);
   assert.equal(criticalPathReason(`${PROGRESS}0020.json`), null, "0020.json is not a guard path");
   // ADR-0018: the registry migration 0074 is on main now, so X3 measures it.
   assert.ok(predicateLeaves(byId("0018").phases.find((ph) => ph.id === "X3")!.evidence).some((p) => p.kind === "migration_applied" && p.name === "0074_register_cta.sql"));

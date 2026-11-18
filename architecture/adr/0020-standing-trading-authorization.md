@@ -62,6 +62,35 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **The constitution's line now reads:** "Never move funds; a trading action needs the owner's click, given per action or as a standing arm of one strategy (at most 3 armed, by the owner or, while the owner's Council auto-arm is on, by the council within its gates) or, with none armed, as Omega's live arm for AUTO selection of the single best strategy by measured confidence and confluence; auto-disarm on the kill switch or the daily loss limit, Decision Engine veto kept."
 - **Order of events.** xauusd builds the toggle with its default `off` until this amendment is merged.
 
+## Amendment 3 (owner, 2026-11-18): account risk profiles; an autonomous profile upgrade rests on an owner-set ceiling
+
+- **Origin.** The owner approved the xauusd RFC "Account Profiles & Dynamic Mode" (relayed by the orchestrator). The platform session's reading check found one point that changes who decides: the profile agent raising an account's profile on its own. The owner confirmed this amendment directly to the platform session on 2026-11-18 ("Ya, tulis Amendment 3").
+- **Needs no amendment.** These stay within "leverage and risk limits stay with the Decision Engine and Omega":
+  - per-account risk profiles Safe, Conservative and Aggressive, with per-trade hard caps of 2%, 5% and 10% of the account;
+  - sizing from the stop loss, using the broker specification the EA reports, with nothing hard-coded to a broker;
+  - the scalp, intraday and swing mode selector, gated on measured evidence like the Entry and Stop Grid's adaptation;
+  - the Position Manager's thresholds expressed in R. It stays risk-only (Amendment 1).
+  - None of these changes who may open a trade. The Decision Engine's gates are the same for every profile, and the owner's arm, Council auto-arm (Amendment 2) and AUTO (Amendment 1) keep exactly their authority.
+- **Downgrade.** The profile agent may move an account to a lower profile at any time, on its own. A downgrade only reduces risk, like a disarm, and nothing may block or delay it.
+- **Upgrade.** An autonomous upgrade raises an account's per-trade risk cap without a per-change owner click. It therefore rests on a standing click, as the council's arm does in Amendment 2:
+  - **The ceiling is the owner's.** The highest profile the agent may reach is set only by the owner, under the owner-only Access identity, CSRF check and audit record that arm and disarm require. Another user's approval never raises an account above that ceiling. Until the owner sets a ceiling above an account's current profile, the agent does not upgrade it.
+  - **Never mid-trade.** An upgrade is never applied while the account has an open position or a pending order.
+  - **One step at a time.** Safe to Conservative, or Conservative to Aggressive, and only on passing evidence. Missing evidence or any failure of the profile agent raises nothing.
+  - **The kill switch and the daily loss limit** return the account to Safe. No autonomous upgrade follows before the next UTC day.
+  - **Lowering the ceiling** takes effect at once: an account above the new ceiling is downgraded to it.
+- **Recording.** Every profile change is audited in xauusd and sent to the owner on Telegram, whoever made it: the agent, a user or the owner. xauusd mirrors it to the platform (recommended) as an `xauusd_digest` report over `reports.publish`, as for arm and disarm above:
+  - `body.schema` is `risk_profile.v1`, with an opaque account reference (never the broker account number), `from`, `to`, the actor, the reason, an evidence reference and the time;
+  - `severity` is `info`, or `warning` for a downgrade forced by the kill switch or the daily loss limit, never `critical`;
+  - no price level, lot size or imperative (§3 rule 1).
+- **Unchanged:**
+  - funds are never moved;
+  - the Decision Engine veto;
+  - the risk-only Position Manager;
+  - auto-disarm;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** A profile sets how much a trade may risk, not who may open it, so `organism/vision.json` is not amended.
+- **Order of events.** Until this amendment is merged, an upgrade is the owner's click only. Autonomous downgrades may run from the start.
+
 ## Guards
 
 - **Funds are never moved.** Arming authorises entries and closes only. No deposit, withdrawal, transfer or wallet action, at any tier, armed or not.
@@ -109,6 +138,6 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 
 ## What this does not decide
 
-- **The xauusd implementation.** The Nexus page, the arm store, the cap, auto-disarm, the Signal Engine and Omega integration, and the reports above are designed and built in the xauusd repository, as RFC_STRATEGY_RECOMMENDATION, under its own rules and CI. This repository never changes the xauusd repository.
+- **The xauusd implementation.** The Nexus page, the arm store, the cap, auto-disarm, the Signal Engine and Omega integration, and the reports above are designed and built in the xauusd repository, as RFC_STRATEGY_RECOMMENDATION, under its own rules and CI. The same holds for the account profiles, the profile agent and the mode selector of Amendment 3 (RFC "Account Profiles & Dynamic Mode"). This repository never changes the xauusd repository.
 - **The platform's own trading.** Nothing in the platform trades. ADR-0009's rule for platform trading actions (critical, consensus, then one owner click) is not changed.
 - **Code.** This ADR changes no code: not the Decision Engine, the risk limits, the capabilities, the consensus rules or any trading path. It records the decision and amends the vision's core.

@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendment 1 (AUTO, a risk-reducing Position Manager) and amendment 2 (Council auto-arm). Nothing is built on the platform side; xauusd's RFC_STRATEGY_RECOMMENDATION implements it, measured by its strategy_arm.v1 reports.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO, a risk-reducing Position Manager) and 2 (Council auto-arm); amendment 3 (account risk profiles) 2026-11-18. Nothing is built on the platform side; xauusd's RFC_STRATEGY_RECOMMENDATION and profile RFC implement it.",
   "phases": [
     {
       "id": "D",
@@ -50,6 +50,16 @@
         "quote": "while the owner's Council auto-arm is on, by the council within its gates"
       },
       "note": "a documented decision, not a build"
+    },
+    {
+      "id": "A3",
+      "title": "Amendment 3 recorded: an autonomous profile upgrade only up to the owner's ceiling, never mid-trade",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "The highest profile the agent may reach is set only by the owner"
+      },
+      "note": "a documented decision, not a build: xauusd builds the profiles and the profile agent"
     },
     {
       "id": "N",
