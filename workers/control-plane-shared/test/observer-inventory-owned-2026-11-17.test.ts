@@ -40,7 +40,8 @@ const D1_LIST = list(["47f4462a-1871-4d1a-a74c-d265cf241c37", "aether-knowledge"
 const KV_LIST = list(["0cbd6ecc0fbc4dc99342960456ca71e5", "xauusd-preview-signal-cache"], ["2000943b5db042f582b03043c75d5b1c", "xauusd-preview-webhook-buffer"],
   ["4ada6196de5a4000a28a047bf6b30ff3", "xauusd-signal-cache"], ["773182e4a26c444e8f56c3e58a1987ef", "xauusd-preview-knowledge-base"],
   ["a1c0f1055bd1434192d681a45866614d", "xauusd-fundamental-news-oauth"], ["a7ceeae9a1d2471980e2bc71cb38e041", "xauusd-webhook-buffer"], ["f611edadb19c4260a111eb5796f2fba7", "xauusd-knowledge-base"]);
-const R2_LIST = list(["cryptophys-d1-backups", "cryptophys-d1-backups"], ["cryptophys-forge-bundles", "cryptophys-forge-bundles"], ["xauusd-room-transcripts", "xauusd-room-transcripts"]);
+// + cryptophys-council-transcripts, created 2026-11-18 for HAIC H1.5e (bound by the AI Kernel).
+const R2_LIST = list(["cryptophys-d1-backups", "cryptophys-d1-backups"], ["cryptophys-forge-bundles", "cryptophys-forge-bundles"], ["xauusd-room-transcripts", "xauusd-room-transcripts"], ["cryptophys-council-transcripts", "cryptophys-council-transcripts"]);
 const QUEUE_NAMES = ["xauusd-webhook-events", "xauusd-webhook-events-dlq", "xauusd-webhook-events-preview", "xauusd-webhook-events-preview-dlq"];
 const QUEUES_LIST = list(...QUEUE_NAMES.map((n) => [`q-${n}`, n] as [string, string]));
 const OWNED = [
