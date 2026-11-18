@@ -89,6 +89,11 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.council_begin", "kernel", "POST", "/v1/councils/{id}/start", true, "CONVENE {id13}"],
   // HAIC push hub: the Console's WebSocket of change signals.
   ["kernel.hub", "kernel", "GET", "/v1/hub", false, null],
+  // HAIC H2: typed proposals; the owner confirms or rejects a draft with a typed phrase.
+  ["kernel.proposals", "kernel", "GET", "/v1/proposals", false, null],
+  ["kernel.proposal", "kernel", "GET", "/v1/proposals/{id}", false, null],
+  ["kernel.proposal_confirm", "kernel", "POST", "/v1/proposals/{id}/confirm", true, "CONFIRM {id13}"],
+  ["kernel.proposal_reject", "kernel", "POST", "/v1/proposals/{id}/reject", true, "REJECT {id13}"],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
   ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
   // Owner 2026-11-13: the Alerts page (Telegram alert channels), approvers only.
@@ -150,7 +155,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 84 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 88 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
   // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
@@ -160,7 +165,8 @@ test("1. route table: exactly the 84 ids with those fields, matching allow-list 
   // + kernel.councils, kernel.council, kernel.council_start, kernel.council_message, kernel.council_pick, kernel.council_dismiss (HAIC H1.5c).
   // + kernel.council_begin (HAIC H1.5d).
   // + kernel.hub (HAIC push hub).
-  assert.equal(UI_ROUTES.length, 84);
+  // + kernel.proposals, kernel.proposal, kernel.proposal_confirm, kernel.proposal_reject (HAIC H2).
+  assert.equal(UI_ROUTES.length, 88);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -169,7 +175,7 @@ test("1. route table: exactly the 84 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 84);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 88);
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
   assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
   assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
@@ -182,9 +188,9 @@ test("1. route table: exactly the 84 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the twenty-nine approverOnly ids (since 2026-11-18 the owners' chat, HAIC H1c, and the owner's council clicks, HAIC H1.5c and H1.5d; owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation; since 2026-11-13 the acknowledgement of a critical report and the alert channels; the registry writes left on 2026-11-15; since 2026-11-16 the identity lists)", () => {
+test("2. approver flags: exactly the thirty-one approverOnly ids (since 2026-11-18 the owners' chat, HAIC H1c, the owner's council clicks, HAIC H1.5c and H1.5d, and the typed proposal decisions, HAIC H2; owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation; since 2026-11-13 the acknowledgement of a critical report and the alert channels; the registry writes left on 2026-11-15; since 2026-11-16 the identity lists)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.conversation","kernel.conversation_rate","kernel.conversation_turn","kernel.conversations","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.council_begin","kernel.council_dismiss","kernel.council_message","kernel.council_pick","kernel.council_start","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.identities_update"].sort());
+  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.conversation","kernel.conversation_rate","kernel.conversation_turn","kernel.conversations","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.council_begin","kernel.council_dismiss","kernel.council_message","kernel.council_pick","kernel.council_start","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.proposal_confirm","kernel.proposal_reject","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.identities_update"].sort());
 });
 
 test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
@@ -277,8 +283,8 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the registry's GET and POST /v1/identities (owner 2026-11-16).
   // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4).
   // + the kernel's four chat rows (HAIC H1c).
-  // + the kernel's six council rows (HAIC H1.5c), its start row (HAIC H1.5d) and the hub (HAIC push hub).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 82);
+  // + the kernel's six council rows (HAIC H1.5c), its start row (HAIC H1.5d), the hub (HAIC push hub) and four typed proposal rows (HAIC H2).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 86);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
