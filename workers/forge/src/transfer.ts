@@ -98,16 +98,18 @@ export async function copyCommit(binding: MergeBinding, args: { source: string; 
 export const typecheckBranch = (crId: string) => `cr/${crId}`;
 
 /**
- * Tick step (ADR-0012 §5j, gate 6): give the newest open, unblocked forge-sourced change request without a
- * type-check report a type-check source, by copying its head to `cr/<cr_id>` of the canonical repository.
+ * Tick step (ADR-0012 §5j, gate 6): give the open, unblocked forge-sourced change request without a type-check
+ * report that has waited longest a type-check source, by copying its head to `cr/<cr_id>` of the canonical repository.
  * One copy per tick; a request already copied at its head is skipped without a transfer.
+ * Oldest first (2026-11-18), as the checks since 693cae6 (changes.ts nextChangeHead): newest first type-checked a base
+ * request (H1b) after the eight requests stacked on it, about two hours later, and nothing stacked merges before it.
  */
 export async function crSourcesTick(env: { DB: D1Database; ARTIFACTS?: MergeBinding }, fetchImpl: Fetch = (i, init) => fetch(i, init)): Promise<Record<string, unknown>> {
   if (!env.ARTIFACTS) return { outcome: "not_configured" };
   const rows = (await env.DB.prepare(
     `SELECT c.cr_id, c.head_sha, c.repo FROM forge_change_requests c LEFT JOIN forge_typecheck_reports t ON t.commit_sha = c.head_sha
      WHERE c.status = 'open' AND c.source = 'forge' AND c.blocked_reason IS NULL AND t.commit_sha IS NULL
-     ORDER BY c.updated_at DESC LIMIT 3`,
+     ORDER BY c.updated_at ASC, c.rowid ASC LIMIT 3`,
   ).all<{ cr_id: string; head_sha: string; repo: string }>()).results ?? [];
   if (!rows.length) return { outcome: "up_to_date" };
   const results: CopyResult[] = [];
