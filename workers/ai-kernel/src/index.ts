@@ -42,6 +42,7 @@ import { ADR_CACHE_CONTROL, adrDetailView, adrListView, validAdrId } from "./adr
 import { intakeEvolutionIntents } from "./evolution-intake.ts";
 import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-view.ts";
 import { listConversations } from "./conversation.ts";
+import { listCouncils } from "./council.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -72,7 +73,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -171,6 +172,29 @@ export default {
         }
         const r = out as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
         return r.ok ? json(r.value) : errorResponse(r.status ?? 500, r.code ?? "internal_error", r.message);
+      }
+      // HAIC H1.5b (docs/design/HAIC-H0-H1.md §4): Call for Councils. Operators read; only the owner opens a council, joins
+      // it with a message, picks an option or dismisses it (Q6: picks in Cerebrum only). A council never acts.
+      if (path === "/v1/councils" || path.startsWith("/v1/councils/")) {
+        if (path === "/v1/councils" && request.method === "GET") return json(await listCouncils(env.DB));
+        const m = /^\/v1\/councils(?:\/(cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(messages|pick|dismiss))?)?$/.exec(path);
+        if (!m) return errorResponse(404, "not_found");
+        if (!env.COUNCIL) return errorResponse(503, "not_available", "the council binding is not configured");
+        if (request.method === "GET" && m[1] && !m[2]) {
+          const out = await env.COUNCIL.get(env.COUNCIL.idFromName(m[1])).read() as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
+          return out.ok ? json(out.value) : errorResponse(out.status ?? 500, out.code ?? "internal_error", out.message);
+        }
+        if (request.method !== "POST" || (m[1] && !m[2])) return errorResponse(405, "method_not_allowed");
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner opens, joins, picks or dismisses a council");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        const id = m[1] ?? `cs_${crypto.randomUUID()}`;
+        const stub = env.COUNCIL.get(env.COUNCIL.idFromName(id));
+        const out = (!m[1] ? await stub.start(operator.actor, id, body.value.topic, body.value.question)
+          : m[2] === "messages" ? await stub.message(operator.actor, body.value.text)
+          : m[2] === "pick" ? await stub.pick(operator.actor, body.value.option_id, body.value.note)
+          : await stub.dismiss(operator.actor)) as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
+        return out.ok ? json(out.value, m[1] ? 200 : 201) : errorResponse(out.status ?? 500, out.code ?? "internal_error", out.message);
       }
       // ADR-0014 §11 (docs/design/EVOLVER.md step V2): the evolution intents and the evolver's kill switch. Reading is open
       // to operators; "off" is a brake any operator may pull; "on" needs the owner.
