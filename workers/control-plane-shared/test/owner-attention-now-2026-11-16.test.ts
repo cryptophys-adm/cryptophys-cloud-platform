@@ -182,7 +182,8 @@ test("N8. a failing cycle still runs the pass afterwards; the pass after the cyc
 
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
   assert.match(idx, /const cycle = env\.SUPERVISOR\.get\(env\.SUPERVISOR\.idFromName\(AGENT_ID\)\)\.cycle\("scheduled"\)/);
-  assert.match(idx, /ctx\.waitUntil\(Promise\.all\(\[cycle, fullPass\]\)\.then\(\(\) => reconcileOwnerAttentionNow\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}\)\)/);
+  // HAIC H1.5d: the hourly council proposals (:07) settle first too, so a new proposal is notified in the same tick.
+  assert.match(idx, /ctx\.waitUntil\(Promise\.all\(\[cycle, fullPass, proposals\]\)\.then\(\(\) => reconcileOwnerAttentionNow\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}\)\)/);
 });
 
 test("N9. topics: collectNotices and reconcileNotices limited to owner_attention touch nothing else", async () => {

@@ -38,7 +38,7 @@ import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audi
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
-import { STALE_MS, councilsAwaitingOwner, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
+import { STALE_MS, councilProposals, councilsAwaitingOwner, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
 import { rankInbox, type InboxItem, type RankInput } from "../../control-plane-shared/src/owner-inbox-rank.ts";
 import { listChannels, sendToChannel, type AlertVault } from "./alert-channels.ts";
 
@@ -126,11 +126,13 @@ async function ownerAttention(db: D1Database, now: number): Promise<Notice> {
   // HAIC H1.5c (§4.6, "Telegram source for council notices"): a council waiting for the owner's pick is part of this
   // notice, the single source for councils; the xauusd bot sends none.
   const councils = await councilsAwaitingOwner(db, now);
-  const n = plans.length + critical.length + knowledge.length + councils.length;
-  const lines = rankedLines(rankInbox({ ...EMPTY_RANK, approvals, councils }, now), now);
+  // HAIC H1.5d (Q9): a council an agent proposed waits for the owner to begin it, so it is listed here too.
+  const proposals = await councilProposals(db, now);
+  const n = plans.length + critical.length + knowledge.length + councils.length + proposals.length;
+  const lines = rankedLines(rankInbox({ ...EMPTY_RANK, approvals, councils, council_proposals: proposals }, now), now);
   return {
     topic: "owner_attention", channel: channelOf("owner_attention"), active: n > 0,
-    fingerprint: await fp([...plans.map((p) => p.plan_id), ...critical.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id), ...councils.map((c) => c.session_id)]),
+    fingerprint: await fp([...plans.map((p) => p.plan_id), ...critical.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id), ...councils.map((c) => c.session_id), ...proposals.map((c) => c.session_id)]),
     title: n ? `${n} item(s) wait for your approval` : "Nothing waits for your approval",
     // Every item is decided on the Owner page (owner 2026-11-13), whatever its kind.
     lines, link: OWNER_PANEL_URL, count: n,
@@ -447,8 +449,9 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now(), opts: {
 export async function ownerAttentionHasNewItems(db: D1Database): Promise<boolean> {
   const { recovery_plans: plans, consensus: critical, knowledge } = await pendingApprovals(db);
   const councils = await councilsAwaitingOwner(db);
+  const proposals = await councilProposals(db);
   const created = [...plans, ...critical, ...knowledge].map((i) => Date.parse(i.created_at))
-    .concat(councils.map((c) => Date.parse(String(c.since ?? "")))).filter(Number.isFinite);
+    .concat(councils.map((c) => Date.parse(String(c.since ?? ""))), proposals.map((c) => Date.parse(c.since))).filter(Number.isFinite);
   if (!created.length) return false;
   const last = await db.prepare("SELECT created_at FROM audit_events WHERE event_type IN ('owner.notice_opened','owner.notice_changed','owner.notice_closed','owner.notice_delivery_retry') AND subject = 'owner_attention' ORDER BY rowid DESC LIMIT 1")
     .first<{ created_at: string }>();
