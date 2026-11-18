@@ -37,6 +37,9 @@ AI_ACCOUNT_DAILY_REQUEST_LIMIT = "75"
 OWNER_NOTICE_CHANNELS = "telegram"
 # ADR-0012 phase 2: sender of owner notices (Email Service, sending subdomain notify.cryptophys.work).
 NOTIFY_FROM = "alerts@notify.cryptophys.work"
+# HAIC H1 (owner Q2 2026-11-16): the chat's own daily budget, in turns (a turn is at most 3 model calls), apart from the
+# AI requests above. The chat's model is CHAT_MODEL (control-plane-shared/src/conversation.ts), its own allow-list.
+CHAT_DAILY_TURN_LIMIT = "40"
 
 [[d1_databases]]
 binding = "DB"
@@ -92,6 +95,12 @@ entrypoint = "MergeRpc"
 binding = "FORGE_EVOLUTION"
 service = "cryptophys-forge"
 entrypoint = "EvolutionRpc"
+
+# HAIC H1b (docs/design/HAIC-H0-H1.md §3.2 docs_index): the chat's read-only view of canonical main's documents.
+[[services]]
+binding = "FORGE_DOCS"
+service = "cryptophys-forge"
+entrypoint = "DocsRpc"
 
 # Wave C (C1): each control-plane Worker casts its own consensus vote (VoteRpc).
 [[services]]
@@ -176,6 +185,11 @@ class_name = "AdrStewardAgent"
 name = "EVOLVER"
 class_name = "EvolverAgent"
 
+# HAIC H1b (docs/design/HAIC-H0-H1.md §3.1): one owner's conversation per object, named "<actor>:<conversation id>".
+[[durable_objects.bindings]]
+name = "CONVERSATION"
+class_name = "ConversationAgent"
+
 [[vectorize]]
 binding = "MEMORY"
 index_name = "cryptophys-agent-memory"
@@ -203,6 +217,10 @@ new_sqlite_classes = ["AdrStewardAgent"]
 [[migrations]]
 tag = "v6"
 new_sqlite_classes = ["EvolverAgent"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["ConversationAgent"]
 
 # No shared secrets: /v1 and /mcp are authorized by the verified Cloudflare Access identity.
 # The deploy workflow sets OPERATOR_IDENTITIES and APPROVER_IDENTITIES from the Environment.
