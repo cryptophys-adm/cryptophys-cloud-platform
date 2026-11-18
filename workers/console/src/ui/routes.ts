@@ -69,6 +69,8 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.proposal", "kernel", "GET", "/v1/proposals/{id}", false, null),
   r("kernel.proposal_confirm", "kernel", "POST", "/v1/proposals/{id}/confirm", true, "CONFIRM {id13}"),
   r("kernel.proposal_reject", "kernel", "POST", "/v1/proposals/{id}/reject", true, "REJECT {id13}"),
+  // HAIC H2b: the owner's chat directive into a draft. No typed phrase: it makes only a draft, which needs CONFIRM.
+  r("kernel.proposal_draft", "kernel", "POST", "/v1/proposals", true, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
