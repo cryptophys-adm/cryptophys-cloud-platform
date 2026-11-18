@@ -107,3 +107,22 @@ The "Evaluate" form on the Console's Policy page sends a real evaluation, so eac
 - **Costs and risks:**
   - a new conversational surface. Mitigated by read-only tools, confirmation, audit, Access identity and prompt-injection rules;
   - model quality. Mitigated by the arena.
+
+## Amendment 2026-11-18: H4, the autonomy dial (the owner's answers)
+
+The owner answered the H4 questions in the platform session on 2026-11-18:
+
+1. **Range ("Hanya turun dari ADR").** The dial only makes an action stricter than its ADR-0009 class. The owner's click lowers a group to any level and raises it back, at most to the group's ceiling: routine actions to "execute on consensus", critical ones to "execute after the owner's click". Raising a critical action to consensus still needs a new ADR and a reviewed guard-path change. Trading never rises above the owner's click (§5).
+2. **Per group ("Per kelompok").** Eight groups: deploys, merges into main, rollback and drift, the Platform Registry, agents and engines, policy and doctrine, data/secrets/Access, and trading. Every catalog action is in exactly one group; an action's effective level is the lower of its group's level and its own ceiling.
+3. **Raise proposals ("30 eksekusi/14 hari, ≥95%").** A group below its ceiling with at least 30 executions in 14 days, at least 95% of them succeeded and no regression is shown to the owner as ready to rise one level. Only the owner's click raises it.
+4. **Auto-downgrade ("Ya, turun satu level").** A regression attributed to a group lowers it one level at once and tells the owner on the Owner page (and in `owner_attention`); only the owner raises it again. A regression is a rollback of a Worker within 2 h after an executed deploy of it (the deploys group), or three failed executions in a row in one group, the latest within 24 h.
+
+The levels mean:
+
+- **observe** and **suggest**: a passed proposal is recorded, not executed and not put to the owner; suggest lists it on the Autonomy page as what the agents would have done.
+- **owner_click**: a passed routine action waits in `pending_owner` for the owner's approval click, as a critical one does; the target Workers and the Policy Engine require that click (ADR-0009 amendment of the same day).
+- **consensus**: unchanged ADR-0009 behaviour.
+
+With no level set, every group is at its ceiling: the ADR-0009 class decides, as before H4. Directives stay always confirmed by the owner (decision 2); they are not part of the dial for now.
+
+Implementation: `control-plane-shared/src/autonomy-dial.ts` (a guard path), migration 0083 (`autonomy_dial`, `consensus_proposals.autonomy_level`), `ai-kernel/src/autonomy.ts`, the kernel's `GET /v1/autonomy` and `POST /v1/autonomy/{group}` (the owner, phrase `SET <GROUP> <LEVEL>`), and the Console's Autonomy page.

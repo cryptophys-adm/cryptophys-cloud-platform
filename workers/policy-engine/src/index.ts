@@ -105,10 +105,14 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     if (MERGE_ACTIONS.has(act)) {
       checks.push(check("merge_path_forge", (await mergePath(db)) === "forge", "the Forge merges into canonical main only after the cut-over (forge_controls.merge_path = forge)"));
     }
-    if (cls === "critical" && context.stage === "execute") {
+    // HAIC H4 (migration 0083): a routine action the owner's autonomy dial held at owner_click needs the same click; the
+    // level is read from the proposal itself, not taken from the caller.
+    const dialClick = context.stage === "execute" && cls === "routine"
+      && (await db.prepare("SELECT autonomy_level FROM consensus_proposals WHERE proposal_id = ?").bind(String(context.proposal_id ?? "")).first<{ autonomy_level: string | null }>().catch(() => null))?.autonomy_level === "owner_click";
+    if ((cls === "critical" && context.stage === "execute") || dialClick) {
       const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?")
         .bind(String(context.proposal_id ?? "")).first<{ decision: string }>();
-      checks.push(check("owner_approved", owner?.decision === "approve", "a critical action needs one owner approval click (ADR-0009 phase 4)"));
+      checks.push(check("owner_approved", owner?.decision === "approve", dialClick ? "the autonomy dial holds this action at owner_click: it needs one owner approval click" : "a critical action needs one owner approval click (ADR-0009 phase 4)"));
     }
     const ks = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
     checks.push(check("agents_enabled", ks?.value === "1", "the global agent kill switch must be on"));

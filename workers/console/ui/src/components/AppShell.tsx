@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass, MessageSquareText, UsersRound, FileCheck2 } from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass, MessageSquareText, UsersRound, FileCheck2, Gauge } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -29,6 +29,8 @@ export const NAV = [
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },
+  // HAIC H4: the autonomy dial (the owner lowers a group of actions, or raises it back to its ADR-0009 class).
+  { label: "Autonomy", href: "#/autonomy", key: "autonomy", icon: Gauge },
   { label: "Knowledge", href: "#/knowledge", key: "knowledge", icon: Sparkles },
   { label: "Recovery", href: "#/recovery", key: "recovery", icon: Wrench },
   { label: "Infrastructure", href: "#/infrastructure", key: "infrastructure", icon: Server },
