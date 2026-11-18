@@ -39,6 +39,7 @@ import { describeAction, explainReason, serviceName } from "../../control-plane-
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
 import { STALE_MS, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
+import { rankInbox, type InboxItem, type RankInput } from "../../control-plane-shared/src/owner-inbox-rank.ts";
 import { listChannels, sendToChannel, type AlertVault } from "./alert-channels.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
@@ -66,6 +67,29 @@ export interface Notice {
   title: string;
   lines: string[];
   link: string;
+  /** How many items the notice is about. For the owner topics `lines` lists only the top TOP_LINES of them (HAIC H0d). */
+  count: number;
+}
+
+/**
+ * HAIC H0d (docs/design/HAIC-H0-H1.md §2.5): an owner notice lists its top items by the inbox's score, each with a deep
+ * link to that item on the Owner page. A link only opens the Console, where Access, the click, the typed phrase and
+ * CSRF apply: no notice carries a URL that acts, and there are no inline buttons or callbacks.
+ */
+export const TOP_LINES = 5;
+const EMPTY_RANK: RankInput = { approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [] };
+function dueText(deadline: string | null, now: number): string {
+  const t = Date.parse(String(deadline ?? ""));
+  if (!Number.isFinite(t)) return "no deadline";
+  const h = Math.round((t - now) / 3_600_000);
+  return h <= 0 ? "due now" : h < 48 ? `due in ${h} h` : `due in ${Math.round(h / 24)} d`;
+}
+/** `#<rank> <what> · blocks <…> · <due> · <deep link>`, the top TOP_LINES, and one line for the rest. */
+export function rankedLines(items: InboxItem[], now: number): string[] {
+  const lines = items.slice(0, TOP_LINES).map((i, n) =>
+    `#${n + 1} ${i.what} · blocks ${i.blocks.length ? i.blocks.join(", ") : "nothing"} · ${dueText(i.deadline, now)} · ${CONSOLE_URL}${i.deep_link}`);
+  if (items.length > TOP_LINES) lines.push(`and ${items.length - TOP_LINES} more on the Owner page`);
+  return lines;
 }
 
 export interface SendEmailBinding {
@@ -96,20 +120,17 @@ const channelOn = (env: NoticeEnv, name: "email" | "telegram") =>
 
 const fp = async (parts: string[]) => (parts.length ? (await sha256Hex([...parts].sort().join("\n"))).slice(0, 32) : "");
 
-async function ownerAttention(db: D1Database): Promise<Notice> {
-  const { recovery_plans: plans, consensus: critical, knowledge } = await pendingApprovals(db);
-  const lines = [
-    ...plans.map((p) => `Recovery plan for ${serviceName(p.service_id)} (by ${p.created_by})`),
-    ...critical.map((c) => `Critical action: ${describeAction(c.action, c.target)} (proposed by ${c.proposer_agent_id})`),
-    ...knowledge.map((k) => `Knowledge proposal ${k.item_id}@${k.item_version} (${String(k.kind).replace(/_/g, " ")}, by ${k.proposer_agent_id})`),
-  ];
-  const n = lines.length;
+async function ownerAttention(db: D1Database, now: number): Promise<Notice> {
+  const approvals = await pendingApprovals(db);
+  const { recovery_plans: plans, consensus: critical, knowledge } = approvals;
+  const n = plans.length + critical.length + knowledge.length;
+  const lines = rankedLines(rankInbox({ ...EMPTY_RANK, approvals }, now), now);
   return {
     topic: "owner_attention", channel: channelOf("owner_attention"), active: n > 0,
     fingerprint: await fp([...plans.map((p) => p.plan_id), ...critical.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id)]),
     title: n ? `${n} item(s) wait for your approval` : "Nothing waits for your approval",
     // Every item is decided on the Owner page (owner 2026-11-13), whatever its kind.
-    lines, link: OWNER_PANEL_URL,
+    lines, link: OWNER_PANEL_URL, count: n,
   };
 }
 
@@ -150,7 +171,7 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     topic: "drift", channel: channelOf("drift"), active: problems.length > 0,
     fingerprint: await fp(problems.map((p) => `${p.service}:${p.code}:${p.line}`)),
     title: problems.length ? `Drift in production: ${problems.length} service(s)` : "All services are healthy and at their expected versions",
-    lines: problems.map((p) => p.line), link: `${CONSOLE_URL}#/infrastructure`,
+    lines: problems.map((p) => p.line), link: `${CONSOLE_URL}#/infrastructure`, count: problems.length,
   };
 }
 
@@ -165,8 +186,8 @@ async function criticalReports(db: D1Database, now: number): Promise<Notice> {
     topic: "critical_reports", channel: channelOf("critical_reports"), active: n > 0,
     fingerprint: await fp(rows.map((r) => r.report_id)),
     title: n ? `${n} open critical agent report(s) in the last 24 hours` : "No open critical agent report in the last 24 hours",
-    lines: rows.slice(0, 5).map((r) => `${r.created_at} ${r.agent_id}: ${r.subject.slice(0, 160)}`),
-    link: OWNER_PANEL_URL,
+    lines: rankedLines(rankInbox({ ...EMPTY_RANK, critical_reports: rows }, now), now),
+    link: OWNER_PANEL_URL, count: n,
   };
 }
 
@@ -192,7 +213,7 @@ async function organism(db: D1Database): Promise<Notice> {
     title: findings.length
       ? `The platform's DNA and its registries differ: ${findings.length} item(s)${findings.every((f) => SELF_REGISTERING_FINDINGS.has(f.kind)) ? ", all being registered automatically" : ""}`
       : "Every organ and agent in the DNA is registered",
-    lines: findings.slice(0, 10).map((f) => f.detail), link: `${CONSOLE_URL}#/agents`,
+    lines: findings.slice(0, 10).map((f) => f.detail), link: `${CONSOLE_URL}#/agents`, count: findings.length,
   };
 }
 
@@ -215,7 +236,7 @@ async function buildMinutes(db: D1Database, now: number): Promise<Notice> {
       : active
       ? `Workers Builds minutes: ${u.status === "over" ? "over" : "near"} the free-tier budget (${u.minutes}/${u.budget_minutes} this month)`
       : `Workers Builds minutes within the free-tier budget (${u.minutes}/${u.budget_minutes} this month)`,
-    lines, link: `${CONSOLE_URL}#/code`,
+    lines, link: `${CONSOLE_URL}#/code`, count: lines.length,
   };
 }
 
@@ -244,7 +265,7 @@ async function dependencies(db: D1Database, now: number): Promise<Notice> {
       : n ? `Vulnerable npm dependencies: ${n} high or critical advisor${n === 1 ? "y" : "ies"} in Worker or Console builds${a.stale ? "; the audit is also stale" : ""}`
       : a.stale ? "The npm dependency audit has not succeeded for 72 hours"
       : `No high or critical advisory in Worker or Console builds (${a.findings.length} finding(s) in total)`,
-    lines, link: `${CONSOLE_URL}#/code`,
+    lines, link: `${CONSOLE_URL}#/code`, count: lines.length,
   };
 }
 
@@ -256,12 +277,12 @@ async function productionUnhandled(db: D1Database, now: number): Promise<Notice>
     topic: "production_unhandled", channel: channelOf("production_unhandled"), active: n > 0,
     fingerprint: await fp(problems.map((p) => `${p.code}:${p.subject}`)),
     title: n ? `A production problem no agent is handling: ${n} item(s)` : "Every production problem is handled by an agent or waits for your approval",
-    lines: problems.slice(0, 20).map((p) => p.detail), link: OWNER_PANEL_URL,
+    lines: rankedLines(rankInbox({ ...EMPTY_RANK, production_problems: problems }, now), now), link: OWNER_PANEL_URL, count: n,
   };
 }
 
 const COLLECTORS: Record<Topic, (db: D1Database, now: number) => Promise<Notice>> = {
-  owner_attention: (db) => ownerAttention(db), drift, critical_reports: criticalReports, organism: (db) => organism(db),
+  owner_attention: ownerAttention, drift, critical_reports: criticalReports, organism: (db) => organism(db),
   build_minutes: buildMinutes, dependencies, production_unhandled: productionUnhandled,
 };
 
@@ -398,7 +419,7 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now(), opts: {
       const allSent = Object.values(merged).every((r) => r === "sent");
       await appendAuditEvent(env.DB, {
         event_type: "owner.notice_delivery_retry", actor: "agent:supervisor", subject: n.topic, outcome: "delivery_retry",
-        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.lines.length, title: n.title, delivery: allSent ? "sent" : delivery, channels: merged, retries: last.retries + 1 },
+        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.count, title: n.title, delivery: allSent ? "sent" : delivery, channels: merged, retries: last.retries + 1 },
       });
       out.push({ topic: n.topic, change: "delivery_retry", delivery });
       continue;
@@ -406,7 +427,7 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now(), opts: {
     const { delivery, channels } = await deliver(env, change, n);
     await appendAuditEvent(env.DB, {
       event_type: `owner.notice_${change}`, actor: "agent:supervisor", subject: n.topic, outcome: change,
-      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.lines.length, title: n.title, delivery, channels },
+      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.count, title: n.title, delivery, channels },
     });
     out.push({ topic: n.topic, change, delivery });
   }

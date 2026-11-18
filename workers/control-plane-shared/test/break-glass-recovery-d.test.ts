@@ -388,7 +388,7 @@ test("BG-3. end to end with the planner down: the owner's click deploys exactly 
     await reconcileNotices(notices as never);
     assert.equal(telegram.length, 1, JSON.stringify(telegram.map((t) => t.title)));
     assert.match(telegram[0].title, /^A production problem no agent is handling: 1 item\(s\)$/);
-    assert.ok(telegram[0].lines.some((l: string) => l.startsWith("Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded")));
+    assert.ok(telegram[0].lines.some((l: string) => l.startsWith("#1 Break-glass deploy of control-plane at 1b1b1b1b1b1b succeeded")), JSON.stringify(telegram[0].lines));
     await reconcileNotices(notices as never);
     assert.equal(telegram.length, 1, "deduplicated");
     // After 24 hours the Orchestrator reports it resolved ("Resolved:", same alert_key), and the notice closes.

@@ -43,7 +43,8 @@ export default function App() {
     case "organism":
     case "metabolism": page = <Organism />; current = "organism"; break;
     // Owner 2026-11-13: the one page where the platform needs a person; every owner email and Telegram message links here.
-    case "owner": page = <Owner />; break;
+    // HAIC H0c: #/owner/<item_id> opens one ranked item (the deep link every owner notice carries since H0d).
+    case "owner": page = <Owner item={id} />; break;
     // ADR-0016 T0: the organism's vision (mission, identity, constitution, goals and KPIs), read-only, with the ADR
     // Steward's panel: #/vision/adr scrolls to it and #/vision/adr/<id> opens that ADR's row.
     case "vision": page = <Vision section={id} item={sub} />; break;

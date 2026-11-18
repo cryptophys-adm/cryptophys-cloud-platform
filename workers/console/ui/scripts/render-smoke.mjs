@@ -282,7 +282,20 @@ MOCK["/api/kernel/v1/owner/inbox"] = { schema: "owner-inbox.v1", observed_at: at
     { code: "observations_stale", subject: "cryptophys-policy-engine", detail: "Policy Engine: not observed since 2026-11-13T01:00:00.000Z; the Drift Detector may have stopped", since: at(120), link: "#/infrastructure" },
     { code: "recovery_failed", subject: "plan_00000000-0000-4000-8000-000000000009", detail: "Recovery plan for Cerebrum Console failed at 2026-11-13T02:00:00.000Z", since: at(90), link: "#/recovery/plan_00000000-0000-4000-8000-000000000009" },
   ],
-  counts: { approvals: 4, critical_reports: 1, production_problems: 3 } };
+  counts: { approvals: 4, critical_reports: 1, production_problems: 3 },
+  // HAIC H0b/H0c: the same items ranked by the kernel (owner-inbox.rank.v1); the page orders by them and opens one by id.
+  items: [
+    { item_id: "critical_report:rpt_00000000-0000-4000-8000-000000000000", source: "critical_report", kind: "critical_report", what: "deployment-orchestrator: Rollback of Cerebrum Console to 6fafa095ce3e failed, which is a long subject that wraps",
+      metric: null, evidence_refs: ["ev:platform/report/rpt_00000000-0000-4000-8000-000000000000"], risk: null, blocks: ["deploys", "merges"], deadline: null, created_at: at(30), urgency: "critical",
+      score: 563, score_parts: { U: 1, B: 4.5, A: 1.25, D: 1 }, action: { kind: "acknowledge", route: "kernel.report_acknowledge", approver_only: true }, page: null, deep_link: "#/owner/critical_report:rpt_00000000-0000-4000-8000-000000000000" },
+    { item_id: "production_problem:self_unhealthy:cryptophys-ai-kernel", source: "production_problem", kind: "self_unhealthy", what: "AI Kernel is drifted or unhealthy (version_mismatch); the agents do not recover their own Worker",
+      metric: null, evidence_refs: ["ev:platform/production_problem/self_unhealthy:cryptophys-ai-kernel"], risk: null, blocks: ["deploys"], deadline: null, created_at: at(50), urgency: "critical",
+      score: 403, score_parts: { U: 1, B: 3, A: 1.03, D: 1 }, action: { kind: "none", route: null, approver_only: false }, page: "#/infrastructure", deep_link: "#/owner/production_problem:self_unhealthy:cryptophys-ai-kernel" },
+    { item_id: "consensus:cns_00000005-0000-4000-8000-000000000000", source: "consensus", kind: "admit_voter", what: "Critical action: give forge-steward a council seat (proposed by supervisor)",
+      metric: { name: "approvals", value: 7, of: 8, unit: "votes" }, evidence_refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], risk: { class: "critical", reversible: true, blast_radius: "agent" },
+      blocks: [], deadline: at(-60 * 22), created_at: at(90), urgency: "normal", score: 85, score_parts: { U: 0.4, B: 1, A: 1.06, D: 2 },
+      action: { kind: "approve_reject", route: "kernel.consensus_approve", approver_only: true }, page: null, deep_link: "#/owner/consensus:cns_00000005-0000-4000-8000-000000000000" },
+  ] };
 // ADR-0016 T0: the Vision page reads GET /v1/vision (organism/vision.json, validated by the kernel). A null baseline
 // or target is shown as "not measured yet", never as a number.
 MOCK["/api/kernel/v1/vision"] = { schema: "organism.vision-view.v1", source: "organism/vision.json", vision_schema: "organism.vision.v1", status: "valid", problems: [],
@@ -446,14 +459,20 @@ OVERRIDE = {};
 const OWNER_CHECKS = [
   { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "kernel or Drift Detector", "recovery failed", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
   { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Only an approver can decide.", "Only an approver can acknowledge."], not: ["Approve…", "Reject…", "Disable…", "Acknowledge…"] },
-  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…"] },
+  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…", "Needs you", "no longer waits"] },
+  // HAIC H0c: the ranked list on top, one item opened by its deep link, and a link to an item that is gone.
+  { name: "ranked", override: {}, want: ["Needs you", "ranked by score", "563", "deploys · merges", "Waiting for your approval"], not: ["no longer waits", "All items"] },
+  { name: "item", hash: "#/owner/consensus:cns_00000005-0000-4000-8000-000000000000", override: {},
+    want: ["All items", "= 100 × U 0.4 × B 1 × A 1.06 × D 2", "approvals: 7 of 8 votes", "critical · reversible · agent", "ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000", "Approve…", "Needs you"], not: ["no longer waits"] },
+  { name: "item-gone", hash: "#/owner/consensus:cns_gone", override: {}, want: ["no longer waits", "All items", "Needs you"], not: [] },
+  { name: "item-gone-empty", hash: "#/owner/consensus:cns_gone", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["no longer waits", "Nothing needs you"], not: [] },
 ];
 for (const width of [390, 1440]) {
   for (const check of OWNER_CHECKS) {
     OVERRIDE = check.override;
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.on("pageerror", (e) => problems.push(`${width}px owner/${check.name} page error: ${e.message}`));
-    await page.goto(`${base}#/owner`);
+    await page.goto(`${base}${check.hash ?? "#/owner"}`);
     await page.waitForTimeout(700);
     // textContent, not innerText: section titles are upper-cased by CSS.
     const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");

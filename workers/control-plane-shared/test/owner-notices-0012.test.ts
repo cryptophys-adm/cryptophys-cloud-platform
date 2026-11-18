@@ -51,7 +51,7 @@ test("O2. a draft plan and a pending_owner proposal open owner_attention once; a
   assert.deepEqual(mail.sent[0].to, ["owner@example.com"], "only owner emails, never service tokens");
   assert.equal(mail.sent[0].from, "alerts@notify.example.com");
   assert.match(mail.sent[0].subject, /^\[Cryptophys\] 1 item\(s\) wait for your approval$/);
-  assert.match(mail.sent[0].text, /^- Recovery plan for Cerebrum Console \(by agent:supervisor\)$/m);
+  assert.match(mail.sent[0].text, /^- #\d Recovery plan for Cerebrum Console \(by agent:supervisor\) · blocks deploys · /m);
   assert.match(mail.sent[0].text, /^Open the Owner page of the Cerebrum Console: https:\/\/nexus\.cryptophys\.work\/console\/#\/owner$/m, "every owner email links to the Owner page");
   assert.doesNotMatch(mail.sent[0].text, /#\/recovery/, "no per-kind link: the item is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
@@ -61,7 +61,7 @@ test("O2. a draft plan and a pending_owner proposal open owner_attention once; a
     VALUES ('cns_1', 'supervisor', 'retire_worker', 'cryptophys-home', 'critical', '{}', '{}', 'deploy', 9, 6, 0, 1, NULL, NULL, 'pending_owner', NULL, ?, ?)`).run(now, now);
   r = await reconcileNotices(env as never, NOW);
   assert.equal(r[0].change, "changed");
-  assert.match(mail.sent[1].text, /^- Critical action: retire Home \(proposed by supervisor\)$/m);
+  assert.match(mail.sent[1].text, /^- #\d Critical action: retire Home \(proposed by supervisor\) · blocks cutover_gate, deploys · due in 2\d h · https:\/\/nexus\.cryptophys\.work\/console\/#\/owner\/consensus:/m);
   db.raw.prepare("UPDATE recovery_plans SET status = 'approved'").run();
   db.raw.prepare("UPDATE consensus_proposals SET status = 'executed'").run();
   r = await reconcileNotices(env as never, NOW);
@@ -210,7 +210,7 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   assert.deepEqual([r[0].topic, r[0].change, r[0].delivery], ["owner_attention", "opened", "failed: rate_limited"]);
   assert.equal(tg[0].change, "opened");
   assert.equal(tg[0].title, "1 item(s) wait for your approval");
-  assert.deepEqual(tg[0].lines, ["Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"], "only the parameter proposal needs the owner");
+  assert.deepEqual(tg[0].lines, ["#1 Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator) · blocks learning · due in 14 d · https://nexus.cryptophys.work/console/#/owner/knowledge:knw_00000000-0000-4000-8000-000000000001"], "only the parameter proposal needs the owner");
   assert.equal(tg[0].link, "https://nexus.cryptophys.work/console/#/owner", "every kind is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].change, r[0].delivery], ["delivery_retry", "sent"], "a failed Telegram send is retried");

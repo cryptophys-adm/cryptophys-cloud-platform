@@ -12,6 +12,7 @@
 // `items[]` with `ranking` (owner-inbox.ts), additively: the owner-inbox.v1 sections stay as they are.
 import { CONSENSUS_ACTIONS } from "./consensus-rules.ts";
 import { TRADING_CAPABILITY } from "./capabilities.ts";
+import { describeAction, serviceName } from "./plain.ts";
 
 export const RANK_FORMULA = "owner-inbox.rank.v1";
 export type Urgency = "critical" | "high" | "normal" | "low";
@@ -78,9 +79,9 @@ const REVERSIBLE: Readonly<Record<string, boolean>> = {
 // The inputs: the shapes ownerInbox() already reads (owner-inbox.ts), only the fields the ranking uses.
 export interface RankInput {
   approvals: {
-    recovery_plans: { plan_id: string; service_id: string; title: string | null; created_at: string; approve_by: string | null }[];
-    consensus: { proposal_id: string; action: string; target: string; created_at: string; expires_at: string; approvals: number; eligible: number }[];
-    knowledge: { proposal_id: string; item_id: string; item_version: number; kind: string; created_at: string; expires_at: string }[];
+    recovery_plans: { plan_id: string; service_id: string; title: string | null; created_by?: string; created_at: string; approve_by: string | null }[];
+    consensus: { proposal_id: string; action: string; target: string; proposer_agent_id?: string; created_at: string; expires_at: string; approvals: number; eligible: number }[];
+    knowledge: { proposal_id: string; item_id: string; item_version: number; kind: string; proposer_agent_id?: string; created_at: string; expires_at: string }[];
   };
   critical_reports: { report_id: string; agent_id: string; subject: string; created_at: string }[];
   production_problems: { code: string; subject: string; detail: string; since: string | null; link: string }[];
@@ -145,7 +146,7 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
     const def = CONSENSUS_ACTIONS[c.action];
     out.push(item({
       item_id: `consensus:${c.proposal_id}`, source: "consensus", kind: c.action,
-      what: `${def?.description ?? c.action}: ${c.target}`.slice(0, 200),
+      what: `Critical action: ${describeAction(c.action, c.target)}${c.proposer_agent_id ? ` (proposed by ${c.proposer_agent_id})` : ""}`.slice(0, 200),
       metric: { name: "approvals", value: Number(c.approvals) || 0, of: Number(c.eligible) || 0, unit: "votes" },
       evidence_refs: [`ev:platform/consensus/${c.proposal_id}`, ...(def?.target === "change" ? [`ev:platform/forge.change/${c.target}`] : [])],
       risk: { class: "critical", reversible: REVERSIBLE[c.action] ?? null, blast_radius: def?.target ?? "platform" },
@@ -156,7 +157,7 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
   for (const r of input.critical_reports) {
     out.push(item({
       item_id: `critical_report:${r.report_id}`, source: "critical_report", kind: "critical_report",
-      what: `Critical report from ${r.agent_id}: ${r.subject}`.slice(0, 200), metric: null,
+      what: `${r.agent_id}: ${r.subject}`.slice(0, 200), metric: null,
       evidence_refs: [`ev:platform/report/${r.report_id}`], risk: null, deadline: null, created_at: r.created_at,
       action: { kind: "acknowledge", route: "kernel.report_acknowledge", approver_only: true }, page: null,
     }, CRITICAL_REPORT_KIND, now));
@@ -164,7 +165,7 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
   for (const p of input.approvals.recovery_plans) {
     out.push(item({
       item_id: `recovery_plan:${p.plan_id}`, source: "recovery_plan", kind: "recovery_plan",
-      what: `Recovery plan for ${p.service_id} (draft)${p.title ? `: ${p.title}` : ""}`.slice(0, 200), metric: null,
+      what: `Recovery plan for ${serviceName(p.service_id)}${p.created_by ? ` (by ${p.created_by})` : ""}`.slice(0, 200), metric: null,
       evidence_refs: [`ev:platform/recovery_plan/${p.plan_id}`], risk: null, deadline: p.approve_by, created_at: p.created_at,
       action: { kind: "approve_disable", route: "recovery.approve", approver_only: true }, page: null,
     }, RECOVERY_PLAN_KIND, now));
@@ -172,7 +173,7 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
   for (const q of input.approvals.knowledge) {
     out.push(item({
       item_id: `knowledge:${q.proposal_id}`, source: "knowledge", kind: q.kind,
-      what: `Knowledge proposal ${q.item_id}@${q.item_version} (${q.kind})`.slice(0, 200), metric: null,
+      what: `Knowledge proposal ${q.item_id}@${q.item_version} (${q.kind.replace(/_/g, " ")}${q.proposer_agent_id ? `, by ${q.proposer_agent_id}` : ""})`.slice(0, 200), metric: null,
       evidence_refs: [`ev:platform/knowledge/${q.proposal_id}`], risk: null, deadline: q.expires_at, created_at: q.created_at,
       action: { kind: "approve_reject", route: "kernel.knowledge_approve", approver_only: true }, page: null,
     }, KNOWLEDGE_KIND, now));
@@ -180,7 +181,8 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
   for (const p of input.production_problems) {
     out.push(item({
       item_id: `production_problem:${p.code}:${p.subject}`, source: "production_problem", kind: p.code,
-      what: p.detail.slice(0, 200), metric: null,
+      // A production problem's detail is its evidence in words (the reason, the plan's skips): kept longer.
+      what: p.detail.slice(0, 400), metric: null,
       evidence_refs: [`ev:platform/production_problem/${p.code}:${p.subject}`], risk: null, deadline: null, created_at: p.since,
       action: { kind: "none", route: null, approver_only: false }, page: p.link,
     }, PROBLEM_KINDS[p.code] ?? k("high", "deploys"), now));

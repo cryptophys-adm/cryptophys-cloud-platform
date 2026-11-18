@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
-import { Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ShieldAlert, ShieldCheck, Siren, Wrench, X } from "lucide-react";
+import { ArrowLeft, Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ListOrdered, ShieldAlert, ShieldCheck, Siren, Wrench, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { CriticalReportList } from "../components/CriticalReports";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
-import { ago } from "../lib/format";
+import { ago, navigate } from "../lib/format";
+import { DataTable } from "../components/viz";
 import { describeAction, serviceName } from "../lib/plain";
 import { ownerClickMode } from "../lib/consensus";
 
@@ -17,6 +18,10 @@ import { ownerClickMode } from "../lib/consensus";
  * production problems no agent is handling. Every action reuses its existing approver-only route and typed phrase;
  * operators and viewers see the page read-only. Everything else (drift the agents handle, the organism census,
  * build minutes under the budget, high advisories) stays on the other pages.
+ *
+ * HAIC H0c (docs/design/HAIC-H0-H1.md §2.6): above the sections, "Needs you" lists the same items ranked by the
+ * kernel's score (items[] of the inbox, owner-inbox.rank.v1), and #/owner/<item_id> opens one item with its score,
+ * evidence and the same approver-only action as its section. The ranking only orders; it decides nothing.
  */
 
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
@@ -169,7 +174,69 @@ function KnowledgeItem({ k, reload }: { k: any; reload: () => void }) {
   );
 }
 
-export default function Owner() {
+const URGENCY_TONE: Record<string, "red" | "amber" | "purple" | "slate"> = { critical: "red", high: "amber", normal: "purple", low: "slate" };
+const BLOCK_LABEL: Record<string, string> = { trading_safety: "trading safety", cutover_gate: "cut-over gate", deploys: "deploys", merges: "merges", learning: "learning" };
+const blocksText = (b: unknown) => arr(b).map((x) => BLOCK_LABEL[x] ?? String(x)).join(" · ") || "—";
+const itemHref = (i: any) => (typeof i?.deep_link === "string" && i.deep_link.startsWith("#/owner/") ? i.deep_link : "#/owner");
+
+/** "Needs you": every waiting item, ranked by the kernel's score; a row opens the item. */
+function RankedList({ items }: { items: any[] }) {
+  const rows = items.map((i, n) => ({ ...i, rank: n + 1 }));
+  return (
+    <Panel title="Needs you" icon={<ListOrdered className="h-3.5 w-3.5 text-cyan-300" />}
+      right={<span className="text-[10px] text-slate-500">{rows.length} item{rows.length === 1 ? "" : "s"} · ranked by score</span>}>
+      <DataTable rows={rows} rowKey={(r: any) => r.item_id} initialSort={{ key: "rank", dir: "asc" }} dense
+        footer={<span>score = 100 × urgency × what it blocks × age × deadline · click a row to open it</span>}
+        onRowClick={(r: any) => navigate(itemHref(r))} columns={[
+          { key: "rank", header: "#", sort: (r: any) => r.rank, cell: (r: any) => <span className="mono text-slate-400">{r.rank}</span> },
+          { key: "what", header: "what", className: "wrap", cell: (r: any) => <span className="text-slate-200">{r.what ?? "—"}</span> },
+          { key: "urgency", header: "urgency", sort: (r: any) => r.score_parts?.U ?? 0, cell: (r: any) => <Badge tone={URGENCY_TONE[r.urgency] ?? "slate"}>{r.urgency ?? "—"}</Badge> },
+          { key: "blocks", header: "blocks", className: "wrap", cell: (r: any) => <span className="text-[11px] text-slate-400">{blocksText(r.blocks)}</span> },
+          { key: "due", header: "due", sort: (r: any) => Date.parse(r.deadline ?? "") || Number.MAX_SAFE_INTEGER, cell: (r: any) => <span className="text-slate-400" title={r.deadline ?? undefined}>{until(r.deadline)}</span> },
+          { key: "score", header: "score", sort: (r: any) => r.score ?? 0, cell: (r: any) => <span className="mono text-slate-200">{count(r.score)}</span> },
+        ]} />
+    </Panel>
+  );
+}
+
+/** #/owner/<item_id>: one item, its score and evidence, and the same action as in its section below. */
+function ItemDetail({ id, items, sections, mode, reload }: { id: string; items: any[]; sections: { plans: any[]; proposals: any[]; knowledge: any[]; reports: any[]; problems: any[] }; mode: string | null; reload: () => void }) {
+  const it = items.find((i) => i.item_id === id);
+  const back = <a href="#/owner" className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline"><ArrowLeft className="h-3 w-3" />All items</a>;
+  if (!it) {
+    return <Panel title="Item" right={back}><Empty>This item no longer waits for you: it was decided, it expired, or the problem closed.</Empty></Panel>;
+  }
+  const ref = id.slice(id.indexOf(":") + 1);
+  const p = it.score_parts ?? {};
+  const m = it.metric;
+  let action: ReactNode = null;
+  if (it.source === "consensus") { const x = sections.proposals.find((q) => q.proposal_id === ref); if (x) action = <ProposalItem p={x} mode={mode} reload={reload} />; }
+  else if (it.source === "recovery_plan") { const x = sections.plans.find((q) => q.plan_id === ref); if (x) action = <PlanItem p={x} reload={reload} />; }
+  else if (it.source === "knowledge") { const x = sections.knowledge.find((q) => q.proposal_id === ref); if (x) action = <KnowledgeItem k={x} reload={reload} />; }
+  else if (it.source === "critical_report") { const x = sections.reports.find((q) => q.report_id === ref); if (x) action = <CriticalReportList rows={[x]} reload={reload} empty="—" />; }
+  else if (it.source === "production_problem") { const x = sections.problems.find((q) => `${q.code}:${q.subject}` === ref); if (x) action = <ProblemItem p={x} />; }
+  return (
+    <Panel title="Item" icon={<Inbox className="h-3.5 w-3.5 text-cyan-300" />} right={back}>
+      <div className="text-[14px] font-semibold wrap-break-word text-white">{it.what ?? "—"}</div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+        <Badge tone={URGENCY_TONE[it.urgency] ?? "slate"}>{it.urgency ?? "—"}</Badge>
+        <span className="mono">{it.source}</span>·<span className="mono">{it.kind}</span>
+      </div>
+      <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[12px]">
+        <dt className="text-slate-500">score</dt><dd className="mono text-slate-200">{count(it.score)} <span className="text-slate-500">= 100 × U {count(p.U)} × B {count(p.B)} × A {count(p.A)} × D {count(p.D)}</span></dd>
+        <dt className="text-slate-500">blocks</dt><dd className="text-slate-300">{blocksText(it.blocks)}</dd>
+        <dt className="text-slate-500">due</dt><dd className="text-slate-300" title={it.deadline ?? undefined}>{until(it.deadline)}</dd>
+        <dt className="text-slate-500">waiting</dt><dd className="text-slate-300" title={it.created_at ?? undefined}>{it.created_at ? ago(it.created_at) : "—"}</dd>
+        <dt className="text-slate-500">metric</dt><dd className="text-slate-300">{m && typeof m.value === "number" ? `${m.name}: ${m.value} of ${count(m.of)} ${m.unit ?? ""}` : "—"}</dd>
+        <dt className="text-slate-500">risk</dt><dd className="text-slate-300">{it.risk ? `${it.risk.class} · ${it.risk.reversible === true ? "reversible" : it.risk.reversible === false ? "not reversible" : "reversibility —"} · ${it.risk.blast_radius}` : "—"}</dd>
+        <dt className="text-slate-500">evidence</dt><dd className="space-y-0.5">{arr(it.evidence_refs).length ? arr(it.evidence_refs).map((r: string) => <div key={r} className="mono break-all text-[11px] text-cyan-200">{r}</div>) : "—"}</dd>
+      </dl>
+      <div className="mt-3">{action ?? <Empty>This item's entry is not in the inbox's sections any more; reload the page.</Empty>}</div>
+    </Panel>
+  );
+}
+
+export default function Owner({ item }: { item?: string }) {
   const { who } = useSession();
   const { refresh: refreshOverview } = useOverview();
   const { data, loading, error, refresh } = usePoll(() => call("kernel.owner_inbox"), 60_000);
@@ -181,11 +248,13 @@ export default function Owner() {
   const problems = arr(data?.production_problems);
   const approvals = plans.length + proposals.length + knowledge.length;
   const mode: string | null = typeof data?.consensus_mode === "string" ? data.consensus_mode : null;
+  const items = arr(data?.items);
   const nothing = Boolean(data) && approvals === 0 && reports.length === 0 && problems.length === 0;
 
   return (
     <div className="flex flex-col gap-3">
       <h1 className="sr-only">Owner</h1>
+      {item && nothing && <ItemDetail id={item} items={items} sections={{ plans, proposals, knowledge, reports, problems }} mode={mode} reload={reload} />}
       {loading && !data ? <Panel><Skeleton rows={4} /></Panel> : error && !data ? (
         <Panel title="Owner" icon={<Inbox className="h-3.5 w-3.5 text-cyan-300" />}><Empty>{error}</Empty></Panel>
       ) : nothing ? (
@@ -200,6 +269,8 @@ export default function Owner() {
         </Panel>
       ) : (
         <>
+          {item && <ItemDetail id={item} items={items} sections={{ plans, proposals, knowledge, reports, problems }} mode={mode} reload={reload} />}
+          {items.length > 0 && <RankedList items={items} />}
           <Panel title="Waiting for your approval" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />}
             right={<Badge tone={approvals ? "amber" : "slate"}>{count(data?.counts?.approvals)}</Badge>}>
             {!who.approver && <p className="mb-2 text-[11px] text-slate-500">You can see these items; an approver decides them.</p>}

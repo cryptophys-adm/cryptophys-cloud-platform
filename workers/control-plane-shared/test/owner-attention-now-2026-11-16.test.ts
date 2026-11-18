@@ -75,7 +75,7 @@ for (const minute of [7, 37, 52]) {
     assert.equal(n.change, "opened");
     assert.equal(n.title, "1 item(s) wait for your approval");
     assert.equal(n.lines.length, 1);
-    assert.match(n.lines[0], /^Critical action: .*fg-owner-attention-now.* \(proposed by supervisor\)$/);
+    assert.match(n.lines[0], /^#1 Critical action: .*fg-owner-attention-now.* \(proposed by supervisor\) · blocks merges, deploys · due in 24 h · https:\/\/nexus\.cryptophys\.work\/console\/#\/owner\/consensus:cns_t\d+$/);
     assert.equal(n.link, OWNER_PANEL_URL, "every item is decided on the Owner page (owner 2026-11-13)");
     const ev = s.events();
     assert.deepEqual(ev.map((e) => [e.type, e.delivery, e.count]), [["owner.notice_opened", "sent", 1]]);
