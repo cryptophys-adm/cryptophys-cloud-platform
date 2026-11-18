@@ -47,7 +47,8 @@ test("H1c-E2. the kinds are covered: every tool at least once, requests to act, 
 test("H1c-UI. the #/ask page: only the four chat routes, owners only, evidence links into the Console, and its render smoke cases", () => {
   const read = (p: string) => readFileSync(new URL(`../../../${p}`, import.meta.url), "utf8");
   const page = read("workers/console/ui/src/pages/Ask.tsx");
-  assert.deepEqual([...new Set([...page.matchAll(/\bcall\(\s*"([a-z_.]+)"/g)].map((m) => m[1]))].sort(), ["kernel.conversation", "kernel.conversation_rate", "kernel.conversation_turn", "kernel.conversations"]);
+  // + kernel.proposal_draft (HAIC H2b): a directive into a typed proposal draft, which the owner confirms on its page.
+  assert.deepEqual([...new Set([...page.matchAll(/\bcall\(\s*"([a-z_.]+)"/g)].map((m) => m[1]))].sort(), ["kernel.conversation", "kernel.conversation_rate", "kernel.conversation_turn", "kernel.conversations", "kernel.proposal_draft"]);
   assert.match(page, /The chat is for owners only\./);
   assert.match(page, /const owner = who\.owner === true;/);
   assert.doesNotMatch(page, /\bact\(/, "asking needs no confirmation dialog: the chat cannot act");

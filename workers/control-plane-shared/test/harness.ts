@@ -114,6 +114,8 @@ export const CONSENSUS_REGISTERED: { agents: ReadonlyArray<{ service: string; ag
     { service: "cryptophys-ai-kernel", task: "council_position" },
     { service: "cryptophys-ai-kernel", task: "council_rebuttal" },
     { service: "cryptophys-ai-kernel", task: "council_synthesis" },
+    // HAIC H2b: a chat directive into a typed proposal draft.
+    { service: "cryptophys-ai-kernel", task: "directive_draft" },
   ],
 };
 
