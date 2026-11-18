@@ -44,6 +44,12 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // ADR Steward step 4 (docs/design/ADR-STEWARD.md §5): each ADR's progress from evidence, read-only, for the Vision page's ADR panel.
   r("kernel.adr", "kernel", "GET", "/v1/adr", false, null),
   r("kernel.adr_one", "kernel", "GET", "/v1/adr/{id}", false, null),
+  // HAIC H1c (docs/design/HAIC-H0-H1.md §3.1): "Ask the organism", owners only (the kernel refuses anyone else). Asking
+  // and rating need no typed phrase: the chat cannot act, and every question is audited by the kernel.
+  r("kernel.conversations", "kernel", "GET", "/v1/conversations", true, null),
+  r("kernel.conversation", "kernel", "GET", "/v1/conversations/{id}", true, null),
+  r("kernel.conversation_turn", "kernel", "POST", "/v1/conversations/{id}/turns", true, null),
+  r("kernel.conversation_rate", "kernel", "POST", "/v1/conversations/{id}/turns/{id}/rating", true, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
