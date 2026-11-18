@@ -50,7 +50,8 @@ export const REFUSED_RETRY_MS = 3_600_000;
 /** What the repository's wrangler.toml files bind (a test keeps this equal to the files). */
 export const DECLARED_RESOURCES = Object.freeze({
   d1: Object.freeze(["cryptophys-control-plane"]),
-  r2: Object.freeze(["cryptophys-d1-backups", "cryptophys-forge-bundles"]),
+  // + cryptophys-council-transcripts (HAIC H1.5e, 2026-11-18): the AI Kernel binds it as TRANSCRIPTS.
+  r2: Object.freeze(["cryptophys-council-transcripts", "cryptophys-d1-backups", "cryptophys-forge-bundles"]),
   kv: Object.freeze([] as string[]),
   queues: Object.freeze([] as string[]),
 });

@@ -9,8 +9,10 @@
 // Since H1.5d (Q9) agents may also propose a council (council-proposals.ts): it waits in state "proposed" as an owner
 // inbox item and deliberates only once the owner begins it; a proposal not begun in 7 days is dismissed as expired.
 //
-// Deviations from the design, each smaller than what it replaces: the transcript stays in this object with its sha256 in D1 and the audit
-// chain (the kernel has no R2 binding yet); no push hub yet: the Console polls (§4.5 fallback); a pick of "no change"
+// Since H1.5e (§4.4 "Records") a closed council's transcript is also one R2 object (archiveTranscript), its sha256 the
+// one in D1 and the audit chain.
+//
+// Deviations from the design, each smaller than what it replaces: no push hub yet: the Console polls (§4.5 fallback); a pick of "no change"
 // closes the council as dismissed by the owner's choice, with no draft.
 import { AiEngine, type AiTask, type AiUsage } from "../../control-plane-shared/src/ai-engine.ts";
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
@@ -41,7 +43,9 @@ export const evidenceCalls = (topic: string): PlannedCall[] => [
 const PRICE = { input: 0.30 / 1e6, cached: 0.006 / 1e6, output: 1.20 / 1e6 }; // CHAT_MODEL, Workers AI catalog 2026-11-18
 const usd = (u: AiUsage) => Math.max(0, u.input - u.cached) * PRICE.input + u.cached * PRICE.cached + u.output * PRICE.output;
 
-export interface CouncilEnv extends ToolEnv { AI?: AiBinding }
+/** The part of the R2 bucket binding TRANSCRIPTS (cryptophys-council-transcripts) a council uses: one put per closed council. */
+export interface TranscriptBucket { put(key: string, value: string, options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }): Promise<unknown> }
+export interface CouncilEnv extends ToolEnv { AI?: AiBinding; TRANSCRIPTS?: TranscriptBucket }
 export interface CouncilStore { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> }
 export class CouncilError extends Error {
   readonly status: number;
@@ -56,6 +60,8 @@ export interface Session {
   decision: unknown | null; transcript_sha256: string | null; created_by: string; reason: string | null; messages: number;
   /** H1.5d: an agent's proposal (who proposed it, its evidence refs, what the detector saw); absent for the owner's councils. */
   proposal?: { proposed_by: string; refs: string[]; detail: string } | null;
+  /** H1.5e: where the closed council's transcript is in R2 (councils/<session id>.json), once stored. */
+  transcript_key?: string | null;
 }
 export type TriggerKind = "owner" | "finding" | "kpi_regression";
 export interface Message {
@@ -433,6 +439,38 @@ export async function dismissCouncil(env: CouncilEnv, store: CouncilStore, actor
   return s;
 }
 
+export const transcriptKey = (sessionId: string) => `councils/${sessionId}.json`;
+/**
+ * H1.5e (§4.4): once a council is closed (decided or terminal), write its transcript to R2 once: the body is exactly the
+ * JSON of its messages that transcript_sha256 hashes, so the object can be checked against D1 and the audit chain. A
+ * failure is audited and leaves the key unset; the kernel's hourly pass asks again. Without the binding it does nothing.
+ */
+export async function archiveTranscript(env: CouncilEnv, store: CouncilStore, now = Date.now()): Promise<{ stored: boolean; key?: string; reason?: string }> {
+  const s = await store.get<Session>("session");
+  if (!s || !s.transcript_sha256) return { stored: false, reason: "not_closed" };
+  if (s.transcript_key) return { stored: false, key: s.transcript_key, reason: "already_stored" };
+  if (!env.TRANSCRIPTS) return { stored: false, reason: "no_binding" };
+  const body = JSON.stringify(await messagesOf(store, s));
+  const sha = await sha256Hex(body);
+  if (sha !== s.transcript_sha256) {
+    await audit(env.DB, "transcript_store_failed", "system:council", s.session_id, "hash_mismatch", { expected: s.transcript_sha256, got: sha });
+    return { stored: false, reason: "hash_mismatch" };
+  }
+  const key = transcriptKey(s.session_id);
+  try {
+    await env.TRANSCRIPTS.put(key, body, { httpMetadata: { contentType: "application/json" },
+      customMetadata: { schema: "council.transcript.v1", session_id: s.session_id, state: s.state, sha256: sha, messages: String(s.messages) } });
+  } catch (err) {
+    await audit(env.DB, "transcript_store_failed", "system:council", s.session_id, "r2_error", { message: String((err as Error)?.message ?? err).slice(0, 200) });
+    return { stored: false, reason: "r2_error" };
+  }
+  s.transcript_key = key;
+  await store.put("session", s);
+  await env.DB.prepare("UPDATE councils SET transcript_key = ?, updated_at = ? WHERE session_id = ?").bind(key, iso(now), s.session_id).run();
+  await audit(env.DB, "transcript_stored", "system:council", s.session_id, "stored", { key, sha256: sha, bytes: new TextEncoder().encode(body).length, messages: s.messages });
+  return { stored: true, key };
+}
+
 export async function readCouncil(store: CouncilStore): Promise<{ session: Session; messages: Message[] }> {
   const s = await store.get<Session>("session");
   if (!s) throw new CouncilError(404, "not_found", "no such council");
@@ -442,7 +480,7 @@ export async function readCouncil(store: CouncilStore): Promise<{ session: Sessi
 /** GET /v1/councils: every council's index row (no text but the topic), newest first. */
 export async function listCouncils(db: D1Database) {
   try {
-    const rows = (await db.prepare("SELECT session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, created_at, updated_at, deadline, trigger_kind, started_at FROM councils ORDER BY created_at DESC LIMIT 50").all()).results ?? [];
+    const rows = (await db.prepare("SELECT session_id, side, topic, state, owner_present, created_by, spent_calls, spent_usd, reason, transcript_sha256, transcript_key, created_at, updated_at, deadline, trigger_kind, started_at FROM councils ORDER BY created_at DESC LIMIT 50").all()).results ?? [];
     return { schema: "councils.v1", available: true, limits: COUNCIL_LIMITS, councils: rows };
   } catch (err) {
     if (/no such table/i.test(String((err as Error)?.message ?? err))) return { schema: "councils.v1", available: false, limits: COUNCIL_LIMITS, councils: [] };

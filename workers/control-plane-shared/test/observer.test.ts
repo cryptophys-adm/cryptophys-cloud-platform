@@ -499,7 +499,8 @@ test("OB16. inventory: storage resources against what this repository's wrangler
     known: known(), traffic7d: new Map([["cryptophys-console", 1], ["cryptophys-forge", 1], ["xauusd-omega", 1], ["xauusd-ai-trading-assistant", 1]]), senses_cover_7d: false, day: "2026-11-14",
     lists: {
       d1: { status: "ok", items: [{ id: "u1", name: "cryptophys-control-plane" }, { id: "u2", name: "xauusd-trades" }, { id: "u3", name: "stray-db" }] },
-      r2: { status: "ok", items: [{ id: "cryptophys-forge-bundles", name: "cryptophys-forge-bundles" }] },
+      // + cryptophys-council-transcripts (HAIC H1.5e, 2026-11-18), bound by the AI Kernel.
+      r2: { status: "ok", items: [{ id: "cryptophys-forge-bundles", name: "cryptophys-forge-bundles" }, { id: "cryptophys-council-transcripts", name: "cryptophys-council-transcripts" }] },
       kv: { status: "ok", items: [{ id: "k1", name: "XAUUSD_CACHE" }] },
       queues: { status: "unavailable", reason: "http_500" },
       durable_objects: { status: "ok", items: [{ id: "n1", name: "SupervisorAgent", script: "cryptophys-ai-kernel" }, { id: "n2", name: "Room", script: "xauusd-omega" }, { id: "n3", name: "Stray", script: "mystery" }] },
@@ -524,7 +525,7 @@ test("OB17. runInventory: reads the DNA union from the census, writes on change 
   const cf = fakeCf({
     "list:scripts": { success: true, result: [{ id: "cryptophys-console" }, { id: "cryptophys-forge-typecheck" }, { id: "rogue-worker" }, { id: "xauusd-omega" }] },
     "list:d1": () => new Response("{}", { status: 403 }),
-    "list:r2": { success: true, result: { buckets: [{ name: "cryptophys-d1-backups" }, { name: "cryptophys-forge-bundles" }] } },
+    "list:r2": { success: true, result: { buckets: [{ name: "cryptophys-d1-backups" }, { name: "cryptophys-forge-bundles" }, { name: "cryptophys-council-transcripts" }] } },
   });
   const r = await runInventory({ ...OBS_ENV, DB: db }, now, cf.fetcher, EXTERNAL);
   assert.equal(r.outcome, "recorded");
@@ -534,7 +535,7 @@ test("OB17. runInventory: reads the DNA union from the census, writes on change 
   assert.deepEqual(f, ["inventory_permission_missing:d1 account", "undeclared_worker rogue-worker"], "xauusd-omega: its origin's DNA was not read, so it is not undeclared");
   // Unchanged 30 minutes later: no new run row; the refused D1 list is not asked again.
   const cf2 = fakeCf({ "list:scripts": { success: true, result: [{ id: "cryptophys-console" }, { id: "cryptophys-forge-typecheck" }, { id: "rogue-worker" }, { id: "xauusd-omega" }] },
-    "list:r2": { success: true, result: { buckets: [{ name: "cryptophys-d1-backups" }, { name: "cryptophys-forge-bundles" }] } } });
+    "list:r2": { success: true, result: { buckets: [{ name: "cryptophys-d1-backups" }, { name: "cryptophys-forge-bundles" }, { name: "cryptophys-council-transcripts" }] } } });
   assert.equal((await runInventory({ ...OBS_ENV, DB: db }, now + 30 * 60_000, cf2.fetcher, EXTERNAL)).outcome, "unchanged");
   assert.ok(!cf2.calls.includes("list:d1"));
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM observer_runs WHERE kind = 'inventory'").get() as any).n, 1);
