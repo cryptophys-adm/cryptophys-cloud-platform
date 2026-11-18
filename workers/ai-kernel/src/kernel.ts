@@ -30,6 +30,8 @@ export interface CouncilStub {
   /** H1.5d (Q9): an agent's proposal, and the owner beginning it. */
   propose(input: unknown): Promise<unknown>;
   begin(actor: string): Promise<unknown>;
+  /** H1.5e: store a closed council's transcript in R2 if it is not there yet. */
+  storeTranscript(): Promise<unknown>;
 }
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
@@ -44,6 +46,8 @@ export interface KernelHttpEnv extends KernelEnv {
   FORGE_DOCS?: { read(input: Record<string, unknown>): Promise<Record<string, unknown>> };
   /** HAIC H1.5b: the CouncilAgent Durable Object (Call for Councils), one per session id. */
   COUNCIL?: { idFromName(name: string): unknown; get(id: unknown): CouncilStub };
+  /** HAIC H1.5e: the R2 bucket cryptophys-council-transcripts; each closed council's transcript is one object in it. */
+  TRANSCRIPTS?: { put(key: string, value: string, options?: unknown): Promise<unknown> };
   CHAT_DAILY_TURN_LIMIT?: string;
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */

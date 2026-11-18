@@ -14,7 +14,7 @@ import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
 import { healthBody, type HealthBody, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { vaultOn } from "./alert-channels.ts";
 import { ConversationError, rateTurn, readConversation, runTurn, type ConversationStore } from "./conversation.ts";
-import { CouncilError, beginCouncil, dismissCouncil, needsAlarm, ownerMessage, pickOption, proposeCouncil, readCouncil, startCouncil, stepCouncil, type CouncilStore, type ProposalInput, type Session } from "./council.ts";
+import { CouncilError, archiveTranscript, beginCouncil, dismissCouncil, needsAlarm, ownerMessage, pickOption, proposeCouncil, readCouncil, startCouncil, stepCouncil, type CouncilStore, type ProposalInput, type Session } from "./council.ts";
 
 export default worker;
 
@@ -166,8 +166,14 @@ export class CouncilAgent extends DurableObject<Env> {
     // A council waiting for the owner, or a proposal (H1.5d) waiting to be begun, wakes only when its window ends.
     await storage.setAlarm(s!.state === "awaiting_owner" || s!.state === "proposed" ? Date.parse(s!.deadline) + 1_000 : Date.now() + 1_000);
   }
+  /** H1.5e: after an operation that may have closed the council, store its transcript in R2 (once; failures retried hourly). */
+  private async archive(): Promise<void> {
+    try { await this.ops.run(() => archiveTranscript(this.env as never, this.store)); } catch (err) {
+      console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "council_transcript_archive_failed", message: String((err as Error)?.message ?? err) }));
+    }
+  }
   private async settle<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; status: number; code: string; message: string }> {
-    try { return { ok: true, value: await this.ops.run(op) }; } catch (err) {
+    try { const value = await this.ops.run(op); await this.archive(); return { ok: true, value }; } catch (err) {
       if (err instanceof CouncilError) return { ok: false, status: err.status, code: err.code, message: err.message };
       throw err;
     }
@@ -186,8 +192,11 @@ export class CouncilAgent extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const s = await this.ops.run(() => stepCouncil(this.env as never, this.store));
     await this.schedule(s);
+    await this.archive();
   }
   async read() { return this.settle(() => readCouncil(this.store)); }
+  /** The kernel's hourly pass: store a closed council's transcript that is not in R2 yet. */
+  async storeTranscript() { return this.settle(() => archiveTranscript(this.env as never, this.store)); }
   async message(actor: string, text: unknown) { return this.settle(() => ownerMessage(this.env as never, this.store, actor, text)); }
   async pick(actor: string, optionId: unknown, note: unknown) { return this.settle(() => pickOption(this.env as never, this.store, actor, optionId, note)); }
   async dismiss(actor: string) { return this.settle(() => dismissCouncil(this.env as never, this.store, actor)); }
