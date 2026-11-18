@@ -190,6 +190,20 @@ async function sameDenyRecently(env: Env, decisionId: string, action: string, re
   return row !== null;
 }
 
+/** A dry run's answer: the same decision, reason and checks as decide(), with no decision id because nothing is recorded. */
+export interface PolicyDryRun extends PolicyResult { dry_run: true; subject: string; action: string; resource: string }
+
+/**
+ * HAIC H1a (ADR-0017 H1, docs/design/HAIC-H0-H1.md §3.2 `policy_dry_run`): "would X be allowed?" for the read-only
+ * chat. The same evaluatePolicy() as decide(), with the subject passed out of band exactly as there, but nothing is
+ * written: no policy_decisions row, no audit event, no report. The chat audits it only as a conversation turn. Only
+ * the RPC entrypoint offers it (worker.ts PolicyRpc.dryRun); no HTTP route does.
+ */
+export async function dryRun(env: Pick<Env, "DB">, req: PolicyRequest): Promise<PolicyDryRun> {
+  const result = await evaluatePolicy(env.DB, req.action, req.resource, { ...req.context, __subject: req.subject });
+  return { dry_run: true, subject: req.subject, action: req.action, resource: req.resource, ...result };
+}
+
 /** Evaluate, persist the decision with its evidence, and append it to the audit chain. */
 export async function decide(env: Env, req: PolicyRequest): Promise<PolicyDecision> {
   // The subject is passed to the agent rules out of band; it is never read from caller context.
