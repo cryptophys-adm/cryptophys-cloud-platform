@@ -341,6 +341,18 @@ MOCK["/api/kernel/v1/adr/0012"] = { schema: "adr.progress-doc.v1", adr: "0012", 
   drift: [], stale: false, stale_sources: [], manifest_sha256: "0".repeat(64), deployed_commit: "abc1234def56",
   revision: 14, changed_at: "2026-11-17T21:56:00.000Z", explanation: ADR_ROWS[1].explanation,
   history: [{ revision: 14, status: "in_progress", percent: 69, created_at: "2026-11-17T21:56:00.000Z" }, { revision: 13, status: "in_progress", percent: 65, created_at: "2026-11-17T09:00:00.000Z" }] };
+// HAIC H1c: the owners' chat. A conversation with an answered turn (a cited number, a removed one, evidence chips) and a
+// refused one; the list with today's budget.
+const CNV = "cnv_0123456789abcdef";
+MOCK["/api/kernel/v1/conversations"] = { schema: "conversations.v1", enabled: true, model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", budget: { day: "2026-11-18", used: 3, limit: 40 },
+  conversations: [{ conversation_id: CNV, turns: 2, stripped: 1, last_status: "refused", created_at: at(30), updated_at: at(5) }] };
+MOCK[`/api/kernel/v1/conversations/${CNV}`] = { conversation_id: CNV, created_at: at(30), turns: [
+  { n: 1, status: "answered", question: "What needs me right now, and is anything blocking deploys?", answer: "2 items wait for you (as of 08:00 UTC): a merge of a guarded change and a knowledge proposal.\nNothing blocks deploys: 0 critical reports are open. — (not measured) deploys ran today.",
+    tools: [{ name: "owner_inbox", args: {}, ok: true }, { name: "reports", args: { severity: "critical" }, ok: true }], refs: ["ev:platform/owner_inbox@2026-11-18T08:00:00.000Z", "ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000", "ev:adr/0017#phases", "ev:platform/doc/docs/SSOT.md@8c3e826fe476#platform-rules"],
+    model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", usage: { input: 9000, cached: 6000, output: 900 }, citations: { kept: 2, stripped: 1 }, injection: [], latency_ms: 8400, created_at: at(20), rating: "up" },
+  { n: 2, status: "refused", reason: "secret_in_question", question: "use Bearer [redacted]", answer: "That message looks like it contains a secret (a token, a key or a password). It was not sent to the model, and only its redacted form is kept. Never paste secrets here.",
+    tools: [], refs: [], model: null, usage: { input: 0, cached: 0, output: 0 }, citations: { kept: 0, stripped: 0 }, injection: [], latency_ms: 3, created_at: at(5) },
+] };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -467,6 +479,32 @@ const OWNER_CHECKS = [
   { name: "item-gone", hash: "#/owner/consensus:cns_gone", override: {}, want: ["no longer waits", "All items", "Needs you"], not: [] },
   { name: "item-gone-empty", hash: "#/owner/consensus:cns_gone", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["no longer waits", "Nothing needs you"], not: [] },
 ];
+const ASK_CHECKS = [
+  { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English"], not: ["owners only"] },
+  { name: "conversation", hash: `#/ask/${CNV}`, override: {}, want: ["What needs me right now", "2 items wait for you", "— (not measured)", "2 numbers cited, 1 removed as not measured", "owner_inbox", "adr/0017#phases", "doc/docs/SSOT.md#platform-rules", "refused", "only its redacted form is kept"], not: ["owners only"] },
+  { name: "operator", hash: "#/ask", override: { "/api/whoami": OPERATOR }, want: ["The chat is for owners only."], not: ["Send"] },
+  { name: "off", hash: "#/ask", override: { "/api/kernel/v1/conversations": { ...MOCK["/api/kernel/v1/conversations"], enabled: false } }, want: ["The chat is switched off."], not: [] },
+];
+for (const width of [390, 1440]) {
+  for (const check of ASK_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px ask/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}${check.hash}`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px ${check.hash} (${check.name}): horizontal scroll of ${overflow}px`);
+    if (check.name === "conversation") {
+      const links = await page.evaluate(() => [...document.querySelectorAll("main a[href^='#/']")].map((a) => a.getAttribute("href")));
+      for (const want of ["#/owner", "#/consensus", "#/vision/adr/0017", "#/code"]) if (!links.includes(want)) problems.push(`${width}px ask: no evidence link to ${want}`);
+    }
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-ask-${check.name}.png`), fullPage: true });
+    await page.close();
+  }
+}
 for (const width of [390, 1440]) {
   for (const check of OWNER_CHECKS) {
     OVERRIDE = check.override;
@@ -622,4 +660,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
