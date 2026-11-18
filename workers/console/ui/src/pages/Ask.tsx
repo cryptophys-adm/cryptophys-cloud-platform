@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquareText, Plus, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import { FileCheck2, MessageSquareText, Plus, Send, ThumbsDown, ThumbsUp } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -85,6 +85,7 @@ export default function Ask({ conversation }: { conversation?: string }) {
   const [loadingTurns, setLoadingTurns] = useState(false);
   const [q, setQ] = useState("");
   const [pending, setPending] = useState<string | null>(null);
+  const [drafting, setDrafting] = useState(false);
   const end = useRef<HTMLDivElement>(null);
 
   const load = () => {
@@ -113,6 +114,17 @@ export default function Ask({ conversation }: { conversation?: string }) {
       .then((t) => { setTurns((prev) => [...prev, t]); void refresh(); })
       .catch((e) => { notify("err", e.message); setQ(question); })
       .finally(() => setPending(null));
+  };
+
+  // HAIC H2b: the owner's directive ("focus on accuracy this week") into a typed proposal draft, confirmed on its page.
+  const propose = () => {
+    const directive = q.trim();
+    if (!directive || drafting || !enabled) return;
+    setDrafting(true);
+    call("kernel.proposal_draft", undefined, { directive, conversation_id: id ?? undefined })
+      .then((p) => { setQ(""); notify("ok", "Draft made; confirm or reject it on its page."); if (typeof p?.proposal_id === "string") navigate(`#/proposals/${p.proposal_id}`); })
+      .catch((e) => notify("err", e.message))
+      .finally(() => setDrafting(false));
   };
 
   return (
@@ -153,9 +165,13 @@ export default function Ask({ conversation }: { conversation?: string }) {
           <div className="flex items-end gap-2">
             <textarea className="field min-h-[60px] flex-1" maxLength={2000} placeholder="Ask in English, for example: What needs me right now?" value={q}
               onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} disabled={!enabled || !!pending} />
-            <button type="button" className="btn" onClick={send} disabled={!enabled || !!pending || !q.trim()} aria-label="Send"><Send className="h-3.5 w-3.5" />Send</button>
+            <div className="flex flex-col gap-1.5">
+              <button type="button" className="btn" onClick={send} disabled={!enabled || !!pending || drafting || !q.trim()} aria-label="Send"><Send className="h-3.5 w-3.5" />Send</button>
+              <button type="button" className="btn" onClick={propose} disabled={!enabled || !!pending || drafting || !q.trim()} aria-label="Make a proposal" title="Turn this directive into a typed proposal draft; nothing happens until you confirm it">
+                <FileCheck2 className="h-3.5 w-3.5" />{drafting ? "Drafting…" : "Propose"}</button>
+            </div>
           </div>
-          <p className="mt-1 text-[10px] text-slate-600">Never paste a token or a password here: a message that carries one is refused and only its redacted form is kept.</p>
+          <p className="mt-1 text-[10px] text-slate-600">Propose turns a directive (for example "raise the daily deploy limit to 12") into a typed proposal draft: a policy parameter, a repository task, a vision KPI or a shadow arm. Nothing happens until you confirm it. Never paste a token or a password here: a message that carries one is refused and only its redacted form is kept.</p>
         </div>
       </Panel>
     </div>

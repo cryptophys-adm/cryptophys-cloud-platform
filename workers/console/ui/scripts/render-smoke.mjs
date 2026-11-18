@@ -563,7 +563,7 @@ const OWNER_CHECKS = [
     want: ["Proposals waiting for your confirmation", "Raise the daily deploy limit to 12", "Open the proposal to confirm or reject it", "typed_proposal_draft"], not: ["Nothing needs you", "no longer waits"] },
 ];
 const ASK_CHECKS = [
-  { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English"], not: ["owners only"] },
+  { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English", "Propose", "typed proposal draft"], not: ["owners only"] },
   { name: "conversation", hash: `#/ask/${CNV}`, override: {}, want: ["What needs me right now", "2 items wait for you", "— (not measured)", "2 numbers cited, 1 removed as not measured", "owner_inbox", "adr/0017#phases", "doc/docs/SSOT.md#platform-rules", "refused", "only its redacted form is kept"], not: ["owners only"] },
   { name: "operator", hash: "#/ask", override: { "/api/whoami": OPERATOR }, want: ["The chat is for owners only."], not: ["Send"] },
   { name: "off", hash: "#/ask", override: { "/api/kernel/v1/conversations": { ...MOCK["/api/kernel/v1/conversations"], enabled: false } }, want: ["The chat is switched off."], not: [] },
