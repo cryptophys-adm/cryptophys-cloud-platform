@@ -1,7 +1,8 @@
 // The Forge cron tick (ADR-0012 phases 3-4). Three independent steps, each isolated so one failing
 // never stops the others, and each failure is audited (forge.tick_failed) instead of only logged:
 //   1. the deploy plan for main's head (cheap; shadow comparison with the Orchestrator);
-//   2. the check of the oldest unchecked open change request head;
+//   2. the check of an unchecked open change request head: in platform-work the one waiting longest, in platform (the
+//      GitHub pull request mirrors) the newest (changes.ts nextChangeHead);
 //   3. the check of main's head: a new head, or its daily run (skipped when step 2 used most of the tick);
 //   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts)
 //   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12);

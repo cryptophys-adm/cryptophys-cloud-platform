@@ -323,9 +323,20 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
 export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number, repoName: ChangeRepo = "platform"): Promise<string | null> {
   // G4: only the requests whose head lives in `repo` (gh-<n> in platform, fg-<slug> in platform-work), and
   // never a head the Forge refused (not based on main, or main not on its first-parent chain).
+  // Which request goes first depends on the repository:
+  //   - platform (gh-<n>, mirrors of GitHub pull requests): the newest first (owner 2026-11-11: pull requests often
+  //     merged minutes after they opened, so an old unchecked one rarely mattered);
+  //   - platform-work (fg-<slug>, the merge path since the cut-over): the one that has waited longest first (2026-11-18:
+  //     nothing there merges before its checks, and newest first let every new push jump the queue: three base
+  //     requests updated at 10:20 waited behind five later stacked pushes, and the owner's clicks came about 1.5 h late).
+  // Only heads still to check are read (no run yet, or a running or error run that may be stale), so 20 checked
+  // requests can no longer hide an unchecked one behind the LIMIT.
+  const order = repoName === "platform-work" ? "c.updated_at ASC, c.rowid ASC" : "c.updated_at DESC, c.rowid DESC";
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
-     WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
+     WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL
+       AND (r.status IS NULL OR r.status IN ('running', 'error'))
+     ORDER BY ${order} LIMIT 20`,
   ).bind(repoName).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
   for (const r of rows) {
     // A run that ended in error (the runner failed, not the tests: 2026-11-17, 9a09010 "An internal error occurred.")
