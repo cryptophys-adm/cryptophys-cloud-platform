@@ -96,7 +96,7 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("registry.identities_update", "registry", "POST", "/v1/identities", true, "IDENTITIES"),
   r("policy.decisions", "policy", "GET", "/v1/decisions", false, null),
   r("policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null),
-  r("policy.evaluate", "policy", "POST", "/v1/evaluate", false, null),
+  // HAIC H0a: policy.evaluate (POST /v1/evaluate) is removed with the Policy page's "Evaluate" form.
   r("drift.list", "drift", "GET", "/v1/drift", false, null),
   // Owner 2026-11-15: a service's recorded drift changes for its detail panel (read only; already allow-listed).
   r("drift.service", "drift", "GET", "/v1/drift/{id}", false, null),
