@@ -14,7 +14,7 @@ import { rpcObserve, rpcSyscall, rpcWhoami } from "./agent-rpc.ts";
 import { healthBody, type HealthBody, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import { vaultOn } from "./alert-channels.ts";
 import { ConversationError, rateTurn, readConversation, runTurn, type ConversationStore } from "./conversation.ts";
-import { CouncilError, dismissCouncil, needsAlarm, ownerMessage, pickOption, readCouncil, startCouncil, stepCouncil, type CouncilStore, type Session } from "./council.ts";
+import { CouncilError, beginCouncil, dismissCouncil, needsAlarm, ownerMessage, pickOption, proposeCouncil, readCouncil, startCouncil, stepCouncil, type CouncilStore, type ProposalInput, type Session } from "./council.ts";
 
 export default worker;
 
@@ -163,7 +163,8 @@ export class CouncilAgent extends DurableObject<Env> {
     if (!needsAlarm(s)) return;
     // The runtime's Durable Object storage has setAlarm; the repository's minimal type shim does not declare it.
     const storage = this.ctx.storage as unknown as { setAlarm(at: number): Promise<void> };
-    await storage.setAlarm(s!.state === "awaiting_owner" ? Date.parse(s!.deadline) + 1_000 : Date.now() + 1_000);
+    // A council waiting for the owner, or a proposal (H1.5d) waiting to be begun, wakes only when its window ends.
+    await storage.setAlarm(s!.state === "awaiting_owner" || s!.state === "proposed" ? Date.parse(s!.deadline) + 1_000 : Date.now() + 1_000);
   }
   private async settle<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; status: number; code: string; message: string }> {
     try { return { ok: true, value: await this.ops.run(op) }; } catch (err) {
@@ -173,6 +174,14 @@ export class CouncilAgent extends DurableObject<Env> {
   }
   async start(actor: string, sessionId: string, topic: unknown, question: unknown) {
     return this.settle(async () => { const s = await startCouncil(this.env as never, this.store, { actor, session_id: sessionId, topic, question }); await this.schedule(s); return s; });
+  }
+  /** H1.5d (Q9): an agent's proposal; it waits for the owner and wakes only to expire. */
+  async propose(input: ProposalInput) {
+    return this.settle(async () => { const s = await proposeCouncil(this.env as never, this.store, input); await this.schedule(s); return s; });
+  }
+  /** The owner begins a proposed council: it deliberates from now on. */
+  async begin(actor: string) {
+    return this.settle(async () => { const s = await beginCouncil(this.env as never, this.store, actor); await this.schedule(s); return s; });
   }
   async alarm(): Promise<void> {
     const s = await this.ops.run(() => stepCouncil(this.env as never, this.store));

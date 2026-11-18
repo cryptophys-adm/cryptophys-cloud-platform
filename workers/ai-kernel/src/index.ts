@@ -43,6 +43,7 @@ import { intakeEvolutionIntents } from "./evolution-intake.ts";
 import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-view.ts";
 import { listConversations } from "./conversation.ts";
 import { listCouncils } from "./council.ts";
+import { proposeCouncils } from "./council-proposals.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -73,7 +74,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -177,7 +178,7 @@ export default {
       // it with a message, picks an option or dismisses it (Q6: picks in Cerebrum only). A council never acts.
       if (path === "/v1/councils" || path.startsWith("/v1/councils/")) {
         if (path === "/v1/councils" && request.method === "GET") return json(await listCouncils(env.DB));
-        const m = /^\/v1\/councils(?:\/(cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(messages|pick|dismiss))?)?$/.exec(path);
+        const m = /^\/v1\/councils(?:\/(cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(messages|pick|dismiss|start))?)?$/.exec(path);
         if (!m) return errorResponse(404, "not_found");
         if (!env.COUNCIL) return errorResponse(503, "not_available", "the council binding is not configured");
         if (request.method === "GET" && m[1] && !m[2]) {
@@ -185,7 +186,7 @@ export default {
           return out.ok ? json(out.value) : errorResponse(out.status ?? 500, out.code ?? "internal_error", out.message);
         }
         if (request.method !== "POST" || (m[1] && !m[2])) return errorResponse(405, "method_not_allowed");
-        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner opens, joins, picks or dismisses a council");
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner opens, begins, joins, picks or dismisses a council");
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         const id = m[1] ?? `cs_${crypto.randomUUID()}`;
@@ -193,6 +194,7 @@ export default {
         const out = (!m[1] ? await stub.start(operator.actor, id, body.value.topic, body.value.question)
           : m[2] === "messages" ? await stub.message(operator.actor, body.value.text)
           : m[2] === "pick" ? await stub.pick(operator.actor, body.value.option_id, body.value.note)
+          : m[2] === "start" ? await stub.begin(operator.actor)
           : await stub.dismiss(operator.actor)) as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
         return out.ok ? json(out.value, m[1] ? 200 : 201) : errorResponse(out.status ?? 500, out.code ?? "internal_error", out.message);
       }
@@ -419,6 +421,14 @@ export default {
         console.error(JSON.stringify({ service: SERVICE, event: "evolver_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
+    // HAIC H1.5d (Q9): once an hour, agents propose councils from the evidence (an Observer cluster, a KPI regression, a
+    // persistent census finding), deduplicated and capped; each waits in the owner's inbox until the owner begins it.
+    let proposals: Promise<void> = Promise.resolve();
+    if (minute === 7 && env.COUNCIL) {
+      ctx.waitUntil(proposals = proposeCouncils(env as never, event.scheduledTime).then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "council_proposals_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
     let fullPass: Promise<void> = Promise.resolve();
     if (minute === 22 || minute === 52) {
@@ -429,7 +439,7 @@ export default {
     // Owner 2026-11-16: a proposal the cycle put in pending_owner (or a draft plan, a pending knowledge proposal) is
     // notified in this tick, once the cycle and this tick's :22/:52 pass have both settled (never concurrently with
     // either); nothing new waiting sends nothing (owner-notices.ts reconcileOwnerAttentionNow).
-    ctx.waitUntil(Promise.all([cycle, fullPass]).then(() => reconcileOwnerAttentionNow({ ...env, ALERT_VAULT: alertVaultOf(env) })).then(() => undefined, (err) => {
+    ctx.waitUntil(Promise.all([cycle, fullPass, proposals]).then(() => reconcileOwnerAttentionNow({ ...env, ALERT_VAULT: alertVaultOf(env) })).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "owner_attention_now_failed", message: String((err as Error)?.message ?? err) }));
     }));
     // Owner 2026-11-16 ("pakai cara 2 lewat kernel"): relay the xauusd Worker's EA heartbeat reports to the alert

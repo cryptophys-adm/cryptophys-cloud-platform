@@ -112,6 +112,6 @@ test("CC6. the Councils page calls only the council routes: a council never acts
   const src = readFileSync(new URL("../../console/ui/src/pages/Councils.tsx", import.meta.url), "utf8");
   const routes = [...src.matchAll(/(?:call\(|route: )"([a-z_.]+)"/g)].map((m) => m[1]);
   assert.ok(routes.length >= 6, routes.join(", "));
-  assert.deepEqual([...new Set(routes)].sort(), ["kernel.council", "kernel.council_dismiss", "kernel.council_message", "kernel.council_pick", "kernel.council_start", "kernel.councils"]);
+  assert.deepEqual([...new Set(routes)].sort(), ["kernel.council", "kernel.council_begin", "kernel.council_dismiss", "kernel.council_message", "kernel.council_pick", "kernel.council_start", "kernel.councils"]);
   assert.ok(!/consensus|policy\.|recovery\.|registry\.|orchestrator\./.test(routes.join(" ")));
 });
