@@ -27,6 +27,9 @@ export interface CouncilStub {
   message(actor: string, text: unknown): Promise<unknown>;
   pick(actor: string, optionId: unknown, note: unknown): Promise<unknown>;
   dismiss(actor: string): Promise<unknown>;
+  /** H1.5d (Q9): an agent's proposal, and the owner beginning it. */
+  propose(input: unknown): Promise<unknown>;
+  begin(actor: string): Promise<unknown>;
 }
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
