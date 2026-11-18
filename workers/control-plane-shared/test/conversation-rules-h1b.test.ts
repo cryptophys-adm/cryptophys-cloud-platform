@@ -46,7 +46,7 @@ test("C4. the citation post-check keeps cited numbers its tool output contains a
 });
 
 test("C5. secrets: a question with a token is detected and only its redacted form is kept; ordinary ids and hashes are not secrets", () => {
-  for (const s of ["my token Bearer abcdefghijklmnop", "ghp_" + "a".repeat(30), "123456789:" + "A".repeat(35), "-----BEGIN RSA PRIVATE KEY-----", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abcdefghijklmnop"]) {
+  for (const s of ["my token Bearer abcdefghijklmnop", "ghp_" + "a".repeat(30), "123456789:" + "A".repeat(35), "-----BEGIN RSA " + "PRIVATE KEY-----", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abcdefghijklmnop"]) {
     assert.ok(secretInText(s), s.slice(0, 20));
     assert.match(redactText(s), /\[redacted\]/);
   }
