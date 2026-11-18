@@ -114,5 +114,6 @@ test("I6. SSOT: a dashboard secret or variable change reads as observed_version_
   const ssot = read("docs/SSOT.md");
   assert.match(ssot, /dashboard secret or variable change creates an untagged Worker version/);
   assert.match(ssot, /observed_version_unavailable/);
-  assert.match(ssot, /a 68-route allow-list/);
+  // The topology table names the Console allow-list by its real size (69 rows since HAIC H0a removed policy POST /v1/evaluate).
+  assert.ok(ssot.includes(`a ${CONSOLE_ALLOW_LIST.length}-row allow-list`), `SSOT names a ${CONSOLE_ALLOW_LIST.length}-row allow-list`);
 });
