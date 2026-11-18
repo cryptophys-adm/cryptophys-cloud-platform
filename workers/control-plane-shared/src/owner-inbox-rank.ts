@@ -72,6 +72,8 @@ export const KNOWLEDGE_KIND = k("low", "learning");
 export const COUNCIL_KIND = k("normal");
 /** HAIC H1.5d (Q9): a council an agent proposed, waiting for the owner to begin it. Nothing waits on it; 7-day window. */
 export const COUNCIL_PROPOSAL_KIND = k("low");
+/** HAIC H2: a typed proposal draft waiting for the owner's confirmation. Nothing waits on it; 7-day window. */
+export const TYPED_PROPOSAL_KIND = k("normal");
 
 /** Known reversibility of a critical action once executed (null: not stated; the UI shows "—"). */
 const REVERSIBLE: Readonly<Record<string, boolean>> = {
@@ -93,11 +95,13 @@ export interface RankInput {
   councils?: { session_id: string; topic: string; since: string | null; deadline: string }[];
   /** HAIC H1.5d: councils agents proposed (state proposed) whose window is still open (owner-inbox.ts councilProposals). */
   council_proposals?: { session_id: string; topic: string; proposed_by: string; trigger_kind: string; refs: string[]; since: string; deadline: string }[];
+  /** HAIC H2: typed proposal drafts waiting for the owner (ai-kernel/src/proposals.ts draftsAwaitingOwner). */
+  typed_proposals?: { proposal_id: string; kind: string; title: string; since: string; deadline: string; origin_source: string }[];
 }
 
 export interface InboxItem {
   item_id: string;
-  source: "consensus" | "recovery_plan" | "knowledge" | "critical_report" | "production_problem" | "council";
+  source: "consensus" | "recovery_plan" | "knowledge" | "critical_report" | "production_problem" | "council" | "proposal";
   kind: string;
   what: string;
   metric: { name: string; value: number; of: number; unit: string } | null;
@@ -109,7 +113,7 @@ export interface InboxItem {
   urgency: Urgency;
   score: number;
   score_parts: { U: number; B: number; A: number; D: number };
-  action: { kind: "approve_reject" | "approve_disable" | "acknowledge" | "pick" | "start" | "none"; route: string | null; approver_only: boolean };
+  action: { kind: "approve_reject" | "approve_disable" | "acknowledge" | "pick" | "start" | "confirm" | "none"; route: string | null; approver_only: boolean };
   /** The Console page that holds the evidence (a hash route), for a production problem or a council; otherwise null. */
   page: string | null;
   deep_link: string;
@@ -212,6 +216,14 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
       // Q9: only the owner begins a proposed council, on its page, where its evidence is shown.
       action: { kind: "start", route: "kernel.council_begin", approver_only: true }, page: `#/councils/${c.session_id}`,
     }, COUNCIL_PROPOSAL_KIND, now));
+  }
+  for (const p of input.typed_proposals ?? []) {
+    out.push(item({
+      item_id: `proposal:${p.proposal_id}`, source: "proposal", kind: "typed_proposal_draft",
+      what: `Confirm or reject: ${p.title} (${p.kind.replace(/_/g, " ")}, from ${p.origin_source === "chat" ? "the chat" : "a council"})`.slice(0, 200), metric: null,
+      evidence_refs: [`ev:platform/proposal/${p.proposal_id}`], risk: null, deadline: p.deadline, created_at: p.since,
+      action: { kind: "confirm", route: "kernel.proposal_confirm", approver_only: true }, page: `#/proposals/${p.proposal_id}`,
+    }, TYPED_PROPOSAL_KIND, now));
   }
   const at = (x: InboxItem) => { const t = Date.parse(String(x.created_at ?? "")); return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY; };
   return out.sort((a, b) => b.score - a.score || at(a) - at(b) || (a.item_id < b.item_id ? -1 : a.item_id > b.item_id ? 1 : 0));

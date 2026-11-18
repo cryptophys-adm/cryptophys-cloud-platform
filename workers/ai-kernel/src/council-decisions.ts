@@ -9,6 +9,24 @@ import { externalOriginOf } from "../../control-plane-shared/src/organism.ts";
 import type { SyscallEnv } from "./syscall.ts";
 
 export const MAX_UPDATES = 20;
+const PRICE_KEY = /^(price|prices|entry|entry_price|sl|tp\d?|stop|stop_loss|take_profit|bid|ask|level|levels|lot|lots|volume)$/i;
+const flat = (v: unknown): Record<string, string | number | boolean | null> | null => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const out: Record<string, string | number | boolean | null> = {};
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (!/^[a-z_][a-z0-9_]{0,40}$/i.test(k) || PRICE_KEY.test(k)) continue;
+    if (typeof x === "number" || typeof x === "boolean" || x === null) out[k] = x as number | boolean | null;
+    else if (typeof x === "string" && x.length <= 200) out[k] = x;
+  }
+  return out;
+};
+/** The draft of a Cerebrum-confirmed shadow arm (HAIC H2), only its known fields, flat and without a price. */
+function draftOf(v: unknown): JsonObject | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const d = v as Record<string, unknown>;
+  if (d.kind !== "shadow_arm" || typeof d.target !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(d.target)) return null;
+  return { kind: "shadow_arm", target: d.target, params: flat(d.params) ?? {}, measurement: flat(d.measurement), requires: Array.isArray(d.requires) ? d.requires.filter((x) => typeof x === "string").slice(0, 6) : [] } as JsonObject;
+}
 const CURSOR = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\|(evu_[A-Za-z0-9-]{1,64})$/;
 const REFS = ["intent_id", "evolution_id", "cr_id", "merge_sha", "deploy_ref"] as const;
 
@@ -37,7 +55,9 @@ export async function readCouncilDecisions(env: Pick<SyscallEnv, "DB">, agentId:
     try { const v = JSON.parse(r.refs_json); if (v && typeof v === "object" && !Array.isArray(v)) raw = v; } catch { raw = {}; }
     const refs: Record<string, string> = {};
     for (const k of REFS) if (typeof raw[k] === "string") refs[k] = raw[k] as string;
-    return { schema: "typed_proposal.v1", proposal_id: r.proposal_id, state: r.state, reason: r.reason, refs, at: r.created_at };
+    // HAIC H2: a shadow arm the owner confirmed in Cerebrum carries its draft (flat values; never a price), so xauusd can run it.
+    const draft = draftOf(raw.draft);
+    return { schema: "typed_proposal.v1", proposal_id: r.proposal_id, state: r.state, reason: r.reason, refs, at: r.created_at, ...(draft ? { draft } : {}) };
   });
   const last = rows.at(-1);
   return { available: true, origin, updates, next_cursor: last ? `${last.created_at}|${last.update_id}` : (input.cursor as string | undefined) ?? null };

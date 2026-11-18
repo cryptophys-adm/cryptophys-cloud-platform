@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "vision"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "proposals", "vision"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -401,6 +401,20 @@ MOCK[`/api/kernel/v1/councils/${CS4}`] = {
     proposal: { proposed_by: "agent:signal-analyst", refs: ["ev:platform/report/rpt_s1#metrics"], detail: "decisions_24h is 2 against a 7-day baseline of 40 (z -3.4)." } },
   messages: [{ ...msg(1, "system", "system", "agent:signal-analyst", "Proposed by signal-analyst: decisions_24h is 2 against a 7-day baseline of 40 (z -3.4)."), session_id: CS4 }],
 };
+// HAIC H2: typed proposals: a draft from the decided council, waiting for the owner; one handed to the evolver.
+const TP = "tp_0123456789abcdef";
+const TP2 = "tp_fedcba9876543210";
+const tpBody = (id, kind, title, extra = {}) => ({ schema: "typed_proposal.v1", proposal_id: id, kind, title, rationale: "Most native failures after a migration are the migration's own refusal.",
+  target: kind === "policy_parameter" ? "daily-deploy-limit" : "platform", params: kind === "policy_parameter" ? { value: 12 } : { spec: "Route destructive-migration deploys through the workflow first." },
+  measurement: { metric: "native_deploy_failure_rate", baseline: 0.12, window: "14d", success_threshold: 0.04 }, origin: { source: "council", ref: `${CS2}#opt_1` },
+  evidence_refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], requires: ["owner_confirm", "owner_click_to_promote"], ...extra });
+MOCK["/api/kernel/v1/proposals"] = { schema: "typed_proposals.v1", available: true, proposals: [
+  { proposal_id: TP, kind: "policy_parameter", state: "draft", title: "Raise the daily deploy limit to 12", origin_source: "council", origin_ref: `${CS2}#opt_1`, created_by: "owner:owner@example.com", created_at: at(30), updated_at: at(30), expires_at: at(-60 * 24 * 6), decided_by: null, decided_at: null, handoff_path: null, handoff_ref: null, reason: null, body: tpBody(TP, "policy_parameter", "Raise the daily deploy limit to 12"), what_happens: "The Supervisor proposes set_policy_parameter to the council; the agents vote; inside its hard bounds it executes as a routine action." },
+  { proposal_id: TP2, kind: "repository_task", state: "handed_off", title: "Run destructive-migration deploys through the workflow first", origin_source: "council", origin_ref: `${CS2}#opt_1`, created_by: "owner:owner@example.com", created_at: at(600), updated_at: at(500), expires_at: at(-60 * 24 * 5), decided_by: "owner@example.com", decided_at: at(500), handoff_path: "evolver", handoff_ref: "int_0123456789ab", reason: "evolution intent int_0123456789ab, queued for the evolver", body: tpBody(TP2, "repository_task", "Run destructive-migration deploys through the workflow first"), what_happens: "It becomes an evolution intent; the evolver writes a change request." },
+] };
+MOCK[`/api/kernel/v1/proposals/${TP}`] = MOCK["/api/kernel/v1/proposals"].proposals[0];
+MOCK[`/api/kernel/v1/proposals/${TP2}`] = MOCK["/api/kernel/v1/proposals"].proposals[1];
+MOCK[`/api/kernel/v1/councils/${CS2}`].session.typed_proposal = { proposal_id: TP2, errors: [] };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -541,6 +555,12 @@ const OWNER_CHECKS = [
       counts: { ...EMPTY_INBOX.counts, council_proposals: 1 },
       items: [{ item_id: `council:${CS4}`, source: "council", kind: "council_proposed", what: "Council proposed by signal-analyst: Trading organ KPI regression: decisions_24h", metric: null, evidence_refs: [`ev:platform/council/${CS4}`], risk: null, blocks: [], deadline: at(-60 * 24 * 6), created_at: at(30), urgency: "low", score: 21, score_parts: { U: 0.2, B: 1, A: 1.02, D: 1 }, action: { kind: "start", route: "kernel.council_begin", approver_only: true }, page: `#/councils/${CS4}`, deep_link: `#/owner/council:${CS4}` }] } },
     want: ["Councils proposed by agents", "Open the proposal", "Council proposed by signal-analyst", "council_proposed", "by signal-analyst"], not: ["Nothing needs you", "no longer waits"] },
+  // HAIC H2: a typed proposal draft waits for the owner's confirmation.
+  { name: "typed-proposal", hash: `#/owner/proposal:${TP}`, override: { "/api/kernel/v1/owner/inbox": { ...EMPTY_INBOX,
+      typed_proposals: [{ proposal_id: TP, kind: "policy_parameter", title: "Raise the daily deploy limit to 12", since: at(30), deadline: at(-60 * 24 * 6), origin_source: "council" }],
+      counts: { ...EMPTY_INBOX.counts, typed_proposals: 1 },
+      items: [{ item_id: `proposal:${TP}`, source: "proposal", kind: "typed_proposal_draft", what: "Confirm or reject: Raise the daily deploy limit to 12 (policy parameter, from a council)", metric: null, evidence_refs: [`ev:platform/proposal/${TP}`], risk: null, blocks: [], deadline: at(-60 * 24 * 6), created_at: at(30), urgency: "normal", score: 41, score_parts: { U: 0.4, B: 1, A: 1.02, D: 1 }, action: { kind: "confirm", route: "kernel.proposal_confirm", approver_only: true }, page: `#/proposals/${TP}`, deep_link: `#/owner/proposal:${TP}` }] } },
+    want: ["Proposals waiting for your confirmation", "Raise the daily deploy limit to 12", "Open the proposal to confirm or reject it", "typed_proposal_draft"], not: ["Nothing needs you", "no longer waits"] },
 ];
 const ASK_CHECKS = [
   { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English"], not: ["owners only"] },
@@ -574,9 +594,13 @@ const COUNCIL_CHECKS = [
   { name: "list", hash: "#/councils", override: {}, want: ["Call a council", "Convene…", "waits for your pick", "decided", "aborted", "11 calls · $0.024", "it never acts"], not: ["Pick…"] },
   { name: "awaiting", hash: `#/councils/${CS}`, override: {}, want: ["Is the migration the cause", "persona of supervisor", "verified", "unverified", "n = 25", "Keep the destructive migration gate", "answers #1",
     "Options", "Run destructive-migration deploys through the workflow first", "62%", "recovery-manager: the sample is small", "repository task", "no change", "Pick…", "Dismiss…", "11 of 16 model calls", "$0.024 of $0.100"], not: ["Proposal draft", "Call a council"] },
-  { name: "decided", hash: `#/councils/${CS2}`, override: {}, want: ["Proposal draft", "owner_confirm, owner_click_to_promote", "your pick", "arrives with H2", "sha256 aaaaaaaaaaaa", `R2 councils/${CS2}.json`], not: ["Pick…", "Dismiss…"] },
+  { name: "decided", hash: `#/councils/${CS2}`, override: {}, want: ["Proposal draft", "owner_confirm, owner_click_to_promote", "your pick", "It waits for your confirmation as", "sha256 aaaaaaaaaaaa", `R2 councils/${CS2}.json`], not: ["Pick…", "Dismiss…"] },
   { name: "proposed", hash: `#/councils/${CS4}`, override: {}, want: ["Proposed by an agent", "signal-analyst", "a KPI regression", "z -3.4", "report/rpt_s1#metrics", "Begin…", "Dismiss…", "proposed, waits for you", "only you begin it"], not: ["Pick…", "Options"] },
   { name: "proposed-operator", hash: `#/councils/${CS4}`, override: { "/api/whoami": OPERATOR }, want: ["Proposed by an agent"], not: ["Begin…", "Dismiss…"] },
+  { name: "proposal-draft", hash: `#/proposals/${TP}`, override: {}, want: ["Raise the daily deploy limit to 12", "waits for you", "policy parameter", "daily-deploy-limit", "value", "12", "native_deploy_failure_rate: 0.12 → 0.04 over 14d", "set_policy_parameter", "Confirm…", "Reject…", "a council", "Typed proposals"], not: [] },
+  { name: "proposal-handed-off", hash: `#/proposals/${TP2}`, override: {}, want: ["handed off", "the evolver", "int_0123456789ab", "decided"], not: ["Confirm…", "Reject…"] },
+  { name: "proposal-operator", hash: `#/proposals/${TP}`, override: { "/api/whoami": OPERATOR }, want: ["Raise the daily deploy limit to 12"], not: ["Confirm…", "Reject…"] },
+  { name: "council-link", hash: `#/councils/${CS2}`, override: {}, want: [`typed proposal ${TP2}`], not: [] },
   { name: "operator", hash: `#/councils/${CS}`, override: { "/api/whoami": OPERATOR }, want: ["Options", "Run destructive-migration deploys through the workflow first"], not: ["Pick…", "Dismiss…", "Call a council", "Send to the council"] },
 ];
 for (const width of [390, 1440]) {
