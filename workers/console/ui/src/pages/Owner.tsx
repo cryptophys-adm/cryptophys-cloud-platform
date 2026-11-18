@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowLeft, Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ListOrdered, ShieldAlert, ShieldCheck, Siren, Wrench, X } from "lucide-react";
+import { ArrowLeft, Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ListOrdered, ShieldAlert, ShieldCheck, Siren, Users, Wrench, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { CriticalReportList } from "../components/CriticalReports";
 import { call } from "../lib/api";
@@ -200,7 +200,19 @@ function RankedList({ items }: { items: any[] }) {
 }
 
 /** #/owner/<item_id>: one item, its score and evidence, and the same action as in its section below. */
-function ItemDetail({ id, items, sections, mode, reload }: { id: string; items: any[]; sections: { plans: any[]; proposals: any[]; knowledge: any[]; reports: any[]; problems: any[] }; mode: string | null; reload: () => void }) {
+/** HAIC H1.5c: a council that waits for the owner's pick; the pick itself is on the council's page (Cerebrum only, Q6). */
+function CouncilItem({ c }: { c: any }) {
+  return (
+    <div className="glass-inner flex flex-wrap items-center gap-2 px-3 py-2 text-[12px]">
+      <Users className="h-3.5 w-3.5 text-cyan-300" />
+      <span className="flex-1 wrap-break-word text-slate-200">{c.topic}</span>
+      <span className="text-slate-500" title={c.deadline}>expires {until(c.deadline)}</span>
+      <a className="btn py-1!" href={`#/councils/${c.session_id}`}>Open the options</a>
+    </div>
+  );
+}
+
+function ItemDetail({ id, items, sections, mode, reload }: { id: string; items: any[]; sections: { plans: any[]; proposals: any[]; knowledge: any[]; reports: any[]; problems: any[]; councils: any[] }; mode: string | null; reload: () => void }) {
   const it = items.find((i) => i.item_id === id);
   const back = <a href="#/owner" className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-cyan-300 hover:underline"><ArrowLeft className="h-3 w-3" />All items</a>;
   if (!it) {
@@ -215,6 +227,7 @@ function ItemDetail({ id, items, sections, mode, reload }: { id: string; items: 
   else if (it.source === "knowledge") { const x = sections.knowledge.find((q) => q.proposal_id === ref); if (x) action = <KnowledgeItem k={x} reload={reload} />; }
   else if (it.source === "critical_report") { const x = sections.reports.find((q) => q.report_id === ref); if (x) action = <CriticalReportList rows={[x]} reload={reload} empty="—" />; }
   else if (it.source === "production_problem") { const x = sections.problems.find((q) => `${q.code}:${q.subject}` === ref); if (x) action = <ProblemItem p={x} />; }
+  else if (it.source === "council") { const x = sections.councils.find((q) => q.session_id === ref); if (x) action = <CouncilItem c={x} />; }
   return (
     <Panel title="Item" icon={<Inbox className="h-3.5 w-3.5 text-cyan-300" />} right={back}>
       <div className="text-[14px] font-semibold wrap-break-word text-white">{it.what ?? "—"}</div>
@@ -246,15 +259,16 @@ export default function Owner({ item }: { item?: string }) {
   const knowledge = arr(data?.approvals?.knowledge);
   const reports = arr(data?.critical_reports);
   const problems = arr(data?.production_problems);
+  const councils = arr(data?.councils);
   const approvals = plans.length + proposals.length + knowledge.length;
   const mode: string | null = typeof data?.consensus_mode === "string" ? data.consensus_mode : null;
   const items = arr(data?.items);
-  const nothing = Boolean(data) && approvals === 0 && reports.length === 0 && problems.length === 0;
+  const nothing = Boolean(data) && approvals === 0 && reports.length === 0 && problems.length === 0 && councils.length === 0;
 
   return (
     <div className="flex flex-col gap-3">
       <h1 className="sr-only">Owner</h1>
-      {item && nothing && <ItemDetail id={item} items={items} sections={{ plans, proposals, knowledge, reports, problems }} mode={mode} reload={reload} />}
+      {item && nothing && <ItemDetail id={item} items={items} sections={{ plans, proposals, knowledge, reports, problems, councils }} mode={mode} reload={reload} />}
       {loading && !data ? <Panel><Skeleton rows={4} /></Panel> : error && !data ? (
         <Panel title="Owner" icon={<Inbox className="h-3.5 w-3.5 text-cyan-300" />}><Empty>{error}</Empty></Panel>
       ) : nothing ? (
@@ -269,7 +283,7 @@ export default function Owner({ item }: { item?: string }) {
         </Panel>
       ) : (
         <>
-          {item && <ItemDetail id={item} items={items} sections={{ plans, proposals, knowledge, reports, problems }} mode={mode} reload={reload} />}
+          {item && <ItemDetail id={item} items={items} sections={{ plans, proposals, knowledge, reports, problems, councils }} mode={mode} reload={reload} />}
           {items.length > 0 && <RankedList items={items} />}
           <Panel title="Waiting for your approval" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />}
             right={<Badge tone={approvals ? "amber" : "slate"}>{count(data?.counts?.approvals)}</Badge>}>
@@ -282,6 +296,13 @@ export default function Owner({ item }: { item?: string }) {
               </div>
             )}
           </Panel>
+          {councils.length > 0 && (
+            <Panel title="Councils waiting for your pick" icon={<Users className="h-3.5 w-3.5 text-cyan-300" />}
+              right={<Badge tone="amber">{count(data?.counts?.councils)}</Badge>}>
+              <p className="mb-2 text-[11px] text-slate-500">A council ended in ranked options. Pick one or dismiss it on its page; with no pick it expires after 72 hours and nothing changes.</p>
+              <div className="space-y-2">{councils.map((c) => <CouncilItem key={c.session_id} c={c} />)}</div>
+            </Panel>
+          )}
           <Panel title="Open critical reports" icon={<ShieldAlert className="h-3.5 w-3.5 text-rose-300" />}
             right={<Badge tone={reports.length ? "red" : "slate"}>{count(data?.counts?.critical_reports)}</Badge>}>
             <p className="mb-2 text-[11px] text-slate-500">An open critical report of the last 24 hours makes the agents reject routine actions until an approver acknowledges it as handled.</p>

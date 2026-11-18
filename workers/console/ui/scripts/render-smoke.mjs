@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "vision"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "vision"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -353,6 +353,43 @@ MOCK[`/api/kernel/v1/conversations/${CNV}`] = { conversation_id: CNV, created_at
   { n: 2, status: "refused", reason: "secret_in_question", question: "use Bearer [redacted]", answer: "That message looks like it contains a secret (a token, a key or a password). It was not sent to the model, and only its redacted form is kept. Never paste secrets here.",
     tools: [], refs: [], model: null, usage: { input: 0, cached: 0, output: 0 }, citations: { kept: 0, stripped: 0 }, injection: [], latency_ms: 3, created_at: at(5) },
 ] };
+// HAIC H1.5c: Call for Councils. One council waits for the owner's pick (a verified and an unverified claim, an owner
+// message, three ranked options with "no change"), one is decided with a draft, one was aborted.
+const CS = "cs_00000000-0000-4000-8000-0000000000c1";
+const CS2 = "cs_00000000-0000-4000-8000-0000000000c2";
+const COUNCIL_LIMITS = { max_open_sessions: 2, max_started_per_utc_day: 4, max_model_calls: 16, max_messages: 60, max_owner_messages: 20, max_message_chars: 1200, max_usd: 0.1 };
+MOCK["/api/kernel/v1/councils"] = { schema: "councils.v1", available: true, limits: COUNCIL_LIMITS, councils: [
+  { session_id: CS, side: "cerebrum", topic: "Native deploys fail more often after a migration than without one", state: "awaiting_owner", owner_present: 1, created_by: "owner@example.com", spent_calls: 11, spent_usd: 0.024, reason: null, transcript_sha256: null, created_at: at(120), updated_at: at(60), deadline: at(-60 * 71) },
+  { session_id: CS2, side: "cerebrum", topic: "Knowledge proposals expire unreviewed", state: "decided", owner_present: 0, created_by: "owner@example.com", spent_calls: 9, spent_usd: 0.019, reason: null, transcript_sha256: "a".repeat(64), created_at: at(60 * 30), updated_at: at(60 * 28), deadline: at(-60 * 40) },
+  { session_id: "cs_00000000-0000-4000-8000-0000000000c3", side: "cerebrum", topic: "Too few positions", state: "aborted", owner_present: 0, created_by: "owner@example.com", spent_calls: 2, spent_usd: 0.003, reason: "too_few_positions", transcript_sha256: "b".repeat(64), created_at: at(60 * 50), updated_at: at(60 * 49), deadline: at(-60 * 20) },
+] };
+const msg = (seq, phase, role, author, text, extra = {}) => ({ schema: "council.message.v1", session_id: CS, seq, at: at(120 - seq * 5), phase, role, author, reply_to: [], stance: null, claims: [], text, options: null, model: null, tokens: { in: 0, cached: 0, out: 0 }, content_sha256: "0".repeat(64), ...extra });
+const OPTIONS = [
+  { option_id: "opt_1", rank: 1, title: "Run destructive-migration deploys through the workflow first", hypothesis: "Most native failures after a migration are the migration's own refusal, not the deploy.", change: { type: "repository_task", target: "deployment-orchestrator", params: {} },
+    expected_effect: { metric: "native_deploy_failure_rate", from: 0.12, to: 0.04, window: "14d" }, risk: { level: "low", reversible: true }, confidence: 0.62, evidence_refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], dissent: ["recovery-manager: the sample is small"] },
+  { option_id: "opt_2", rank: 2, title: "Lower the native deploy retry window", hypothesis: "Retries collide with the migration lock.", change: { type: "policy_parameter", target: "deploy_retry_minutes", params: { to: 10 } },
+    expected_effect: null, risk: { level: "medium", reversible: true, notes: "touches every deploy" }, confidence: 0.35, evidence_refs: [], dissent: [] },
+  { option_id: "opt_3", rank: 3, title: "No change", hypothesis: "The rate is within its usual range.", change: { type: "no_change", target: null, params: {} }, expected_effect: null, risk: { level: "low", reversible: true }, confidence: 0.2, evidence_refs: [], dissent: [] },
+];
+MOCK[`/api/kernel/v1/councils/${CS}`] = {
+  session: { schema: "council.session.v1", session_id: CS, side: "cerebrum", topic: "Native deploys fail more often after a migration than without one", question: "Is the migration the cause, and what should change?", trigger: { kind: "owner", ref: null },
+    convened: ["auditor", "supervisor", "recovery-manager", "platform-api", "signal-analyst"], state: "awaiting_owner", owner_present: true, created_at: at(120), deadline: at(-60 * 71), phase_deadline: null,
+    budget: { max_calls: 16, max_usd: 0.1 }, spent: { calls: 11, tokens_in: 52000, tokens_cached: 30000, tokens_out: 7000, usd_est: 0.024 }, decision: null, transcript_sha256: null, created_by: "owner@example.com", reason: null, messages: 4 },
+  messages: [
+    msg(1, "position", "participant", "agent:supervisor", "Native deploys after a migration fail three times as often in the last 14 days.", { stance: "change", claims: [
+      { metric: "native_deploy_failure_rate_after_migration", value: 0.12, window: "14d", n: 25, refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], verified: true },
+      { metric: "retry_collisions", value: 4, window: "14d", refs: ["ev:platform/report/rpt_missing"], verified: false }] }),
+    msg(2, "owner", "owner", "owner:owner@example.com", "Keep the destructive migration gate as it is."),
+    msg(3, "rebuttal", "participant", "agent:recovery-manager", "The sample of 25 deploys is small; the rate may be noise.", { reply_to: [1], stance: "keep" }),
+    msg(4, "synthesis", "moderator", "agent:auditor", "Two options change something, one changes nothing. The owner's constraint holds: the destructive migration gate stays.", { options: OPTIONS }),
+  ],
+};
+MOCK[`/api/kernel/v1/councils/${CS2}`] = {
+  session: { ...MOCK[`/api/kernel/v1/councils/${CS}`].session, session_id: CS2, topic: "Knowledge proposals expire unreviewed", state: "decided", owner_present: false, transcript_sha256: "a".repeat(64),
+    decision: { schema: "council.decision.v1", session_id: CS2, option_id: "opt_1", chosen_by: "owner:owner@example.com", chosen_at: at(60 * 28), owner_note: null,
+      proposal_draft: { schema: "council.proposal_draft.v1", kind: "repository_task", origin: { council: CS2, option: "opt_1" }, target: "deployment-orchestrator", params: {}, measurement: {}, requires: ["owner_confirm", "owner_click_to_promote"] } } },
+  messages: [{ ...msg(4, "synthesis", "moderator", "agent:auditor", "One option was picked.", { options: OPTIONS }), session_id: CS2 }],
+};
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -478,6 +515,11 @@ const OWNER_CHECKS = [
     want: ["All items", "= 100 × U 0.4 × B 1 × A 1.06 × D 2", "approvals: 7 of 8 votes", "critical · reversible · agent", "ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000", "Approve…", "Needs you"], not: ["no longer waits"] },
   { name: "item-gone", hash: "#/owner/consensus:cns_gone", override: {}, want: ["no longer waits", "All items", "Needs you"], not: [] },
   { name: "item-gone-empty", hash: "#/owner/consensus:cns_gone", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["no longer waits", "Nothing needs you"], not: [] },
+  // HAIC H1.5c: a council waiting for the owner's pick is listed, and its item opens a link to the council's page.
+  { name: "council", hash: `#/owner/council:${CS}`, override: { "/api/kernel/v1/owner/inbox": { ...EMPTY_INBOX, councils: [{ session_id: CS, topic: "Native deploys fail more often after a migration", since: at(60), deadline: at(-60 * 71) }],
+      counts: { ...EMPTY_INBOX.counts, councils: 1 },
+      items: [{ item_id: `council:${CS}`, source: "council", kind: "council_awaiting_pick", what: "Council waits for your pick: Native deploys fail more often after a migration", metric: null, evidence_refs: [`ev:platform/council/${CS}`], risk: null, blocks: [], deadline: at(-60 * 71), created_at: at(60), urgency: "normal", score: 42, score_parts: { U: 0.4, B: 1, A: 1.04, D: 1 }, action: { kind: "pick", route: "kernel.council_pick", approver_only: true }, page: `#/councils/${CS}`, deep_link: `#/owner/council:${CS}` }] } },
+    want: ["Councils waiting for your pick", "Open the options", "Council waits for your pick", "council_awaiting_pick", "All items"], not: ["Nothing needs you", "no longer waits"] },
 ];
 const ASK_CHECKS = [
   { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English"], not: ["owners only"] },
@@ -502,6 +544,35 @@ for (const width of [390, 1440]) {
       for (const want of ["#/owner", "#/consensus", "#/vision/adr/0017", "#/code"]) if (!links.includes(want)) problems.push(`${width}px ask: no evidence link to ${want}`);
     }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-ask-${check.name}.png`), fullPage: true });
+    await page.close();
+  }
+}
+// HAIC H1.5c: the Councils page: the list with the convene form (owner), one council waiting for a pick with its claims,
+// options and dismiss, a decided one with its draft, and the read-only view of an operator.
+const COUNCIL_CHECKS = [
+  { name: "list", hash: "#/councils", override: {}, want: ["Call a council", "Convene…", "waits for your pick", "decided", "aborted", "11 calls · $0.024", "it never acts"], not: ["Pick…"] },
+  { name: "awaiting", hash: `#/councils/${CS}`, override: {}, want: ["Is the migration the cause", "persona of supervisor", "verified", "unverified", "n = 25", "Keep the destructive migration gate", "answers #1",
+    "Options", "Run destructive-migration deploys through the workflow first", "62%", "recovery-manager: the sample is small", "repository task", "no change", "Pick…", "Dismiss…", "11 of 16 model calls", "$0.024 of $0.100"], not: ["Proposal draft", "Call a council"] },
+  { name: "decided", hash: `#/councils/${CS2}`, override: {}, want: ["Proposal draft", "owner_confirm, owner_click_to_promote", "your pick", "arrives with H2", "sha256 aaaaaaaaaaaa"], not: ["Pick…", "Dismiss…"] },
+  { name: "operator", hash: `#/councils/${CS}`, override: { "/api/whoami": OPERATOR }, want: ["Options", "Run destructive-migration deploys through the workflow first"], not: ["Pick…", "Dismiss…", "Call a council", "Send to the council"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of COUNCIL_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px councils/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}${check.hash}`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px ${check.hash} (${check.name}): horizontal scroll of ${overflow}px`);
+    if (check.name === "awaiting") {
+      const links = await page.evaluate(() => [...document.querySelectorAll("main a[href^='#/']")].map((a) => a.getAttribute("href")));
+      if (!links.includes("#/consensus")) problems.push(`${width}px councils: no evidence link to #/consensus`);
+    }
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-councils-${check.name}.png`), fullPage: true });
     await page.close();
   }
 }
@@ -660,4 +731,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Councils page (${COUNCIL_CHECKS.length} cases), the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);

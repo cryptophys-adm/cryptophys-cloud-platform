@@ -50,6 +50,15 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.conversation", "kernel", "GET", "/v1/conversations/{id}", true, null),
   r("kernel.conversation_turn", "kernel", "POST", "/v1/conversations/{id}/turns", true, null),
   r("kernel.conversation_rate", "kernel", "POST", "/v1/conversations/{id}/turns/{id}/rating", true, null),
+  // HAIC H1.5c (docs/design/HAIC-H0-H1.md §4): Call for Councils. Operators read; only the owner convenes (a typed
+  // phrase: it spends model calls, 4 a UTC day), joins with a message (no phrase, like the chat), picks an option or
+  // dismisses (typed phrases with the council's id). The kernel checks the owner; a council never acts.
+  r("kernel.councils", "kernel", "GET", "/v1/councils", false, null),
+  r("kernel.council", "kernel", "GET", "/v1/councils/{id}", false, null),
+  r("kernel.council_start", "kernel", "POST", "/v1/councils", true, "CONVENE COUNCIL"),
+  r("kernel.council_message", "kernel", "POST", "/v1/councils/{id}/messages", true, null),
+  r("kernel.council_pick", "kernel", "POST", "/v1/councils/{id}/pick", true, "PICK {id13}"),
+  r("kernel.council_dismiss", "kernel", "POST", "/v1/councils/{id}/dismiss", true, "DISMISS {id13}"),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

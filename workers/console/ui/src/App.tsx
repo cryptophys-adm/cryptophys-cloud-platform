@@ -20,6 +20,7 @@ import Owner from "./pages/Owner";
 import Alerts from "./pages/Alerts";
 import Vision from "./pages/Vision";
 import Ask from "./pages/Ask";
+import Councils from "./pages/Councils";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -51,6 +52,8 @@ export default function App() {
     case "vision": page = <Vision section={id} item={sub} />; break;
     // HAIC H1c: "Ask the organism", owners only; #/ask/<conversation id> opens one conversation.
     case "ask": page = <Ask conversation={id} />; break;
+    // HAIC H1.5c: Call for Councils; #/councils/<session id> opens one council (its transcript, options and the pick).
+    case "councils": page = <Councils council={id} />; break;
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;

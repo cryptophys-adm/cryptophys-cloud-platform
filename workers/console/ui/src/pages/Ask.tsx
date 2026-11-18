@@ -29,6 +29,8 @@ export function refPage(ref: string): string | null {
     vision: "#/vision", adr_progress: "#/vision/adr", doc: "#/code", policy_dry_run: "#/policy", reports: "#/",
   };
   if (kind === "recovery_plan" && id) return `#/recovery/${id}`;
+  // HAIC H1.5c: a council ref opens that council.
+  if (kind === "council" && id) return `#/councils/${id}`;
   return pages[kind] ?? null;
 }
 const refLabel = (ref: string) => ref.replace(/^ev:(platform\/)?/, "").replace(/@\d{4}-\d\d-\d\dT[\d:.]+Z/, "").replace(/@[0-9a-f]{12}#/, "#").slice(0, 60);
