@@ -1,0 +1,35 @@
+{
+  "schema": "council.session.v1",
+  "session_id": "cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01",
+  "side": "cerebrum",
+  "topic": "Key Level entries often hit SL or SL+",
+  "question": "Why do Key Level entries hit SL or SL+ so often, and what should be tested in shadow?",
+  "trigger": {
+    "kind": "owner",
+    "ref": null
+  },
+  "convened": [
+    "agent:auditor",
+    "agent:supervisor",
+    "agent:signal-analyst",
+    "agent:platform-api",
+    "agent:recovery-manager"
+  ],
+  "state": "executing",
+  "owner_present": true,
+  "created_at": "2026-11-18T10:00:00Z",
+  "deadline": "2026-11-21T10:00:00Z",
+  "budget": {
+    "max_calls": 16,
+    "max_usd": 0.1
+  },
+  "spent": {
+    "calls": 11,
+    "tokens_in": 50000,
+    "tokens_cached": 60000,
+    "tokens_out": 7500,
+    "usd_est": 0.025
+  },
+  "decision": null,
+  "transcript_sha256": null
+}
