@@ -154,11 +154,28 @@ export async function openCriticalReportRows(db: D1Database, now = Date.now(), l
   return rows.results.map((r) => ({ report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: "critical", subject: r.subject, created_at: r.created_at }));
 }
 
+/**
+ * HAIC H1.5c (docs/design/HAIC-H0-H1.md §2.2, §4.4): the councils that wait for the owner's pick, soonest deadline first.
+ * A council's window is 72 h (expired afterwards, no default option); `since` is when it began to wait. Before the
+ * councils table exists (migration 0079) there are none.
+ */
+export async function councilsAwaitingOwner(db: D1Database, now = Date.now()): Promise<{ session_id: string; topic: string; since: string | null; deadline: string }[]> {
+  try {
+    const rows = await db.prepare("SELECT session_id, topic, updated_at, deadline FROM councils WHERE state = 'awaiting_owner' AND deadline > ? ORDER BY deadline LIMIT ?")
+      .bind(iso(now), INBOX_LIMIT).all<{ session_id: string; topic: string; updated_at: string | null; deadline: string }>();
+    return rows.results.map((r) => ({ session_id: r.session_id, topic: r.topic, since: r.updated_at ?? null, deadline: r.deadline }));
+  } catch (err) {
+    if (/no such table/i.test(String((err as Error)?.message ?? err))) return [];
+    throw err;
+  }
+}
+
 /** GET /v1/owner/inbox: the Owner page's sections and their ranked items (HAIC H0b), from D1 only. Operators may read it; only approvers act. */
 export async function ownerInbox(db: D1Database, now = Date.now()) {
   const approvals = await pendingApprovals(db);
   const critical = await openCriticalReportRows(db, now, INBOX_LIMIT);
   const problems = await unhandledProblems(db, now);
+  const councils = await councilsAwaitingOwner(db, now);
   let mode: string | null = null;
   try { mode = (await db.prepare("SELECT value FROM consensus_controls WHERE control = 'mode'").first<{ value: string }>())?.value ?? null; } catch { mode = null; }
   const n = approvals.recovery_plans.length + approvals.consensus.length + approvals.knowledge.length;
@@ -170,9 +187,11 @@ export async function ownerInbox(db: D1Database, now = Date.now()) {
     approvals,
     critical_reports: critical,
     production_problems: problems,
-    counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length },
+    // HAIC H1.5c: additive, like items[]; the three sections above are unchanged.
+    councils,
+    counts: { approvals: n, critical_reports: critical.length, production_problems: problems.length, councils: councils.length },
     // HAIC H0b (docs/design/HAIC-H0-H1.md §2.4): the same items, ranked, additively; the sections above are unchanged.
-    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems }, now),
+    items: rankInbox({ approvals, critical_reports: critical, production_problems: problems, councils }, now),
     ranking: RANKING,
   };
 }

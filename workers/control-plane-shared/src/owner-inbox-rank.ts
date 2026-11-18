@@ -68,6 +68,8 @@ export const PROBLEM_KINDS: Readonly<Record<string, Kind>> = {
 export const CRITICAL_REPORT_KIND = k("critical", "deploys", "merges");
 export const RECOVERY_PLAN_KIND = k("high", "deploys");
 export const KNOWLEDGE_KIND = k("low", "learning");
+/** HAIC H1.5c (§2.2 table, last row): a council waiting for the owner's pick. Nothing waits on it; it expires after 72 h. */
+export const COUNCIL_KIND = k("normal");
 
 /** Known reversibility of a critical action once executed (null: not stated; the UI shows "—"). */
 const REVERSIBLE: Readonly<Record<string, boolean>> = {
@@ -85,11 +87,13 @@ export interface RankInput {
   };
   critical_reports: { report_id: string; agent_id: string; subject: string; created_at: string }[];
   production_problems: { code: string; subject: string; detail: string; since: string | null; link: string }[];
+  /** HAIC H1.5c: councils in awaiting_owner whose window is still open (owner-inbox.ts councilsAwaitingOwner). */
+  councils?: { session_id: string; topic: string; since: string | null; deadline: string }[];
 }
 
 export interface InboxItem {
   item_id: string;
-  source: "consensus" | "recovery_plan" | "knowledge" | "critical_report" | "production_problem";
+  source: "consensus" | "recovery_plan" | "knowledge" | "critical_report" | "production_problem" | "council";
   kind: string;
   what: string;
   metric: { name: string; value: number; of: number; unit: string } | null;
@@ -101,8 +105,8 @@ export interface InboxItem {
   urgency: Urgency;
   score: number;
   score_parts: { U: number; B: number; A: number; D: number };
-  action: { kind: "approve_reject" | "approve_disable" | "acknowledge" | "none"; route: string | null; approver_only: boolean };
-  /** The Console page that holds the evidence (a hash route), for a production problem; otherwise null. */
+  action: { kind: "approve_reject" | "approve_disable" | "acknowledge" | "pick" | "none"; route: string | null; approver_only: boolean };
+  /** The Console page that holds the evidence (a hash route), for a production problem or a council; otherwise null. */
   page: string | null;
   deep_link: string;
 }
@@ -186,6 +190,15 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
       evidence_refs: [`ev:platform/production_problem/${p.code}:${p.subject}`], risk: null, deadline: null, created_at: p.since,
       action: { kind: "none", route: null, approver_only: false }, page: p.link,
     }, PROBLEM_KINDS[p.code] ?? k("high", "deploys"), now));
+  }
+  for (const c of input.councils ?? []) {
+    out.push(item({
+      item_id: `council:${c.session_id}`, source: "council", kind: "council_awaiting_pick",
+      what: `Council waits for your pick: ${c.topic}`.slice(0, 200), metric: null,
+      evidence_refs: [`ev:platform/council/${c.session_id}`], risk: null, deadline: c.deadline, created_at: c.since,
+      // The pick is made on the council's page, where its options, claims and dissent are shown (Cerebrum only, Q6).
+      action: { kind: "pick", route: "kernel.council_pick", approver_only: true }, page: `#/councils/${c.session_id}`,
+    }, COUNCIL_KIND, now));
   }
   const at = (x: InboxItem) => { const t = Date.parse(String(x.created_at ?? "")); return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY; };
   return out.sort((a, b) => b.score - a.score || at(a) - at(b) || (a.item_id < b.item_id ? -1 : a.item_id > b.item_id ? 1 : 0));
