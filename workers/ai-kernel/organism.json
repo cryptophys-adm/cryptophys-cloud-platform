@@ -86,6 +86,9 @@
       "task": "council_synthesis"
     },
     {
+      "task": "directive_draft"
+    },
+    {
       "task": "draft_adr_explanation"
     },
     {

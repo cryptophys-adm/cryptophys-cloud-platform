@@ -55,7 +55,7 @@ export async function conversationEnabled(db: D1Database): Promise<boolean> {
 export const turnLimit = (env: { CHAT_DAILY_TURN_LIMIT?: string }) => { const n = Number(env.CHAT_DAILY_TURN_LIMIT); return Number.isInteger(n) && n > 0 && n <= 500 ? n : CHAT_DAILY_TURN_LIMIT; };
 
 /** One turn from today's budget, atomically; false when it is used up. */
-async function reserveTurn(db: D1Database, today: string, limit: number): Promise<boolean> {
+export async function reserveTurn(db: D1Database, today: string, limit: number): Promise<boolean> {
   const r = await db.prepare(
     `INSERT INTO conversation_budget (day, turns) SELECT ?, 1 WHERE ? > 0
      ON CONFLICT(day) DO UPDATE SET turns = turns + 1 WHERE turns < ?`,
