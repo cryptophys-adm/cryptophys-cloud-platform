@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass } from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass, MessageSquareText } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -17,6 +17,8 @@ export const NAV = [
   // Owner 2026-11-13: approvals and open critical reports, the only things that need a person, come first.
   { label: "Owner", href: "#/owner", key: "owner", icon: Inbox },
   { label: "Command", href: "#/", key: "", icon: Terminal },
+  // HAIC H1c: the owners' read-only chat with the organism.
+  { label: "Ask", href: "#/ask", key: "ask", icon: MessageSquareText },
   { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
   // ADR-0016 T0: the vision the organism grows toward (read-only).
   { label: "Vision", href: "#/vision", key: "vision", icon: Compass },
