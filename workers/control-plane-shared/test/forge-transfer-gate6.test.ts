@@ -72,6 +72,26 @@ test("T4. cr_sources: open, unblocked forge requests without a type-check report
   assert.ok(!audit[0].payload_json.includes('"t"'), "no token in the audit");
 });
 
+test("T4b. cr_sources: the request that has waited longest goes first (2026-11-18: newest first type-checked a base request last)", async () => {
+  const db = migratedDb();
+  const row = (id: string, head: string, at: string) => db.prepare(
+    `INSERT INTO forge_change_requests (cr_id, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, created_at, updated_at, source, repo, blocked_reason)
+     VALUES (?, 0, ?, ?, 't', 'a', ?, ?, NULL, 'open', ?, ?, 'forge', 'platform-work', NULL)`,
+  ).bind(id, id.slice(3).replace(/-/, "/"), id.slice(3).replace(/-/, "/"), head, A, at, at).run();
+  await row("fg-claude-stacked", "d".repeat(40), "2026-11-18T16:49:55.017Z");
+  await row("fg-claude-base", "e".repeat(40), "2026-11-18T16:34:50.389Z");
+  await row("fg-claude-newest", "f".repeat(40), "2026-11-18T16:50:00.000Z");
+  const repo = (name: string) => ({
+    info: async () => ({ remote: `https://${"a".repeat(32)}.artifacts.cloudflare.net/git/cryptophys/${name}.git` }),
+    readCommit: async () => ({ hash: B, treeHash: A }), createToken: async () => ({ plaintext: "t", expiresAt: 0 }),
+  });
+  const binding = { get: async (name: string) => repo(name) };
+  const out = await crSourcesTick({ DB: db as never, ARTIFACTS: binding as never }, (async () => new Response("no", { status: 503 })) as never);
+  assert.deepEqual((out.results as any[]).map((r) => r.branch), ["cr/fg-claude-base"], "the oldest request is copied first; one attempt per tick");
+  const src = readFileSync(new URL("../../forge/src/transfer.ts", import.meta.url), "utf8");
+  assert.match(src, /ORDER BY c\.updated_at ASC, c\.rowid ASC LIMIT 3/);
+});
+
 test("T5. merge spike: run by the tick until one run succeeded; a failed run waits SPIKE_RETRY_MS", async () => {
   const db = migratedDb();
   const audit = (outcome: string, at: string) => db.prepare(
