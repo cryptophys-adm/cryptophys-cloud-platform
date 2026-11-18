@@ -120,7 +120,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["registry.identities_update", "registry", "POST", "/v1/identities", true, "IDENTITIES"],
   ["policy.decisions", "policy", "GET", "/v1/decisions", false, null],
   ["policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null],
-  ["policy.evaluate", "policy", "POST", "/v1/evaluate", false, null],
+  // HAIC H0a (ADR-0017 Decision 5): policy.evaluate is removed with the Policy page's "Evaluate" form.
   ["drift.list", "drift", "GET", "/v1/drift", false, null],
   // Owner 2026-11-15: the service detail panel reads a service's recorded drift changes (read only).
   ["drift.service", "drift", "GET", "/v1/drift/{id}", false, null],
@@ -134,13 +134,14 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 72 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 71 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
   // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
   // + registry.identities and registry.identities_update (owner 2026-11-16).
   // + kernel.adr and kernel.adr_one (ADR Steward step 4, read-only).
-  assert.equal(UI_ROUTES.length, 72);
+  // - policy.evaluate (HAIC H0a: the Policy page only reads).
+  assert.equal(UI_ROUTES.length, 71);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -149,7 +150,8 @@ test("1. route table: exactly the 72 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 72);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 71);
+  assert.ok(!UI_ROUTES.some((r) => r.id === "policy.evaluate" || (r.service === "policy" && r.method !== "GET")), "no UI route writes to the Policy Engine (HAIC H0a)");
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
   assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
   assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
@@ -167,11 +169,11 @@ test("2. approver flags: exactly the twenty approverOnly ids (owner clicks: appr
   assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.identities_update"].sort());
 });
 
-test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
+test("3. confirmations: non-GET have confirm except drift.observe; GET have null", () => {
   for (const r of UI_ROUTES) {
     if (r.method === "GET") assert.equal(r.confirm, null, r.id);
     else {
-      if (r.id === "policy.evaluate" || r.id === "drift.observe") assert.equal(r.confirm, null, r.id);
+      if (r.id === "drift.observe") assert.equal(r.confirm, null, r.id);
       else assert.ok(r.confirm, r.id);
     }
   }
@@ -254,7 +256,9 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // - the two registry PUT rows, a service record and a desired version (owner 2026-11-15).
   // + the registry's GET and POST /v1/identities (owner 2026-11-16).
   // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 70);
+  // - the policy's POST /v1/evaluate (HAIC H0a, ADR-0017 Decision 5).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 69);
+  assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "policy" && a.method !== "GET"), "the Policy Engine is read only from the Console (HAIC H0a)");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
