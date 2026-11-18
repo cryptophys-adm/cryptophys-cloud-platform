@@ -71,7 +71,7 @@ The constitution's line now reads: "Never move funds; a trading action needs the
   - the scalp, intraday and swing mode selector, gated on measured evidence like the Entry and Stop Grid's adaptation;
   - the Position Manager's thresholds expressed in R. It stays risk-only (Amendment 1).
   - None of these changes who may open a trade. The Decision Engine's gates are the same for every profile, and the owner's arm, Council auto-arm (Amendment 2) and AUTO (Amendment 1) keep exactly their authority.
-- **Downgrade.** The profile agent may move an account to a lower profile at any time, on its own. A downgrade only reduces risk, like a disarm, and nothing may block or delay it.
+- **Downgrade.** The profile agent may move an account to a lower profile at any time, on its own. A downgrade only reduces risk, like a disarm, and nothing may block or delay it. Amendment 5 narrows this for soft triggers only: a bounded council review may veto one.
 - **Upgrade.** An autonomous upgrade raises an account's per-trade risk cap without a per-change owner click. It therefore rests on a standing click, as the council's arm does in Amendment 2:
   - **The ceiling is the owner's.** The highest profile the agent may reach is set only by the owner, under the owner-only Access identity, CSRF check and audit record that arm and disarm require. Another user's approval never raises an account above that ceiling. Until the owner sets a ceiling above an account's current profile, the agent does not upgrade it.
   - **Never mid-trade.** An upgrade is never applied while the account has an open position or a pending order.
@@ -93,10 +93,10 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 
 ## Amendment 4 (owner, 2026-11-18): the Position Manager's take-profit ladder and partial closes
 
-- **Origin.** The owner decided on a live take-profit ladder with progressive partial profit-taking for the xauusd Position Manager ("a, langsung live, termasuk agent juga bisa dinamis mengatur TP sebagian secara progresive"; relayed by the orchestrator). The owner confirmed it directly to the platform session on 2026-11-18 ("Ya, benar, tulis Amendment 4"). It replaces Amendment 1's "move a take profit outward once, to TP2".
+- **Origin.** The owner decided on a live take-profit ladder with progressive partial profit-taking for the xauusd Position Manager ("a, langsung live, termasuk agent juga bisa dinamis mengatur TP sebagian secara progresive"; relayed by the orchestrator). The owner confirmed it directly to the platform session on 2026-11-18 ("Ya, benar, tulis Amendment 4"). It replaces Amendment 1's "move a take profit outward once, to TP2". The owner then extended it to every mode, Scalp included (relayed by the orchestrator; confirmed directly to the platform session on 2026-11-18, "Ya, semua mode").
 - **Take profit outward, more than once.** The Position Manager may move a position's take profit outward again and again, but only while its stop loss already locks a profit: the stop sits at TP1, or further in the trade's favour. From then on no move can turn the position into a loss. Before that lock, Amendment 1's single move to TP2 still applies.
-- **Partial closes.** At a take-profit level the Position Manager may close a bounded part of the position (xauusd sets the fraction, for example 25–50%). A partial close only reduces risk. The part left open is never below the broker's `volume_min`, and nothing is added or reopened.
-- **The ladder** (xauusd's design, for the record): when price passes TPx by the configured distance, the stop is locked to TPx−1, and the take profit moves outward to TPx+1 if momentum holds; otherwise the position is closed, wholly or in part. Intraday and Swing use it; Scalp does not. The distances and fractions are xauusd parameters, within the rules above.
+- **Partial closes.** At a take-profit level the Position Manager may close a bounded part of the position (xauusd sets the fraction, for example 25–50%). A partial close only reduces risk. The part closed and the part left open follow the broker's `volume_step`, the part left open is never below the broker's `volume_min`, and nothing is added or reopened. A position too small to split (for example 0.01 lots at a `volume_min` of 0.01) gets the stop lock only.
+- **The ladder** (xauusd's design, for the record): when price passes TPx by the configured distance, the stop is locked to TPx−1, and the take profit moves outward to TPx+1 if momentum holds; otherwise the position is closed, wholly or in part. Every mode uses it: Scalp, Intraday and Swing. The distances and fractions are xauusd parameters, within the rules above.
 - **Unchanged:**
   - the stop loss only tightens: never widened;
   - the Position Manager never opens, adds to, reverses or hedges a position;
@@ -105,6 +105,18 @@ The constitution's line now reads: "Never move funds; a trading action needs the
   - the xauusd external ceiling and the platform's trading capability rules.
 - **The constitution's line is unchanged.** These are risk rules of the Position Manager under the existing standing arm, not a new trading authority.
 - **Order of events.** xauusd builds the stop lock and the partial closes now (both already within Amendment 1). The multi-step take-profit moves go live after this amendment is merged.
+
+## Amendment 5 (owner, 2026-11-18): a bounded council veto on soft-trigger profile downgrades
+
+- **Origin.** The owner chose "Council boleh menolak" for the xauusd profile agent's downgrades (relayed by the orchestrator), knowingly narrowing Amendment 3's "nothing may block or delay it" for soft triggers only. The owner confirmed it directly to the platform session on 2026-11-18 ("Ya, tulis Amendment 5"), after being told that it weakens Amendment 3's protection.
+- **Soft triggers.** A drawdown of 20% or more from the account's drawdown reference (`dd_ref`), 4 losses in a row, or an extreme ATR.
+- **The review.** On a soft trigger the profile agent convenes the council once per trigger episode. The review is capped at about 2 minutes.
+- **The veto.** A `keep` verdict vetoes that downgrade. The veto holds for at most 24 hours, and ends at once if the trigger worsens: a drawdown of 25% or more, or 6 losses in a row. The downgrade then applies without the council, and no second review follows in the same episode.
+- **Fail-safe.** A council failure, an invalid verdict or a timeout means the downgrade applies.
+- **Never vetoable.** The kill switch and the daily loss limit still return the account to Safe at once (Amendment 3). Nothing in this amendment blocks or delays them, a disarm, or a downgrade from lowering the owner's ceiling.
+- **Recording.** Every veto is audited in xauusd, sent to the owner on Telegram, and mirrored as a `risk_profile.v1` `xauusd_digest` report at severity `warning`, with the trigger, the verdict, the evidence reference and when the veto ends (§3 rule 1 holds: no price level, lot size or imperative).
+- **Unchanged:** upgrades (Amendment 3: the owner's ceiling, never mid-trade, one step at a time); funds are never moved; the Decision Engine veto; the risk-only Position Manager; auto-disarm; the xauusd external ceiling and the platform's trading capability rules. The constitution's line is unchanged.
+- **Order of events.** xauusd builds it behind `OMEGA_PROFILE_COUNCIL_DOWNGRADE`, default `off`, and turns it on only after this amendment is merged. Until then every downgrade applies as Amendment 3 says.
 
 ## Guards
 

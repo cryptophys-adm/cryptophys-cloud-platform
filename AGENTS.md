@@ -21,7 +21,8 @@ owner closed #269 and asked for a real panel instead (#270).
   as Omega's live arm for AUTO selection of the single best strategy (ADR-0020 amendment 1, 2026-11-17); while the owner's
   Council auto-arm is on, the council may arm and disarm within its gates (ADR-0020 amendment 2, 2026-11-17); an xauusd
   profile agent may raise an account's risk profile only up to the owner's ceiling, never mid-trade (ADR-0020 amendment 3, 2026-11-18);
-  the Position Manager may ladder the take profit and close part of a position only once the stop locks a profit (amendment 4).
+  the Position Manager may ladder the take profit and close part of a position only once the stop locks a profit (amendment 4);
+  a council may veto a soft-trigger profile downgrade for at most 24 h, failing safe, never the kill switch or daily loss limit (amendment 5).
 - `workers/control-plane-shared/test/console-truthfulness.test.ts` enforces this in CI. Do not weaken
   or skip it; change the data source instead.
 - Agents open pull requests; they do not merge them. The orchestrator (the Claude cloud session)

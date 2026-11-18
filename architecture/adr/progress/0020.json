@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO, a risk-reducing Position Manager) and 2 (Council auto-arm); amendments 3 (risk profiles) and 4 (TP ladder) 2026-11-18. Nothing is built on the platform side; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO, a risk-reducing Position Manager) and 2 (Council auto-arm); amendments 3 (risk profiles), 4 (TP ladder) and 5 (soft-downgrade veto) 2026-11-18. No platform build; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
   "phases": [
     {
       "id": "D",
@@ -70,6 +70,16 @@
         "quote": "but only while its stop loss already locks a profit"
       },
       "note": "a documented decision, not a build: xauusd builds the ladder and the partial closes"
+    },
+    {
+      "id": "A5",
+      "title": "Amendment 5 recorded: a council veto on soft-trigger downgrades only; kill switch and daily loss never vetoed",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "A council failure, an invalid verdict or a timeout means the downgrade applies."
+      },
+      "note": "a documented decision, not a build: xauusd builds it behind a flag, off until merged"
     },
     {
       "id": "N",
