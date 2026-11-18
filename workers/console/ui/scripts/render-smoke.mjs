@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "proposals", "vision"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "proposals", "autonomy", "vision"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -414,6 +414,21 @@ MOCK["/api/kernel/v1/proposals"] = { schema: "typed_proposals.v1", available: tr
 ] };
 MOCK[`/api/kernel/v1/proposals/${TP}`] = MOCK["/api/kernel/v1/proposals"].proposals[0];
 MOCK[`/api/kernel/v1/proposals/${TP2}`] = MOCK["/api/kernel/v1/proposals"].proposals[1];
+// HAIC H4: the autonomy dial: deploys lowered after a regression, merges ready to rise, the rest at their ADR class.
+const grp = (group, label, level, ceiling, actions, extra = {}) => ({ group, label, level, level_label: level, ceiling, source: "adr", set_by: null, set_at: null, reason: null,
+  actions: actions.map(([action, cls, effective]) => ({ action, class: cls, ceiling: cls === "routine" ? "consensus" : "owner_click", effective })),
+  stats: { executions: 0, succeeded: 0, success_rate: null, regressions: 0 }, raise_to: null, regressions: [], ...extra });
+MOCK["/api/kernel/v1/autonomy"] = { available: true, raise_rule: { window_days: 14, min_executions: 30, min_success: 0.95 }, levels: [], held: [
+  { proposal_id: "cns_00000009-0000-4000-8000-000000000000", action: "deploy_commit", target: "cryptophys-console", autonomy_level: "suggest", created_at: at(20) }],
+  groups: [
+    grp("deploys", "Deploys", "suggest", "consensus", [["deploy_commit", "routine", "suggest"], ["redeploy_desired_version", "routine", "suggest"], ["deploy_destructive_migration", "critical", "suggest"]],
+      { source: "auto_downgrade", set_by: "system:autonomy-dial", set_at: at(40), reason: "cryptophys-console was rolled back after the deploy cns_00000008",
+        stats: { executions: 31, succeeded: 30, success_rate: 30 / 31, regressions: 1 }, regressions: [{ group: "deploys", kind: "rollback_after_deploy", at: at(45), ref: "cns_00000008", detail: "cryptophys-console was rolled back after the deploy cns_00000008" }] }),
+    grp("merges", "Merges into main", "owner_click", "consensus", [["merge_change", "routine", "owner_click"], ["merge_owner_change", "critical", "owner_click"]],
+      { source: "owner", set_by: "owner@example.com", set_at: at(60 * 24 * 15), reason: "watch merges", stats: { executions: 34, succeeded: 34, success_rate: 1, regressions: 0 }, raise_to: "consensus" }),
+    grp("protected", "Data, secrets and Access", "owner_click", "owner_click", [["rotate_secret", "critical", "owner_click"]]),
+    grp("trading", "Trading", "owner_click", "owner_click", []),
+  ] };
 MOCK[`/api/kernel/v1/councils/${CS2}`].session.typed_proposal = { proposal_id: TP2, errors: [] };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
@@ -600,6 +615,8 @@ const COUNCIL_CHECKS = [
   { name: "proposal-draft", hash: `#/proposals/${TP}`, override: {}, want: ["Raise the daily deploy limit to 12", "waits for you", "policy parameter", "daily-deploy-limit", "value", "12", "native_deploy_failure_rate: 0.12 → 0.04 over 14d", "set_policy_parameter", "Confirm…", "Reject…", "a council", "Typed proposals"], not: [] },
   { name: "proposal-handed-off", hash: `#/proposals/${TP2}`, override: {}, want: ["handed off", "the evolver", "int_0123456789ab", "decided"], not: ["Confirm…", "Reject…"] },
   { name: "proposal-operator", hash: `#/proposals/${TP}`, override: { "/api/whoami": OPERATOR }, want: ["Raise the daily deploy limit to 12"], not: ["Confirm…", "Reject…"] },
+  { name: "autonomy", hash: "#/autonomy", override: {}, want: ["Autonomy dial", "Deploys", "lowered after a regression", "rolled back after the deploy", "Merges into main", "ready to rise to on consensus", "34 executions · 100% · 0 regression(s), 14 days", "your note: watch merges", "Trading", "never rises above your click", "Set…", "Held by the dial", "deploy_commit"], not: [] },
+  { name: "autonomy-operator", hash: "#/autonomy", override: { "/api/whoami": OPERATOR }, want: ["Autonomy dial", "Deploys"], not: ["Set…"] },
   { name: "council-link", hash: `#/councils/${CS2}`, override: {}, want: [`typed proposal ${TP2}`], not: [] },
   { name: "operator", hash: `#/councils/${CS}`, override: { "/api/whoami": OPERATOR }, want: ["Options", "Run destructive-migration deploys through the workflow first"], not: ["Pick…", "Dismiss…", "Call a council", "Send to the council"] },
 ];

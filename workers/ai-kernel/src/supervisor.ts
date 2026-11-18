@@ -604,9 +604,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         // Once per unit and commit, except that a proposal the Policy Engine vetoed (shadow_blocked,
         // e.g. a rate limit) is retried after an hour; otherwise a commit blocked once by the hourly
         // limit would never deploy (2026-11-07: #187 stayed undeployed after a target_rate_limit veto).
+        // HAIC H4: so is one the autonomy dial held (observe or suggest) or one whose owner window lapsed (expired), so
+        // the commit deploys once the owner raises the level again.
         const seen = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ?
-             AND (status <> 'shadow_blocked' OR created_at >= ?)
+             AND ((status NOT IN ('shadow_blocked', 'expired') AND NOT (status = 'shadow_passed' AND COALESCE(autonomy_level, '') IN ('observe', 'suggest'))) OR created_at >= ?)
              AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
         ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString(), brakeOff ? 1 : 0).first();
         if (seen) {
@@ -689,7 +691,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         }
         const seen = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action IN ('merge_change', 'merge_owner_change') AND target = ? AND json_extract(params_json, '$.head_sha') = ?
-             AND (created_at >= ? OR NOT (status = 'shadow_blocked' OR (status = 'rejected' AND ? = 1 AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0))) LIMIT 1`,
+             AND (created_at >= ? OR NOT (status = 'shadow_blocked' OR (status = 'rejected' AND ? = 1 AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0)
+               OR (action = 'merge_change' AND (status = 'expired' OR (status = 'shadow_passed' AND COALESCE(autonomy_level, '') IN ('observe', 'suggest')))))) LIMIT 1`,
         ).bind(cr.cr_id, cr.head_sha, hourAgo, await mergeBrakeOff(env.DB) ? 1 : 0).first();
         if (seen) continue;
         const state = await env.FORGE_MERGE.changeState(cr.cr_id);

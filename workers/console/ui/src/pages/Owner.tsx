@@ -230,6 +230,7 @@ function ItemDetail({ id, items, sections, mode, reload }: { id: string; items: 
   else if (it.source === "critical_report") { const x = sections.reports.find((q) => q.report_id === ref); if (x) action = <CriticalReportList rows={[x]} reload={reload} empty="—" />; }
   else if (it.source === "production_problem") { const x = sections.problems.find((q) => `${q.code}:${q.subject}` === ref); if (x) action = <ProblemItem p={x} />; }
   else if (it.source === "proposal") action = <a className="btn py-1!" href={`#/proposals/${ref}`}>Open the proposal to confirm or reject it</a>;
+  else if (it.source === "autonomy") action = <a className="btn py-1!" href="#/autonomy">Open the autonomy dial to set the level</a>;
   else if (it.source === "council") {
     const x = sections.councils.find((q) => q.session_id === ref);
     const y = sections.councilProposals.find((q) => q.session_id === ref);

@@ -22,6 +22,7 @@ import Vision from "./pages/Vision";
 import Ask from "./pages/Ask";
 import Councils from "./pages/Councils";
 import Proposals from "./pages/Proposals";
+import Autonomy from "./pages/Autonomy";
 
 const SAFE = /^[A-Za-z0-9._@+:-]{1,128}$/;
 function parse(hash: string) {
@@ -57,6 +58,8 @@ export default function App() {
     case "councils": page = <Councils council={id} />; break;
     // HAIC H2: typed proposals; #/proposals/<proposal id> opens one (confirm or reject a draft).
     case "proposals": page = <Proposals proposal={id} />; break;
+    // HAIC H4: the autonomy dial, per group of consensus actions.
+    case "autonomy": page = <Autonomy />; break;
     case "agents": page = id ? <AgentDetail id={id} /> : <Agents />; break;
     case "cognition": page = <Cognition />; break;
     case "consensus": page = <Consensus />; break;

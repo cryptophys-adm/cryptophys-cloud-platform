@@ -4,7 +4,8 @@
  *  - the proposal exists, is in status 'executing', and names exactly this action and target;
  *  - the consensus mode is not 'shadow';
  *  - the Policy Engine recorded an allow for consensus.execute on "<action>:<target>" in the
- *    last 10 minutes, and that decision is the proposal's own policy decision.
+ *    last 10 minutes, and that decision is the proposal's own policy decision;
+ *  - a critical action, or one the autonomy dial held at owner_click (HAIC H4), has the owner's approval click.
  * The kernel cannot make a Worker act on a proposal that did not pass, and a replayed or
  * stale decision is refused.
  */
@@ -33,9 +34,10 @@ export async function verifyConsensusExecution(
     || !Number.isFinite(age) || age < 0 || age > CONSENSUS_EXECUTION_WINDOW_MS) {
     throw new Error("consensus_decision_invalid");
   }
-  const cls = await db.prepare("SELECT class FROM consensus_proposals WHERE proposal_id = ?").bind(proposalId).first<{ class: string }>();
-  if (cls?.class === "critical") {
-    // Phase 4: a critical action also needs exactly one owner approval click (migration 0024).
+  const cls = await db.prepare("SELECT class, autonomy_level FROM consensus_proposals WHERE proposal_id = ?").bind(proposalId).first<{ class: string; autonomy_level: string | null }>();
+  if (cls?.class === "critical" || cls?.autonomy_level === "owner_click") {
+    // Phase 4: a critical action also needs exactly one owner approval click (migration 0024). HAIC H4 (migration 0083):
+    // so does a routine action the owner's autonomy dial held at owner_click.
     const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?").bind(proposalId).first<{ decision: string }>();
     if (owner?.decision !== "approve") throw new Error("consensus_owner_approval_required");
   }

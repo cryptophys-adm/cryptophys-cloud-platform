@@ -74,6 +74,9 @@ export const COUNCIL_KIND = k("normal");
 export const COUNCIL_PROPOSAL_KIND = k("low");
 /** HAIC H2: a typed proposal draft waiting for the owner's confirmation. Nothing waits on it; 7-day window. */
 export const TYPED_PROPOSAL_KIND = k("normal");
+/** HAIC H4: a group a regression lowered (high: what it held back now waits for clicks) and one ready to be raised (low). */
+export const AUTONOMY_LOWERED_KIND = k("high");
+export const AUTONOMY_RAISE_KIND = k("low");
 
 /** Known reversibility of a critical action once executed (null: not stated; the UI shows "—"). */
 const REVERSIBLE: Readonly<Record<string, boolean>> = {
@@ -97,11 +100,13 @@ export interface RankInput {
   council_proposals?: { session_id: string; topic: string; proposed_by: string; trigger_kind: string; refs: string[]; since: string; deadline: string }[];
   /** HAIC H2: typed proposal drafts waiting for the owner (ai-kernel/src/proposals.ts draftsAwaitingOwner). */
   typed_proposals?: { proposal_id: string; kind: string; title: string; since: string; deadline: string; origin_source: string }[];
+  /** HAIC H4: the autonomy dial's notices (ai-kernel/src/autonomy.ts autonomyNotices). */
+  autonomy?: { group: string; label: string; kind: "lowered" | "raise_ready"; level: string; to: string | null; detail: string; since: string }[];
 }
 
 export interface InboxItem {
   item_id: string;
-  source: "consensus" | "recovery_plan" | "knowledge" | "critical_report" | "production_problem" | "council" | "proposal";
+  source: "consensus" | "recovery_plan" | "knowledge" | "critical_report" | "production_problem" | "council" | "proposal" | "autonomy";
   kind: string;
   what: string;
   metric: { name: string; value: number; of: number; unit: string } | null;
@@ -113,7 +118,7 @@ export interface InboxItem {
   urgency: Urgency;
   score: number;
   score_parts: { U: number; B: number; A: number; D: number };
-  action: { kind: "approve_reject" | "approve_disable" | "acknowledge" | "pick" | "start" | "confirm" | "none"; route: string | null; approver_only: boolean };
+  action: { kind: "approve_reject" | "approve_disable" | "acknowledge" | "pick" | "start" | "confirm" | "set_level" | "none"; route: string | null; approver_only: boolean };
   /** The Console page that holds the evidence (a hash route), for a production problem or a council; otherwise null. */
   page: string | null;
   deep_link: string;
@@ -224,6 +229,14 @@ export function rankInbox(input: RankInput, now = Date.now()): InboxItem[] {
       evidence_refs: [`ev:platform/proposal/${p.proposal_id}`], risk: null, deadline: p.deadline, created_at: p.since,
       action: { kind: "confirm", route: "kernel.proposal_confirm", approver_only: true }, page: `#/proposals/${p.proposal_id}`,
     }, TYPED_PROPOSAL_KIND, now));
+  }
+  for (const a of input.autonomy ?? []) {
+    out.push(item({
+      item_id: `autonomy:${a.group}:${a.kind}`, source: "autonomy", kind: a.kind === "lowered" ? "autonomy_lowered" : "autonomy_raise_ready",
+      what: (a.kind === "lowered" ? `${a.label} lowered to ${a.level.replace(/_/g, " ")} after a regression: ${a.detail}` : `${a.label} is ready to rise to ${String(a.to).replace(/_/g, " ")}: ${a.detail}`).slice(0, 200), metric: null,
+      evidence_refs: [`ev:platform/autonomy/${a.group}`], risk: null, deadline: null, created_at: a.since,
+      action: { kind: "set_level", route: "kernel.autonomy_set", approver_only: true }, page: "#/autonomy",
+    }, a.kind === "lowered" ? AUTONOMY_LOWERED_KIND : AUTONOMY_RAISE_KIND, now));
   }
   const at = (x: InboxItem) => { const t = Date.parse(String(x.created_at ?? "")); return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY; };
   return out.sort((a, b) => b.score - a.score || at(a) - at(b) || (a.item_id < b.item_id ? -1 : a.item_id > b.item_id ? 1 : 0));
