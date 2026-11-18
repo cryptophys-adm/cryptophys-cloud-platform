@@ -46,6 +46,8 @@ export interface KernelHttpEnv extends KernelEnv {
   FORGE_DOCS?: { read(input: Record<string, unknown>): Promise<Record<string, unknown>> };
   /** HAIC H1.5b: the CouncilAgent Durable Object (Call for Councils), one per session id. */
   COUNCIL?: { idFromName(name: string): unknown; get(id: unknown): CouncilStub };
+  /** HAIC push hub (§4.5): the ConsoleHub Durable Object, one instance named "console". */
+  HUB?: { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response>; publish(events: { channel: string; kind: string; data: Record<string, unknown> }[]): Promise<unknown> } };
   /** HAIC H1.5e: the R2 bucket cryptophys-council-transcripts; each closed council's transcript is one object in it. */
   TRANSCRIPTS?: { put(key: string, value: string, options?: unknown): Promise<unknown> };
   CHAT_DAILY_TURN_LIMIT?: string;
