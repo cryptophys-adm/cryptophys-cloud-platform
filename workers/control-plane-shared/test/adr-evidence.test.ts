@@ -515,7 +515,7 @@ test("AE8. ADR-0020 from xauusd's strategy_arm.v1 reports: N by an owner's click
   const states = (e: AdrEvaluation) => Object.fromEntries(e.phases.map((p) => [p.id, p.state]));
   // No report yet: N and R are open (no longer not measurable), A1 rests on the document, D is the document.
   const before = await evaluateAdrManifest(m20, deps(s.db)) as AdrEvaluation;
-  assert.deepEqual(states(before), { D: "doc_asserted", A1: "doc_asserted", A2: "doc_asserted", A3: "doc_asserted", A4: "doc_asserted", A5: "doc_asserted", N: "open", R: "open" });
+  assert.deepEqual(states(before), { D: "doc_asserted", A1: "doc_asserted", A2: "doc_asserted", A3: "doc_asserted", A4: "doc_asserted", A5: "doc_asserted", A6: "doc_asserted", N: "open", R: "open" });
   assert.deepEqual(before.next_step?.phase, "N");
   assert.ok(before.blockers.includes("R: depends on N"), JSON.stringify(before.blockers));
   // The two reports production D1 holds (2026-11-17), in their shape: owner arms at 11:02, mode auto with owner disarms at 12:02.
@@ -524,16 +524,16 @@ test("AE8. ADR-0020 from xauusd's strategy_arm.v1 reports: N by an owner's click
   xr.run("rpt_2541a17b", JSON.stringify({ schema: "strategy_arm.v1", mode: "armed", armed: ["sweep_reversal", "pattern_event", "zone_pullback"], armed_count: 3, max: 3,
     items: [{ event: "armed", strategy_id: "sweep_reversal", reason: "owner", armed_count: 1, at: "2026-11-17T09:26:54.241Z", audit_ref: 1 }], source: "xauusd-ai-trading-assistant" }), at1);
   const armedOnly = await evaluateAdrManifest(m20, deps(s.db, { now: Date.parse(at1) + HOUR })) as AdrEvaluation;
-  assert.deepEqual(states(armedOnly), { D: "doc_asserted", A1: "doc_asserted", A2: "doc_asserted", A3: "doc_asserted", A4: "doc_asserted", A5: "doc_asserted", N: "proven", R: "proven" }, "no mode auto report yet");
+  assert.deepEqual(states(armedOnly), { D: "doc_asserted", A1: "doc_asserted", A2: "doc_asserted", A3: "doc_asserted", A4: "doc_asserted", A5: "doc_asserted", A6: "doc_asserted", N: "proven", R: "proven" }, "no mode auto report yet");
   assert.deepEqual(armedOnly.phases.find((p) => p.id === "N")!.refs, [`ev:platform/report/rpt_2541a17b@${at1}#items`]);
   xr.run("rpt_fd9da96b", JSON.stringify({ schema: "strategy_arm.v1", mode: "auto", armed: [], armed_count: 0, max: 3,
     items: [{ event: "disarmed", strategy_id: "zone_pullback", reason: "owner", armed_count: 2 }, { event: "picked", mode: "auto", strategy_id: "zone_pullback", confidence: 0.85 }],
     source: "xauusd-ai-trading-assistant" }), at2);
   const e = await evaluateAdrManifest(m20, deps(s.db, { now: Date.parse(at2) + HOUR })) as AdrEvaluation;
-  assert.deepEqual(states(e), { D: "doc_asserted", A1: "proven", A2: "doc_asserted", A3: "doc_asserted", A4: "doc_asserted", A5: "doc_asserted", N: "proven", R: "proven" });
+  assert.deepEqual(states(e), { D: "doc_asserted", A1: "proven", A2: "doc_asserted", A3: "doc_asserted", A4: "doc_asserted", A5: "doc_asserted", A6: "doc_asserted", N: "proven", R: "proven" });
   const ref = (id: string) => e.phases.find((p) => p.id === id)!.refs;
   assert.deepEqual([ref("A1"), ref("N"), ref("R")], [[`ev:platform/report/rpt_fd9da96b@${at2}#schema`], [`ev:platform/report/rpt_fd9da96b@${at2}#items`], [`ev:platform/report/rpt_fd9da96b@${at2}#schema`]]);
-  assert.deepEqual([e.status, e.phases_complete, e.phases_total, e.phases_proven, e.phases_doc_asserted, e.percent, e.percent_proven], ["done", 8, 8, 3, 5, 100, 38]);
+  assert.deepEqual([e.status, e.phases_complete, e.phases_total, e.phases_proven, e.phases_doc_asserted, e.percent, e.percent_proven], ["done", 9, 9, 3, 6, 100, 33]);
   for (const p of e.phases) p.refs.forEach((r) => assert.match(r, EV_REF, `${p.id}: ${r}`));
   assertBoundedAndIndexed(db.raw, s.seen);
   assert.ok(s.seen.some((q) => /FROM agent_reports r WHERE r\.agent_id = \? AND r\.kind = \?/.test(q.sql)));
