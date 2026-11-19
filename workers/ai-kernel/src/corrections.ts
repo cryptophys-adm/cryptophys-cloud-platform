@@ -13,9 +13,9 @@
 //   The payload never holds the text, which stays in body_json.
 // - It changes no parameter, weight, proposal or gate: it writes the corrections table and the audit chain only.
 import { appendAuditEvent, appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
-import { CHAT_MODEL } from "../../control-plane-shared/src/conversation.ts";
+import { CHAT_MODEL, CHAT_SERVICE } from "../../control-plane-shared/src/conversation.ts";
 import {
-  CORRECTION_SIDES, buildCorrection, type Correction, type CorrectionContext, type CorrectionInput,
+  CORRECTION_SIDES, buildCorrection, forbiddenCorrectionKeys, type Correction, type CorrectionContext, type CorrectionInput,
 } from "../../control-plane-shared/src/correction.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 
@@ -130,6 +130,102 @@ export function correctionInputFromBody(body: Record<string, unknown>): Correcti
     evidence_refs: body.evidence_refs, supersedes: body.supersedes,
     target: t ? { ref: t.ref, subject: t.subject, as_of: t.as_of } : { ref: body.target_ref, subject: body.subject, as_of: body.as_of },
   };
+}
+
+// ---------------------------------------------------------------- H3c: council and proposal corrections, reject reasons
+//
+// HAIC H3c (docs/design/HAIC-H3.md §3, §11 step 3; owner 2026-11-19, "Setuju semua rekomendasi"). The owner corrects a
+// council's message, claim or option, or a typed proposal; an owner's free-text reject reason on a typed proposal or a
+// knowledge review is recorded as an owner_decision (Q6, weight 1). This module reads what it corrects as plain values
+// handed in by the caller: it never imports the council, typed-proposal, knowledge, consensus, policy-parameter,
+// autonomy-dial or executor modules (test corrections-boundary-h3), and it writes only the corrections table and the
+// audit chain, through recordCorrection.
+
+/**
+ * The council's moderator, whose synthesis holds the options (§3: subject agent:<moderator>). ai-kernel/src/council.ts
+ * names it MODERATOR; it is not imported from there (that module writes drafts), and test H3c-9 keeps the two equal.
+ */
+export const COUNCIL_MODERATOR_SUBJECT = "agent:auditor";
+/** The ev: ref of a council message, claim or option (§3). The ref grammar allows no "-" in a field: opt-2 is option_opt_2. */
+export const councilRef = (sessionId: string, field: string) => `ev:platform/council/${sessionId}#${field}`;
+export const proposalRef = (proposalId: string) => `ev:platform/typed_proposal/${proposalId}`;
+export const knowledgeRef = (proposalId: string) => `ev:platform/knowledge/${proposalId}`;
+
+/** What a council correction reads of a council (GET /v1/councils/{id}): its id and its messages. */
+export interface CouncilView {
+  session: { session_id: string };
+  messages: { seq: number; at: string; author: string; phase: string; claims?: unknown[] | null; options?: { option_id: string }[] | null }[];
+}
+/** What a proposal correction reads of a typed proposal (GET /v1/proposals/{id}): its id, its time and its origin. */
+export interface ProposalView { proposal_id: string; created_at: string; body: { origin?: { source?: unknown } | null } | null }
+
+const bad = (message: string) => new CorrectionError(400, "invalid_request", message);
+/**
+ * The judgement in a correction body: what the owner says, never where it points (that comes from the record itself). A
+ * parameter or price key anywhere in the body is refused, as the contract refuses it in a record (§4.1).
+ */
+function judgement(body: Record<string, unknown>) {
+  const forbidden = forbiddenCorrectionKeys(body, "body");
+  if (forbidden.length) throw bad(`forbidden_key: ${forbidden[0]}`);
+  return { rating: body.rating, category: body.category, text: body.text, evidence_refs: body.evidence_refs };
+}
+
+/**
+ * POST /v1/councils/{id}/corrections: the owner corrects one message ({seq}), one of its claims ({seq, claim}, the
+ * claim's 0-based index) or one option of the newest synthesis ({option_id}). A target that does not exist is a 400; a
+ * council in any state, expired or closed included, is corrected all the same (a correction is never refused for it).
+ * Only an agent's output is corrected: an owner's or a system message has no agent subject.
+ */
+export async function recordCouncilCorrection(db: D1Database, council: CouncilView, body: Record<string, unknown>, ctx: RecordContext): Promise<Recorded> {
+  const id = council.session.session_id;
+  const msgs = Array.isArray(council.messages) ? council.messages : [];
+  let target: { ref: string; subject: string; as_of: string | null };
+  if (body.option_id !== undefined) {
+    if (body.seq !== undefined || body.claim !== undefined) throw bad("name a message (seq, and claim for one of its claims) or an option (option_id), not both");
+    const optionId = body.option_id;
+    if (typeof optionId !== "string" || !/^[a-z0-9-]{1,40}$/.test(optionId)) throw bad("option_id is an option's id");
+    // The newest synthesis is the one whose options the owner picks from (as pickOption reads it).
+    const synth = [...msgs].reverse().find((m) => m.phase === "synthesis");
+    if (!synth || !Array.isArray(synth.options) || !synth.options.some((o) => o?.option_id === optionId)) throw bad("no such option");
+    target = { ref: councilRef(id, `option_${optionId.replace(/-/g, "_")}`), subject: synth.author, as_of: synth.at };
+  } else {
+    if (body.seq === undefined) throw bad("a council correction names a message (seq), a claim (seq and claim) or an option (option_id)");
+    if (!Number.isInteger(body.seq) || (body.seq as number) < 1) throw bad("seq is a message's number");
+    const m = msgs.find((x) => x.seq === body.seq);
+    if (!m) throw bad("no such message");
+    if (!/^agent:[A-Za-z0-9_.:-]{1,100}$/.test(m.author)) throw bad("only an agent's message is corrected");
+    let field = `seq_${m.seq}`;
+    if (body.claim !== undefined) {
+      const claims = Array.isArray(m.claims) ? m.claims : [];
+      if (!Number.isInteger(body.claim) || (body.claim as number) < 0 || (body.claim as number) >= claims.length) throw bad("no such claim");
+      field += `.claim_${body.claim}`;
+    }
+    target = { ref: councilRef(id, field), subject: m.author, as_of: m.at };
+  }
+  return recordCorrection(db, { side: "cerebrum", source: "council", ...judgement(body), target }, ctx);
+}
+
+/** A typed proposal's subject (§3): the council's moderator for a council's pick, the chat model for a chat directive. */
+export const proposalSubject = (p: ProposalView): string => (p.body?.origin?.source === "chat" ? modelSubject(CHAT_MODEL) : COUNCIL_MODERATOR_SUBJECT);
+
+/** POST /v1/proposals/{id}/corrections: the owner corrects a typed proposal, in any state (the route reads it, 404 when missing). */
+export function recordProposalCorrection(db: D1Database, p: ProposalView, body: Record<string, unknown>, ctx: RecordContext): Promise<Recorded> {
+  return recordCorrection(db, { side: "cerebrum", source: "typed_proposal", ...judgement(body), target: { ref: proposalRef(p.proposal_id), subject: proposalSubject(p), as_of: p.created_at } }, ctx);
+}
+
+/**
+ * Q6: an owner's free-text reject reason is recorded as an owner_decision (weight 1, LABEL_WEIGHT). No reason, no
+ * record. The reject stands whatever happens here: a failure is logged without the text, never thrown (as rateTurn).
+ */
+export async function recordRejectReason(db: D1Database, r: { source: "typed_proposal" | "knowledge_review"; ref: string; subject: string; as_of: string | null; reason: string | null }, ctx: RecordContext): Promise<string | null> {
+  if (!r.reason) return null;
+  try {
+    const out = await recordCorrection(db, { side: "cerebrum", source: r.source, label: "owner_decision", text: r.reason, target: { ref: r.ref, subject: r.subject, as_of: r.as_of } }, ctx);
+    return out.correction.correction_id;
+  } catch (err) {
+    console.error(JSON.stringify({ service: CHAT_SERVICE, event: "reject_reason_correction_failed", source: r.source, ref: r.ref, message: String((err as Error)?.message ?? err).slice(0, 200) }));
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- Q8: the one-off backfill of existing chat ratings

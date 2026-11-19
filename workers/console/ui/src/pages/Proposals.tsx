@@ -7,6 +7,7 @@ import { useSession } from "../lib/session";
 import { ago, navigate } from "../lib/format";
 import { refPage } from "./Ask";
 import { hubLabel, useDebounced, useHub } from "../lib/hub";
+import { CorrectionBox } from "../components/CorrectionBox";
 
 /**
  * HAIC H2 (ADR-0017 H2; owner answers of 2026-11-18): typed proposals. A council's pick (and, with H2b, a chat
@@ -14,6 +15,10 @@ import { hubLabel, useDebounced, useHub } from "../lib/hub";
  * kind's way: policy_parameter to consensus (set_policy_parameter, routine), repository_task to the evolver,
  * vision_kpi to the orchestrator (a guard path: the merge needs the owner's click), shadow_arm to xauusd. Nothing here
  * acts by itself; operators read.
+ *
+ * HAIC H3c (docs/design/HAIC-H3.md §11 step 3, Q6): the owner may correct a proposal in any state (kept as the owner's
+ * teaching of its origin: the council's moderator or the chat model), and a reject's note is also kept as the owner's
+ * decision (weight 1). Neither confirms, rejects or changes anything.
  */
 
 const ID = /^tp_[0-9a-f]{16}$/;
@@ -87,10 +92,17 @@ function Detail({ id }: { id: string }) {
             <span className="label">Note (optional, at most 500 characters)</span>
             <input className="field" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why you confirm or reject it" />
           </label>
+          <p className="mt-1 text-[10px] text-slate-600">A reject's note is also kept as your decision on the proposal's origin, for its teaching record.</p>
           <div className="mt-2 flex justify-end gap-2">
             <button type="button" className="btn btn-danger py-1!" onClick={() => decide("kernel.proposal_reject")}><X className="h-3.5 w-3.5" />Reject…</button>
             <button type="button" className="btn btn-approve py-1!" onClick={() => decide("kernel.proposal_confirm")}><Check className="h-3.5 w-3.5" />Confirm…</button>
           </div>
+        </div>
+      )}
+      {owner && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-2 text-[10px] text-slate-500">
+          <span>Correct this proposal: what its origin got wrong (or right). It decides nothing.</span>
+          <CorrectionBox what="this proposal" submit={(body) => call("kernel.proposal_correct", p.proposal_id, body)} />
         </div>
       )}
     </Panel>

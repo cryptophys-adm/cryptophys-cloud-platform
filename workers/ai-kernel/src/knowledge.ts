@@ -22,6 +22,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { knowledgeDedupHash, missingDedupColumn } from "./learning-dedup.ts";
+import { knowledgeRef, recordRejectReason } from "./corrections.ts";
 
 export const KNOWLEDGE_ITEM_VERSION = "cryptophys.knowledge-item.v1";
 export const KNOWLEDGE_KINDS = ["caution", "role_reminder", "param_candidate"] as const;
@@ -399,9 +400,11 @@ export async function getKnowledge(db: D1Database, proposalId: string): Promise<
 
 /**
  * A person's decision on a pending proposal. Approvers only (checked by the caller); a person's Access
- * identity, never a service token; never the proposer. Each proposal is decided once.
+ * identity, never a service token; never the proposer. Each proposal is decided once. HAIC H3c (Q6): an owner's
+ * reject reason is also recorded as an owner_decision correction of the proposer (`opts.owner`, from the caller's
+ * authentication); an approver account that is not an owner corrects nothing in H3 (Q9).
  */
-export async function decideKnowledge(db: D1Database, proposalId: string, decision: "approve" | "reject", approver: string, reasonRaw: unknown, now = Date.now()): Promise<JsonObject> {
+export async function decideKnowledge(db: D1Database, proposalId: string, decision: "approve" | "reject", approver: string, reasonRaw: unknown, now = Date.now(), opts: { owner?: boolean } = {}): Promise<JsonObject> {
   if (!PROPOSAL_ID.test(proposalId)) throw new KnowledgeDecisionError(404, "not_found", "unknown proposal");
   if (!/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(approver)) throw new KnowledgeDecisionError(403, "person_required", "a knowledge review needs a person's Access identity");
   const reason = typeof reasonRaw === "string" && reasonRaw.trim() ? reasonRaw.trim().slice(0, 500) : null;
@@ -420,6 +423,10 @@ export async function decideKnowledge(db: D1Database, proposalId: string, decisi
     subject: `${r.item_id}@${r.item_version}`, outcome: status,
     payload: { proposal_id: proposalId, proposer: `agent:${r.proposer_agent_id}`, content_sha256: r.content_sha256, reason },
   });
+  // The corrections ledger only; a failure there is logged and the review stands.
+  if (decision === "reject" && opts.owner) {
+    await recordRejectReason(db, { source: "knowledge_review", ref: knowledgeRef(proposalId), subject: `agent:${r.proposer_agent_id}`, as_of: r.created_at, reason }, { actor: `owner:${approver}`, owner: true, attested_by: "cerebrum_access" });
+  }
   return { proposal_id: proposalId, item_id: r.item_id, item_version: r.item_version, status, decided_by: approver, reason, decided_at: at };
 }
 

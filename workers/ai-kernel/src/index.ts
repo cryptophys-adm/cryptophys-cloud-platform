@@ -50,10 +50,14 @@ import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTy
 import { DirectiveError, draftFromDirective } from "./directives.ts";
 import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
 import { listIncidents } from "./incidents.ts";
-import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection } from "./corrections.ts";
+import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection, recordCouncilCorrection, recordProposalCorrection, type Recorded } from "./corrections.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
+
+/** The answer to a recorded correction (§7.1): 201 when written, 200 when it was a duplicate of the actor's newest row. */
+const correctionResponse = (r: Recorded) =>
+  json({ correction_id: r.correction.correction_id, deduplicated: r.deduplicated, redactions: r.correction.redactions, correction: r.correction }, r.deduplicated ? 200 : 201);
 
 async function isApprover(request: Request, env: Env): Promise<boolean> {
   // Owners and approver accounts (2026-11-07); requireApprover refuses service tokens.
@@ -90,7 +94,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -204,8 +208,7 @@ export default {
           if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
           const body = await readJsonObject(request);
           if (!body.ok) return body.response;
-          const r = await recordCorrection(env.DB, correctionInputFromBody(body.value), { actor: `owner:${operator.actor}`, owner: true, attested_by: "cerebrum_access" });
-          return json({ correction_id: r.correction.correction_id, deduplicated: r.deduplicated, redactions: r.correction.redactions, correction: r.correction }, r.deduplicated ? 200 : 201);
+          return correctionResponse(await recordCorrection(env.DB, correctionInputFromBody(body.value), { actor: `owner:${operator.actor}`, owner: true, attested_by: "cerebrum_access" }));
         } catch (err) {
           if (err instanceof CorrectionError) return errorResponse(err.status, err.code, err.message);
           throw err;
@@ -259,19 +262,23 @@ export default {
             throw err;
           }
         }
-        const m = /^\/v1\/proposals\/(tp_[0-9a-f]{16})(?:\/(confirm|reject))?$/.exec(path);
+        const m = /^\/v1\/proposals\/(tp_[0-9a-f]{16})(?:\/(confirm|reject|corrections))?$/.exec(path);
         if (!m) return errorResponse(404, "not_found");
         try {
           if (!m[2]) return request.method === "GET" ? json(await readTypedProposal(env.DB, m[1])) : errorResponse(405, "method_not_allowed");
           if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
-          if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner confirms or rejects a typed proposal");
+          if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner confirms, rejects or corrects a typed proposal");
           const body = await readJsonObject(request);
           if (!body.ok) return body.response;
+          // HAIC H3c (docs/design/HAIC-H3.md §3): the owner's correction of a proposal, in any state. It decides nothing.
+          if (m[2] === "corrections") {
+            return correctionResponse(await recordProposalCorrection(env.DB, await readTypedProposal(env.DB, m[1]), body.value, { actor: `owner:${operator.actor}`, owner: true, attested_by: "cerebrum_access" }));
+          }
           const out = await decideProposal(env.DB, operator.actor, m[1], m[2] as "confirm" | "reject", body.value.reason);
           await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "proposals" } }]);
           return json(out);
         } catch (err) {
-          if (err instanceof ProposalError) return errorResponse(err.status, err.code, err.message);
+          if (err instanceof ProposalError || err instanceof CorrectionError) return errorResponse(err.status, err.code, err.message);
           throw err;
         }
       }
@@ -279,7 +286,7 @@ export default {
       // it with a message, picks an option or dismisses it (Q6: picks in Cerebrum only). A council never acts.
       if (path === "/v1/councils" || path.startsWith("/v1/councils/")) {
         if (path === "/v1/councils" && request.method === "GET") return json(await listCouncils(env.DB));
-        const m = /^\/v1\/councils(?:\/(cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(messages|pick|dismiss|start))?)?$/.exec(path);
+        const m = /^\/v1\/councils(?:\/(cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(messages|pick|dismiss|start|corrections))?)?$/.exec(path);
         if (!m) return errorResponse(404, "not_found");
         if (!env.COUNCIL) return errorResponse(503, "not_available", "the council binding is not configured");
         if (request.method === "GET" && m[1] && !m[2]) {
@@ -287,9 +294,21 @@ export default {
           return out.ok ? json(out.value) : errorResponse(out.status ?? 500, out.code ?? "internal_error", out.message);
         }
         if (request.method !== "POST" || (m[1] && !m[2])) return errorResponse(405, "method_not_allowed");
-        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner opens, begins, joins, picks or dismisses a council");
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner opens, begins, joins, picks, dismisses or corrects a council");
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
+        // HAIC H3c (docs/design/HAIC-H3.md §3, §11 step 3): the owner corrects a message, a claim or an option of a council in
+        // any state, expired or closed included. The council is read as it stands; only the corrections ledger is written.
+        if (m[2] === "corrections") {
+          const read = await env.COUNCIL.get(env.COUNCIL.idFromName(m[1]!)).read() as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
+          if (!read.ok) return errorResponse(read.status ?? 500, read.code ?? "internal_error", read.message);
+          try {
+            return correctionResponse(await recordCouncilCorrection(env.DB, read.value as never, body.value, { actor: `owner:${operator.actor}`, owner: true, attested_by: "cerebrum_access" }));
+          } catch (err) {
+            if (err instanceof CorrectionError) return errorResponse(err.status, err.code, err.message);
+            throw err;
+          }
+        }
         const id = m[1] ?? `cs_${crypto.randomUUID()}`;
         const stub = env.COUNCIL.get(env.COUNCIL.idFromName(id));
         const out = (!m[1] ? await stub.start(operator.actor, id, body.value.topic, body.value.question)
@@ -335,7 +354,7 @@ export default {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         try {
-          return json(await decideKnowledge(env.DB, knowledgeDecision[1], knowledgeDecision[2] === "approve" ? "approve" : "reject", operator.actor, body.value.reason));
+          return json(await decideKnowledge(env.DB, knowledgeDecision[1], knowledgeDecision[2] === "approve" ? "approve" : "reject", operator.actor, body.value.reason, undefined, { owner: isOwner(operator.identity, env) }));
         } catch (err) {
           if (err instanceof KnowledgeDecisionError) return errorResponse(err.status, err.code, err.message);
           throw err;

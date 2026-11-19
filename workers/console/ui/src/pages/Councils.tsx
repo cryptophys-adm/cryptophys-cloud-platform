@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { ArrowLeft, Check, CheckCircle2, CircleHelp, Gavel, Plus, RefreshCw, Send, Users, X } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
@@ -7,6 +7,7 @@ import { useSession } from "../lib/session";
 import { ago, navigate } from "../lib/format";
 import { refPage } from "./Ask";
 import { hubLabel, useDebounced, useHub } from "../lib/hub";
+import { CorrectionBox } from "../components/CorrectionBox";
 
 /**
  * HAIC H1.5c (ADR-0017, docs/design/HAIC-H0-H1.md §4): Call for Councils in Cerebrum. A council is a bounded,
@@ -21,7 +22,13 @@ import { hubLabel, useDebounced, useHub } from "../lib/hub";
  * H1.5d (Q9): agents may propose a council from the evidence (an Observer cluster, a KPI regression, a persistent census
  * finding). A proposal waits here and in the owner's inbox; only the owner begins it ("CONVENE <id13>") or dismisses it.
  * Unbegun, it is dismissed as expired after 7 days. Nothing deliberates and no model is called before the owner's click.
+ *
+ * H3c (docs/design/HAIC-H3.md §11 step 3): the owner may correct an agent's message, one of its claims, or an option, in
+ * any state of the council (expired and closed ones too). A correction is kept as the owner's teaching of that agent; it
+ * is not a pick and decides nothing.
  */
+/** The owner's correction of one target of a council: {seq}, {seq, claim} or {option_id}; null when not the owner. */
+type Correct = ((target: Record<string, unknown>, what: string) => ReactElement) | null;
 
 const ID = /^cs_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const POLL_MS = 5 * 60_000;
@@ -51,7 +58,7 @@ function RefChip({ r }: { r: string }) {
 }
 
 /** One metric claim: its value, window and n, its refs, and whether the convener verified it against them. */
-function ClaimRow({ c }: { c: any }) {
+function ClaimRow({ c, correct }: { c: any; correct?: ReactElement | null }) {
   const verified = c?.verified === true;
   return (
     <li className="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -61,13 +68,16 @@ function ClaimRow({ c }: { c: any }) {
       {c?.window && <span className="text-slate-500">over {c.window}</span>}
       {typeof c?.n === "number" && <span className="text-slate-500">n = {c.n}</span>}
       {arr(c?.refs).slice(0, 6).map((r: string) => <RefChip key={r} r={r} />)}
+      {correct}
     </li>
   );
 }
 
-function MessageCard({ m }: { m: any }) {
+function MessageCard({ m, correct }: { m: any; correct: Correct }) {
   const who = m.role === "owner" ? "You" : m.role === "system" ? "System" : `persona of ${String(m.author ?? "—").replace(/^agent:/, "")}`;
   const tone = m.role === "owner" ? "border-cyan-400/25 bg-cyan-500/5" : m.role === "system" ? "border-white/5 bg-transparent" : "border-white/10 bg-white/[0.03]";
+  // Only an agent's output is corrected (the owner's own messages and the convener's are not).
+  const agent = /^agent:/.test(String(m.author ?? ""));
   return (
     <div className={`rounded-lg border px-3 py-2 ${tone}`}>
       <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-widest text-slate-500">
@@ -78,13 +88,14 @@ function MessageCard({ m }: { m: any }) {
         <span className="ml-auto normal-case tracking-normal" title={m.at}>{m.at ? ago(m.at) : "—"}</span>
       </div>
       {m.phase !== "synthesis" && <div className="text-[13px] leading-relaxed text-slate-100 whitespace-pre-wrap wrap-break-word">{m.text}</div>}
-      {arr(m.claims).length > 0 && <ul className="mt-2 space-y-1">{arr(m.claims).map((c: any, i: number) => <ClaimRow key={i} c={c} />)}</ul>}
+      {arr(m.claims).length > 0 && <ul className="mt-2 space-y-1">{arr(m.claims).map((c: any, i: number) => <ClaimRow key={i} c={c} correct={agent ? correct?.({ seq: m.seq, claim: i }, `claim ${i + 1} of #${m.seq}`) : null} />)}</ul>}
+      {agent && correct && <div className="mt-1.5 flex justify-end">{correct({ seq: m.seq }, `message #${m.seq}`)}</div>}
     </div>
   );
 }
 
 /** The moderator's ranked options; the owner picks one or dismisses the council while it waits. */
-function Options({ synth, session, reload }: { synth: any; session: any; reload: () => void }) {
+function Options({ synth, session, reload, correct }: { synth: any; session: any; reload: () => void; correct: Correct }) {
   const { who, act } = useSession();
   const owner = who.owner === true;
   const waiting = session.state === "awaiting_owner";
@@ -106,6 +117,7 @@ function Options({ synth, session, reload }: { synth: any; session: any; reload:
     <Panel title="Options" icon={<Gavel className="h-3.5 w-3.5 text-amber-300" />}
       right={<span className="text-[10px] text-slate-500">ranked by the moderator · unverified claims add no confidence</span>}>
       {synth?.text && <p className="mb-3 text-[13px] leading-relaxed text-slate-200 whitespace-pre-wrap wrap-break-word">{synth.text}</p>}
+      {correct && typeof synth?.seq === "number" && /^agent:/.test(String(synth.author ?? "")) && <div className="-mt-2 mb-3 flex justify-end">{correct({ seq: synth.seq }, "the moderator's synthesis")}</div>}
       <div className="space-y-3">
         {arr(synth?.options).map((o: any) => (
           <div key={o.option_id} className={`rounded-lg border px-3 py-2 ${chosen === o.option_id ? "border-emerald-400/40 bg-emerald-500/5" : "border-white/10"}`}>
@@ -129,6 +141,7 @@ function Options({ synth, session, reload }: { synth: any; session: any; reload:
                 <button type="button" className="btn btn-approve py-1!" onClick={() => pick(o)}><Check className="h-3.5 w-3.5" />Pick…</button>
               </div>
             )}
+            {correct && <div className="mt-1.5 flex justify-end">{correct({ option_id: o.option_id }, `option ${o.rank}`)}</div>}
           </div>
         ))}
       </div>
@@ -170,6 +183,8 @@ function Detail({ id, limits }: { id: string; limits: any }) {
   const running = RUNNING.includes(s.state);
   const open = running || s.state === "awaiting_owner" || s.state === "proposed";
   const maxChars = typeof limits?.max_message_chars === "number" ? limits.max_message_chars : 1200;
+  // H3c: the owner's correction, in any state; the kernel resolves the target, whose output it is, and the time.
+  const correct: Correct = owner ? (target, what) => <CorrectionBox key={what} what={what} submit={(body) => call("kernel.council_correct", s.session_id, { ...target, ...body })} /> : null;
   const say = () => {
     const t = text.trim();
     if (!t || sending) return;
@@ -227,10 +242,10 @@ function Detail({ id, limits }: { id: string; limits: any }) {
           )}
         </Panel>
       )}
-      {synth && arr(synth.options).length > 0 && <Options synth={synth} session={s} reload={reload} />}
+      {synth && arr(synth.options).length > 0 && <Options synth={synth} session={s} reload={reload} correct={correct} />}
       <Panel title="Transcript" right={<span className="text-[10px] text-slate-500">{messages.length} message{messages.length === 1 ? "" : "s"} · every post is a persona of its agent, labelled</span>}>
         {messages.length === 0 ? <Empty>{running ? "The council is convening: positions appear within about 10 minutes." : "No message."}</Empty> : (
-          <div className="space-y-2">{messages.filter((m) => m.phase !== "synthesis").map((m) => <MessageCard key={m.seq} m={m} />)}</div>
+          <div className="space-y-2">{messages.filter((m) => m.phase !== "synthesis").map((m) => <MessageCard key={m.seq} m={m} correct={correct} />)}</div>
         )}
         {owner && running && (
           <div className="mt-3 border-t border-white/5 pt-3">
