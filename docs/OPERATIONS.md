@@ -266,7 +266,7 @@ What the owner does:
    - Bring GitHub main up to main while GitHub is still the fallback (cut-over steps 6–8 not done): a fast-forward to main's head, the owner's decision. The Supervisor's next retry then runs the unit's workflow.
    - Otherwise run a break-glass deploy (above): Console → Recovery → Create Plan, a service of the unit, plan version = main's full head, one step `force_redeploy_unit`, then the owner's approval. It plans the migrations from D1's applied state.
    - Then have the cause fixed by a routine change, so the next occurrence heals itself. A fix inside the Deployment Orchestrator cannot deploy before the Control Plane when main also carries a migration its code reads (executor-first is not independent). That is why the one-time unblock comes first.
-4. **Closure**: the item closes when a desired version is recorded for the refused Worker, the drift clears with the deploy, and the critical report stays acknowledged. Write the post-incident summary on the Owner page's Incidents panel once it exists.
+4. **Closure**: the item closes when a desired version is recorded for the refused Worker, the drift clears with the deploy, and the critical report stays acknowledged. The incident shows on the Owner page's Incidents panel (open, mitigated when acknowledged, resolved when a later deploy of the unit succeeded and its Workers show no drift); its post-incident summary (cause, impact, fix, lessons) is written as a change to `workers/ai-kernel/src/incident-summaries.ts`.
 
 ## Destructive D1 migrations (`deploy_destructive_migration`, cut-over gate, owner 2026-11-15)
 

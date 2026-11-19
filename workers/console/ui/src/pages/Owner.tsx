@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ArrowLeft, Ban, BookOpenCheck, Check, CheckCircle2, ExternalLink, Gavel, Inbox, ListOrdered, ShieldAlert, ShieldCheck, Siren, Users, Wrench, X } from "lucide-react";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { CriticalReportList } from "../components/CriticalReports";
+import { IncidentsPanel } from "../components/Incidents";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useDebounced, useHub } from "../lib/hub";
@@ -23,6 +24,9 @@ import { ownerClickMode } from "../lib/consensus";
  * HAIC H0c (docs/design/HAIC-H0-H1.md §2.6): above the sections, "Needs you" lists the same items ranked by the
  * kernel's score (items[] of the inbox, owner-inbox.rank.v1), and #/owner/<item_id> opens one item with its score,
  * evidence and the same approver-only action as its section. The ranking only orders; it decides nothing.
+ *
+ * Owner 2026-11-19: below the sections, the Incidents panel (components/Incidents.tsx, GET /v1/incidents) lists each
+ * incident with its derived status, its timeline and its post-incident summary, on every state of the page.
  */
 
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
@@ -351,6 +355,7 @@ export default function Owner({ item }: { item?: string }) {
           </Panel>
         </>
       )}
+      <IncidentsPanel />
       <p className="px-1 text-[11px] text-slate-500">
         Other notices (drift the agents handle, the organism census, build minutes under the budget, high advisories) are not sent to you; they are on <a className="text-cyan-300/80 hover:underline" href="#/">Command</a>, <a className="text-cyan-300/80 hover:underline" href="#/infrastructure">Infrastructure</a>, <a className="text-cyan-300/80 hover:underline" href="#/agents">AI Mesh</a> and <a className="text-cyan-300/80 hover:underline" href="#/code">Code</a>.
       </p>

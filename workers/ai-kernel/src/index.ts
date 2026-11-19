@@ -49,6 +49,7 @@ import { publishHub } from "./hub.ts";
 import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTypedProposal } from "./proposals.ts";
 import { DirectiveError, draftFromDirective } from "./directives.ts";
 import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
+import { listIncidents } from "./incidents.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -79,7 +80,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -187,6 +188,8 @@ export default {
         if (!env.HUB) return errorResponse(503, "not_available", "the hub binding is not configured");
         return env.HUB.get(env.HUB.idFromName("console")).fetch(new Request("https://hub.internal/connect", { headers: { upgrade: "websocket", "x-hub-actor": operator.actor } }));
       }
+      // Owner 2026-11-19: the Owner page's Incidents panel. Read only, derived from existing records (incidents.ts).
+      if (path === "/v1/incidents") return request.method === "GET" ? json(await listIncidents(env.DB)) : errorResponse(405, "method_not_allowed");
       // HAIC H4 (ADR-0017 §5; owner 2026-11-18): the autonomy dial. Operators read; only the owner sets a group's level,
       // and only up to its ADR-0009 class. The dial is enforced where consensus executes (consensus.ts, consensus-exec.ts).
       if (path === "/v1/autonomy" || path.startsWith("/v1/autonomy/")) {

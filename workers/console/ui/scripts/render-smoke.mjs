@@ -418,6 +418,22 @@ MOCK[`/api/kernel/v1/proposals/${TP2}`] = MOCK["/api/kernel/v1/proposals"].propo
 const grp = (group, label, level, ceiling, actions, extra = {}) => ({ group, label, level, level_label: level, ceiling, source: "adr", set_by: null, set_at: null, reason: null,
   actions: actions.map(([action, cls, effective]) => ({ action, class: cls, ceiling: cls === "routine" ? "consensus" : "owner_click", effective })),
   stats: { executions: 0, succeeded: 0, success_rate: null, regressions: 0 }, raise_to: null, regressions: [], ...extra });
+// Owner 2026-11-19: the Owner page's Incidents panel (GET /v1/incidents): one resolved deploy incident with its
+// timeline and summary, and one open report.
+MOCK["/api/kernel/v1/incidents"] = { schema: "incidents.v1", observed_at: at(0), window_days: 30, incidents: [
+  { incident_id: "inc_rpt_open", title: "Executor heartbeat missing for 20 minutes", status: "open", status_reason: "not acknowledged", opened_at: at(30),
+    mitigated_at: null, resolved_at: null, unit: null, services: [], commit: null, report_id: "rpt_open", request_id: null,
+    timeline: [{ at: at(30), kind: "report", text: "Critical report: Executor heartbeat missing for 20 minutes" }], summary: null },
+  { incident_id: "inc_rpt_dep", title: "Deploy of control-plane at bf94be10356c failed", status: "resolved", status_reason: "a later deploy of the unit succeeded (47ee2d551de4) and its Workers show no drift",
+    opened_at: at(480), mitigated_at: at(300), resolved_at: at(60), unit: "control-plane", services: ["cryptophys-ai-kernel"], commit: "bf".repeat(20), report_id: "rpt_dep", request_id: "dep_x",
+    timeline: [
+      { at: at(482), kind: "deploy_requested", text: "Deploy of control-plane at bf94be10356c requested (native:deploy)" },
+      { at: at(480), kind: "deploy_failed", text: "Deploy of control-plane at bf94be10356c failed: do_migration_tag_not_applied: v8; D1 migrations applied: 0082_typed_proposals.sql; not restored: AI Kernel, Drift Detector, Policy Engine" },
+      { at: at(400), kind: "no_path", text: "Deploy of ddfa6d341cd1 refused on every path: native d1_migrations_mismatch, GitHub github_main_not_mirrored" },
+      { at: at(62), kind: "deploy_succeeded", text: "Deploy of control-plane at 47ee2d551de4 succeeded" },
+      { at: at(60), kind: "drift_clear", text: "No drift on the 6 Worker(s) of control-plane" }],
+    summary: { cause: "The migration tag was read too early.", impact: "No data lost; deploys held for hours.", fix: "Deployed through the workflow; code fixes merged.", lessons: ["Keep the registry true to what runs."], written_by: "engineering session", written_at: at(30) } },
+] };
 MOCK["/api/kernel/v1/autonomy"] = { available: true, raise_rule: { window_days: 14, min_executions: 30, min_success: 0.95 }, levels: [], held: [
   { proposal_id: "cns_00000009-0000-4000-8000-000000000000", action: "deploy_commit", target: "cryptophys-console", autonomy_level: "suggest", created_at: at(20) }],
   groups: [
@@ -552,6 +568,9 @@ OVERRIDE = {};
 const OWNER_CHECKS = [
   { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "kernel or Drift Detector", "recovery failed", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
   { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Only an approver can decide.", "Only an approver can acknowledge."], not: ["Approve…", "Reject…", "Disable…", "Acknowledge…"] },
+  // Owner 2026-11-19: the Incidents panel shows on every state of the page; the newest active incident opens.
+  { name: "incidents", override: {}, want: ["Incidents", "1 active", "Executor heartbeat missing for 20 minutes", "Deploy of control-plane at bf94be10356c failed", "resolved", "No post-incident summary yet."], not: [] },
+  { name: "incidents-empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX, "/api/kernel/v1/incidents": { schema: "incidents.v1", observed_at: at(0), window_days: 30, incidents: [] } }, want: ["Nothing needs you", "Incidents", "No incident in this window."], not: [] },
   { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…", "Needs you", "no longer waits"] },
   // HAIC H0c: the ranked list on top, one item opened by its deep link, and a link to an item that is gone.
   { name: "ranked", override: {}, want: ["Needs you", "ranked by score", "563", "deploys · merges", "Waiting for your approval"], not: ["no longer waits", "All items"] },

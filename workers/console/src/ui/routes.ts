@@ -75,6 +75,8 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // naming the group (the body names the level, and the kernel checks the owner and the ceiling).
   r("kernel.autonomy", "kernel", "GET", "/v1/autonomy", false, null),
   r("kernel.autonomy_set", "kernel", "POST", "/v1/autonomy/{id}", true, "SET {id}"),
+  // Owner 2026-11-19: the Owner page's Incidents panel (read only).
+  r("kernel.incidents", "kernel", "GET", "/v1/incidents", false, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
