@@ -56,6 +56,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   deploys_stalled: "deploys stalled",
   git_backup_unverified: "git backup failed verify",
   executor_deploy_failed: "deploy executor blocked",
+  deploy_no_path: "deploy has no path",
   identity_source_invalid: "identity list invalid",
 };
 

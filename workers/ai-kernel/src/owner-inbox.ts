@@ -37,6 +37,8 @@ import { autonomyNotices } from "./autonomy.ts";
 
 /** At most this many items of each kind are listed (the owner notices have always used 50). */
 export const INBOX_LIMIT = 50;
+/** deploy_no_path: a refusal on every deploy path is listed this long (the stall alarm covers a longer stall). */
+export const NO_PATH_WINDOW_MS = 24 * 3_600_000;
 /** Open critical reports are read from this window, as for the consensus brake. */
 export const CRITICAL_WINDOW_MS = 24 * 3_600_000;
 
@@ -61,7 +63,7 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid";
+export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path";
 /** The Orchestrator's own failed native deploy of its unit is listed this long, unless a later deploy of it succeeded. */
 export const EXECUTOR_FAILURE_WINDOW_MS = 24 * 3_600_000;
 export interface ProductionProblem {
@@ -282,6 +284,11 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     nothing from it and carries every Worker's active identity lists, so an owner's edit would silently not apply;
  *     this item says so. One item (subject: the table); it closes when an owner saves a valid list. No row and the seed
  *     are not problems: the deploys carry the deployed lists, as before.
+ * 12. deploy_no_path (owner 2026-11-19, after the deploy of ddfa6d3 was refused at 00:22 on both paths): a consensus
+ *     deploy of a unit was refused by the native deploy and by the GitHub path (audit deployment.no_path) in the last
+ *     NO_PATH_WINDOW_MS, and none of its Workers has had a desired version recorded since. The Supervisor's retries fail
+ *     the same way, and the stall alarm waits 2 hours, so the owner hears of it at once, with both reasons and the way
+ *     out (docs/OPERATIONS.md "Deploy with no path"). One item per unit and commit (subject no_path:<unit>:<sha12>).
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -419,6 +426,36 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }
   } catch { executor = []; }
 
+  let noPath: ProductionProblem[] = [];
+  try {
+    const rows = (await db.prepare(
+      `SELECT subject, created_at, payload_json FROM audit_events WHERE event_type = 'deployment.no_path' AND created_at >= ? AND created_at <= ?
+        ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+    ).bind(iso(now - NO_PATH_WINDOW_MS), iso(now), INBOX_LIMIT).all<{ subject: string; created_at: string; payload_json: string | null }>()).results ?? [];
+    const seen = new Set<string>();
+    for (const r of rows) {
+      let p: { unit?: unknown; commit_sha?: unknown; github_gate?: unknown; native_deploy?: { reason?: unknown; service?: unknown } | null } = {};
+      try { p = JSON.parse(r.payload_json ?? "{}") ?? {}; } catch { continue; }
+      const unit = typeof p.unit === "string" ? p.unit.slice(0, 60) : "";
+      const sha = typeof p.commit_sha === "string" && /^[0-9a-f]{40}$/.test(p.commit_sha) ? p.commit_sha : "";
+      if (!unit || !sha) continue;
+      const key = `no_path:${unit}:${sha.slice(0, 12)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const later = await db.prepare(
+        "SELECT 1 AS x FROM audit_events WHERE subject = ? AND event_type = 'registry.desired_version_set' AND created_at > ? LIMIT 1",
+      ).bind(r.subject, r.created_at).first();
+      if (later) continue;
+      const native = typeof p.native_deploy?.reason === "string" ? p.native_deploy.reason.slice(0, 80) + (typeof p.native_deploy.service === "string" ? ` on ${serviceName(p.native_deploy.service)}` : "") : "not recorded";
+      const github = typeof p.github_gate === "string" ? p.github_gate.slice(0, 80) : "not recorded";
+      noPath.push({
+        code: "deploy_no_path", subject: key,
+        detail: `The deploy of ${unit} at ${sha.slice(0, 12)} has no path: the native deploy refused it (${native}) and so did the GitHub path (${github}); the Supervisor's retries fail the same way. Unblock it once with a break-glass plan (Recovery, one step force_redeploy_unit at main's full head) or by bringing GitHub main up to main, then fix the cause (OPERATIONS.md "Deploy with no path")`.slice(0, 600),
+        since: r.created_at, link: "#/recovery",
+      });
+    }
+  } catch { noPath = []; }
+
   let identities: ProductionProblem[] = [];
   const src = await readIdentitySource(db);
   if (src.status === "invalid") {
@@ -429,5 +466,5 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }];
   }
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...backups, ...executor, ...identities];
+  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities];
 }
