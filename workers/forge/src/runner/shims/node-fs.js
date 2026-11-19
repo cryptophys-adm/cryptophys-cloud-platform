@@ -10,16 +10,20 @@ function rel(p) {
   return abs.startsWith(ROOT) ? abs.slice(ROOT.length) : abs.startsWith("/tmp/") ? abs : abs.slice(1);
 }
 const vfs = () => globalThis.__VFS;
+// The runner records what each test file reads (globalThis.__FS_READS, a Set): a path, "dir/" for a listing of dir,
+// "*" for the whole snapshot. A change request then runs a file only when something it read changed (2026-11-19).
+const note = (r) => { const s = globalThis.__FS_READS; if (s) s.add(r); };
+const noteDir = (r) => note(r === "" || r === "/" ? "*" : r.replace(/\/?$/, "/"));
 const mem = (globalThis.__MEMFS ??= {});
 const enoent = (p) => Object.assign(new Error(`ENOENT: no such file or directory, open '${p}'`), { code: "ENOENT" });
 export function readFileSync(p, enc) {
-  const r = rel(p);
+  const r = rel(p); note(r);
   const v = mem[r] ?? vfs()[r];
   if (v === undefined) throw enoent(r);
   const e = typeof enc === "string" ? enc : enc?.encoding;
   return e ? v : Buffer.from(v);
 }
-export function existsSync(p) { const r = rel(p); return r in mem || r in vfs() || isDir(r); }
+export function existsSync(p) { const r = rel(p); note(r); noteDir(r); return r in mem || r in vfs() || isDir(r); }
 function children(r) {
   const pre = r.endsWith("/") ? r : r + "/";
   const names = new Set();
@@ -28,13 +32,13 @@ function children(r) {
 }
 function isDir(r) { return children(r).length > 0; }
 export function readdirSync(p, opts) {
-  const r = rel(p); if (!isDir(r)) throw enoent(r);
+  const r = rel(p); noteDir(r); if (!isDir(r)) throw enoent(r);
   const names = children(r);
   if (!opts?.withFileTypes) return names;
   return names.map((name) => { const k = (r ? r + "/" : "") + name; const file = k in mem || k in vfs(); return { name, isFile: () => file, isDirectory: () => !file }; });
 }
 export function statSync(p) {
-  const r = rel(p); const f = mem[r] ?? vfs()[r];
+  const r = rel(p); note(r); noteDir(r); const f = mem[r] ?? vfs()[r];
   if (f === undefined && !isDir(r)) throw enoent(r);
   return { isFile: () => f !== undefined, isDirectory: () => f === undefined, size: f?.length ?? 0 };
 }
