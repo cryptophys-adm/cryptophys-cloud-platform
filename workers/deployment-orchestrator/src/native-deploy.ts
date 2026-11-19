@@ -476,6 +476,19 @@ export async function readMigration(bucket: BundleReader, commit: string, m: Pla
 }
 
 /**
+ * How many of the target's new files (`fresh`, in order) D1 has already applied: 0 when the ledger is exactly the running
+ * list, k when it is the running list followed by the first k fresh files (a failed deploy applied them and restored its
+ * Workers), null for any other ledger. The applied files' SQL is not read again: the Forge refuses an edit to a migration
+ * file (migration_rewritten), and the same rule plans the break-glass deploy (recovery-deploy.ts pendingMigrations).
+ */
+export function ledgerAhead(ledger: readonly string[], running: readonly string[], fresh: readonly string[]): number | null {
+  if (ledger.length < running.length || ledger.length - running.length > fresh.length) return null;
+  if (!running.every((f, i) => ledger[i] === f)) return null;
+  const extra = ledger.slice(running.length);
+  return extra.every((f, i) => fresh[i] === f) ? extra.length : null;
+}
+
+/**
  * G2c-1: what a changed migration list means for this unit. Only the Control Plane applies migrations; another
  * unit may deploy once the ledger already lists exactly the target's files (the Control Plane applied them).
  * For the Control Plane: no applied file edited or removed (sha256 in both manifests), the new files sort after
@@ -515,9 +528,13 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
   const ledger = await appliedMigrations(env.DB);
   if (!ledger) return { reason: "d1_migrations_unreadable", service };
   if (sameList(ledger, targetList)) return { migrations: [] };
-  if (!sameList(ledger, runningList)) return { reason: "d1_migrations_mismatch", service };
+  // Owner 2026-11-19 (after dep_01b18773): a deploy that applied migrations and then failed restores its Workers, not D1
+  // (forward-only), so D1 lists the running files plus the first of the target's new ones. That state is accepted, and
+  // only the rest is applied; anything else (a running file missing, a file outside the target, a gap) stays refused.
+  const applied = ledgerAhead(ledger, runningList, fresh.map((f) => f.file));
+  if (applied === null) return { reason: "d1_migrations_mismatch", service };
   const out: PlannedMigration[] = [];
-  for (const f of fresh) {
+  for (const f of fresh.slice(applied)) {
     // Gate 2026-11-15: only a file the owner-approved deploy_destructive_migration names may be destructive; any other
     // destructive file keeps the routine refusal (destructive_migration). Routine deploys name none.
     const r = await readMigration(env.BUNDLES!, target.commit, f, named.includes(f.file));

@@ -248,6 +248,25 @@ Zone routes cannot be named. Creating or removing a Workers route on a zone need
 
 **Refusals** (audited as `deployment.break_glass_refused`, nothing changed): the commit is not main's head or not ready, a destructive migration not named, a named file that is not a pending destructive migration, a destructive topology change not named, a named topology item not in main's change, a D1 migration main does not have, pending migrations on a unit other than the Control Plane (deploy the Control Plane first), the deploy lock held or another deploy of the unit under way, the native deploy not configured (there is no GitHub fallback), or a Worker the native deploy cannot plan (its reason is recorded). Write a new plan once the cause is fixed; a plan deploys at most once.
 
+## Deploy with no path: a deploy failed after it changed production (owner 2026-11-19)
+
+The incident this protocol comes from: on 2026-11-18 at 21:57 the native deploy of the Control Plane at bf94be1 (`dep_01b18773`) applied D1 migration 0082, put the AI Kernel's Durable Object migration v8→v9 live, then failed (`do_migration_tag_not_applied`, the tag read too early). It restored what it could. Cloudflare refuses a rollback across a Durable Object migration, so the kernel, the Drift Detector and the Policy Engine kept running bf94be1, and D1 stays migrated (forward-only). At 00:22 the next deploy (ddfa6d3) was refused on both paths: the native plan by `d1_migrations_mismatch` (D1 listed 0082, the registry's version 35954c3 ends at 0081) and the GitHub path by `github_main_not_mirrored`. The Owner approved mirroring GitHub main at about 00:40.
+
+What the platform now does by itself:
+- The read-back of a Durable Object migration tag waits up to 8 reads, 2 s apart (`topology.ts` `MIGRATION_TAG_ATTEMPTS`), so a lagging tag no longer fails a good deploy.
+- The Control Plane's native plan accepts a D1 ledger that is the running list followed by the first of the target's new files (`native-deploy.ts` `ledgerAhead`) and applies only the rest. Any other ledger is still refused.
+- A consensus deploy refused on every path is on the Owner page at once as **deploy has no path** (`production_unhandled`, code `deploy_no_path`, Telegram), with the native and GitHub reasons. The stall alarm (`deploys_stalled`) would only fire after 2 hours.
+- The Supervisor retries a deploy that failed before anything was dispatched, an hour later, at most twice. It retries a failed and restored deploy the same way.
+
+What the owner does:
+1. **Critical report** ("Deploy of … failed"): read its steps on the Owner page. `not_restored` names the Workers that still run the new version, `migrations_applied` the D1 files that stay, and `do_migrations` a Durable Object migration that cannot be rolled back. Check production (Infrastructure page), then acknowledge the report. Until then it holds every routine consensus action (the brake).
+2. **Persistent drift** of the Workers named in `not_restored` is expected until the next deploy of their unit. Do not redeploy the old commit by hand: across a Durable Object migration Cloudflare refuses it, and across D1 migrations the old code runs on the newer schema.
+3. **"deploy has no path"**: the item names both reasons. Unblock it once, in this order of preference:
+   - Bring GitHub main up to main while GitHub is still the fallback (cut-over steps 6–8 not done): a fast-forward to main's head, the owner's decision. The Supervisor's next retry then runs the unit's workflow.
+   - Otherwise run a break-glass deploy (above): Console → Recovery → Create Plan, a service of the unit, plan version = main's full head, one step `force_redeploy_unit`, then the owner's approval. It plans the migrations from D1's applied state.
+   - Then have the cause fixed by a routine change, so the next occurrence heals itself. A fix inside the Deployment Orchestrator cannot deploy before the Control Plane when main also carries a migration its code reads (executor-first is not independent). That is why the one-time unblock comes first.
+4. **Closure**: the item closes when a desired version is recorded for the refused Worker, the drift clears with the deploy, and the critical report stays acknowledged. Write the post-incident summary on the Owner page's Incidents panel once it exists.
+
 ## Destructive D1 migrations (`deploy_destructive_migration`, cut-over gate, owner 2026-11-15)
 
 A migration the Forge marks destructive drops, deletes or rewrites data (`DESTRUCTIVE_SQL`: `DROP`, `DELETE FROM`, `UPDATE … SET`, `ALTER TABLE … RENAME/DROP`). A routine `deploy_commit` never applies one: the native deploy refuses it (`destructive_migration`). Before the gate, such a deploy fell back to `deploy-control-plane.yml`, as 0069 did on 2026-11-15. Now it has a native path with the owner's click, and it needs no workflow after cut-over step 6.
