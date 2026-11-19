@@ -1,0 +1,99 @@
+{
+  "schema": "correction-v1.fixtures",
+  "contract": "docs/design/HAIC-H3.md §4",
+  "note": "Every valid file passes validateCorrection; every invalid file fails with at least the expected error.",
+  "files": [
+    {
+      "file": "valid/chat-rating-down.json",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/council-claim-correction.json",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/typed-proposal-reject-reason.json",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/nexus-card-non-owner.json",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/masked-and-redacted.json",
+      "expect_errors": []
+    },
+    {
+      "file": "invalid/params-key.json",
+      "expect_errors": [
+        "unknown_key: params"
+      ]
+    },
+    {
+      "file": "invalid/price-key.json",
+      "expect_errors": [
+        "forbidden_key: correction.entry_price"
+      ]
+    },
+    {
+      "file": "invalid/target-ref-with-price.json",
+      "expect_errors": [
+        "target.ref_carries_price"
+      ]
+    },
+    {
+      "file": "invalid/text-with-price.json",
+      "expect_errors": [
+        "text_carries_price"
+      ]
+    },
+    {
+      "file": "invalid/text-with-secret.json",
+      "expect_errors": [
+        "text_carries_secret"
+      ]
+    },
+    {
+      "file": "invalid/text-too-long.json",
+      "expect_errors": [
+        "text_too_long"
+      ]
+    },
+    {
+      "file": "invalid/weight-not-for-label.json",
+      "expect_errors": [
+        "weight"
+      ]
+    },
+    {
+      "file": "invalid/rating-label-without-rating.json",
+      "expect_errors": [
+        "owner_rating_without_rating"
+      ]
+    },
+    {
+      "file": "invalid/decision-without-reason.json",
+      "expect_errors": [
+        "owner_decision_without_reason"
+      ]
+    },
+    {
+      "file": "invalid/unknown-category.json",
+      "expect_errors": [
+        "category"
+      ]
+    },
+    {
+      "file": "invalid/unknown-source.json",
+      "expect_errors": [
+        "source"
+      ]
+    },
+    {
+      "file": "invalid/subject-not-agent-model-or-seat.json",
+      "expect_errors": [
+        "target.subject"
+      ]
+    }
+  ]
+}

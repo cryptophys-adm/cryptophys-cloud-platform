@@ -1,0 +1,24 @@
+{
+  "schema": "correction.v1",
+  "correction_id": "cor_1111111111111111",
+  "side": "cerebrum",
+  "source": "chat_rating",
+  "label": "owner_rating",
+  "rating": null,
+  "category": null,
+  "target": {
+    "ref": "ev:platform/conversation/cnv_8f14e45fceea467a#turn_3",
+    "subject": "model:qwen3-30b",
+    "as_of": "2026-11-19T09:58:00Z"
+  },
+  "text": null,
+  "evidence_refs": [],
+  "actor": "owner:owner@example.com",
+  "attested_by": "cerebrum_access",
+  "weight": 3,
+  "supersedes": null,
+  "redactions": [],
+  "created_at": "2026-11-19T10:01:00Z",
+  "content_sha256": "42a450c4ea0202ce6e57f70d8a28601919044a2ee7bafac84265a8b68bbd5926",
+  "dedup_sha256": "72fdfa1f431dd6b1d3d346fa056e837ebca76d14f59382c61d9c6a72906e2a54"
+}

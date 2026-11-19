@@ -1,0 +1,30 @@
+{
+  "schema": "correction.v1",
+  "correction_id": "cor_2222222222222222",
+  "side": "cerebrum",
+  "source": "council",
+  "label": "owner_correction",
+  "rating": null,
+  "category": "evidence_wrong",
+  "target": {
+    "ref": "ev:platform/council/cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01#seq_2.claim_0",
+    "subject": "agent:signal-analyst",
+    "as_of": null
+  },
+  "text": "The 30-day stop-loss share counts the halted session twice.",
+  "evidence_refs": [
+    "ev:xauusd/report/rpt_1#sl_share",
+    "ev:platform/council/cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01#seq_2"
+  ],
+  "actor": "owner:owner@example.com",
+  "attested_by": "cerebrum_access",
+  "weight": 3,
+  "supersedes": null,
+  "redactions": [],
+  "created_at": "2026-11-19T10:02:00Z",
+  "content_sha256": "b3cd31ed97d1788d257485ee8b335d0572fb422a49127e3b41f83f6e58db205e",
+  "dedup_sha256": "5381f724dff7176657817c6daba039fefff07a8f61528ea0fd01bfdf515ff785",
+  "params": {
+    "risk_pct_max": 10
+  }
+}
