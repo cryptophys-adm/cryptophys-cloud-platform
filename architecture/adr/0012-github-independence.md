@@ -519,6 +519,7 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
     - no applied file was edited or removed (`destructive_migration`, with `file`);
     - the new files sort after the running ones (`migration_out_of_order`);
     - the D1 table `d1_migrations` lists exactly the running manifest's files (`d1_migrations_mismatch`, or `d1_migrations_unreadable`). When it already lists the target's files, nothing is applied;
+      *Amended 2026-11-19 (owner: "Perbaikan rutin", after `dep_01b18773`):* the ledger may also list the running files followed by the first of the target's new files, in order, the state a deploy that applied migrations and then failed leaves, since its Workers are restored and D1 is not. Only the rest is applied (`native-deploy.ts` `ledgerAhead`, the rule the break-glass plan already used). Any other ledger (a running file missing, a file outside the target, a gap) stays `d1_migrations_mismatch`;
     - for each new file: its SQL is in R2 and matches its sha256 (`migration_missing`, `migration_hash_mismatch`); it splits into statements (`migration_unreadable`); it does not match the Forge's `DESTRUCTIVE_SQL` (`destructive_migration`); and it has no statement a D1 batch cannot run, such as `BEGIN`, `COMMIT`, `PRAGMA` or `ATTACH` (`migration_unsupported_statement`).
   - Another unit whose migration list changed is eligible once the ledger lists exactly the target's files, so the Control Plane applied them first. Otherwise it is `new_migration`, as before.
   - A manifest without `migration_files` (G2b and older) keeps the G2b answer, `new_migration`. So the first migration after this step still goes through GitHub.
@@ -533,6 +534,7 @@ Contributors (Claude Code sessions, other agents) push their branches to the wor
   - The request stops before any Worker is captured, and the request fails.
   - The failed file's own batch is rolled back. The files before it stay applied.
   - The critical report names `migration_failed` and `migrations_applied`, and says that the owner decides whether to fix forward or restore D1.
+  - *Amended 2026-11-19 (after `dep_01b18773`):* a Worker whose restore failed and that the Drift Detector sees serving the new commit gets that commit recorded as its desired version (`platform-registry` `recordNotRestored`, step `<worker>:desired_recorded_as_running`), so later plans (native and break-glass) compare the target with what runs. A Worker on another or an unknown version keeps its record. A deploy refused on every path is the Owner page item `deploy_no_path`; the runbook is `docs/OPERATIONS.md`, "Deploy with no path".
   - A Worker that fails after the migrations were applied restores the Workers, never the schema, and the report says so.
 - **Recovery redeploys.**
   - `deployForRecovery` takes the native path when the unit is eligible. It queues the same signed `native:deploy` request, with `requested_by = recovery:<plan>` and `idempotency_key = recovery:<workflow>:<sha>`, the recovery lock of the workflow path.
