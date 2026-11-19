@@ -31,6 +31,8 @@ export interface RegistryRollbackBinding {
   recordRollback(requestId: string): Promise<{ desired_version: string }>;
   /** ADR-0012 G2b: records the deployed commit for every service of a running native deploy's unit. */
   recordNativeDeploy?(requestId: string): Promise<{ desired_version: string; services: string[] }>;
+  /** Owner 2026-11-19: records the deployed commit for the Workers a failed native deploy could not restore. */
+  recordNotRestored?(requestId: string, services: string[]): Promise<{ desired_version: string; services: string[] }>;
 }
 export interface NativeRollbackEnv {
   CF_DEPLOY_TOKEN?: string;

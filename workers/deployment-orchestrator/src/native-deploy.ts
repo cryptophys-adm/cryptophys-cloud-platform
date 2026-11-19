@@ -1281,6 +1281,24 @@ export async function executeNativeDeploy(
         steps.push(`${service}:restored`);
       } catch (e) { restored = false; notRestored.push(service); steps.push(`${service}:restore_failed:${why(e)}`); }
     }
+    // Owner 2026-11-19 (after dep_01b18773): a Worker not restored that the Drift Detector sees serving this commit runs
+    // it, so the registry records that commit for it. Otherwise the registry kept the old tag, and every later plan
+    // (native, break-glass) compared the target with a version that no longer ran (d1_migrations_mismatch,
+    // binding_set_outside_config). A Worker whose live version is unknown or another is left as it was.
+    const live: string[] = [];
+    for (const service of notRestored) {
+      try {
+        const p = await env.DRIFT.probeService(service);
+        if (p.reachable && p.version_tag === tag) live.push(service);
+      } catch { /* unknown: not recorded */ }
+    }
+    if (live.length) {
+      try {
+        if (!env.REGISTRY.recordNotRestored) throw new Error("registry_not_restored_unavailable");
+        await env.REGISTRY.recordNotRestored(requestId, live);
+        for (const service of live) steps.push(`${service}:desired_recorded_as_running`);
+      } catch (e) { steps.push(`not_restored_record_failed:${why(e)}`); }
+    }
     return {
       ok: false, reason, ...(current ? { service: current } : {}), restored, ...(notRestored.length ? { not_restored: notRestored } : {}),
       production_changed: changed.length > 0 || applied.length > 0 || settings.length > 0 || topoApplied.some((x) => x.restore), versions, steps,

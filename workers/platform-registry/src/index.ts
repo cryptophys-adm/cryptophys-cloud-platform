@@ -170,6 +170,47 @@ export async function recordNativeDeploy(env: Env, requestId: string): Promise<{
 }
 
 /**
+ * Owner 2026-11-19 (after dep_01b18773): a failed native deploy whose restore could not put some Workers back records
+ * the commit for those Workers only, the ones the Orchestrator's Drift Detector probe saw serving it. Same request
+ * checks as recordNativeDeploy (a running native deploy of the last hour, a full commit); the services must be Workers
+ * of the request's unit, named once each.
+ */
+export async function recordNotRestored(env: Env, requestId: string, services: string[]): Promise<{ desired_version: string; services: string[] }> {
+  if (!/^dep_[0-9a-f-]{36}$/.test(requestId)) throw new Error("invalid_request_id");
+  const row = await env.DB.prepare("SELECT service_id, requested_version, status, details_json, created_at FROM deployment_requests WHERE request_id = ?")
+    .bind(requestId).first<{ service_id: string; requested_version: string; status: string; details_json: string; created_at: string }>();
+  if (!row) throw new Error("deploy_request_not_found");
+  let details: { executor?: unknown } = {};
+  try { details = JSON.parse(row.details_json || "{}"); } catch { details = {}; }
+  if (details.executor !== "native:deploy" && details.executor !== "native:break-glass" && details.executor !== "native:destructive-deploy") throw new Error("not_a_native_deploy");
+  if (row.status !== "running") throw new Error("deploy_not_running");
+  const age = Date.now() - Date.parse(row.created_at);
+  if (!(age >= 0 && age <= 3_600_000)) throw new Error("deploy_request_expired");
+  if (!/^[0-9a-f]{40}$/.test(row.requested_version)) throw new Error("invalid_version");
+  const unit = unitForService(row.service_id);
+  if (!unit) throw new Error("no_deploy_unit_for_service");
+  const allowed = new Set<string>(unit.services);
+  if (!Array.isArray(services) || services.length === 0 || new Set(services).size !== services.length || !services.every((s) => typeof s === "string" && allowed.has(s))) {
+    throw new Error("invalid_services");
+  }
+  const version = row.requested_version.slice(0, 12);
+  const existing: ServiceRow[] = [];
+  for (const id of services) {
+    const svc = await getService(env, id);
+    if (!svc) throw new Error("service_not_registered");
+    existing.push(svc);
+  }
+  for (const svc of existing) {
+    await env.DB.prepare("UPDATE service_registry SET desired_version = ?, updated_at = ? WHERE service_id = ?").bind(version, nowIso(), svc.service_id).run();
+    await appendAuditEvent(env.DB, {
+      event_type: "registry.desired_version_set", actor: `native-deploy-not-restored:${requestId}`, subject: svc.service_id, outcome: "success",
+      payload: { previous: svc.desired_version, desired_version: version, reason: "not_restored" },
+    });
+  }
+  return { desired_version: version, services: existing.map((s) => s.service_id) };
+}
+
+/**
  * ADR-0009 phase 2: apply a passed consensus action. The Registry re-verifies the proposal and
  * its Policy Engine decision itself (verifyConsensusExecution) before it writes anything.
  */

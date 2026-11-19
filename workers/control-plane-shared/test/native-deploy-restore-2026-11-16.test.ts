@@ -150,3 +150,30 @@ test("RB6. the critical report of a failed native deploy carries not_restored", 
   const report = src.slice(src.indexOf('kind: "platform_digest", severity: "critical"'));
   assert.match(report.slice(0, 1200), /\.\.\.\(run\.not_restored\?\.length \? \{ not_restored: run\.not_restored \} : \{\}\)/);
 });
+
+test("RB7. owner 2026-11-19: a Worker not restored that serves the new commit is recorded as running it; one on the old version is not", async () => {
+  // The registry's restore fails and it keeps serving the new version: the Drift Detector sees the new tag.
+  const f = fakeCloudflare({ notFound: (s) => s === KERNEL, restore: (s) => s === "cryptophys-platform-registry" ? "stale" : null });
+  const calls: [string, string[]][] = [];
+  (f.env.REGISTRY as any).recordNotRestored = async (id: string, services: string[]) => { calls.push([id, services]); return { desired_version: TAG, services }; };
+  const r = await run(f);
+  assert.deepEqual(r.not_restored, ["cryptophys-platform-registry"]);
+  assert.deepEqual(calls, [["dep_75107ff6-51ae-479a-b2ca-6970bbaeae29", ["cryptophys-platform-registry"]]]);
+  assert.ok(r.steps.includes("cryptophys-platform-registry:desired_recorded_as_running"));
+  // A restore that throws leaves the Worker on its new version too; without the RPC the step says so and nothing breaks.
+  const g = fakeCloudflare({ notFound: (s) => s === KERNEL, restore: (s) => s === "cryptophys-platform-registry" ? "throw" : null });
+  const r2 = await run(g);
+  assert.deepEqual([r2.ok, r2.not_restored], [false, ["cryptophys-platform-registry"]]);
+  assert.ok(r2.steps.includes("not_restored_record_failed:registry_not_restored_unavailable"), JSON.stringify(r2.steps.slice(-3)));
+  // A Worker not restored whose live tag is not the commit (or unknown) is never recorded.
+  const h = fakeCloudflare({ notFound: (s) => s === KERNEL, restore: (s) => s === "cryptophys-platform-registry" ? "stale" : null });
+  const seen: string[][] = [];
+  (h.env.REGISTRY as any).recordNotRestored = async (_id: string, services: string[]) => { seen.push(services); return { desired_version: TAG, services }; };
+  const probe = h.env.DRIFT.probeService;
+  // Live checks during the deploy see the new tag; once restores begin, the registry reports another one.
+  (h.env.DRIFT as any).probeService = async (s: string) => s === "cryptophys-platform-registry" && h.deployments.some((d) => d.startsWith("restore"))
+    ? { reachable: true, healthy: true, version_tag: OLD_TAG, error: null } : probe(s);
+  const r3 = await run(h);
+  assert.deepEqual([r3.not_restored, seen], [["cryptophys-platform-registry"], []]);
+  assert.ok(!r3.steps.some((x) => x.includes("desired_recorded_as_running")));
+});

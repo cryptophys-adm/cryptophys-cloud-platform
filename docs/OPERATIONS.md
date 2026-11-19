@@ -256,6 +256,7 @@ What the platform now does by itself:
 - The read-back of a Durable Object migration tag waits up to 8 reads, 2 s apart (`topology.ts` `MIGRATION_TAG_ATTEMPTS`), so a lagging tag no longer fails a good deploy.
 - The Control Plane's native plan accepts a D1 ledger that is the running list followed by the first of the target's new files (`native-deploy.ts` `ledgerAhead`) and applies only the rest. Any other ledger is still refused.
 - A consensus deploy refused on every path is on the Owner page at once as **deploy has no path** (`production_unhandled`, code `deploy_no_path`, Telegram), with the native and GitHub reasons. The stall alarm (`deploys_stalled`) would only fire after 2 hours.
+- A Worker that a failed native deploy could not restore, and that the Drift Detector sees serving the new commit, gets that commit recorded as its desired version (`platform-registry` `recordNotRestored`, step `<worker>:desired_recorded_as_running`). In this incident the registry kept 35954c3 for Workers that ran bf94be1, so every later plan compared the target with a version that no longer ran. The native plan refused with `d1_migrations_mismatch`, and the break-glass plan of 02:29 (`plan_a73526dd`) with `binding_set_outside_config:durable_object_namespace:HUB`.
 - The Supervisor retries a deploy that failed before anything was dispatched, an hour later, at most twice. It retries a failed and restored deploy the same way.
 
 What the owner does:
