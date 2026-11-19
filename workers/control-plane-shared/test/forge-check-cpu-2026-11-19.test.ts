@@ -389,6 +389,9 @@ test("CPU9. the runner records what each file reads: resolved imports (every can
   // A plain relative import: the Forge's test Workers cannot import a data: URL (2026-11-19, run of c0f1643).
   const shim = nodeFsShim;
   const g = globalThis as Record<string, unknown>;
+  // In the Forge's test Workers these globals ARE the runner's snapshot and read log for every test in the group:
+  // keep the runner's own values and put them back, never clear them.
+  const prior = { vfs: g.__VFS, reads: g.__FS_READS };
   g.__VFS = { "docs/a.md": "a", "workers/x/y.ts": "y" };
   g.__FS_READS = new Set<string>();
   try {
@@ -398,7 +401,7 @@ test("CPU9. the runner records what each file reads: resolved imports (every can
     assert.throws(() => shim.readFileSync("/repo/docs/gone.md"), /ENOENT/);
     assert.throws(() => shim.readdirSync(""), /ENOENT/, "a listing of the root (recorded as everything)");
     assert.deepEqual([...(g.__FS_READS as Set<string>)].sort(), ["*", "docs/a.md", "docs/gone.md", "docs/missing.md", "docs/missing.md/", "workers/x/"]);
-  } finally { g.__VFS = undefined; g.__FS_READS = undefined; }
+  } finally { g.__VFS = prior.vfs; g.__FS_READS = prior.reads; }
   const core = read("workers/forge/src/runner/core.ts");
   assert.match(core, /const reads = globalThis\.__FS_READS = new Set\(\);/);
   assert.match(core, /globalThis\.__FS_READS\.add\("\*"\); return env\.BUNDLER\.bundleWorker\(dir, payload\.commit\)/, "a test that bundles a Worker through the Forge depends on everything");
