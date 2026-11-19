@@ -81,6 +81,10 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // one needs no typed phrase: a correction is never an approval and changes no parameter, weight, proposal or gate.
   r("kernel.corrections", "kernel", "GET", "/v1/corrections", true, null),
   r("kernel.correction_create", "kernel", "POST", "/v1/corrections", true, null),
+  // HAIC H3c (docs/design/HAIC-H3.md §11 step 3): the owner corrects a council's message, claim or option, or a typed
+  // proposal, on its page; the kernel resolves the target and its subject. No typed phrase, as for any correction.
+  r("kernel.council_correct", "kernel", "POST", "/v1/councils/{id}/corrections", true, null),
+  r("kernel.proposal_correct", "kernel", "POST", "/v1/proposals/{id}/corrections", true, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

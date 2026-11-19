@@ -7,10 +7,12 @@
 //   - vision_kpi -> handed to the orchestrator (organism/vision.json is a guard path the evolver refuses by design);
 //   - shadow_arm -> an evolution intent waiting on xauusd and one return-path update (evolution_updates_v2, origin
 //     xauusd) that council.decisions.read serves with the draft, so xauusd pulls it and runs the shadow arm itself.
-// This module never proposes to consensus, never executes, and writes only its own table and those hand-off rows.
+// This module never proposes to consensus, never executes, and writes only its own table and those hand-off rows (and,
+// since HAIC H3c, a reject reason into the corrections ledger, through corrections.ts).
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { DRAFT_WINDOW_MS, HANDOFF_PATH, TP_SCHEMA, isProposalId, validateTypedProposal, whatHappens, type TpKind, type TypedProposal } from "../../control-plane-shared/src/typed-proposal.ts";
+import { proposalRef, proposalSubject, recordRejectReason } from "./corrections.ts";
 
 export class ProposalError extends Error {
   readonly status: number;
@@ -119,6 +121,10 @@ export async function decideProposal(db: D1Database, actor: string, id: string, 
   if (decision === "reject") {
     await setState(db, id, "rejected", { decided_by: actor, reason }, now);
     await audit(db, "rejected", actor, id, "rejected", { kind: row.kind, reason });
+    // HAIC H3c (Q6): the owner's reject reason is also an owner_decision correction of the proposal's origin. Only the
+    // corrections ledger is written; a failure there is logged and the reject stands.
+    const view = present(row);
+    await recordRejectReason(db, { source: "typed_proposal", ref: proposalRef(id), subject: proposalSubject(view), as_of: row.created_at, reason }, { actor: `owner:${actor}`, owner: true, attested_by: "cerebrum_access" });
     return readTypedProposal(db, id);
   }
   let tp: TypedProposal;
