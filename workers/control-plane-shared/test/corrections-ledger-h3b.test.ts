@@ -330,6 +330,27 @@ test("H3b-9. the Q8 backfill: earlier conversation.rated events become owner_rat
   assert.match(index, /if \(minute === 7\) \{\n\s*ctx\.waitUntil\(backfillChatRatingsOnce\(env\.DB\)/);
 });
 
+test("H3b-9b. the backfill finds a repeat in audit order, so ratings written in the same millisecond backfill the same, twice", async (t) => {
+  const s = setup();
+  const audit = (outcome: string) =>
+    appendAuditEvent(s.db, { event_type: "conversation.rated", actor: OWNER, subject: `conversation:${CNV}`, outcome, payload: { conversation_id: CNV, turn: 1 } });
+  // Up at :00; up and down in the same millisecond at :01; up at :02. By time alone, the second up's newest row at or
+  // before its time is the down written in the same millisecond, so a second run recorded it again.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-01T10:00:00.000Z") });
+  for (const [r, at] of [["up", "10:00:00"], ["up", "10:00:01"], ["down", "10:00:01"], ["up", "10:00:02"]]) {
+    t.mock.timers.setTime(Date.parse(`2026-11-01T${at}.000Z`));
+    await audit(r);
+  }
+  t.mock.timers.reset();
+  assert.deepEqual((s.db.raw.prepare("SELECT substr(created_at, 12, 8) AS t FROM audit_events WHERE event_type = 'conversation.rated' ORDER BY rowid").all() as any[]).map((r) => r.t), ["10:00:00", "10:00:01", "10:00:01", "10:00:02"]);
+  for (let i = 0; i < 3; i += 1) {
+    assert.deepEqual(await backfillChatRatings(s.db), i === 0
+      ? { read: 4, recorded: 3, deduplicated: 1, skipped: 0, complete: true }
+      : { read: 4, recorded: 0, deduplicated: 1, skipped: 3, complete: true }, `run ${i + 1}`);
+    assert.deepEqual(s.rows().map((r) => r.rating), ["up", "down", "up"], `run ${i + 1}`);
+  }
+});
+
 test("H3b-10. wiring: the kernel's route index, the Console's allow-list and UI routes, and the SSOT", async () => {
   const index = read("workers/ai-kernel/src/index.ts");
   assert.match(index, /"GET \/v1\/corrections\?[^"]*\(the owner\)", "POST \/v1\/corrections \(the owner\)"/);
@@ -341,7 +362,7 @@ test("H3b-10. wiring: the kernel's route index, the Console's allow-list and UI 
     { id: "kernel.correction_create", service: "kernel", method: "POST", path: "/v1/corrections", approverOnly: true, confirm: null },
   ]);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \(HAIC H3b, 2026-11-19 [^\n]*migration 0084[^\n]*`GET` and `POST \/v1\/corrections`[^\n]*; HAIC H3a, 2026-11-19 /);
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?HAIC H3b, 2026-11-19 [^\n]*migration 0084[^\n]*`GET` and `POST \/v1\/corrections`[^\n]*; HAIC H3a, 2026-11-19 /);
   assert.doesNotMatch(ssot, /\*\*Not built yet\.\*\* H0 and H1 start only after/, "the §2.6 drift is fixed");
   assert.match(ssot, /\*\*Built on the platform:\*\* H0 [^\n]*the corrections ledger \(H3b: migration 0084/);
 });

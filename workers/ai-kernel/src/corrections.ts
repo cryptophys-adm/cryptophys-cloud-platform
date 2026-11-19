@@ -145,10 +145,14 @@ export interface BackfillReport { read: number; recorded: number; deduplicated: 
  * an owner_rating correction with source chat_rating, its original time and body_json.backfilled: true. Idempotent: an
  * event already backfilled (body_json.backfill_event) is skipped, a repeat of the same rating is deduplicated, and a
  * rating recorded live since H3b (correction_id in its payload) is never read again. At most 1,000 events a run.
+ * A repeat is found in audit order (the previous rating of the same actor on the same turn in this run, backfilled
+ * or not), never by time alone: ratings written in the same millisecond would otherwise compare with a later row.
  */
 export async function backfillChatRatings(db: D1Database): Promise<BackfillReport> {
   const report: BackfillReport = { read: 0, recorded: 0, deduplicated: 0, skipped: 0, complete: true };
   let after = 0;
+  // The last rating read in this run per actor and turn, in audit order.
+  const last = new Map<string, string>();
   for (;;) {
     const page = (await db.prepare(
       "SELECT rowid AS rid, event_id, actor, subject, outcome, payload_json, created_at FROM audit_events WHERE event_type = 'conversation.rated' AND rowid > ? ORDER BY rowid LIMIT ?",
@@ -163,8 +167,10 @@ export async function backfillChatRatings(db: D1Database): Promise<BackfillRepor
       const n = p.turn;
       if (typeof p.correction_id === "string" || !/^cnv_[0-9a-f]{16}$/.test(id) || !Number.isInteger(n) || (ev.outcome !== "up" && ev.outcome !== "down")) { report.skipped += 1; continue; }
       const ref = turnRef(id, n as number);
+      const key = `${ev.actor}\n${ref}`;
       const done = await db.prepare("SELECT 1 AS x FROM corrections WHERE target_ref = ? AND json_extract(body_json, '$.backfill_event') = ? LIMIT 1").bind(ref, ev.event_id).first();
-      if (done) { report.skipped += 1; continue; }
+      if (done) { last.set(key, ev.outcome); report.skipped += 1; continue; }
+      if (last.get(key) === ev.outcome) { report.deduplicated += 1; continue; }
       // The rated turn's own audit event names its model and the time of the answer (the turn record lives in its DO).
       const turn = await db.prepare(
         "SELECT payload_json, created_at FROM audit_events WHERE subject = ? AND event_type = 'conversation.turn' AND json_extract(payload_json, '$.turn') = ? ORDER BY rowid LIMIT 1",
@@ -177,6 +183,7 @@ export async function backfillChatRatings(db: D1Database): Promise<BackfillRepor
           target: { ref, subject: modelSubject(model), as_of: turn?.created_at ?? null },
         }, { actor: `owner:${ev.actor}`, owner: true, attested_by: "cerebrum_access", now: ev.created_at, backfill_event: ev.event_id });
         if (r.deduplicated) report.deduplicated += 1; else report.recorded += 1;
+        last.set(key, ev.outcome);
       } catch (err) {
         if (!(err instanceof CorrectionError)) throw err;
         report.skipped += 1;
