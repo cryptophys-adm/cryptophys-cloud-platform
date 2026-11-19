@@ -6,7 +6,7 @@ import {
 } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, boundedStringArray, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
-import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
+import { COLLABORATOR_MIGRATIONS, readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, authenticate, isOwner, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { verifyConsensusExecution } from "../../control-plane-shared/src/consensus-exec.ts";
 import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
@@ -243,7 +243,7 @@ export default {
     const path = url.pathname;
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/health" || path === "/healthz") return healthResponse(env);
-      if (path === "/ready" || path === "/readyz") return readinessResponse(env);
+      if (path === "/ready" || path === "/readyz") return readinessResponse(env, {}, COLLABORATOR_MIGRATIONS);
       if (path === "/") {
         return serviceMetadata(env, "Desired inventory and resource ownership metadata", [
           "GET /v1/services", "GET /v1/services/{service_id}",

@@ -12,7 +12,7 @@
  */
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { errorResponse, healthResponse, json, limitParam, newId, readJsonObject, serviceMetadata } from "../../control-plane-shared/src/http.ts";
-import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
+import { COLLABORATOR_MIGRATIONS, readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, actorOf, authenticate, identityAllowed, isOwner, listConfigured, requireApprover, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { CAPABILITIES, getActivePrincipalByIdentity, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import {
@@ -86,7 +86,7 @@ export default {
           signal_analyst_binding: Boolean(env.SIGNAL_ANALYST),
           auditor_binding: Boolean(env.AUDITOR),
           memory_binding: Boolean(env.MEMORY),
-        });
+        }, COLLABORATOR_MIGRATIONS);
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [

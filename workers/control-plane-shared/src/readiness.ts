@@ -26,6 +26,15 @@ const REQUIRED_MIGRATIONS = [
   REQUIRED_MIGRATION,
 ] as const;
 
+/**
+ * HAIC H5d (docs/design/HAIC-H5.md §7.1): the collaborator schema, migration 0085. Only the Workers that will read and
+ * write it require it, as the Forge does with FORGE_MIGRATIONS: the AI Kernel (comments, the collaborator chat pool and
+ * its switch) and the Platform Registry (platform_accounts.reviewer and expires_at). Both deploy in the Control Plane
+ * unit, which applies a migration before its Workers. REQUIRED_MIGRATIONS still ends at 0029, so the Orchestrator, the
+ * Forge, the Console and the Platform API need nothing newer (executor-first.ts).
+ */
+export const COLLABORATOR_MIGRATIONS = ["0085_collaborators.sql"] as const;
+
 export type Checks = Record<string, boolean>;
 
 /**
@@ -48,12 +57,13 @@ export async function schemaReady(env: BaseEnv, extra: readonly string[] = []): 
 /**
  * Readiness = every dependency the service needs to perform its authoritative
  * function. AI is reported but is advisory, so it is checked for binding presence
- * only; quota exhaustion must not make a service unready.
+ * only; quota exhaustion must not make a service unready. `migrations` are the service's own newer migrations
+ * (schemaReady's extra list).
  */
-export async function readinessResponse(env: BaseEnv, extra: Checks = {}): Promise<Response> {
+export async function readinessResponse(env: BaseEnv, extra: Checks = {}, migrations: readonly string[] = []): Promise<Response> {
   const checks: Checks = {
     production_environment: env.SERVICE_ENVIRONMENT === "production",
-    database_schema: await schemaReady(env),
+    database_schema: await schemaReady(env, migrations),
     operator_identities_configured: listConfigured(env.OPERATOR_IDENTITIES),
     ai_binding: Boolean(env.AI),
     access_configured: accessConfigured(env),
