@@ -16,6 +16,7 @@ import {
   type ChatAnswer, type ChatPlan,
 } from "../../control-plane-shared/src/conversation.ts";
 import { runTool, type ToolEnv, type ToolResult } from "./conversation-tools.ts";
+import { modelSubject, recordCorrection, turnRef } from "./corrections.ts";
 
 export interface ConversationEnv extends ToolEnv { AI?: AiBinding; CHAT_DAILY_TURN_LIMIT?: string }
 /** The Durable Object's storage, as much of it as a conversation uses. */
@@ -194,17 +195,33 @@ export async function readConversation(store: ConversationStore, actor: string, 
   return { conversation_id: id, created_at: meta.created_at, turns };
 }
 
-/** A thumbs up or down on one answered turn (§3.1); audited as conversation.rated. */
-export async function rateTurn(env: { DB: D1Database }, store: ConversationStore, actor: string, id: string, n: unknown, rating: unknown): Promise<{ turn: number; rating: "up" | "down" }> {
+/**
+ * A thumbs up or down on one answered turn (§3.1); audited as conversation.rated. HAIC H3b: it is also recorded as a
+ * correction (source chat_rating; with the owner's optional note, an owner_correction whose text is the note), whose id
+ * the rated event names. The rating stands whatever happens to that record: a failure there is logged, never thrown.
+ */
+export async function rateTurn(env: { DB: D1Database }, store: ConversationStore, actor: string, id: string, n: unknown, rating: unknown, note?: unknown): Promise<{ turn: number; rating: "up" | "down" }> {
   const meta = await metaOf(store, actor, id);
   if (!meta) throw new ConversationError(404, "not_found", "no such conversation");
   if (!Number.isInteger(n) || (n as number) < 1 || (n as number) > meta.turns) throw new ConversationError(400, "invalid_request", "no such turn");
   if (rating !== "up" && rating !== "down") throw new ConversationError(400, "invalid_request", "rating is up or down");
+  if (note !== undefined && note !== null && typeof note !== "string") throw new ConversationError(400, "invalid_request", "note is text");
   const t = await store.get<TurnRecord>(TURN_KEY(n as number));
   if (!t || t.status !== "answered") throw new ConversationError(409, "not_rateable", "only an answered turn is rated");
   t.rating = rating;
   await store.put(TURN_KEY(n as number), t);
-  await audit(env.DB, "rated", actor, id, rating, { turn: n });
+  let correctionId: string | null = null;
+  try {
+    // The note is never refused for its content: the contract redacts a secret, masks a price and truncates at 500.
+    const r = await recordCorrection(env.DB, {
+      side: "cerebrum", source: "chat_rating", rating, text: note ?? null,
+      target: { ref: turnRef(id, n as number), subject: modelSubject(t.model), as_of: t.created_at },
+    }, { actor: `owner:${actor}`, owner: true, attested_by: "cerebrum_access" });
+    correctionId = r.correction.correction_id;
+  } catch (err) {
+    console.error(JSON.stringify({ service: CHAT_SERVICE, event: "chat_rating_correction_failed", conversation_id: id, turn: n, message: String((err as Error)?.message ?? err).slice(0, 200) }));
+  }
+  await audit(env.DB, "rated", actor, id, rating, { turn: n, correction_id: correctionId });
   return { turn: n as number, rating };
 }
 

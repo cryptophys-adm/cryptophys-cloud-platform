@@ -19,7 +19,7 @@ export interface SupervisorNamespace { idFromName(name: string): unknown; get(id
 export interface ConversationStub {
   turn(actor: string, conversationId: string, question: unknown): Promise<unknown>;
   read(actor: string, conversationId: string): Promise<unknown>;
-  rate(actor: string, conversationId: string, turn: unknown, rating: unknown): Promise<unknown>;
+  rate(actor: string, conversationId: string, turn: unknown, rating: unknown, note?: unknown): Promise<unknown>;
 }
 export interface CouncilStub {
   start(actor: string, sessionId: string, topic: unknown, question: unknown): Promise<unknown>;

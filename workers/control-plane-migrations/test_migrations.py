@@ -875,3 +875,39 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", ct_code) a
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", ct_sql, re.I), "0074 is not destructive"
 ct_db.close()
 print("PASS: 0074 register cryptophys-cta (additive, row present and active, versions unset, no agent, rows kept)")
+# Migration 0084 (HAIC H3b, docs/design/HAIC-H3.md §4.2; owner 2026-11-19): the corrections ledger. Additive: one new
+# table and four lookup indexes, the dedup index NOT unique (as 0070: a concurrent duplicate is never refused). Every
+# earlier table and row is kept, and applying it again changes nothing.
+co_db = sqlite3.connect(":memory:")
+co_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0084_":
+        co_db.executescript(migration.read_text(encoding="utf-8"))
+def co_snapshot():
+    return {r[0]: co_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in co_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+co_schema_before = {r[0] for r in co_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+co_before = co_snapshot()
+assert "corrections" not in co_before
+co_sql = (ROOT / "0084_corrections.sql").read_text(encoding="utf-8")
+co_db.executescript(co_sql)
+co_db.executescript(co_sql)
+co_schema_after = {r[0] for r in co_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert co_schema_after - co_schema_before == {"corrections", "sqlite_autoindex_corrections_1", "idx_corrections_subject", "idx_corrections_target", "idx_corrections_dedup", "idx_corrections_side"}, sorted(co_schema_after - co_schema_before)
+co_after = co_snapshot()
+assert {k: v for k, v in co_after.items() if k != "corrections"} == co_before and co_after["corrections"] == [], "0084 keeps every row and seeds none"
+co_idx = {r[1]: r[2] for r in co_db.execute("SELECT * FROM pragma_index_list('corrections')")}
+assert co_idx.get("idx_corrections_dedup") == 0, f"the dedup index is not unique: {co_idx}"
+H64 = "a" * 64
+co_ok = ("cor_0123456789abcdef", "cerebrum", "chat_rating", "owner_rating", "up", None, "ev:platform/conversation/cnv_0123456789abcdef#turn_1", "model:m", "{}", "owner:o@example.com", "cerebrum_access", 3, None, H64, H64, "t0")
+co_insert = "INSERT INTO corrections (correction_id, side, source, label, rating, category, target_ref, subject, body_json, actor, attested_by, weight, supersedes, content_sha256, dedup_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+co_db.execute(co_insert, co_ok)
+co_db.execute(co_insert, ("cor_0123456789abcdee",) + co_ok[1:])  # the same dedup hash twice is accepted (never refused)
+for i, bad in ((0, "cor_short"), (0, "xyz_0123456789abcdef"), (1, "elsewhere"), (2, ""), (3, "owner_vote"), (4, "meh"), (5, "c" * 41), (6, "ev:"), (7, "m"), (8, "not json"), (11, 0), (11, 4), (13, "a"), (14, "b" * 63)):
+    row = list(co_ok); row[0] = f"cor_{i:02d}{len(str(bad)):02d}000000000000"; row[i] = bad
+    expect_integrity_error(f"0084 column {i} {str(bad)[:12]!r}", lambda r=tuple(row): co_db.execute(co_insert, r))
+co_code = "\n".join(line.split("--", 1)[0] for line in co_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER|UNIQUE)\b", co_code), "0084 only creates the table and its non-unique indexes"
+assert co_code.count("CREATE TABLE IF NOT EXISTS") == 1 and co_code.count("CREATE INDEX IF NOT EXISTS") == 4
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", co_sql, re.I), "0084 is not destructive"
+co_db.close()
+print("PASS: 0084 corrections (additive: one table, four non-unique indexes, CHECKs hold, rows kept, applies twice)")

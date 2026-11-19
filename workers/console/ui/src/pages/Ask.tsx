@@ -37,7 +37,12 @@ const refLabel = (ref: string) => ref.replace(/^ev:(platform\/)?/, "").replace(/
 
 function Turn({ t, id, reload }: { t: any; id: string; reload: () => void }) {
   const { notify } = useSession();
-  const rate = (rating: "up" | "down") => call("kernel.conversation_rate", [id, String(t.n)], { rating }).then(reload).catch((e) => notify("err", e.message));
+  // HAIC H3b: a rating is also recorded as a correction; an optional short note goes with it as the correction's text.
+  const [note, setNote] = useState("");
+  const rate = (rating: "up" | "down") => {
+    const text = note.trim();
+    call("kernel.conversation_rate", [id, String(t.n)], text ? { rating, note: text } : { rating }).then(() => { setNote(""); reload(); }).catch((e) => notify("err", e.message));
+  };
   const tone = t.status === "answered" ? "green" : t.status === "refused" ? "amber" : "red";
   return (
     <div className="space-y-2">
@@ -64,6 +69,8 @@ function Turn({ t, id, reload }: { t: any; id: string; reload: () => void }) {
           <span title={t.created_at}>{t.created_at ? ago(t.created_at) : "—"}</span>
           {t.status === "answered" && (
             <span className="ml-auto flex items-center gap-1">
+              <input type="text" className="field w-44! px-2! py-0.5! text-[10px]!" maxLength={500} placeholder="note (optional)" aria-label="Rating note"
+                title="Sent with your thumbs up or down and kept as your correction of this answer (at most 500 characters; a secret is redacted)" value={note} onChange={(e) => setNote(e.target.value)} />
               <button type="button" aria-label="Good answer" aria-pressed={t.rating === "up"} onClick={() => rate("up")}
                 className={`rounded p-1 hover:bg-white/10 ${t.rating === "up" ? "text-emerald-300" : "text-slate-500"}`}><ThumbsUp className="h-3.5 w-3.5" /></button>
               <button type="button" aria-label="Bad answer" aria-pressed={t.rating === "down"} onClick={() => rate("down")}
