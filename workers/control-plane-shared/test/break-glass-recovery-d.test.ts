@@ -405,8 +405,8 @@ test("BG-3. end to end with the planner down: the owner's click deploys exactly 
 });
 
 test("BG-4. pending migrations come from D1's applied state, not from the running version's list", async () => {
-  // The running version's bundle lacks the newest repository migration, which D1 has applied: the normal native plan
-  // refuses (the ledger matches neither list), the break-glass plan applies only what D1 lacks.
+  // The running version's bundle lacks the newest repository migration, which D1 has applied: the break-glass plan
+  // applies only what D1 lacks, and (owner 2026-11-19, after dep_01b18773) so does the normal native plan.
   const older = Object.fromEntries(Object.entries(REPO_SQL).slice(0, -1));
   const db = migratedDb();
   db.raw.prepare("UPDATE service_registry SET desired_version = ?").run(OLD.slice(0, 12));
@@ -415,7 +415,8 @@ test("BG-4. pending migrations come from D1's applied state, not from the runnin
   await bundlesFor(b, NEW, { ...REPO_SQL, ...ADDITIVE });
   mainChecked(db, NEW);
   const normal = await nativeDeployEligible({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW);
-  assert.deepEqual(normal.eligible ? null : normal.reason, "d1_migrations_mismatch");
+  assert.ok(normal.eligible, JSON.stringify(normal));
+  assert.deepEqual(normal.eligible && normal.migrations.map((m) => m.file), ["0990_break_glass_probe.sql"]);
   const choice = await breakGlassChoice({ DB: db as never, BUNDLES: b }, CONTROL_PLANE, NEW, []);
   assert.ok(choice.ok, JSON.stringify(choice));
   assert.deepEqual(choice.ok && choice.migrations.map((m) => [m.file, m.destructive]), [["0990_break_glass_probe.sql", false]]);

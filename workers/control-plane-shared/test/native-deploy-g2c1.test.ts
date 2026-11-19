@@ -32,6 +32,7 @@ const enc = new TextEncoder();
 const MIG_DIR = "workers/control-plane-migrations/";
 const REPO_MIGRATIONS = readdirSync(new URL(MIG_DIR, ROOT)).filter((f) => f.endsWith(".sql")).sort();
 const REPO_SQL: Record<string, string> = Object.fromEntries(REPO_MIGRATIONS.map((f) => [f, read(MIG_DIR + f)]));
+const ADDITIVE_2 = { "0100_g2c1_probe_b.sql": "CREATE TABLE g2c1_probe_b (id TEXT PRIMARY KEY);\n" };
 const ADDITIVE = { "0099_g2c1_probe.sql": "-- G2c-1 probe\nCREATE TABLE g2c1_probe (id TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT 'a;b');\nCREATE INDEX idx_g2c1_probe_note ON g2c1_probe(note);\n" };
 
 const nextSafeMinute = (after: number): number => {
@@ -403,6 +404,19 @@ test("G2c1-4. eligibility for migrations: additive ones for the Control Plane, a
     ["the D1 ledger does not list the running files", async (db, b) => {
       await bundlesFor(b, NEW, { sql: { ...REPO_SQL, ...ADDITIVE } });
       db.raw.prepare("DELETE FROM d1_migrations WHERE name = ?").run(REPO_MIGRATIONS.at(-1)!);
+    }, ["d1_migrations_mismatch", "cryptophys-policy-engine", null]],
+    // Owner 2026-11-19 (after dep_01b18773): a failed deploy applied the first new file and restored its Workers.
+    ["D1 ahead: the ledger lists the running files and the first new one", async (db, b) => {
+      await bundlesFor(b, NEW, { sql: { ...REPO_SQL, ...ADDITIVE, ...ADDITIVE_2 } });
+      db.raw.prepare("INSERT INTO d1_migrations (name) VALUES ('0099_g2c1_probe.sql')").run();
+    }, ["eligible", ["0100_g2c1_probe_b.sql"]]],
+    ["D1 ahead with a gap (a later new file applied, the first not)", async (db, b) => {
+      await bundlesFor(b, NEW, { sql: { ...REPO_SQL, ...ADDITIVE, ...ADDITIVE_2 } });
+      db.raw.prepare("INSERT INTO d1_migrations (name) VALUES ('0100_g2c1_probe_b.sql')").run();
+    }, ["d1_migrations_mismatch", "cryptophys-policy-engine", null]],
+    ["D1 lists a file the target does not have", async (db, b) => {
+      await bundlesFor(b, NEW, { sql: { ...REPO_SQL, ...ADDITIVE } });
+      db.raw.prepare("INSERT INTO d1_migrations (name) VALUES ('0099_zz_elsewhere.sql')").run();
     }, ["d1_migrations_mismatch", "cryptophys-policy-engine", null]],
     ["the D1 ledger is unreadable", async (db, b) => {
       await bundlesFor(b, NEW, { sql: { ...REPO_SQL, ...ADDITIVE } });
