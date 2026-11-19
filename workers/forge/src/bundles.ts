@@ -28,6 +28,8 @@ import type { ExternalSource } from "./externals.ts";
 
 export const BUNDLE_RETENTION_DAYS = 14;
 export const BUNDLE_PREFIX = "bundles/";
+/** 2026-11-19: a full check run's per-test-file dependencies (check-plan.ts), kept and pruned like the bundles. */
+export const TEST_DEPS_PREFIX = "forge-test-deps/";
 const HEX40 = /^[0-9a-f]{40}$/;
 
 type PutOptions = { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> };
@@ -248,16 +250,19 @@ export function migrationSqlOf(snapshot: Record<string, string>): Record<string,
   return out;
 }
 
-/** Delete bundles older than the retention. Bounded per call; the next tick continues. */
+/** Delete bundles (and test dependency records) older than the retention. Bounded per call; the next tick continues. */
 export async function pruneBundles(bucket: BundleBucket, nowMs = Date.now(), maxDeletes = 500): Promise<number> {
   const cutoff = nowMs - BUNDLE_RETENTION_DAYS * 86_400_000;
-  let cursor: string | undefined;
   let deleted = 0;
-  do {
-    const page = await bucket.list({ prefix: BUNDLE_PREFIX, cursor, limit: 500 });
-    const old = page.objects.filter((o) => o.uploaded.getTime() < cutoff).map((o) => o.key).slice(0, maxDeletes - deleted);
-    if (old.length) { await bucket.delete(old); deleted += old.length; }
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor && deleted < maxDeletes);
+  for (const prefix of [BUNDLE_PREFIX, TEST_DEPS_PREFIX]) {
+    let cursor: string | undefined;
+    do {
+      if (deleted >= maxDeletes) return deleted;
+      const page = await bucket.list({ prefix, cursor, limit: 500 });
+      const old = page.objects.filter((o) => o.uploaded.getTime() < cutoff).map((o) => o.key).slice(0, maxDeletes - deleted);
+      if (old.length) { await bucket.delete(old); deleted += old.length; }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor && deleted < maxDeletes);
+  }
   return deleted;
 }

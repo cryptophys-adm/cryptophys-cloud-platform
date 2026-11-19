@@ -99,7 +99,8 @@ test("G2a-2. a passed, clean commit of main is stored; a failed one, or a change
   const crDb = migratedDb();
   const cb = bucket();
   await tickWith({ DB: crDb as never, ARTIFACTS: { get: async () => repoWith(FILES) }, BUNDLES: cb }, "platform", deps("pass"), () => Date.now(), async () => SHA, "change");
-  assert.equal(cb.objects.size, 0, "a change request is not a deploy candidate");
+  assert.equal([...cb.objects.keys()].filter((k) => k.startsWith(BUNDLE_PREFIX)).length, 0, "a change request is not a deploy candidate");
+  assert.deepEqual([...cb.objects.keys()], [`forge-test-deps/${SHA}.json`], "only its full run's test dependency record (2026-11-19, check-plan.ts)");
 });
 
 test("G2a-2b. the run of main is recorded only after its bundles are stored: until then the deploy gate says pending (2026-11-16, 4001de2 fell back to the workflow on no_bundle)", async () => {
