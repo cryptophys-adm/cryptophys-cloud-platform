@@ -7,15 +7,20 @@
  *
  * A draft redeploy plan is retired (status `disabled`, with an audit event) when:
  *   - `superseded`: the service's desired version has moved past the plan's version, or
- *   - `drift_resolved`: the plan's version is still desired and the service already runs it.
+ *   - `drift_resolved`: the plan's version is still desired and the service already runs it, or
+ *   - `not_main` (orchestrator finding D, owner 2026-11-19): the plan's version is not main's head as the Forge last
+ *     planned it, so the Orchestrator would refuse the redeploy (`version_not_current_main`). An unreadable head
+ *     retires nothing.
  * Approval refuses such a plan, and the hourly sweep retires the rest. Plans without a
  * redeploy_commit step are never touched: their version is not a deploy target.
  */
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
+import { forgeMainHead } from "../../control-plane-shared/src/forge-gate.ts";
+import { notMain } from "../../control-plane-shared/src/recovery-resolution.ts";
 
-export type SupersededReason = "superseded" | "drift_resolved";
+export type SupersededReason = "superseded" | "drift_resolved" | "not_main";
 
 interface PlanLike { plan_id: string; service_id: string; plan_version: string; status: string; steps_json: string }
 interface RegistryLike { desired_version: string | null; observed_version: string | null }
@@ -49,7 +54,9 @@ async function registryOf(db: D1Database, serviceId: string): Promise<RegistryLi
 
 export async function planSuperseded(db: D1Database, plan: PlanLike): Promise<SupersededReason | null> {
   if (plan.status !== "draft" || !redeploys(plan.steps_json)) return null;
-  return supersededReason(plan, await registryOf(db, plan.service_id));
+  const reason = supersededReason(plan, await registryOf(db, plan.service_id));
+  if (reason) return reason;
+  return notMain(plan.plan_version, (await forgeMainHead(db)).sha) ? "not_main" : null;
 }
 
 /** Disable a draft plan that is no longer needed. True only if this call changed it. */

@@ -100,11 +100,14 @@ export default function RecoveryDetail({ id }: { id: string }) {
   return (
     <div className="flex flex-col gap-3">
       <a href="#/recovery" className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-slate-500 hover:text-cyan-300"><ArrowLeft className="h-3 w-3" />Recovery</a>
-      <Panel title={<span className="mono normal-case tracking-normal text-slate-200">{pid}</span>} right={<Badge tone={statusTone(plan.status) as any}>{plan.status ?? "—"}</Badge>}>
+      <Panel title={<span className="mono normal-case tracking-normal text-slate-200">{pid}</span>} right={<Badge tone={(plan.resolution ? "green" : statusTone(plan.status)) as any}>{plan.resolution ? "superseded" : plan.status ?? "—"}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : (
           <>
             {typeof plan.created_by === "string" && plan.created_by.startsWith("agent:") && plan.status === "draft" && (
               <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[12px] text-amber-200"><AlertTriangle className="h-3.5 w-3.5" />Proposed by an agent. After you approve, the AI executes it on its own.</div>
+            )}
+            {plan.resolution?.detail && (
+              <div className="mb-3 flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[12px] text-emerald-200"><Check className="h-3.5 w-3.5" />Superseded: {String(plan.resolution.detail)}. Nothing to do.</div>
             )}
             {plan.plan?.title && <h2 className="mb-1 text-[14px] text-slate-100">{plan.plan.title}</h2>}
             {plan.plan?.rationale && <p className="mb-3 whitespace-pre-line text-[12px] text-slate-400">{plan.plan.rationale}</p>}

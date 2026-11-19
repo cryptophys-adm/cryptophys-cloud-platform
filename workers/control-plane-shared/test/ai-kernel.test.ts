@@ -341,6 +341,33 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 
+test("supervisor D (owner 2026-11-19): a redeploy of a desired version that is no longer main's head is not drafted", async () => {
+  const MAIN = "c".repeat(40);
+  const forgeHead = (db: Db, sha: string) => db.raw.prepare("INSERT INTO forge_deploy_plans (main_sha, fingerprint, forge_units, forge_at) VALUES (?, 'f', '[]', ?)").run(sha, new Date().toISOString());
+  const k = kernelEnv(migratedDb(), { AI: fakeAi(AI_PLAN) });
+  forgeHead(k.db, MAIN);
+  k.db.raw.prepare("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id = 'cryptophys-platform-api'").run();
+  drift(k.db, "cryptophys-platform-api", true, 20);
+  drift(k.db, "cryptophys-platform-api", true, 5);
+  const report = await runCycle(k.env as never, k.mem, "scheduled");
+  const f = report.findings.find((x) => x.kind === "drift")!;
+  assert.equal(f.action, "none");
+  assert.match(String(f.why), /desired version aaaaaaaaaaaa is not main's head ccccccc: a redeploy would be refused \(version_not_current_main\); no plan proposed/);
+  assert.equal((k.db.raw.prepare("SELECT COUNT(*) AS n FROM recovery_plans").get() as any).n, 0, "no redeploy plan of a version the Orchestrator refuses");
+  const again = await runCycle(k.env as never, k.mem, "scheduled");
+  assert.deepEqual(again.findings.filter((x) => x.kind === "drift").map((x) => x.why), ["proposal already open or recent"], "the cooldown holds: no AI draft every cycle");
+
+  // When the desired version is main's head, the redeploy is drafted as before.
+  const ok = kernelEnv(migratedDb(), { AI: fakeAi(AI_PLAN) });
+  forgeHead(ok.db, "aaaaaaaaaaaa" + "d".repeat(28));
+  ok.db.raw.prepare("UPDATE service_registry SET desired_version = 'aaaaaaaaaaaa' WHERE service_id = 'cryptophys-platform-api'").run();
+  drift(ok.db, "cryptophys-platform-api", true, 20);
+  drift(ok.db, "cryptophys-platform-api", true, 5);
+  await runCycle(ok.env as never, ok.mem, "scheduled");
+  const plan = ok.db.raw.prepare("SELECT steps_json FROM recovery_plans").get() as any;
+  assert.deepEqual(JSON.parse(plan.steps_json).steps.map((x: any) => x.action), ["redeploy_commit", "manual"]);
+});
+
 test("supervisor: no duplicate proposals, template when AI is unavailable, nothing when suspended", async () => {
   const k = kernelEnv(migratedDb(), { AI: fakeAi({ response: "not json" }) });
   drift(k.db, "cryptophys-audit-ledger", true, 20, ["health_check_failed"]);
