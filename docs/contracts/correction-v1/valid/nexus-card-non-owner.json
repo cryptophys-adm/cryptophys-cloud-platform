@@ -1,0 +1,24 @@
+{
+  "schema": "correction.v1",
+  "correction_id": "cor_4444444444444444",
+  "side": "nexus",
+  "source": "nexus_card",
+  "label": "owner_correction",
+  "rating": "up",
+  "category": "good_call",
+  "target": {
+    "ref": "ev:xauusd/card/d_20261119_0900",
+    "subject": "seat:r37_funnel",
+    "as_of": "2026-11-19T09:00:00Z"
+  },
+  "text": null,
+  "evidence_refs": [],
+  "actor": "nexus:analyst@example.com",
+  "attested_by": "xauusd_nexus_access",
+  "weight": 1,
+  "supersedes": null,
+  "redactions": [],
+  "created_at": "2026-11-19T10:04:00Z",
+  "content_sha256": "f2badb350273d03fc4658a84ff1848ae9290f900e04f3cbba7829f7ea6ebbf53",
+  "dedup_sha256": "3d7cedc375858c1fc8a7ec166dc21764b7ed454f8dfa51744f4b6d8d9248e27c"
+}

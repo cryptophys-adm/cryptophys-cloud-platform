@@ -1,0 +1,24 @@
+{
+  "schema": "correction.v1",
+  "correction_id": "cor_3333333333333333",
+  "side": "cerebrum",
+  "source": "typed_proposal",
+  "label": "owner_decision",
+  "rating": null,
+  "category": null,
+  "target": {
+    "ref": "ev:platform/typed_proposal/tp_0123456789abcdef",
+    "subject": "agent:moderator",
+    "as_of": null
+  },
+  "text": null,
+  "evidence_refs": [],
+  "actor": "owner:owner@example.com",
+  "attested_by": "cerebrum_access",
+  "weight": 1,
+  "supersedes": null,
+  "redactions": [],
+  "created_at": "2026-11-19T10:03:00Z",
+  "content_sha256": "65d2269c7d72f263eb72dfbaca953d6e7697a7712ecf184bbe622c5d7b35cd98",
+  "dedup_sha256": "46285079ab8bf6c384c6d60d0610f917b8cc625e61ca2bf157a93d6002aae7f2"
+}

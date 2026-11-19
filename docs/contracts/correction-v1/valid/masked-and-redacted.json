@@ -1,0 +1,30 @@
+{
+  "schema": "correction.v1",
+  "correction_id": "cor_5555555555555555",
+  "side": "cerebrum",
+  "source": "council",
+  "label": "owner_correction",
+  "rating": null,
+  "category": "reading_wrong",
+  "target": {
+    "ref": "ev:platform/council/cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01#option_2",
+    "subject": "agent:moderator",
+    "as_of": null
+  },
+  "text": "Support near [level] was ignored; key [redacted] leaked",
+  "evidence_refs": [
+    "ev:xauusd/card/d_1"
+  ],
+  "actor": "owner:owner@example.com",
+  "attested_by": "cerebrum_access",
+  "weight": 3,
+  "supersedes": null,
+  "redactions": [
+    "secret",
+    "price"
+  ],
+  "created_at": "2026-11-19T10:05:00Z",
+  "invalid_refs": 1,
+  "content_sha256": "782189e7c378144b2a5620b8217e459d2f3cb5b577f3ee2e0429951d616f386c",
+  "dedup_sha256": "81e05fa9708e312071d31ce1b532edef7e63cfc81ceada99ccf3de9816fc3ac3"
+}

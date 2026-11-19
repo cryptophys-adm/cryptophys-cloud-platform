@@ -1,0 +1,184 @@
+{
+  "schema": "correction-v1.vectors",
+  "dedup_version": "cryptophys.correction-dedup.v1",
+  "build": [
+    {
+      "name": "rating",
+      "input": {
+        "side": "cerebrum",
+        "source": "chat_rating",
+        "rating": "up",
+        "target": {
+          "ref": "ev:platform/conversation/cnv_1#turn_1",
+          "subject": "model:qwen3-30b",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "cerebrum_access",
+        "now": "2026-11-19T10:06:00Z",
+        "correction_id": "cor_6666666666666666"
+      },
+      "expect": {
+        "label": "owner_rating",
+        "category": null,
+        "text": null,
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [],
+        "content_sha256": "ce0022f9b878365aba93b49c2a6ad8a5d4e2d536a577785e5c54ee9ba277ef0c",
+        "dedup_sha256": "6a2b86dda7631ea985730d3cb7c47def98bd26a27404e6a6099dc55306fa9766"
+      }
+    },
+    {
+      "name": "whitespace-equal",
+      "input": {
+        "side": "cerebrum",
+        "source": "council",
+        "category": "overconfident",
+        "text": "  Too   sure\nof the read.  ",
+        "evidence_refs": [
+          "ev:platform/b/2",
+          "ev:platform/a/1"
+        ],
+        "target": {
+          "ref": "ev:platform/council/cs_x#seq_1",
+          "subject": "agent:signal-analyst",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "cerebrum_access",
+        "now": "2026-11-19T10:07:00Z",
+        "correction_id": "cor_7777777777777777"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "overconfident",
+        "text": "Too sure of the read.",
+        "evidence_refs": [
+          "ev:platform/b/2",
+          "ev:platform/a/1"
+        ],
+        "weight": 3,
+        "redactions": [],
+        "content_sha256": "68a445126df82cc6d6f4f40c256ad185227fade105599f3c6e5f85fb5e47de80",
+        "dedup_sha256": "a3c96eb37066c40bc71c30d25712347a9b3d279e4b62cf427ed48780ec0a6485"
+      }
+    },
+    {
+      "name": "whitespace-equal-2",
+      "input": {
+        "side": "cerebrum",
+        "source": "council",
+        "category": "overconfident",
+        "text": "Too sure of the read.",
+        "evidence_refs": [
+          "ev:platform/a/1",
+          "ev:platform/b/2"
+        ],
+        "target": {
+          "ref": "ev:platform/council/cs_x#seq_1",
+          "subject": "agent:signal-analyst",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "cerebrum_access",
+        "now": "2026-11-19T10:08:00Z",
+        "correction_id": "cor_8888888888888888"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "overconfident",
+        "text": "Too sure of the read.",
+        "evidence_refs": [
+          "ev:platform/a/1",
+          "ev:platform/b/2"
+        ],
+        "weight": 3,
+        "redactions": [],
+        "content_sha256": "8decba360c8f6be050ddf45ff5ed447326c942350a0ea0ee5580e2aa8273890e",
+        "dedup_sha256": "a3c96eb37066c40bc71c30d25712347a9b3d279e4b62cf427ed48780ec0a6485"
+      }
+    },
+    {
+      "name": "unknown-category",
+      "input": {
+        "side": "cerebrum",
+        "source": "council",
+        "category": "vibes",
+        "target": {
+          "ref": "ev:platform/council/cs_x#seq_1",
+          "subject": "agent:signal-analyst",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "cerebrum_access",
+        "now": "2026-11-19T10:09:00Z",
+        "correction_id": "cor_9999999999999999"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "other",
+        "text": null,
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [],
+        "content_sha256": "b543492bba40e9b37060d53b8ee0cc80d290ef082e2fe2d56544e9e8fa8761a7",
+        "dedup_sha256": "e3f9fe9d5c9a65c85bd0ceab106b52f059ae797494afb364f8139b208d11615e",
+        "category_raw": "vibes"
+      }
+    }
+  ],
+  "refused": [
+    {
+      "name": "empty",
+      "input": {
+        "side": "cerebrum",
+        "source": "council",
+        "target": {
+          "ref": "ev:platform/council/cs_x#seq_1",
+          "subject": "agent:a",
+          "as_of": null
+        }
+      },
+      "error": "empty"
+    },
+    {
+      "name": "no-target",
+      "input": {
+        "side": "cerebrum",
+        "source": "council",
+        "rating": "up"
+      },
+      "error": "invalid_target"
+    },
+    {
+      "name": "params-in-input",
+      "input": {
+        "side": "cerebrum",
+        "source": "council",
+        "rating": "up",
+        "params": {
+          "a": 1
+        },
+        "target": {
+          "ref": "ev:platform/council/cs_x#seq_1",
+          "subject": "agent:a",
+          "as_of": null
+        }
+      },
+      "error": "forbidden_key: input.params"
+    }
+  ]
+}
