@@ -118,6 +118,23 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **Unchanged:** upgrades (Amendment 3: the owner's ceiling, never mid-trade, one step at a time); funds are never moved; the Decision Engine veto; the risk-only Position Manager; auto-disarm; the xauusd external ceiling and the platform's trading capability rules. The constitution's line is unchanged.
 - **Order of events.** xauusd builds it behind `OMEGA_PROFILE_COUNCIL_DOWNGRADE`, default `off`, and turns it on only after this amendment is merged. Until then every downgrade applies as Amendment 3 says.
 
+## Amendment 6 (owner, 2026-11-19): TP2 before the TP1 lock, with the stop at break-even
+
+- **Origin.** The owner chose the break-even option for the Position Manager's outward take profit ("Merge #490 + kerjakan opsi BE", given to the xauusd session and relayed by the orchestrator). The owner confirmed it directly to the platform session on 2026-11-19 ("Yes, write Amendment 6"), after being told that the worst case of such a position becomes about zero instead of the TP1 profit.
+- **Why.** xauusd's ladder (Amendment 4) sends the outward take profit, the Position Manager's TP2, only once the stop locks TP1. From the ladder's start (2026-11-18 08:38 UTC) to 2026-11-19, 8 Omega positions reached no TP1 lock (only the earlier lock at TP0, 5 times), so TP2 never reached the broker: Scalp targets lie a few dollars from the entry and are hit before a TP1 lock can happen.
+- **The rule.** Under the TP ladder an outward take-profit may also be sent before the TP1 lock when the Position Manager's council approves it (momentum not weakening, thesis intact), the position is in profit, and the same modification moves the stop to break-even plus the spread or better (never below the entry); a broker that refuses the stop leaves both unchanged.
+- **Relation to Amendments 1 and 4.** It adds a path; it removes none. Amendment 4's ladder from the TP1 lock onwards, and its other rules, are unchanged.
+- **One modification.** The take profit and the stop are sent together. The take profit never moves outward on its own before the TP1 lock: either both change or neither does.
+- **The trade-off, as the owner accepted it.** Once the stop sits at break-even plus the spread, the position can no longer end in a loss, but its worst case is about zero, where after a TP1 lock it was the TP1 profit. From the TP1 lock onwards, Amendment 4 applies as before.
+- **Unchanged:**
+  - the stop loss only tightens: never widened, and never below the entry under this amendment;
+  - the Position Manager never opens, adds to, reverses or hedges a position;
+  - the Decision Engine veto, auto-disarm, and Omega's live arm;
+  - funds are never moved;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** This is a risk rule of the Position Manager under the existing standing arm, not a new trading authority.
+- **Order of events.** xauusd's change that implements it waits until this amendment is merged.
+
 ## Guards
 
 - **Funds are never moved.** Arming authorises entries and closes only. No deposit, withdrawal, transfer or wallet action, at any tier, armed or not.
