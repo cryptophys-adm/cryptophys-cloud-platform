@@ -26,6 +26,7 @@
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { CRITICAL_PATHS } from "../../control-plane-shared/src/guard-paths.ts";
+import { coverageAccepted } from "../../control-plane-shared/src/forge-gate.ts";
 import { checkOf, isReady, STALE_RUN_MS, type ArtifactsReader, type ArtifactsTreeEntry, type CheckSummary } from "./checks.ts";
 import { FIRST_PARENT_WALK, mainPosition } from "./merge.ts";
 
@@ -146,6 +147,11 @@ export function verdictOf(check: CheckSummary | null, critical: string[] | null,
   if (check.guard_status && check.guard_status !== "clean") reasons.push("secret scan found a secret");
   if (check.typecheck?.status === "failed") reasons.push(check.typecheck.console_build === "failed" && !check.typecheck.errors ? "the Console build failed" : "the type-check failed");
   if (check.status === "failed" && reasons.length === 0) reasons.push("the check failed");
+  // Forge check CPU (owner 2026-11-19): a run that did not run the full suite covers this head only under the exact
+  // rule (forge-gate.ts coverageAccepted): docs only, a partial run of the affected tests, or a result reused for this
+  // identical tree. Anything else never merges, whatever its status says.
+  const coverage = check.coverage ?? { mode: "full" as const };
+  if (!coverageAccepted(coverage, { commit: check.commit, source: check.source ?? null, tree: check.tree ?? null }, "merge")) reasons.push(`the check's coverage (${coverage.mode}) does not cover this head`);
   if (reasons.length) return { verdict: "blocked", reasons };
   // G4: a head from platform-work has no type-check source yet (the secret-free build reads cr/<n> of platform).
   // It stays pending, so a forge-sourced change request cannot reach would_merge until one exists (G3b needs it).
@@ -153,7 +159,7 @@ export function verdictOf(check: CheckSummary | null, critical: string[] | null,
   if (!check.typecheck || check.typecheck.status !== "passed") return { verdict: "pending", reasons: ["the type-check of this head has not reported"] };
   if (check.typecheck.console_build !== "passed") return { verdict: "pending", reasons: ["the Console build of this head has not reported"] };
   if (critical === null) return { verdict: "pending", reasons: ["changed paths not computed"] };
-  if (!isReady(check.status, check.guard_status, check.typecheck)) return { verdict: "pending", reasons: ["not ready"] };
+  if (!isReady(check.status, check.guard_status, check.typecheck, true)) return { verdict: "pending", reasons: ["not ready"] };
   return critical.length ? { verdict: "needs_owner", reasons: critical } : { verdict: "would_merge", reasons: [] };
 }
 
@@ -304,7 +310,7 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
       cr_id: r.cr_id, source: r.source, repo: r.repo, blocked_reason: refusedReason(r), number: r.number, branch: r.branch, source_branch: r.source_branch, title: r.title, author: r.author,
       head_sha: r.head_sha, base_sha: r.base_sha, github_ci: r.github_ci, status: r.status,
       changed_paths: parseList(r.changed_paths) ?? [], critical: critical ?? [],
-      check: check ? { status: check.status, pass: check.pass, fail: check.fail, guard_status: check.guard_status, typecheck: check.typecheck, ready: check.ready } : null,
+      check: check ? { status: check.status, pass: check.pass, fail: check.fail, guard_status: check.guard_status, typecheck: check.typecheck, ready: check.ready, coverage: check.coverage?.mode ?? "full", workers: check.workers ?? null } : null,
       verdict: r.status === "open" ? live.verdict : r.verdict_at_outcome, reasons: r.status === "open" ? live.reasons : [],
       merge_sha: r.merge_sha, agrees: r.agrees === null ? null : r.agrees === 1,
       created_at: r.created_at, updated_at: r.updated_at, outcome_at: r.outcome_at,
@@ -332,6 +338,7 @@ export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowM
   // Only heads still to check are read (no run yet, or a running or error run that may be stale), so 20 checked
   // requests can no longer hide an unchecked one behind the LIMIT.
   const order = repoName === "platform-work" ? "c.updated_at ASC, c.rowid ASC" : "c.updated_at DESC, c.rowid DESC";
+  if (repoName === "platform-work") return nextQueueHead(db, repo, nowMs);
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
      WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL
@@ -344,6 +351,51 @@ export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowM
     const stale = Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS;
     if (r.status && !((r.status === "running" || r.status === "error") && stale)) continue;
     if (await repo.readCommit(r.head_sha)) return r.head_sha;
+  }
+  return null;
+}
+
+/**
+ * How long a request ahead in the merge queue holds the later ones' rebased heads (coordinator 2026-11-19, item 4): a
+ * passed run of it that finished this recently may merge any minute, and that merge moves main, so a later request's
+ * current head would need another rebase before it can merge. Past this the hold lapses and the later head is checked.
+ */
+export const QUEUE_HOLD_MS = 60 * 60_000;
+
+/**
+ * The next platform-work head to check: a request's full check runs at most twice (coordinator 2026-11-19, item 4):
+ *   - the registration run: the request's first head the Forge checks (no finished run of the request yet,
+ *     steps.cr_id), checked in queue order at once, whatever is ahead of it;
+ *   - the head-of-queue run: a later head (a rebase or a new push) is checked only when no request ahead of it in the
+ *     Supervisor's merge order (supervisor.ts: open, forge-sourced, not refused, updated_at ascending) holds the queue.
+ *     A request holds it while its current head has a live run, or a passed run that finished in the last
+ *     QUEUE_HOLD_MS and is not blocked: it may merge first, and its merge would make the later head stale.
+ * A held head has no run, so its verdict stays pending and it is never proposed for merge (no result covers it).
+ * Lost and errored runs are retried once STALE_RUN_MS old, as before.
+ */
+async function nextQueueHead(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
+  const rows = (await db.prepare(
+    `SELECT c.cr_id, c.head_sha, c.critical, c.blocked_reason, c.history_blocked_reason, r.status, r.started_at, r.finished_at FROM forge_change_requests c
+     LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
+     WHERE c.status = 'open' AND c.repo = 'platform-work' AND c.source = 'forge' AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL
+     ORDER BY c.updated_at ASC, c.rowid ASC LIMIT 50`,
+  ).all<{ cr_id: string; head_sha: string; critical: string | null; blocked_reason: string | null; history_blocked_reason: string | null; status: string | null; started_at: string | null; finished_at: string | null }>()).results ?? [];
+  let held = false;
+  for (const r of rows) {
+    const stale = Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS;
+    const due = !r.status || ((r.status === "running" || r.status === "error") && stale);
+    if (due) {
+      const firstRun = !(await db.prepare("SELECT 1 AS x FROM forge_check_runs WHERE source = 'change' AND status <> 'running' AND json_extract(steps, '$.cr_id') = ? LIMIT 1").bind(r.cr_id).first());
+      if ((firstRun || !held) && await repo.readCommit(r.head_sha)) return r.head_sha;
+      continue;
+    }
+    if (held) continue;
+    if (r.status === "running") { held = true; continue; }
+    if (r.status === "passed" && Date.parse(r.finished_at ?? "") >= nowMs - QUEUE_HOLD_MS) {
+      let critical: string[] | null = null;
+      try { const c = JSON.parse(r.critical ?? "null"); critical = Array.isArray(c) ? c.map(String) : null; } catch { critical = null; }
+      if (changeVerdict(r, await checkOf(db, r.head_sha), critical, nowMs).verdict !== "blocked") held = true;
+    }
   }
   return null;
 }

@@ -14,9 +14,108 @@ import { DEPLOY_UNITS, registryFingerprint, type PlannedUnit, type Skip } from "
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
-/** The gate: a passed check with no secret, a passed type-check and a passed Console build. */
-export function isReady(status: string, guard: string | null, typecheck: { status: string; console_build: "passed" | "failed" | null } | null): boolean {
-  return status === "passed" && guard === "clean" && typecheck?.status === "passed" && typecheck.console_build === "passed";
+/**
+ * The gate: a passed check with no secret, a passed type-check and a passed Console build, whose test coverage is
+ * accepted for the use at hand (`covered`, from coverageAccepted; a run recorded before coverage markers ran the full
+ * suite, which is why the parameter defaults to true for callers that read such a run).
+ */
+export function isReady(status: string, guard: string | null, typecheck: { status: string; console_build: "passed" | "failed" | null } | null, covered = true): boolean {
+  return covered && status === "passed" && guard === "clean" && typecheck?.status === "passed" && typecheck.console_build === "passed";
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Forge check CPU (owner 2026-11-19: "setuju semua", then "All 3 as proposed"). A check run records what its tests
+// covered in steps.coverage, and the gate accepts a run that did not run the full suite only under these rules:
+//   - full       the whole suite ran on this tree (and a run recorded before markers existed);
+//   - docs_only  a change request whose every changed path is documentation (isDocsOnlyPath): no test ran;
+//   - partial    a change request whose changed paths touch none of FULL_SUITE_PATHS: only the test files that can
+//                be affected ran (the rest passed on `base`, a full run of the same runner);
+//   - reused     a change request whose git tree is byte-identical to `tree`, a tree that passed a full run of the
+//                same runner (`from`): its result is reused, valid only while the tree is that exact tree.
+// A run of main is always full: the deploy gate (forgeReady) accepts nothing else, and neither does the merge gate
+// for a row of source 'main'. An unknown or malformed marker is never accepted.
+
+/** Documentation that no test run is needed for: docs/**.md (not docs/contracts/), architecture/adr/*.md, root *.md. */
+export function isDocsOnlyPath(path: string): boolean {
+  if (typeof path !== "string" || path.includes("..") || path.includes("\\")) return false;
+  if (/^[^/]+\.md$/.test(path)) return true;
+  if (/^architecture\/adr\/[^/]+\.md$/.test(path)) return true;
+  return /^docs\/(?:[^/]+\/)*[^/]+\.md$/.test(path) && !path.startsWith("docs/contracts/");
+}
+
+/** Paths whose change always runs the full suite: shared code, package and compiler files, the runner, migrations. */
+export const FULL_SUITE_PATHS: readonly RegExp[] = [
+  /^workers\/control-plane-shared\/src\//,
+  /(^|\/)package(-lock)?\.json$/,
+  /(^|\/)tsconfig[^/]*\.json$/,
+  /^workers\/control-plane-tsconfig\.json$/,
+  /^workers\/forge\/src\/runner\//,
+  /^workers\/forge\/src\/(checks|check-plan|changes|tick|worker)\.ts$/,
+  /^tools\/forge-runner\//,
+  /^workers\/control-plane-migrations\//,
+  /(^|\/)wrangler(\.[a-z]+)?\.toml$/,
+  /^\.github\//,
+];
+
+export function needsFullSuite(path: string): boolean {
+  return typeof path !== "string" || path.includes("..") || FULL_SUITE_PATHS.some((re) => re.test(path));
+}
+
+export type Coverage =
+  | { mode: "full" }
+  | { mode: "docs_only"; base: string; paths: string[] }
+  | { mode: "partial"; base: string; files: number; of: number; changed: string[] }
+  | { mode: "reused"; from: string; tree: string }
+  | { mode: "invalid" };
+
+/** The most changed paths a docs_only or partial marker lists; a longer change runs the full suite. */
+export const MAX_COVERAGE_PATHS = 200;
+
+const strList = (v: unknown): string[] | null => Array.isArray(v) && v.length > 0 && v.length <= MAX_COVERAGE_PATHS && v.every((x) => typeof x === "string") ? v as string[] : null;
+
+/** steps.coverage as the gate reads it: absent is a full run (every run before 2026-11-19); anything malformed is invalid. */
+export function coverageOfSteps(steps: string | null): Coverage {
+  let c: unknown;
+  try { c = (JSON.parse(steps ?? "null") as { coverage?: unknown } | null)?.coverage; } catch { return { mode: "invalid" }; }
+  if (c === undefined) return { mode: "full" };
+  if (!c || typeof c !== "object") return { mode: "invalid" };
+  const o = c as Record<string, unknown>;
+  if (o.mode === "full") return { mode: "full" };
+  if (o.mode === "docs_only") {
+    const paths = strList(o.paths);
+    return typeof o.base === "string" && HEX40.test(o.base) && paths ? { mode: "docs_only", base: o.base, paths } : { mode: "invalid" };
+  }
+  if (o.mode === "partial") {
+    const changed = strList(o.changed);
+    const files = Number(o.files); const of = Number(o.of);
+    return typeof o.base === "string" && HEX40.test(o.base) && changed && Number.isInteger(files) && Number.isInteger(of) && files >= 0 && files < of
+      ? { mode: "partial", base: o.base, files, of, changed } : { mode: "invalid" };
+  }
+  if (o.mode === "reused") {
+    return typeof o.from === "string" && HEX40.test(o.from) && typeof o.tree === "string" && HEX40.test(o.tree) ? { mode: "reused", from: o.from, tree: o.tree } : { mode: "invalid" };
+  }
+  return { mode: "invalid" };
+}
+
+/** The git tree a run was of (steps.tree, recorded since 2026-11-19), or null. */
+export function treeOfSteps(steps: string | null): string | null {
+  try { const t = (JSON.parse(steps ?? "null") as { tree?: unknown } | null)?.tree; return typeof t === "string" && HEX40.test(t) ? t : null; } catch { return null; }
+}
+
+/**
+ * Whether a run's coverage is accepted. `deploy` (and any row of main) accepts only a full run. `merge` accepts, for a
+ * change request's run of `commit`, the reduced modes exactly under the rule above: docs_only when every listed path
+ * is documentation, partial when no listed path needs the full suite, reused when the reused tree is this run's tree.
+ */
+export function coverageAccepted(c: Coverage, run: { commit: string; source: string | null; tree: string | null }, use: "merge" | "deploy"): boolean {
+  if (c.mode === "full") return true;
+  if (use === "deploy" || (run.source ?? "main") !== "change") return false;
+  switch (c.mode) {
+    case "docs_only": return c.base !== run.commit && c.paths.every(isDocsOnlyPath);
+    case "partial": return c.base !== run.commit && !c.changed.some(needsFullSuite);
+    case "reused": return c.from !== run.commit && run.tree !== null && c.tree === run.tree;
+    default: return false;
+  }
 }
 
 /** The type-check step of a check run's steps JSON, as the gate reads it. */
@@ -35,8 +134,12 @@ export async function forgeReady(db: D1Database, sha: string): Promise<{ ready: 
   const r = await db.prepare("SELECT status, guard_status, steps FROM forge_check_runs WHERE commit_sha = ?")
     .bind(sha).first<{ status: string; guard_status: string | null; steps: string | null }>();
   if (!r) return { ready: false, reason: "forge_checks_pending", status: null };
-  const ready = isReady(r.status, r.guard_status ?? null, typecheckOfSteps(r.steps));
-  return { ready, reason: ready ? "forge_ready" : r.status === "running" ? "forge_checks_pending" : "forge_checks_not_ready", status: r.status };
+  // A deploy needs a full run (owner 2026-11-19): a docs-only, partial or reused change request result never deploys.
+  const full = coverageAccepted(coverageOfSteps(r.steps), { commit: sha, source: "main", tree: treeOfSteps(r.steps) }, "deploy");
+  const ready = isReady(r.status, r.guard_status ?? null, typecheckOfSteps(r.steps), full);
+  // A change request's reduced run of a commit now on main waits for main's own full run (the next tick): pending.
+  const waitsForFull = !full && isReady(r.status, r.guard_status ?? null, typecheckOfSteps(r.steps), true);
+  return { ready, reason: ready ? "forge_ready" : r.status === "running" || waitsForFull ? "forge_checks_pending" : "forge_checks_not_ready", status: r.status };
 }
 
 /**

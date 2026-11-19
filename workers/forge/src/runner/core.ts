@@ -59,8 +59,10 @@ export function groupFiles(files: string[], size = FILES_PER_WORKER): string[][]
   return groups;
 }
 
-function resolveIn(snapshot: Snapshot, path: string): string | null {
+function resolveIn(snapshot: Snapshot, path: string, trace?: Set<string>): string | null {
   for (const candidate of [path, path + ".ts", path + ".js", path + "/index.ts", path + "/index.js"]) {
+    // Every candidate tried is a dependency (2026-11-19): a file added where an earlier candidate was missing changes the bundle.
+    trace?.add(candidate);
     if (Object.prototype.hasOwnProperty.call(snapshot, candidate)) return candidate;
   }
   return null;
@@ -114,7 +116,7 @@ export function moduleRules(toml: string): ModuleRule[] {
  * keeps them as separate modules, and a snapshot has no node_modules. They are recorded in
  * `external`. Imports matching the Worker's Text or Data rules load as text or bytes.
  */
-export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; importMetaUrl?: boolean; worker?: { rules: ModuleRule[]; external: Set<string>; specifiers?: Map<string, Set<string>> } } = {}) {
+export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; importMetaUrl?: boolean; worker?: { rules: ModuleRule[]; external: Set<string>; specifiers?: Map<string, Set<string>> }; trace?: Set<string> } = {}) {
   return {
     name: "forge-snapshot",
     setup(build: PluginBuild) {
@@ -138,7 +140,7 @@ export function snapshotPlugin(snapshot: Snapshot, opts: { shims?: ShimSources; 
             return { path: a.path, external: true };
           }
         }
-        const found = resolveIn(snapshot, target);
+        const found = resolveIn(snapshot, target, opts.trace);
         return found ? { path: found, namespace: "forge-snapshot", pluginData: loader } : { errors: [{ text: `cannot resolve ${a.path} from ${a.importer || "the entry point"}` }] };
       });
       if (shims) build.onLoad({ filter: /.*/, namespace: "forge-shim" }, (a) => ({ contents: shims[a.path as ShimName], loader: "js" }));
@@ -169,8 +171,8 @@ export function deferTopLevel(bundled: string): string {
 
 const COMMON = { bundle: true, format: "esm", platform: "neutral", write: false, logLevel: "silent", target: "es2022" };
 
-export async function bundleTest(esbuild: EsbuildLike, snapshot: Snapshot, shims: ShimSources, file: string): Promise<string> {
-  const r = await esbuild.build({ ...COMMON, entryPoints: [file], plugins: [snapshotPlugin(snapshot, { shims, importMetaUrl: true })] });
+export async function bundleTest(esbuild: EsbuildLike, snapshot: Snapshot, shims: ShimSources, file: string, trace?: Set<string>): Promise<string> {
+  const r = await esbuild.build({ ...COMMON, entryPoints: [file], plugins: [snapshotPlugin(snapshot, { shims, importMetaUrl: true, trace })] });
   const text = r.outputFiles?.[0]?.text;
   if (text === undefined) throw new Error("esbuild produced no output for " + file);
   return deferTopLevel(text);
@@ -302,13 +304,13 @@ async function runFiles(request, env) {
   const payload = await request.json();
   if (!payload || typeof payload.snapshot !== "object" || payload.snapshot === null) return new Response("no snapshot", { status: 400 });
   try { return await runWith(payload, env); }
-  finally { globalThis.__VFS = undefined; globalThis.__SQL = undefined; globalThis.__SQL_DATABASES = undefined; globalThis.__FORGE_BUNDLE = undefined; globalThis.__TESTS = undefined; globalThis.__MEMFS = undefined; }
+  finally { globalThis.__VFS = undefined; globalThis.__SQL = undefined; globalThis.__SQL_DATABASES = undefined; globalThis.__FORGE_BUNDLE = undefined; globalThis.__TESTS = undefined; globalThis.__MEMFS = undefined; globalThis.__FS_READS = undefined; }
 }
 async function runWith(payload, env) {
   globalThis.__VFS = payload.snapshot;
   globalThis.__SQL_DATABASES = undefined;
   if (!globalThis.location) globalThis.location = { href: "http://runner/" };
-  if (env && env.BUNDLER) globalThis.__FORGE_BUNDLE = (dir) => env.BUNDLER.bundleWorker(dir, payload.commit);
+  if (env && env.BUNDLER) globalThis.__FORGE_BUNDLE = (dir) => { if (globalThis.__FS_READS) globalThis.__FS_READS.add("*"); return env.BUNDLER.bundleWorker(dir, payload.commit); };
   globalThis.__SQL = await initSqlJs({ instantiateWasm(imports, done) { WebAssembly.instantiate(wasm, imports).then((i) => done(i)); return {}; } });
   await new Promise((r) => setTimeout(r, 5)); // advance the clock (it only moves on I/O)
   const cleanupSqlite = (keep = new Set()) => {
@@ -327,8 +329,12 @@ async function runWith(payload, env) {
   const report = [];
   for (const file of files) {
     globalThis.__TESTS = undefined; globalThis.__MEMFS = undefined; globalThis.__T0 = Date.now();
+    const reads = globalThis.__FS_READS = new Set();
     const out = { file, results: [] };
     report.push(out);
+    // 2026-11-19: the snapshot paths this file read through node:fs ("dir/" for a listing, "*" for everything),
+    // so a later change request runs it only when one of them changed (forge/src/check-plan.ts).
+    Object.defineProperty(out, "reads", { enumerable: true, get: () => (reads.size > 2000 ? ["*"] : [...reads].sort()) });
     try { await (await loaders[file]()).__load(); } catch (e) {
       out.load_error = String(e && e.stack || e).slice(0, 800);
       const cleanup = cleanupSqlite();
@@ -373,13 +379,20 @@ export function runnerEntry(files: string[]): string {
 
 export interface FileReport {
   file: string;
+  /** The snapshot paths the file read through node:fs: a path, "dir/" for a listing, "*" for everything (2026-11-19). */
+  reads?: string[];
   load_error?: string;
   results?: Array<{ name: string; status: string; error?: string }>;
   sqlite_open_after?: number;
   sqlite_close_errors?: number;
 }
-/** `isolated`: files rerun alone after their group's test Worker failed as a whole (absent when none). */
-export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[]; isolated?: number; workers?: WorkerStats }
+/**
+ * `isolated`: files rerun alone after their group's test Worker failed as a whole (absent when none).
+ * `deps` (2026-11-19): per test file, what it depends on: the snapshot paths its bundle resolved (every candidate tried)
+ * and the paths it read through node:fs ("dir/" a listing, "*" everything); "*" when its Worker reported none.
+ * `worker_wall_ms`: the summed wall time of the requests to test Workers. The Worker Loader reports no CPU time.
+ */
+export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[]; isolated?: number; workers?: WorkerStats; deps?: Record<string, string[]>; worker_wall_ms?: number }
 
 export function emptyResult(): SuiteResult {
   return { files: 0, pass: 0, fail: 0, skip: 0, failures: [] };
@@ -515,11 +528,16 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
   const result = emptyResult();
   const workers: WorkerStats = { groups: 0, bundles: 0, loads: 0 };
   const ids = new Set<string>();
+  const imports = new Map<string, Set<string>>();
+  const reads = new Map<string, string[]>();
+  let wallMs = 0;
   for (const group of groupFiles(files)) {
     const bundled: Array<{ file: string; code: string }> = [];
     const unbundled: string[] = [];
     for (const file of group) {
-      try { bundled.push({ file, code: await bundleTest(deps.esbuild, snapshot, deps.shims, file) }); }
+      const trace = new Set<string>([file]);
+      imports.set(file, trace);
+      try { bundled.push({ file, code: await bundleTest(deps.esbuild, snapshot, deps.shims, file, trace) }); }
       catch (e) { result.files++; result.fail++; result.failures.push(`${file.split("/").pop()}: BUNDLE ${String((e as Error)?.message ?? e).slice(0, 300)}`); unbundled.push(file); }
     }
     if (bundled.length === 0) continue;
@@ -532,7 +550,12 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
         const id = await testWorkerId(code);
         ids.add(id);
         workers.loads++;
-        return { report: await deps.runWorker(code, testWorkerRequest(id, snapshotText, commit)) };
+        const t0 = Date.now();
+        try {
+          const report = await deps.runWorker(code, testWorkerRequest(id, snapshotText, commit));
+          for (const f of report?.files ?? []) if (typeof f?.file === "string" && Array.isArray(f.reads)) reads.set(f.file, f.reads.map(String));
+          return { report };
+        } finally { wallMs += Date.now() - t0; }
       } catch (e) { return { report: null, error: String((e as Error)?.message ?? e).slice(0, 300) }; }
     };
     const whole = await run(bundled);
@@ -548,5 +571,26 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
   }
   workers.bundles = ids.size;
   result.workers = workers;
+  result.worker_wall_ms = wallMs;
+  // A file whose Worker reported no reads (an older runner, a crash) may depend on anything.
+  result.deps = Object.fromEntries(files.map((f) => [f, [...new Set([...(imports.get(f) ?? []), ...(reads.get(f) ?? ["*"])])].sort()]));
   return result;
+}
+
+/** Bumped when the meaning of a run's result changes in a way the parts hashed below do not show. */
+export const RUNNER_LOGIC = "forge-runner-logic/2";
+
+/**
+ * The runner and toolchain fingerprint (2026-11-19): what a test result depends on besides the snapshot. Two runs of
+ * the same tree with the same fingerprint give the same result (the clock aside: main's daily run covers that), so a
+ * result is reused only under an equal fingerprint; a new esbuild, sql.js, shim, runner entry or limit runs again.
+ */
+export async function runnerFingerprint(deps: Pick<SuiteDeps, "shims" | "sqlJs" | "limits"> & { esbuild: EsbuildLike & { version?: unknown } }): Promise<string> {
+  const parts = JSON.stringify({
+    logic: RUNNER_LOGIC, entry: RUNNER_ENTRY, compatibilityDate: COMPATIBILITY_DATE, filesPerWorker: FILES_PER_WORKER,
+    esbuild: typeof deps.esbuild?.version === "string" ? deps.esbuild.version : null, sqlJs: deps.sqlJs ?? null, limits: stable(deps.limits ?? null),
+    shims: stable(deps.shims ?? {}),
+  });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(parts));
+  return "rf1-" + Array.from(new Uint8Array(digest).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
 }
