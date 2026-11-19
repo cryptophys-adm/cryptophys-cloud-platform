@@ -110,8 +110,12 @@ test("I2. the Console: #/owner is the first nav item, reads only the inbox, reus
   for (const route of ["recovery.approve", "recovery.disable", "kernel.consensus_approve", "kernel.consensus_reject", "kernel.knowledge_approve", "kernel.knowledge_reject"]) {
     assert.match(page, new RegExp(`route: "${route.replace(".", "\\.")}"`), `${route} is reused`);
   }
-  assert.equal((page.match(/who\.approver \?/g) ?? []).length, 3, "every action group is shown to approvers only");
-  assert.match(page, /Only an approver can decide\./);
+  // HAIC H5b (owner 2026-11-19): recovery plans and knowledge stay with approvers; critical consensus is the owner's.
+  assert.equal((page.match(/who\.approver \?/g) ?? []).length, 2, "recovery plans and knowledge are shown to approvers only");
+  assert.equal((page.match(/who\.owner \?/g) ?? []).length, 1, "critical consensus decisions are shown to the owner only");
+  assert.match(page, /Only \{who\} can decide\./);
+  assert.match(page, /who = "an approver"/);
+  assert.match(page, /<ReadOnly who="the owner" \/>/);
   assert.match(page, /<CriticalReportList rows=\{reports\}/, "the open critical reports reuse CriticalReports.tsx (acknowledge for approvers)");
   for (const text of ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Nothing needs you"]) assert.ok(page.includes(text), text);
   assert.match(page, /const problems = arr\(data\?\.production_problems\)/, "the third section reads the same inbox");

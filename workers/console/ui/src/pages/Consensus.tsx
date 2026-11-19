@@ -80,7 +80,7 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
             return (
               <div className="space-y-1">
                 {!runnable && <div className="text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject to close it.</div>}
-                {who.approver ? (
+                {who.owner ? (
                   <div className="flex flex-wrap gap-2">
                     {runnable && ownerClickMode(mode) && (
                       <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
@@ -90,7 +90,7 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
                     <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
                       lines: ["The proposal is closed as rejected; nothing executes."], done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
                   </div>
-                ) : <span className="text-[11px] text-slate-500">Only an approver can decide.</span>}
+                ) : <span className="text-[11px] text-slate-500">Only the owner can decide.</span>}
               </div>
             );
           } },
@@ -149,7 +149,7 @@ function ModeControl({ mode, reload }: { mode: string; reload: () => void }) {
   const idx = MODES.indexOf(mode as (typeof MODES)[number]);
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2">
-      {who.approver && MODES.filter((_, i) => i > idx).map((m) => (
+      {who.owner && MODES.filter((_, i) => i > idx).map((m) => (
         <button key={m} type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.consensus_mode_raise", body: { mode: m, confirm: "RAISE MODE", reason: "owner raised the mode in the Console" },
           title: `Raise the consensus mode to ${m}`, lines: [MODE_EFFECT[m], "Recorded in the audit chain under your identity. Any operator can return to shadow at any time."],
           done: `Mode is now ${m}.`, after: reload })}><ArrowUpCircle className="h-3.5 w-3.5" />Mode: {m}…</button>

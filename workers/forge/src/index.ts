@@ -29,7 +29,7 @@
 //     platform in R2 (SHA-256, size, refs, objects) and the failed runs, for the Console Code page.
 // Every write is in the audit chain. Tokens are returned once and never stored or logged.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
-import { accessConfigured, accessGate, actorOf, listConfigured, requireApprover, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
+import { accessConfigured, accessGate, actorOf, isOwner, listConfigured, requireApprover, requireOperator, type AccessIdentity } from "../../control-plane-shared/src/access.ts";
 import { errorResponse, healthBody, json, readJsonObject } from "../../control-plane-shared/src/http.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
@@ -215,10 +215,12 @@ export default {
     if (blocked) return blocked;
     if (request.method === "GET" && url.pathname === "/health") return json(healthBody(env as never));
     if (request.method === "GET" && url.pathname === "/ready") return readiness(env);
-    // G3a spike: an approver (owner or approver account, always a person); operators and service tokens are refused.
+    // G3a spike: the owner (HAIC H5b, owner 2026-11-19; before, any approver), always a person; operators, approver accounts
+    // and service tokens are refused.
     if (url.pathname === "/v1/forge/merge-spike") {
       const approver = await requireApprover(request, env as never);
       if (!approver.ok) return approver.response;
+      if (!isOwner(approver.identity, env as never)) return errorResponse(403, "owner_required", "a Forge one-time action is the owner's (HAIC H5b)");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       const body = await readJsonObject(request);
       if (!body.ok) return body.response;
@@ -231,10 +233,11 @@ export default {
         return errorResponse(e.status ?? 500, e.status ? e.message : "internal_error");
       }
     }
-    // G4: the work repository, approvers only (a person); reports the repo name and remote host, never a token.
+    // G4: the work repository, the owner only (HAIC H5b; a person); reports the repo name and remote host, never a token.
     if (url.pathname === "/v1/forge/work-repo") {
       const approver = await requireApprover(request, env as never);
       if (!approver.ok) return approver.response;
+      if (!isOwner(approver.identity, env as never)) return errorResponse(403, "owner_required", "a Forge one-time action is the owner's (HAIC H5b)");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       const body = await readJsonObject(request);
       if (!body.ok) return body.response;

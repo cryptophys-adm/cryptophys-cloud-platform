@@ -83,7 +83,7 @@ function ProblemItem({ p }: { p: any }) {
   );
 }
 
-const ReadOnly = () => <div className="mt-1.5 text-[11px] text-slate-500">Only an approver can decide.</div>;
+const ReadOnly = ({ who = "an approver" }: { who?: string }) => <div className="mt-1.5 text-[11px] text-slate-500">Only {who} can decide.</div>;
 
 function PlanItem({ p, reload }: { p: any; reload: () => void }) {
   const { who, act } = useSession();
@@ -137,7 +137,7 @@ function ProposalItem({ p, mode, reload }: { p: any; mode: string | null; reload
       )}
       {p.executable !== true && <div className="mt-1 text-[11px] text-amber-300">No platform executor: carry it out by its runbook, then reject to close it.</div>}
       {p.executable === true && !ownerClickMode(mode) && <div className="mt-1 text-[11px] text-amber-300">Approval executes only in consensus mode deploy or critical (now {mode ?? "—"}).</div>}
-      {who.approver ? (
+      {who.owner ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {canApprove && (
             <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
@@ -147,7 +147,7 @@ function ProposalItem({ p, mode, reload }: { p: any; mode: string | null; reload
           <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
             lines: ["The proposal is closed as rejected; nothing executes."], done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
         </div>
-      ) : <ReadOnly />}
+      ) : <ReadOnly who="the owner" />}
     </div>
   );
 }

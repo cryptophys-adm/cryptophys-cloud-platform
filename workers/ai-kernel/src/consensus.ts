@@ -628,7 +628,7 @@ export async function setConsensusMode(env: SyscallEnv, modeRaw: unknown, actor:
   const lowering = targetIndex < currentIndex;
   if (lowering && mode !== "shadow") throw new OwnerDecisionError(400, "invalid_transition", "lowering the consensus mode must use the shadow emergency brake");
   if (raising) {
-    if (!isApprover) throw new OwnerDecisionError(403, "approver_required", "raising the consensus mode needs an approver");
+    if (!isApprover) throw new OwnerDecisionError(403, "owner_required", "raising the consensus mode is the owner's (HAIC H5b)");
     if (actorType !== "user" || !/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(actor)) throw new OwnerDecisionError(403, "person_required", "raising the consensus mode needs a person's Access identity");
   }
   if (mode !== current) {
