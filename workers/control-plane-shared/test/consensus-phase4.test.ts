@@ -188,7 +188,7 @@ test("7. retire_worker: an owner-approved retire dispatches the Retire Worker wo
   } finally { globalThis.fetch = realFetch; }
 });
 
-test("8. HTTP: approvers decide through the kernel; operators and service tokens are refused", async () => {
+test("8. HTTP: the owner decides through the kernel (HAIC H5b); operators and service tokens are refused", async () => {
   const { env, db } = kernelEnv();
   const p = await pendingPrincipal(env, db);
   try {
@@ -196,7 +196,7 @@ test("8. HTTP: approvers decide through the kernel; operators and service tokens
     const path = `/v1/consensus/${p.proposal_id}/approve`;
     const ci = await call(kernel, env, new Request(`https://x${path}`, { method: "POST", headers: { "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" }, body: "{}" }));
     assert.equal(ci.status, 403);
-    assert.equal(ci.body.error, "approver_required");
+    assert.equal(ci.body.error, "owner_required");
     const ok = await call(kernel, env, new Request(`https://x${path}`, { method: "POST", headers: { "cf-access-jwt-assertion": APPROVER_JWT, "content-type": "application/json" }, body: JSON.stringify({ reason: "ok" }) }));
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.equal(ok.body.status, "executed");

@@ -60,6 +60,15 @@ async function isApprover(request: Request, env: Env): Promise<boolean> {
   return authorization.ok;
 }
 
+/**
+ * HAIC H5b (owner 2026-11-19, ADR-0017 §6: "only the owner approves critical actions"): owners only, the people in
+ * APPROVER_IDENTITIES. An approver account (Users page) is not an owner. A person, never a service token.
+ */
+async function isOwnerRequest(request: Request, env: Env): Promise<boolean> {
+  const auth = await authenticate(request, env);
+  return auth.ok && isOwner(auth.identity, env);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -117,7 +126,7 @@ export default {
       if (isOperator) {
         // Operator and CI identities always receive operator tools. Agent identity is never
         // selected from a request header; external agents require an active registered principal.
-        return await handleMcp(request, env, callerActor, await isApprover(request, env));
+        return await handleMcp(request, env, callerActor, await isApprover(request, env), undefined, await isOwnerRequest(request, env));
       }
       if (agentSessionPrincipal) {
         return await handleMcp(request, env, callerActor, false, {
@@ -126,7 +135,7 @@ export default {
         });
       }
       const operator = await requireOperator(request, env);
-      return operator.ok ? await handleMcp(request, env, operator.actor, await isApprover(request, env)) : operator.response;
+      return operator.ok ? await handleMcp(request, env, operator.actor, await isApprover(request, env), undefined, await isOwnerRequest(request, env)) : operator.response;
     }
 
     const operator = await requireOperator(request, env);
@@ -287,7 +296,7 @@ export default {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         try {
-          return json(await setConsensusMode(env, body.value.mode, operator.actor, operator.identity.type, await isApprover(request, env), body.value.confirm, body.value.reason));
+          return json(await setConsensusMode(env, body.value.mode, operator.actor, operator.identity.type, await isOwnerRequest(request, env), body.value.confirm, body.value.reason));
         } catch (err) {
           if (err instanceof OwnerDecisionError) return errorResponse(err.status, err.code, err.message);
           throw err;
@@ -318,7 +327,7 @@ export default {
       if (ownerMatch) {
         // ADR-0009 phase 4: one owner click on a critical proposal. Approvers only; a person, never a token.
         if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
-        if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "an owner decision needs an approver");
+        if (!(await isOwnerRequest(request, env))) return errorResponse(403, "owner_required", "a critical decision is the owner's (HAIC H5b)");
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         try {
@@ -353,7 +362,7 @@ export default {
               email: emailConfigured(env) ? "configured" : "off",
             });
           }
-          if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "changing alert channels needs an approver");
+          if (!(await isOwnerRequest(request, env))) return errorResponse(403, "owner_required", "the owner's alert channels change only by the owner (HAIC H5b)");
           if (!id && request.method === "POST") {
             const body = await readJsonObject(request);
             if (!body.ok) return body.response;
@@ -399,7 +408,7 @@ export default {
         const body = await readJsonObject(request);
         if (!body.ok) return body.response;
         if (typeof body.value.enabled !== "boolean") return errorResponse(400, "invalid_request", "enabled must be a boolean");
-        if (body.value.enabled && !(await isApprover(request, env))) return errorResponse(403, "approver_required", "turning agents back on needs an approver");
+        if (body.value.enabled && !(await isOwnerRequest(request, env))) return errorResponse(403, "owner_required", "turning agents back on is the owner's (HAIC H5b)");
         return json(await setAgentsEnabled(env, body.value.enabled, operator.actor));
       }
       if (path === "/v1/agents" && request.method === "GET") return json(await listAgents(env));
@@ -409,14 +418,14 @@ export default {
         const [, agentId, encodedIdentity] = principalMatch;
         if (!encodedIdentity) {
           if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
-          if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "registering an agent principal needs an approver");
+          if (!(await isOwnerRequest(request, env))) return errorResponse(403, "owner_required", "registering an agent principal is the owner's (HAIC H5b)");
           const body = await readJsonObject(request);
           if (!body.ok) return body.response;
           const res = await addAgentPrincipal(env, agentId, body.value.access_identity, operator.actor);
           return json(res.body, res.status);
         }
         if (request.method !== "DELETE") return errorResponse(405, "method_not_allowed");
-        if (!(await isApprover(request, env))) return errorResponse(403, "approver_required", "revoking an agent principal needs an approver");
+        if (!(await isOwnerRequest(request, env))) return errorResponse(403, "owner_required", "revoking an agent principal is the owner's (HAIC H5b)");
         let decodedIdentity: string;
         try {
           decodedIdentity = decodeURIComponent(encodedIdentity);

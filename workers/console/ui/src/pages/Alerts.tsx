@@ -10,7 +10,7 @@ import { ago } from "../lib/format";
  * Owner 2026-11-13: "buatkan panel alert di menu cerebrum user ... mengaktifkan/nonaktifkan atau menambah/hapus
  * telegram alert ... cukup input chat id atau token id telegram". The owner's Telegram alert channels (GET /v1/alerts).
  * A channel receives the owner notices of the topics it lists while enabled. The bot token is write-only: it is kept in
- * the AI Kernel's vault, never shown again; the page shows its last four characters. Only an approver changes channels.
+ * the AI Kernel's vault, never shown again; the page shows its last four characters. Only the owner changes channels (HAIC H5b).
  */
 const TOPIC_TEXT: Record<string, string> = {
   owner_attention: "Approvals waiting for you",
@@ -56,7 +56,7 @@ function ChannelCard({ c, topics, reload }: { c: any; topics: any[]; reload: () 
       <div className="text-[11px] text-slate-400">Sends: {c.topics.length ? c.topics.map((t: string) => TOPIC_TEXT[t] ?? t).join(" · ") : "nothing"}</div>
       {/* A relayed topic never goes back through the xauusd bot it came from (the kernel refuses it there). */}
       {editing && <TopicPicker topics={isDefault ? topics.filter((t) => !t.relay) : topics} value={editing} onChange={setEditing} />}
-      {who.approver ? (
+      {who.owner ? (
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn py-1!" onClick={() => act({ route: "kernel.alert_update", params: c.channel_id, body: { enabled: !c.enabled }, title: `${c.enabled ? "Disable" : "Enable"} ${c.name}`, done: c.enabled ? "Disabled." : "Enabled.", after: reload })}>
             {c.enabled ? "Disable" : "Enable"}
@@ -71,7 +71,7 @@ function ChannelCard({ c, topics, reload }: { c: any; topics: any[]; reload: () 
             <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.alert_delete", params: c.channel_id, title: `Delete ${c.name}`, lines: ["The channel and its bot token are removed. Alerts stop going to this chat.", "The bot itself is not changed in Telegram."], done: "Deleted.", after: reload })}><Trash2 className="h-3.5 w-3.5" />Delete…</button>
           )}
         </div>
-      ) : <div className="text-[11px] text-slate-500">Only an approver can change alert channels.</div>}
+      ) : <div className="text-[11px] text-slate-500">Only the owner can change alert channels.</div>}
     </div>
   );
 }
@@ -118,7 +118,7 @@ export default function Alerts() {
           <div className="grid gap-3 md:grid-cols-2">{channels.map((c) => <ChannelCard key={c.channel_id} c={c} topics={topics} reload={refresh} />)}</div>
         )}
       </Panel>
-      {who.approver && data?.available !== false && (
+      {who.owner && data?.available !== false && (
         <Panel title="Add a Telegram channel" icon={<Plus className="h-3.5 w-3.5 text-emerald-300" />}>
           {data?.vault === false ? <Empty>The alert vault is not bound yet: the AI Kernel's next deploy adds it.</Empty> : <AddChannel topics={topics} reload={refresh} />}
         </Panel>

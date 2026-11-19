@@ -12,10 +12,10 @@ const env = (db = migratedDb()) => ({ db, env: baseEnv("cryptophys-ai-kernel", d
 const mode = (db: ReturnType<typeof migratedDb>) => (db.raw.prepare("SELECT value FROM consensus_controls WHERE control = 'mode'").get() as any).value;
 const post = (jwt: string, body: unknown) => new Request("https://x/v1/consensus/mode", { method: "POST", headers: { "cf-access-jwt-assertion": jwt, "content-type": "application/json" }, body: JSON.stringify(body) });
 
-test("raising the mode needs an approver who is a person; the CI token cannot", async () => {
+test("raising the mode needs the owner, a person (HAIC H5b); the CI token cannot", async () => {
   const { db, env: e } = env();
   const ci = await call(kernel, e, post(CI_JWT, { mode: "deploy", confirm: "RAISE MODE" }));
-  assert.deepEqual([ci.status, ci.body.error], [403, "approver_required"]);
+  assert.deepEqual([ci.status, ci.body.error], [403, "owner_required"]);
   assert.equal(mode(db), "shadow");
   await assert.rejects(setConsensusMode(e as never, "deploy", "ci-client.access", "service_token", true, "RAISE MODE", null), /person_required/);
   const ok = await call(kernel, e, post(APPROVER_JWT, { mode: "deploy", confirm: "RAISE MODE", reason: "owner override of the 7-day shadow window" }));
@@ -48,7 +48,7 @@ test("deploy verification accepts any known mode but fails on a stuck execution"
 });
 
 
-test("a service-token common_name that looks like an email is never a human approver", async () => {
+test("a service-token common_name that looks like an email is never a human owner", async () => {
   const { db, env: e } = env();
   const serviceIdentity = "owner@cryptophys.work";
   const serviceJwt = await signAccessJwt({ common_name: serviceIdentity });
@@ -58,7 +58,7 @@ test("a service-token common_name that looks like an email is never a human appr
   });
 
   const response = await call(kernel, e, post(serviceJwt, { mode: "deploy", confirm: "RAISE MODE" }));
-  assert.deepEqual([response.status, response.body.error], [403, "approver_required"]);
+  assert.deepEqual([response.status, response.body.error], [403, "owner_required"]);
   assert.equal(mode(db), "shadow");
   await assert.rejects(
     setConsensusMode(e as never, "deploy", serviceIdentity, "service_token", true, "RAISE MODE", null),

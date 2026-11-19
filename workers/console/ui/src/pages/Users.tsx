@@ -11,7 +11,7 @@ import { DataTable, STATUS, StatusBar } from "../components/viz";
 const PRIVILEGE_TEXT: Record<string, string> = {
   viewer: "Viewer: opens the Cerebrum Console and reads everything; cannot act.",
   operator: "Operator: runs routine actions (observe, wake agents, create recovery plans, deploy requests).",
-  approver: "Approver: also approves recovery plans and critical actions, and may raise the consensus mode.",
+  approver: "Approver: also approves recovery plans and knowledge, acknowledges critical reports and resumes agents. Critical actions stay with the owner.",
 };
 const KIND_TEXT: Record<string, string> = {
   admin: "Admin: may open the Cerebrum Console, with the privilege below.",
