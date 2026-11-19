@@ -911,3 +911,93 @@ assert co_code.count("CREATE TABLE IF NOT EXISTS") == 1 and co_code.count("CREAT
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", co_sql, re.I), "0084 is not destructive"
 co_db.close()
 print("PASS: 0084 corrections (additive: one table, four non-unique indexes, CHECKs hold, rows kept, applies twice)")
+# Migration 0085 (HAIC H5d, docs/design/HAIC-H5.md §7.1; owner 2026-11-19): the collaborator schema, the next free number
+# after H3b's 0084. Additive: two columns on platform_accounts (reviewer, 0 by
+# default; expires_at, NULL), three new tables and one index, no row. Every earlier table and row is kept.
+cl_db = sqlite3.connect(":memory:")
+cl_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0085_":
+        cl_db.executescript(migration.read_text(encoding="utf-8"))
+cl_db.execute(
+    """INSERT INTO platform_accounts (email, kind, privilege, status, note, created_by, created_at, updated_by, updated_at)
+       VALUES ('viewer@example.com', 'admin', 'viewer', 'active', NULL, 'o@example.com', 't0', 'o@example.com', 't0'),
+              ('nexus@example.com', 'user', NULL, 'disabled', 'n', 'o@example.com', 't0', 'o@example.com', 't0')"""
+)
+def cl_snapshot():
+    return {r[0]: cl_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in cl_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+cl_schema_before = {r[0] for r in cl_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+cl_before = cl_snapshot()
+cl_account_cols = [r[1] for r in cl_db.execute("PRAGMA table_info(platform_accounts)")]
+assert not {"collab_comments", "conversation_collab_budget", "collab_controls"} & set(cl_before)
+cl_sql = (ROOT / "0085_collaborators.sql").read_text(encoding="utf-8")
+cl_db.executescript(cl_sql)
+cl_schema_after = {r[0] for r in cl_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert cl_schema_after - cl_schema_before == {
+    "collab_comments", "sqlite_autoindex_collab_comments_1", "idx_collab_comments_target",
+    "conversation_collab_budget", "sqlite_autoindex_conversation_collab_budget_1",
+    "collab_controls", "sqlite_autoindex_collab_controls_1",
+}, sorted(cl_schema_after - cl_schema_before)
+assert cl_schema_before <= cl_schema_after, "0085 drops nothing"
+assert "human_feedback" not in cl_schema_after, "collaborators teach through the H3 ledger (corrections, 0084)"
+assert [r[1] for r in cl_db.execute("PRAGMA table_info(platform_accounts)")] == cl_account_cols + ["reviewer", "expires_at"]
+cl_after = cl_snapshot()
+assert {k: v for k, v in cl_after.items() if k not in ("platform_accounts", "collab_comments", "conversation_collab_budget", "collab_controls")} == {k: v for k, v in cl_before.items() if k != "platform_accounts"}, "0085 keeps every other row"
+assert [r[:-2] for r in cl_after["platform_accounts"]] == cl_before["platform_accounts"], "0085 keeps every account row"
+assert [r[-2:] for r in cl_after["platform_accounts"]] == [(0, None), (0, None)], "an existing account reads as no reviewer and no expiry"
+assert cl_after["collab_comments"] == [] and cl_after["conversation_collab_budget"] == [] and cl_after["collab_controls"] == [], "0085 seeds no row"
+# platform_accounts.reviewer: 0 or 1 only, never NULL; expires_at is free text or NULL.
+cl_db.execute("UPDATE platform_accounts SET reviewer = 1, expires_at = '2026-12-31T00:00:00.000Z' WHERE email = 'viewer@example.com'")
+cl_db.execute("UPDATE platform_accounts SET reviewer = 0, expires_at = NULL WHERE email = 'viewer@example.com'")
+for bad in (2, -1, None, "yes"):
+    expect_integrity_error(f"0085 reviewer {bad!r}", lambda b=bad: cl_db.execute("UPDATE platform_accounts SET reviewer = ? WHERE email = 'viewer@example.com'", (b,)))
+cl_db.execute(
+    """INSERT INTO platform_accounts (email, kind, privilege, status, created_by, created_at, updated_by, updated_at)
+       VALUES ('new@example.com', 'admin', 'operator', 'active', 'o@example.com', 't1', 'o@example.com', 't1')"""
+)
+assert cl_db.execute("SELECT reviewer, expires_at FROM platform_accounts WHERE email = 'new@example.com'").fetchone() == (0, None), "a new row defaults to no reviewer"
+# collab_comments: an ev: target, a closed author role, 1 to 1,200 characters, a sha256, visible or hidden (hidden_by set
+# exactly when hidden).
+H64 = "a" * 64
+cm_insert = "INSERT INTO collab_comments (comment_id, target_ref, author, author_role, text, content_sha256, status, hidden_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+cm_ok = ("cmt_0123456789abcdef", "ev:platform/council/cs_0123456789abcdef#3", "r@example.com", "reviewer", "x" * 1200, H64, "visible", None, "t0")
+cl_db.execute(cm_insert, cm_ok)
+for n, role in enumerate(("operator", "approver", "owner")):
+    cl_db.execute(cm_insert, (f"cmt_role{n}",) + cm_ok[1:3] + (role,) + cm_ok[4:])
+cl_db.execute(cm_insert, ("cmt_hidden",) + cm_ok[1:6] + ("hidden", "o@example.com", "t0"))
+cl_db.execute("INSERT INTO collab_comments (comment_id, target_ref, author, author_role, text, content_sha256, created_at) VALUES ('cmt_default', 'ev:platform/inbox/i1', 'r@example.com', 'reviewer', 'ok', ?, 't0')", (H64,))
+assert cl_db.execute("SELECT status, hidden_by FROM collab_comments WHERE comment_id = 'cmt_default'").fetchone() == ("visible", None), "a comment is visible by default"
+cl_db.execute("UPDATE collab_comments SET status = 'hidden', hidden_by = 'o@example.com' WHERE comment_id = 'cmt_default'")
+expect_integrity_error("0085 comment_id unique", lambda: cl_db.execute(cm_insert, cm_ok))
+for i, bad in ((0, "c"), (0, "c" * 41), (0, None), (1, "platform/council/cs_x"), (1, "ev:"), (1, "ev:" + "x" * 298), (2, ""), (3, "viewer"), (3, "user"), (3, "OWNER"), (4, ""), (4, "x" * 1201), (5, "a" * 63), (6, "deleted"), (6, None), (8, None)):
+    row = list(cm_ok); row[0] = f"cmt_bad_{i}_{len(str(bad))}_{str(bad)[:4]}"; row[i] = bad
+    expect_integrity_error(f"0085 collab_comments column {i} {str(bad)[:12]!r}", lambda r=tuple(row): cl_db.execute(cm_insert, r))
+for status, hidden_by in (("hidden", None), ("visible", "o@example.com"), ("hidden", "")):
+    expect_integrity_error(f"0085 collab_comments {status} by {hidden_by!r}", lambda s=status, h=hidden_by: cl_db.execute(cm_insert, ("cmt_bad_hidden",) + cm_ok[1:6] + (s, h, "t0")))
+# conversation_collab_budget: one row per (day, actor), a collaborator role only (the owner's pool is conversation_budget),
+# turns never negative.
+cb_insert = "INSERT INTO conversation_collab_budget (day, actor, role, turns) VALUES (?, ?, ?, ?)"
+for n, role in enumerate(("reviewer", "operator", "approver")):
+    cl_db.execute(cb_insert, ("2026-11-19", f"a{n}@example.com", role, 5))
+cl_db.execute("INSERT INTO conversation_collab_budget (day, actor, role) VALUES ('2026-11-20', 'a0@example.com', 'reviewer')")
+assert cl_db.execute("SELECT turns FROM conversation_collab_budget WHERE day = '2026-11-20'").fetchone() == (0,)
+expect_integrity_error("0085 budget (day, actor) unique", lambda: cl_db.execute(cb_insert, ("2026-11-19", "a0@example.com", "reviewer", 1)))
+for i, bad in ((0, "2026-11-1"), (0, None), (1, ""), (1, None), (2, "owner"), (2, "viewer"), (2, None), (3, -1), (3, None)):
+    row = ["2026-11-21", f"b{i}{len(str(bad))}@example.com", "operator", 1]; row[i] = bad
+    expect_integrity_error(f"0085 conversation_collab_budget column {i} {bad!r}", lambda r=tuple(row): cl_db.execute(cb_insert, r))
+# collab_controls: the one control collaborators_enabled, '0' or '1'.
+cc_insert = "INSERT INTO collab_controls (control, value, updated_by, updated_at) VALUES (?, ?, ?, ?)"
+cl_db.execute(cc_insert, ("collaborators_enabled", "1", "o@example.com", "t0"))
+cl_db.execute("UPDATE collab_controls SET value = '0', updated_by = 'operator@example.com' WHERE control = 'collaborators_enabled'")
+expect_integrity_error("0085 collab_controls one row per control", lambda: cl_db.execute(cc_insert, ("collaborators_enabled", "0", "o@example.com", "t0")))
+for bad in ("enabled", "agents_enabled", "COLLABORATORS_ENABLED", None):
+    expect_integrity_error(f"0085 collab_controls control {bad!r}", lambda b=bad: cl_db.execute(cc_insert, (b, "1", "o@example.com", "t0")))
+for column, bad in (("value", "2"), ("value", "on"), ("value", None), ("updated_by", ""), ("updated_by", None), ("updated_at", None)):
+    expect_integrity_error(f"0085 collab_controls {column} {bad!r}", lambda c=column, b=bad: cl_db.execute(f"UPDATE collab_controls SET {c} = ? WHERE control = 'collaborators_enabled'", (b,)))
+cl_code = "\n".join(line.split("--", 1)[0] for line in cl_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|UNIQUE)\b", cl_code), "0085 only adds columns, tables and a plain index"
+assert cl_code.count("ALTER TABLE PLATFORM_ACCOUNTS ADD COLUMN") == 2 and cl_code.count("ALTER TABLE") == 2
+assert cl_code.count("CREATE TABLE IF NOT EXISTS") == 3 and cl_code.count("CREATE INDEX IF NOT EXISTS") == 1
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", cl_sql, re.I), "0085 is not destructive"
+cl_db.close()
+print("PASS: 0085 collaborators (additive: reviewer and expires_at on platform_accounts, three tables, one index, no row, CHECKs hold, rows kept)")
