@@ -127,7 +127,7 @@ export default function Command() {
             <button type="button" className="btn btn-danger" onClick={() => act({ route: "kernel.agents_disabled", body: { enabled: false }, title: "Stop all agents", lines: ["Sets the global kill switch: no agent acts until an approver turns agents on again."], done: "Agents are stopped.", after: () => void refresh() })}>
               <Power className="h-3.5 w-3.5" />Agents OFF
             </button>
-            {who.approver && (
+            {who.owner && (
               <button type="button" className="btn btn-approve" onClick={() => act({ route: "kernel.agents_enabled", body: { enabled: true }, title: "Restart all agents", lines: ["Lets enabled agents act again."], done: "Agents are running.", after: () => void refresh() })}>
                 <Power className="h-3.5 w-3.5" />Agents ON
               </button>
