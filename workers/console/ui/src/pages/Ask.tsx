@@ -5,6 +5,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, navigate } from "../lib/format";
+import { TeachingLine, modelSubjectOf, teachingOf } from "../components/TeachingRecord";
 
 /**
  * HAIC H1c (ADR-0017 H1, docs/design/HAIC-H0-H1.md §3.1): "Ask the organism". The owner asks in English; the kernel
@@ -87,6 +88,8 @@ export default function Ask({ conversation }: { conversation?: string }) {
   const { who, notify } = useSession();
   const owner = who.owner === true;
   const { data: list, loading, refresh } = usePoll(() => (owner ? call("kernel.conversations") : Promise.resolve(null)), 60_000);
+  // HAIC H3d: the chat model's teaching record (the owner's ratings and corrections of its answers), context only.
+  const rep = usePoll(() => (owner ? call("kernel.reputation") : Promise.resolve(null)), 60_000);
   const id = conversation && ID.test(conversation) ? conversation : null;
   const [turns, setTurns] = useState<any[]>([]);
   const [loadingTurns, setLoadingTurns] = useState(false);
@@ -152,6 +155,7 @@ export default function Ask({ conversation }: { conversation?: string }) {
         <div className="mt-3 border-t border-white/5 pt-2 text-[10px] text-slate-500">
           <div>Chat {list ? (enabled ? "on" : "off") : "—"} · model <span className="mono">{typeof list?.model === "string" ? list.model.replace(/^@cf\//, "") : "—"}</span></div>
           <div>Today: {typeof budget?.used === "number" ? budget.used : "—"} of {typeof budget?.limit === "number" ? budget.limit : "—"} turns</div>
+          <div>Teaching record: {(() => { const subject = modelSubjectOf(list?.model); return subject && rep.data ? <TeachingLine record={teachingOf(rep.data, subject)} /> : "—"; })()}</div>
         </div>
       </Panel>
       <Panel title="Ask the organism" right={<span className="text-[10px] text-slate-500">read only · every number cited · it cannot act</span>}>

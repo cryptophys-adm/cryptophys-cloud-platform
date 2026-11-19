@@ -13,6 +13,8 @@ const PRODUCES: Record<string, string[]> = {
   agents: ["ev:platform/agents@"], knowledge: ["ev:platform/knowledge@"], metabolism: ["ev:platform/metabolism@"], mesh: ["ev:platform/mesh@"],
   vision: ["ev:platform/vision@"], adr_progress: ["ev:platform/adr_progress@", "ev:adr/"], census: ["ev:platform/census/", "ev:platform/census@"],
   docs: ["ev:platform/doc/"], policy_dry_run: ["ev:platform/policy_dry_run@"],
+  // HAIC H3d: the owner's corrections, each cited by its own ref.
+  owner_corrections: ["ev:platform/owner_corrections@", "ev:platform/correction/"],
 };
 
 test("H1c-E1. 30 English questions with unique ids, each tool in the chat's catalog, each ref prefix one its tools produce", () => {
@@ -48,7 +50,8 @@ test("H1c-UI. the #/ask page: only the four chat routes, owners only, evidence l
   const read = (p: string) => readFileSync(new URL(`../../../${p}`, import.meta.url), "utf8");
   const page = read("workers/console/ui/src/pages/Ask.tsx");
   // + kernel.proposal_draft (HAIC H2b): a directive into a typed proposal draft, which the owner confirms on its page.
-  assert.deepEqual([...new Set([...page.matchAll(/\bcall\(\s*"([a-z_.]+)"/g)].map((m) => m[1]))].sort(), ["kernel.conversation", "kernel.conversation_rate", "kernel.conversation_turn", "kernel.conversations", "kernel.proposal_draft"]);
+  // + kernel.reputation (HAIC H3d): the chat model's teaching record, read only.
+  assert.deepEqual([...new Set([...page.matchAll(/\bcall\(\s*"([a-z_.]+)"/g)].map((m) => m[1]))].sort(), ["kernel.conversation", "kernel.conversation_rate", "kernel.conversation_turn", "kernel.conversations", "kernel.proposal_draft", "kernel.reputation"]);
   assert.match(page, /The chat is for owners only\./);
   assert.match(page, /const owner = who\.owner === true;/);
   assert.doesNotMatch(page, /\bact\(/, "asking needs no confirmation dialog: the chat cannot act");

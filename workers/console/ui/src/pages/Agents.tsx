@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Activity, BarChart3, Bot, Dna, Network, Radio, UserPlus } from "lucide-react";
 import MeshGraph from "../components/MeshGraph";
 import ExecutionHosts from "../components/ExecutionHosts";
+import { TeachingLine, TeachingTable, scoreText, teachingOf } from "../components/TeachingRecord";
 import { Badge, Dot, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -43,6 +44,8 @@ const ROSTER: Column<any>[] = [
   { key: "tier", header: "tier", sort: (a) => a.tier_max, align: "right", cell: (a) => <span className="mono">{a.tier_max}</span> },
   { key: "caps", header: "caps", sort: (a) => caps(a).length, align: "right", cell: (a) => <span className="mono" title={caps(a).join(", ")}>{caps(a).length || "—"}</span> },
   { key: "status", header: "status", sort: (a) => a.status, cell: (a) => <span className="inline-flex items-center gap-1.5"><Dot tone={a.status === "enabled" ? "green" : "slate"} />{a.status}</span> },
+  // HAIC H3d: the owner's teaching record (GET /v1/reputation, 30 days); "—" for an agent with no correction.
+  { key: "teach", header: "teaching 30 d", align: "right", sort: (a) => a.teaching?.windows?.["30d"]?.score ?? -1, cell: (a) => a.teaching ? <TeachingLine record={a.teaching} /> : <span className="mono" title="No correction of this agent in the last 30 days">{scoreText(null)}</span> },
 ];
 const STREAM: Column<any>[] = [
   { key: "when", header: "when", sort: (x) => Date.parse(x.created_at) || 0, cell: (x) => <span className="text-slate-500" title={x.created_at}>{ago(x.created_at)}</span> },
@@ -75,9 +78,10 @@ const REGISTRATIONS: Column<any>[] = [
 export default function Agents() {
   const { data, loading, error } = usePoll(() => call("kernel.agents"), 60_000);
   const mesh = usePoll(() => call("kernel.mesh"), 60_000);
+  const rep = usePoll(() => call("kernel.reputation"), 60_000);
   const registry = listOf(data, "agents");
   const live = new Map(listOf(mesh.data, "agents").map((a: any) => [a.agent_id, a]));
-  const agents = registry.map((a: any) => ({ ...a, ...(live.get(a.agent_id) ?? {}) }));
+  const agents = registry.map((a: any) => ({ ...a, ...(live.get(a.agent_id) ?? {}), teaching: teachingOf(rep.data, `agent:${a.agent_id}`) }));
   const [host, setHost] = useState("");
   const [q, setQ] = useState("");
   const hosts = useMemo(() => [...new Set(agents.map((a: any) => a.host_worker))].sort() as string[], [agents]);
@@ -179,6 +183,8 @@ export default function Agents() {
           <StatusBar className="mt-1.5" segments={tiers} />
         </Panel>
       </div>
+
+      <TeachingTable rep={rep.data} loading={rep.loading} error={rep.error} />
 
       <Panel title="Agent Roster" icon={<Bot className="h-3.5 w-3.5 text-cyan-300" />}
         right={<div className="flex flex-wrap justify-end gap-2">

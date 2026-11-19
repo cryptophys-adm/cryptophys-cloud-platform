@@ -85,6 +85,9 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // proposal, on its page; the kernel resolves the target and its subject. No typed phrase, as for any correction.
   r("kernel.council_correct", "kernel", "POST", "/v1/councils/{id}/corrections", true, null),
   r("kernel.proposal_correct", "kernel", "POST", "/v1/proposals/{id}/corrections", true, null),
+  // HAIC H3d (docs/design/HAIC-H3.md §6.1): the teaching record (the owner-judgement side of reputation), read only and
+  // operator-readable; the Agents, agent detail and Ask pages show it, "—" for a subject with no correction.
+  r("kernel.reputation", "kernel", "GET", "/v1/reputation", false, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

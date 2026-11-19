@@ -50,6 +50,7 @@ import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTy
 import { DirectiveError, draftFromDirective } from "./directives.ts";
 import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
 import { listIncidents } from "./incidents.ts";
+import { reputationView } from "./corrections-read.ts";
 import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection, recordCouncilCorrection, recordProposalCorrection, type Recorded } from "./corrections.ts";
 
 export type Env = KernelHttpEnv;
@@ -94,7 +95,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -213,6 +214,14 @@ export default {
           if (err instanceof CorrectionError) return errorResponse(err.status, err.code, err.message);
           throw err;
         }
+      }
+      // HAIC H3d (docs/design/HAIC-H3.md §6.1, §7.1): the teaching record, operator-readable: aggregates of the corrections
+      // ledger per subject and window (7 and 30 days), computed on read; no text, no actor. Context only: it gates nothing.
+      if (path === "/v1/reputation") {
+        if (request.method !== "GET") return errorResponse(405, "method_not_allowed", "the teaching record is read only");
+        const subject = url.searchParams.get("subject");
+        if (subject !== null && !/^(agent|model|seat):[A-Za-z0-9_.:-]{1,100}$/.test(subject)) return errorResponse(400, "invalid_request", "subject is agent:<id>, model:<id> or seat:<id>");
+        return json(await reputationView(env.DB, Date.now(), subject));
       }
       // HAIC push hub (docs/design/HAIC-H0-H1.md §4.5): one WebSocket per Console page, for operators (as every channel's
       // GET is); the Console forwards the upgrade only after its Access gate and a same-origin check. Change signals only.

@@ -6,6 +6,7 @@ import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, fmt, listOf } from "../lib/format";
 import { ActivityChart, BarList, DataTable, STATUS, bucketize } from "../components/viz";
+import { TeachingPanel } from "../components/TeachingRecord";
 
 const OUTCOMES = [
   { key: "succeeded", label: "succeeded", color: STATUS.good },
@@ -19,6 +20,8 @@ export default function AgentDetail({ id }: { id: string }) {
   const { who, act, notify } = useSession();
   const agent = usePoll(() => call("kernel.agent", id), 0, [id]);
   const actions = usePoll(() => call("kernel.agent_actions", id, undefined, { limit: "50" }), 60_000, [id]);
+  // HAIC H3d: this agent's teaching record (the owner's corrections of its outputs), context only.
+  const rep = usePoll(() => call("kernel.reputation", undefined, undefined, { subject: `agent:${id}` }), 60_000, [id]);
   const [reason, setReason] = useState("");
   const [principal, setPrincipal] = useState("");
   const [revoke, setRevoke] = useState("");
@@ -84,6 +87,8 @@ export default function AgentDetail({ id }: { id: string }) {
           </Panel>
         )}
       </div>
+
+      <TeachingPanel subject={`agent:${id}`} rep={rep.data} loading={rep.loading} error={rep.error} />
 
       {acts.length > 0 && (
         <div className="grid gap-3 lg:grid-cols-2">

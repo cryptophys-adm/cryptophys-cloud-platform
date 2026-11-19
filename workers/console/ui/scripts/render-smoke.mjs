@@ -358,6 +358,14 @@ MOCK[`/api/kernel/v1/conversations/${CNV}`] = { conversation_id: CNV, created_at
 const CS = "cs_00000000-0000-4000-8000-0000000000c1";
 const CS2 = "cs_00000000-0000-4000-8000-0000000000c2";
 const COUNCIL_LIMITS = { max_open_sessions: 2, max_started_per_utc_day: 4, max_model_calls: 16, max_messages: 60, max_owner_messages: 20, max_message_chars: 1200, max_usd: 0.1 };
+// HAIC H3d: the teaching record (GET /v1/reputation): one down on the auditor, one up on the chat model in 30 days.
+const win = (o) => ({ up_w: 0, down_w: 0, score: null, n: 0, by_category: {}, last_at: null, ...o });
+MOCK["/api/kernel/v1/reputation"] = { schema: "reputation.v1", as_of: at(0), prior: 10, windows: ["7d", "30d"], rows: 2, truncated: false,
+  rule: "score = (up_w + P/2) / (up_w + down_w + P), P = 10, over each actor's newest correction per target; null when nothing is counted. Context only: it gates nothing.",
+  subjects: [
+    { subject: "agent:auditor", windows: { "7d": win({ down_w: 3, score: 0.3846, n: 1, by_category: { overconfident: 1 }, last_at: at(60) }), "30d": win({ down_w: 3, score: 0.3846, n: 1, by_category: { overconfident: 1 }, last_at: at(60) }) } },
+    { subject: "model:deepseek-v4.1-flash-1017", windows: { "7d": win({}), "30d": win({ up_w: 3, score: 0.6154, n: 1, last_at: at(60 * 24 * 12) }) } },
+  ] };
 MOCK["/api/kernel/v1/councils"] = { schema: "councils.v1", available: true, limits: COUNCIL_LIMITS, councils: [
   { session_id: CS, side: "cerebrum", topic: "Native deploys fail more often after a migration than without one", state: "awaiting_owner", owner_present: 1, created_by: "owner@example.com", spent_calls: 11, spent_usd: 0.024, reason: null, transcript_sha256: null, created_at: at(120), updated_at: at(60), deadline: at(-60 * 71) },
   { session_id: CS2, side: "cerebrum", topic: "Knowledge proposals expire unreviewed", state: "decided", owner_present: 0, created_by: "owner@example.com", spent_calls: 9, spent_usd: 0.019, reason: null, transcript_sha256: "a".repeat(64), created_at: at(60 * 30), updated_at: at(60 * 28), deadline: at(-60 * 40) },
@@ -622,6 +630,32 @@ for (const width of [390, 1440]) {
     await page.close();
   }
 }
+// HAIC H3d: the teaching record on the Agents page (every subject, a roster column), an agent's detail page (its record,
+// or "—" with none) and the Ask page (the chat model's record); with no correction at all, "—" and no score.
+const TEACHING_CHECKS = [
+  { name: "agents", hash: "#/agents", override: {}, want: ["Teaching record · owner judgements", "agent:auditor", "model:deepseek-v4.1-flash-1017", "0.38", "0.62", "teaching 30 d", "context only"], not: [] },
+  { name: "agent", hash: "#/agents/auditor", override: {}, want: ["Teaching record · owner judgements", "0.38", "n 1 · up 0 · down 3", "overconfident 1", "agent:auditor"], not: ["No correction of this subject"] },
+  { name: "agent-none", hash: "#/agents/supervisor", override: {}, want: ["Teaching record · owner judgements", "No correction of this subject in the last 30 days"], not: ["0.38", "0.50"] },
+  { name: "ask", hash: "#/ask", override: {}, want: ["Teaching record:", "0.62 · n 1 (30 d) · 7 d —"], not: [] },
+  { name: "empty", hash: "#/agents", override: { "/api/kernel/v1/reputation": { ...MOCK["/api/kernel/v1/reputation"], subjects: [], rows: 0 } }, want: ["No correction in the last 30 days: no teaching record yet.", "0 subjects"], not: ["0.38", "0.50"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of TEACHING_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px teaching/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}${check.hash}`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px ${check.hash} (teaching ${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px ${check.hash} (teaching ${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px ${check.hash} (teaching ${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-teaching-${check.name}.png`), fullPage: true });
+    await page.close();
+  }
+}
+OVERRIDE = {};
 // HAIC H1.5c: the Councils page: the list with the convene form (owner), one council waiting for a pick with its claims,
 // options and dismiss, a decided one with its draft, and the read-only view of an operator.
 const COUNCIL_CHECKS = [
@@ -847,4 +881,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
