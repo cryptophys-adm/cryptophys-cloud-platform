@@ -146,8 +146,8 @@ export class ConversationAgent extends DurableObject<Env> {
     return this.settle(() => this.turns.run(() => runTurn(this.env as never, this.store, { actor, conversation_id: conversationId, question })));
   }
   async read(actor: string, conversationId: string) { return this.settle(() => readConversation(this.store, actor, conversationId)); }
-  async rate(actor: string, conversationId: string, turn: unknown, rating: unknown) {
-    return this.settle(() => this.turns.run(() => rateTurn(this.env as never, this.store, actor, conversationId, turn, rating)));
+  async rate(actor: string, conversationId: string, turn: unknown, rating: unknown, note?: unknown) {
+    return this.settle(() => this.turns.run(() => rateTurn(this.env as never, this.store, actor, conversationId, turn, rating, note)));
   }
 }
 

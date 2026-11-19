@@ -77,6 +77,10 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.autonomy_set", "kernel", "POST", "/v1/autonomy/{id}", true, "SET {id}"),
   // Owner 2026-11-19: the Owner page's Incidents panel (read only).
   r("kernel.incidents", "kernel", "GET", "/v1/incidents", false, null),
+  // HAIC H3b (docs/design/HAIC-H3.md §7.1): the corrections ledger, owners only (the kernel checks the owner). Recording
+  // one needs no typed phrase: a correction is never an approval and changes no parameter, weight, proposal or gate.
+  r("kernel.corrections", "kernel", "GET", "/v1/corrections", true, null),
+  r("kernel.correction_create", "kernel", "POST", "/v1/corrections", true, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

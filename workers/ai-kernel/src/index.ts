@@ -50,6 +50,7 @@ import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTy
 import { DirectiveError, draftFromDirective } from "./directives.ts";
 import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
 import { listIncidents } from "./incidents.ts";
+import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection } from "./corrections.ts";
 
 export type Env = KernelHttpEnv;
 const SERVICE = "cryptophys-ai-kernel";
@@ -89,7 +90,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -184,10 +185,31 @@ export default {
           if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
           const body = await readJsonObject(request);
           if (!body.ok) return body.response;
-          out = m[3] ? await stub.rate(operator.actor, m[1], Number(m[3]), body.value.rating) : await stub.turn(operator.actor, m[1], body.value.question);
+          out = m[3] ? await stub.rate(operator.actor, m[1], Number(m[3]), body.value.rating, body.value.note) : await stub.turn(operator.actor, m[1], body.value.question);
         }
         const r = out as { ok: boolean; value?: unknown; status?: number; code?: string; message?: string };
         return r.ok ? json(r.value) : errorResponse(r.status ?? 500, r.code ?? "internal_error", r.message);
+      }
+      // HAIC H3b (docs/design/HAIC-H3.md §4, §7.1; owner 2026-11-19): the corrections ledger, owners only. A record is never
+      // refused for its content (400 only for a structural error) and changes no parameter, weight, proposal or gate.
+      if (path === "/v1/corrections") {
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "corrections are the owner's");
+        try {
+          if (request.method === "GET") {
+            return json(await listCorrections(env.DB, {
+              subject: url.searchParams.get("subject"), target: url.searchParams.get("target"), side: url.searchParams.get("side"),
+              since: url.searchParams.get("since"), limit: limitParam(url),
+            }));
+          }
+          if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+          const body = await readJsonObject(request);
+          if (!body.ok) return body.response;
+          const r = await recordCorrection(env.DB, correctionInputFromBody(body.value), { actor: `owner:${operator.actor}`, owner: true, attested_by: "cerebrum_access" });
+          return json({ correction_id: r.correction.correction_id, deduplicated: r.deduplicated, redactions: r.correction.redactions, correction: r.correction }, r.deduplicated ? 200 : 201);
+        } catch (err) {
+          if (err instanceof CorrectionError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
       }
       // HAIC push hub (docs/design/HAIC-H0-H1.md §4.5): one WebSocket per Console page, for operators (as every channel's
       // GET is); the Console forwards the upgrade only after its Access gate and a same-origin check. Change signals only.
@@ -521,6 +543,13 @@ export default {
       // HAIC H1.5e: a closed council whose transcript is not in R2 yet is asked to store it again (5 an hour).
       ctx.waitUntil(storeMissingTranscripts(env as never).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "council_transcripts_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
+    // HAIC H3b (Q8, "yes, once"): the existing chat ratings into the corrections ledger, at :07 until one complete run;
+    // after that a single indexed read of the done event. Idempotent, and it writes only corrections and their audit.
+    if (minute === 7) {
+      ctx.waitUntil(backfillChatRatingsOnce(env.DB).then(() => undefined, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "corrections_backfill_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
