@@ -1,0 +1,35 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0010",
+  "title": "Nexus is the single origin; the Console is a Nexus menu",
+  "adr_file": "architecture/adr/0010-nexus-single-origin.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "N",
+      "title": "One origin: nexus.cryptophys.work, the Console mounted at /console/",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "`https://nexus.cryptophys.work` is the only public origin."
+      }
+    },
+    {
+      "id": "R",
+      "title": "Amendment 2026-11-13: cryptophys-home and the old hostnames retired",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "migration_applied",
+            "name": "0055_retire_home.sql"
+          },
+          {
+            "kind": "migration_applied",
+            "name": "0064_retire_signal_engine_and_home.sql"
+          }
+        ]
+      }
+    }
+  ]
+}

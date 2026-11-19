@@ -5,7 +5,8 @@ import { usePoll } from "./usePoll";
 export interface Overview {
   observed_at?: string;
   agents_enabled?: boolean;
-  services?: { service_id: string; drifted: boolean; observed_at?: string; persistent?: boolean }[];
+  /** observed_at: when the current state was first seen; last_seen_at: when the Drift Detector last observed it (0061). */
+  services?: { service_id: string; drifted: boolean; observed_at?: string; last_seen_at?: string; persistent?: boolean }[];
   open_agent_plans?: { plan_id: string; service_id?: string; status?: string; created_at?: string }[];
   agent_reports_24h?: {
     /** critical: open (not acknowledged) critical reports; critical_acknowledged: acknowledged by an approver (ADR-0009, 2026-11-13). */
@@ -15,6 +16,15 @@ export interface Overview {
     error?: string;
   };
   xauusd_latest?: { decision?: string; confidence?: number; candle_key?: string; decided_at?: string; reported_at?: string; error?: string } | null;
+  /** The Signal Analyst's newest trading organ health snapshot (owner 2026-11-15): metric, value, 7-day baseline, z. */
+  trading_organ_health?: {
+    report_id?: string; reported_at?: string; observed_at?: string | null; bar_minutes?: number | null; stale?: boolean | null; error?: string;
+    metrics?: {
+      metric: string; value: number | null; baseline_7d: number | null; z: number | null; status?: string;
+      // Hit rates only: the scoring context of xauusd's outcome_summary.
+      n_directional?: number | null; hit?: number | null; miss?: number | null; wait_accuracy?: number | null; subject?: string | null; as_of?: string | null;
+    }[];
+  } | null;
 }
 
 const Ctx = createContext<{ ov: Overview | null; error: string | null; loading: boolean; refresh: () => Promise<void> } | null>(null);

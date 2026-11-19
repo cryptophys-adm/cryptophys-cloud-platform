@@ -3,7 +3,8 @@
 // JavaScript with JSON.stringify(UI_ROUTES); the client builds every API call from it.
 //
 // `confirm` is the typed phrase template, or null. In a template, {id} is the route's first
-// path parameter, {id13} its first 13 characters and {sha12} the first 12 of commit_sha.
+// path parameter and {id13} its first 13 characters. ({sha12}, the first 12 of commit_sha, served only the manual
+// deploy route, removed 2026-11-14.)
 
 export interface UiRoute {
   id: string;
@@ -20,6 +21,8 @@ const r = (id: string, service: string, method: string, path: string, approverOn
 export const UI_ROUTES: readonly UiRoute[] = [
   r("platform.overview", "platform", "GET", "/v1/overview", false, null),
   r("platform.usage", "platform", "GET", "/v1/usage", false, null),
+  // Owner 2026-11-14: the account-wide Observer's vitals, anomalies and deploys (Organism page; read only).
+  r("platform.observer", "platform", "GET", "/v1/observer", false, null),
   r("forge.status", "forge", "GET", "/v1/forge/status", false, null),
   r("forge.commits", "forge", "GET", "/v1/forge/commits", false, null),
   r("forge.checks", "forge", "GET", "/v1/forge/checks", false, null),
@@ -36,6 +39,42 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.owner_inbox", "kernel", "GET", "/v1/owner/inbox", false, null),
   r("kernel.metabolism", "kernel", "GET", "/v1/metabolism", false, null),
   r("kernel.mesh", "kernel", "GET", "/v1/mesh", false, null),
+  // ADR-0016 T0: the organism's vision (organism/vision.json), read-only, for the Vision page.
+  r("kernel.vision", "kernel", "GET", "/v1/vision", false, null),
+  // ADR Steward step 4 (docs/design/ADR-STEWARD.md §5): each ADR's progress from evidence, read-only, for the Vision page's ADR panel.
+  r("kernel.adr", "kernel", "GET", "/v1/adr", false, null),
+  r("kernel.adr_one", "kernel", "GET", "/v1/adr/{id}", false, null),
+  // HAIC H1c (docs/design/HAIC-H0-H1.md §3.1): "Ask the organism", owners only (the kernel refuses anyone else). Asking
+  // and rating need no typed phrase: the chat cannot act, and every question is audited by the kernel.
+  r("kernel.conversations", "kernel", "GET", "/v1/conversations", true, null),
+  r("kernel.conversation", "kernel", "GET", "/v1/conversations/{id}", true, null),
+  r("kernel.conversation_turn", "kernel", "POST", "/v1/conversations/{id}/turns", true, null),
+  r("kernel.conversation_rate", "kernel", "POST", "/v1/conversations/{id}/turns/{id}/rating", true, null),
+  // HAIC H1.5c (docs/design/HAIC-H0-H1.md §4): Call for Councils. Operators read; only the owner convenes (a typed
+  // phrase: it spends model calls, 4 a UTC day), joins with a message (no phrase, like the chat), picks an option or
+  // dismisses (typed phrases with the council's id). The kernel checks the owner; a council never acts.
+  r("kernel.councils", "kernel", "GET", "/v1/councils", false, null),
+  r("kernel.council", "kernel", "GET", "/v1/councils/{id}", false, null),
+  r("kernel.council_start", "kernel", "POST", "/v1/councils", true, "CONVENE COUNCIL"),
+  r("kernel.council_message", "kernel", "POST", "/v1/councils/{id}/messages", true, null),
+  r("kernel.council_pick", "kernel", "POST", "/v1/councils/{id}/pick", true, "PICK {id13}"),
+  r("kernel.council_dismiss", "kernel", "POST", "/v1/councils/{id}/dismiss", true, "DISMISS {id13}"),
+  // HAIC H1.5d (Q9): the owner begins a council an agent proposed (it then spends model calls, like convening one).
+  r("kernel.council_begin", "kernel", "POST", "/v1/councils/{id}/start", true, "CONVENE {id13}"),
+  // HAIC push hub (§4.5): the Console's WebSocket of change signals (inbox, councils, a council). Read only, operators.
+  r("kernel.hub", "kernel", "GET", "/v1/hub", false, null),
+  // HAIC H2 (owner 2026-11-18): typed proposals. Operators read; the owner confirms (then it is handed off by kind) or
+  // rejects a draft, each with a typed phrase. The kernel checks the owner.
+  r("kernel.proposals", "kernel", "GET", "/v1/proposals", false, null),
+  r("kernel.proposal", "kernel", "GET", "/v1/proposals/{id}", false, null),
+  r("kernel.proposal_confirm", "kernel", "POST", "/v1/proposals/{id}/confirm", true, "CONFIRM {id13}"),
+  r("kernel.proposal_reject", "kernel", "POST", "/v1/proposals/{id}/reject", true, "REJECT {id13}"),
+  // HAIC H2b: the owner's chat directive into a draft. No typed phrase: it makes only a draft, which needs CONFIRM.
+  r("kernel.proposal_draft", "kernel", "POST", "/v1/proposals", true, null),
+  // HAIC H4 (owner 2026-11-18): the autonomy dial. Operators read; the owner sets a group's level with a typed phrase
+  // naming the group (the body names the level, and the kernel checks the owner and the ceiling).
+  r("kernel.autonomy", "kernel", "GET", "/v1/autonomy", false, null),
+  r("kernel.autonomy_set", "kernel", "POST", "/v1/autonomy/{id}", true, "SET {id}"),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),
@@ -74,21 +113,29 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("recovery.disable", "recovery", "POST", "/v1/plans/{id}/disable", false, "DISABLE {id13}"),
   r("registry.services", "registry", "GET", "/v1/services", false, null),
   r("registry.service", "registry", "GET", "/v1/services/{id}", false, null),
-  r("registry.upsert", "registry", "PUT", "/v1/services/{id}", true, "UPDATE {id}"),
-  r("registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", true, "VERSION {id}"),
+  // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): registry.upsert (PUT /v1/services/{id}, "UPDATE {id}") and
+  // registry.desired_version (PUT /v1/services/{id}/desired-version, "VERSION {id}") are removed with the
+  // Infrastructure page's Edit form: records come from the DNA, the census and consensus deploys.
   // Users page (owner decision 2026-11-07): owners manage accounts; the server checks the owner and the phrase.
   r("registry.accounts", "registry", "GET", "/v1/accounts", false, null),
   r("registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"),
   r("registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"),
   r("registry.accounts_sync", "registry", "POST", "/v1/accounts/sync-login", true, "SYNC"),
+  // Owner 2026-11-16 (migration 0073): the deploy-time identity lists' source on the Users page. The server checks the
+  // owner (APPROVER_IDENTITIES, a person), the phrase and the revision; every change is an audit event.
+  r("registry.identities", "registry", "GET", "/v1/identities", false, null),
+  r("registry.identities_update", "registry", "POST", "/v1/identities", true, "IDENTITIES"),
   r("policy.decisions", "policy", "GET", "/v1/decisions", false, null),
   r("policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null),
-  r("policy.evaluate", "policy", "POST", "/v1/evaluate", false, null),
+  // HAIC H0a: policy.evaluate (POST /v1/evaluate) is removed with the Policy page's "Evaluate" form.
   r("drift.list", "drift", "GET", "/v1/drift", false, null),
+  // Owner 2026-11-15: a service's recorded drift changes for its detail panel (read only; already allow-listed).
+  r("drift.service", "drift", "GET", "/v1/drift/{id}", false, null),
   r("drift.observe", "drift", "POST", "/v1/observe", false, null),
   r("audit.events", "audit", "GET", "/v1/events", false, null),
   r("audit.event", "audit", "GET", "/v1/events/{id}", false, null),
   r("audit.verify", "audit", "GET", "/v1/verify", false, null),
+  // Read only. The manual deploy route (orchestrator.deploy, POST /v1/deployments) was removed by the owner on
+  // 2026-11-14: production changes only through consensus, the owner's click on critical actions, and native rollback.
   r("orchestrator.deployments", "orchestrator", "GET", "/v1/deployments", false, null),
-  r("orchestrator.deploy", "orchestrator", "POST", "/v1/deployments", false, "DEPLOY {sha12}"),
 ];

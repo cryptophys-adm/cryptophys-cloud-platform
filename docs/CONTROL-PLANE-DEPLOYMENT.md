@@ -21,10 +21,17 @@ Every `/v1` call is authorized by the caller's verified Cloudflare Access identi
 
 | List | Members | Grants |
 | --- | --- | --- |
-| `OPERATOR_IDENTITIES` (all six Control Plane Workers; `DEPLOY_ALLOWED_IDENTITIES` on the Orchestrator) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint; `POST /v1/deployments` |
+| `OPERATOR_IDENTITIES` (all six Control Plane Workers) | `CF_ACCESS_CLIENT_ID` + `ACCESS_ALLOWED_EMAILS` | every `/v1` endpoint (on the Orchestrator, the read-only `GET /v1/deployments`; its `POST /v1/deployments` and `DEPLOY_ALLOWED_IDENTITIES` were removed 2026-11-14 by the owner) |
 | `APPROVER_IDENTITIES` (Recovery Manager) | `ACCESS_ALLOWED_EMAILS` | `POST /v1/plans/{id}/approve` only, never for a plan the same identity authored |
 
 Emails are compared and recorded in lower case; Client IDs exactly. An unset list fails closed (`503 …_not_configured`); an identity outside a list gets `403 forbidden`. Automation can operate but can never approve a recovery plan.
+
+**Identity source after the GitHub cut-over (owner 2026-11-16, migration 0073).** The native deploy (`deployment-orchestrator/src/deploy-vars.ts`) takes the emails from D1 `platform_identities` instead of `ACCESS_ALLOWED_EMAILS`, with the same semantics (`control-plane-shared/src/identity-source.ts`): lower case, duplicates dropped in first order, `access-identities.sh`'s email regex, at least one and at most 20, operators and approvers one list. It builds `OPERATOR_IDENTITIES` and `DEPLOY_ALLOWED_IDENTITIES` as `<Client ID of the Orchestrator's CF_ACCESS_CLIENT_ID>,<emails>` and `APPROVER_IDENTITIES` as `<emails>`, exactly as the script prints them, for the Workers each workflow passes them to (`DEPLOY_VARS`).
+- **No row, or the seed** (copied once from the Orchestrator's own active lists, for the Console): each Worker's active values are carried as before.
+- **An owner-saved row** (Console → Users, `POST /v1/identities` on the Platform Registry: an owner only, typed `IDENTITIES`, audited as `identity_source.changed`): the expected values come from it, with the same checks (format, Client ID first, equal across the unit). A value that differs from the active version is written as its `plain_text` binding and verified on the new version before traffic (steps `<worker>:vars_from_identity_table`, `<worker>:vars_changed:<NAME>`; audit `deployment.identity_vars_written`, names only).
+- **An invalid row:** never deployed; the active values are carried and the Owner page lists `identity_source_invalid`. A row that cannot be read (D1 failed) is carried the same way.
+
+The deploy workflows keep using `ACCESS_ALLOWED_EMAILS` until the cut-over. Keep the two equal until then: a workflow deploy overwrites what a native deploy wrote. How the owner changes an email: `docs/OPERATIONS.md`, "Changing an operator or approver email".
 
 The retired secrets are removed from the Workers by the deploy workflows (`ADMIN_TOKEN`, `APPROVER_TOKEN`, `ORCHESTRATOR_SHARED_SECRET`); the GitHub secrets `CONTROL_PLANE_ADMIN_TOKEN`, `CONTROL_PLANE_APPROVER_TOKEN` and `ORCHESTRATOR_SHARED_SECRET` are unused and can be deleted.
 

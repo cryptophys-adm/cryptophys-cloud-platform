@@ -16,7 +16,13 @@ owner closed #269 and asked for a real panel instead (#270).
   not measured.
 - No simulation, demo or surge toggles, and no hardcoded metrics.
 - No text that claims the platform moves funds, pays bills from trading, or "auto-funds" anything.
-  Deal results are read only. ADR-0009 (amended 2026-11-12): no fund movement, ever; a trading action needs the owner's click.
+  Deal results are read only. ADR-0009 (amended 2026-11-12): no fund movement, ever; a trading action needs the owner's click,
+  given per action or, since ADR-0020 (2026-11-16), as a standing arm of one xauusd strategy, or, with none armed,
+  as Omega's live arm for AUTO selection of the single best strategy (ADR-0020 amendment 1, 2026-11-17); while the owner's
+  Council auto-arm is on, the council may arm and disarm within its gates (ADR-0020 amendment 2, 2026-11-17); an xauusd
+  profile agent may raise an account's risk profile only up to the owner's ceiling, never mid-trade (ADR-0020 amendment 3, 2026-11-18);
+  the Position Manager may ladder the take profit and close part of a position only once the stop locks a profit (amendment 4);
+  a council may veto a soft-trigger profile downgrade for at most 24 h, failing safe, never the kill switch or daily loss limit (amendment 5).
 - `workers/control-plane-shared/test/console-truthfulness.test.ts` enforces this in CI. Do not weaken
   or skip it; change the data source instead.
 - Agents open pull requests; they do not merge them. The orchestrator (the Claude cloud session)
@@ -33,4 +39,5 @@ The canonical repository is `cryptophys/platform` on Cloudflare Artifacts; GitHu
   a change that touches a guard path (`control-plane-shared/src/guard-paths.ts`) is `merge_owner_change` and
   waits for the owner's click. The Forge fast-forwards `main`; the agents then deploy it as before.
 - A branch that does not contain the current `main` is `blocked` until it is rebased or merged with `main`.
+- Rebase onto `main`, or merge with `main` as the FIRST parent; `git merge main` on the branch (main as the second parent) is refused as `main_not_first_parent` (incident 2026-11-14, `docs/SSOT.md`).
 

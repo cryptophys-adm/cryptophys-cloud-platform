@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
-  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing } from "lucide-react";
+  FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass, MessageSquareText, UsersRound, FileCheck2, Gauge } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useOverview } from "../lib/overview";
@@ -17,10 +17,20 @@ export const NAV = [
   // Owner 2026-11-13: approvals and open critical reports, the only things that need a person, come first.
   { label: "Owner", href: "#/owner", key: "owner", icon: Inbox },
   { label: "Command", href: "#/", key: "", icon: Terminal },
+  // HAIC H1c: the owners' read-only chat with the organism.
+  { label: "Ask", href: "#/ask", key: "ask", icon: MessageSquareText },
+  // HAIC H1.5c: Call for Councils (evidence-bound deliberations that end in options for the owner's pick).
+  { label: "Councils", href: "#/councils", key: "councils", icon: UsersRound },
+  // HAIC H2: typed proposals (drafts the owner confirms or rejects).
+  { label: "Proposals", href: "#/proposals", key: "proposals", icon: FileCheck2 },
   { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
+  // ADR-0016 T0: the vision the organism grows toward (read-only).
+  { label: "Vision", href: "#/vision", key: "vision", icon: Compass },
   { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
   { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },
+  // HAIC H4: the autonomy dial (the owner lowers a group of actions, or raises it back to its ADR-0009 class).
+  { label: "Autonomy", href: "#/autonomy", key: "autonomy", icon: Gauge },
   { label: "Knowledge", href: "#/knowledge", key: "knowledge", icon: Sparkles },
   { label: "Recovery", href: "#/recovery", key: "recovery", icon: Wrench },
   { label: "Infrastructure", href: "#/infrastructure", key: "infrastructure", icon: Server },
@@ -112,12 +122,12 @@ function AccountMenu() {
   const { who } = useSession();
   return (
     <details className="group relative">
-      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[12px] text-slate-300 hover:text-white [&::-webkit-details-marker]:hidden"
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-[12px] text-slate-300 hover:text-white [&::-webkit-details-marker]:hidden"
         aria-label="Account menu">
         <UserRound className="h-4 w-4 text-cyan-300" />
         <span className="hidden max-w-[180px] truncate lg:inline">{who.actor}</span>
       </summary>
-      <div className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-white/10 bg-obsidian-panel/95 p-2 shadow-xl backdrop-blur" role="menu">
+      <div className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-white/10 bg-obsidian-panel/95 p-2 shadow-xl backdrop-blur-sm" role="menu">
         <div className="px-3 py-2">
           <div className="text-[10px] uppercase tracking-widest text-slate-500">Signed in as</div>
           <div className="mono break-all text-[12px] text-slate-200">{who.actor}</div>
@@ -149,7 +159,7 @@ export default function AppShell({ current, children }: { current: string; child
 
   return (
     <div className="min-h-screen text-slate-100">
-      <header className="relative z-30 border-b border-white/10 bg-obsidian-panel/90 backdrop-blur">
+      <header className="relative z-30 border-b border-white/10 bg-obsidian-panel/90 backdrop-blur-sm">
         <div className="mx-auto flex max-w-[1680px] items-center gap-3 px-3 py-3 sm:px-6 sm:py-4">
           <a href="https://nexus.cryptophys.work/" className="flex items-center gap-3" aria-label="Nexus home">
             <motion.div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-400/10 sm:h-11 sm:w-11"
@@ -170,7 +180,7 @@ export default function AppShell({ current, children }: { current: string; child
             </span>
             <AccountMenu />
           </div>
-          <button type="button" className="ml-auto rounded-md border border-white/10 bg-white/[0.04] p-2 text-slate-400 hover:text-white md:hidden"
+          <button type="button" className="ml-auto rounded-md border border-white/10 bg-white/4 p-2 text-slate-400 hover:text-white md:hidden"
             onClick={() => setOpen((o) => !o)} aria-label="Toggle navigation" aria-expanded={open}>
             {open ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
           </button>
@@ -183,7 +193,7 @@ export default function AppShell({ current, children }: { current: string; child
           <div className="flex items-center gap-2 md:hidden">
             {NAV.filter((n) => n.key === current).map((n) => <span key={n.key} className="inline-flex items-center gap-2 text-[12px] font-semibold text-white"><n.icon className="h-4 w-4 text-cyan-300" />{n.label}</span>)}
           </div>
-          <div className="ml-auto hidden items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-[0.2em] text-slate-500 lg:flex">
+          <div className="ml-auto hidden items-center gap-2 rounded-md border border-white/10 bg-white/3 px-3 py-2 text-[11px] uppercase tracking-[0.2em] text-slate-500 lg:flex">
             <Sparkles className="h-3.5 w-3.5 text-cyan-300" />Observe → reason → act → attest
           </div>
         </div>
@@ -220,7 +230,7 @@ export default function AppShell({ current, children }: { current: string; child
         </aside>
       </div>
 
-      <footer className="sticky bottom-0 z-20 border-t border-white/10 bg-obsidian-foot/95 backdrop-blur">
+      <footer className="sticky bottom-0 z-20 border-t border-white/10 bg-obsidian-foot/95 backdrop-blur-sm">
         <div className="mx-auto flex max-w-[1680px] items-center gap-4 overflow-x-auto px-3 py-3 text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500 sm:px-6">
           <OrganStrip />
           <a href="https://nexus.cryptophys.work/" className="ml-auto inline-flex items-center gap-1 whitespace-nowrap text-cyan-300/80 hover:text-cyan-200">Nexus <ExternalLink className="h-3 w-3" /></a>

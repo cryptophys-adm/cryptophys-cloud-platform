@@ -10,6 +10,12 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { schemaReady } from "../../control-plane-shared/src/readiness.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { cloudflareUsage } from "../../control-plane-shared/src/cf-usage.ts";
+import { observerView, runSenses, storeFindings, sweepObserver, SENSES_MINUTE, type Finding } from "../../control-plane-shared/src/observer.ts";
+import { runInventory } from "../../control-plane-shared/src/observer-inventory.ts";
+import { lastCompleteHourMs, learningFindings, learningHour } from "../../control-plane-shared/src/learning-watch.ts";
+import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
+import { STALL_AGENT, stallReport, stallResolvedReport, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
+import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The kernel's read-only RPC surface (workers/ai-kernel/src/worker.ts KernelRpc). */
 export interface KernelRpcBinding { overview(): Promise<Record<string, unknown>> }
@@ -32,6 +38,8 @@ export interface Env {
   CF_ANALYTICS_TOKEN?: string;
   CF_BILLING_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
+  /** AI Kernel AgentRpc (host_worker pinned to this Worker): the Observer's advisory report as agent platform-api. */
+  AGENTS?: { syscall(agentId: string, capability: string, input: Record<string, unknown>): Promise<Record<string, unknown>> };
 }
 
 const SERVICE = "cryptophys-platform-api";
@@ -66,8 +74,12 @@ export const overviewTask: AiTask<Summary> = {
     '"attention": up to 5 strings of at most 200 characters naming what needs a human}. Use only the data given. ' +
     "Never give trading advice and never claim an action was taken. " +
     "Services without an expected (desired) version, disabled services, and services outside the platform's own deploys " +
-    "(for example Aether, the Signal Engine and the XAUUSD services) are normal by design: do not mention them unless they are unhealthy. " +
-    "Mention repeated deploy refusals caused by the daily or hourly deploy limits only once, as a single short note.",
+    "(for example Aether and the XAUUSD services) are normal by design: do not mention them unless they are unhealthy. " +
+    "Mention repeated deploy refusals caused by the daily or hourly deploy limits only once, as a single short note. " +
+    // Owner 2026-11-14: the kernel lists open warnings only; an alert its agent reported resolved is left out.
+    "agent_reports_24h lists open warnings only: never present a resolved alert as open; if warnings_resolved_24h is above 0, " +
+    'say at most "resolved in last 24 h: n" once.',
+
   maxInputChars: 8000,
   maxOutputTokens: 400,
   validate(output) {
@@ -103,7 +115,7 @@ export default {
     if (url.pathname === "/health" || url.pathname === "/healthz") return json(platformHealth(env));
     if (url.pathname === "/ready" || url.pathname === "/readyz") return readiness(env);
     if (url.pathname === "/") {
-      return json({ service: env.PLATFORM_NAME, api_version: env.API_CONTRACT_VERSION, endpoints: ["/health", "/ready", "/v1/overview[?advisory=true]", "/v1/usage"],
+      return json({ service: env.PLATFORM_NAME, api_version: env.API_CONTRACT_VERSION, endpoints: ["/health", "/ready", "/v1/overview[?advisory=true]", "/v1/usage", "/v1/observer"],
         operating_system: "AI Worker OS (ADR-0007): agents and the MCP front door live in cryptophys-ai-kernel" });
     }
     if (url.pathname === "/v1/overview") {
@@ -118,7 +130,10 @@ export default {
       }
       const body: Record<string, unknown> = { overview };
       if (url.searchParams.get("advisory") === "true" && env.DB) {
-        body.advisory = await engineFor({ ...env, DB: env.DB }, SERVICE, [overviewTask.name]).run(overviewTask, overview, `overview:${Date.now()}`);
+        // The trading organ's metric snapshot (2026-11-15) is for the Console chips, not the summary: it stays out of
+        // the AI input, which keeps its 8,000-character bound.
+        const { trading_organ_health: _organHealth, ...summaryInput } = overview;
+        body.advisory = await engineFor({ ...env, DB: env.DB }, SERVICE, [overviewTask.name]).run(overviewTask, summaryInput, `overview:${Date.now()}`);
       }
       return json(body);
     }
@@ -128,6 +143,110 @@ export default {
       if (!operator.ok) return operator.response;
       return json(await cloudflareUsage(env));
     }
+    if (url.pathname === "/v1/observer") {
+      // The account-wide Observer's vitals, findings and deploys (read only, from D1; no Cloudflare call).
+      const operator = await requireOperator(request, env);
+      if (!operator.ok) return operator.response;
+      return json(await observerView(env));
+    }
     return json({ error: "not_found" }, 404);
   },
+
+  /** The Observer (owner 2026-11-14): senses at :27 (the last complete hour), the account inventory at :27 and :57. */
+  async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    ctx.waitUntil(runObserver(env, event.scheduledTime || Date.now()));
+  },
 };
+
+/** The external origins' services (EXT_ORGANISM_*), for the inventory's "DNA not read" rule. */
+const EXTERNAL_SERVICES: Record<string, readonly string[]> = Object.fromEntries(EXTERNAL_ORIGINS.map((o) => [o.origin, o.services]));
+
+export async function runObserver(env: Env, now = Date.now(), fetcher: (input: string, init?: RequestInit) => Promise<Response> = (i, init) => fetch(i, init)): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const minute = new Date(now).getUTCMinutes();
+  try {
+    if (minute >= SENSES_MINUTE && minute < SENSES_MINUTE + 30) {
+      const senses = await runSenses(env, now, fetcher);
+      out.senses = { outcome: senses.outcome, hour: senses.hour, vitals: senses.vitals, findings: senses.findings?.length ?? 0 };
+      // Learning observed, never blocked (owner 2026-11-14): its findings read D1 only, so they need no analytics token.
+      let learning: Finding[] = [];
+      try {
+        learning = await senseLearning(env, now);
+        out.learning = { outcome: env.DB ? "recorded" : "not_configured", findings: learning.length };
+      } catch (err) {
+        out.learning = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+      }
+      const notable = [...(senses.findings ?? []), ...learning];
+      if (notable.length) out.report = await publishAdvisory(env, senses.hour ?? new Date(lastCompleteHourMs(now)).toISOString(), notable);
+      if (env.DB && new Date(now).getUTCHours() === 3) await sweepObserver(env.DB, now);
+    }
+  } catch (err) {
+    out.senses = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+  }
+  try {
+    out.inventory = await runInventory(env, now, fetcher, EXTERNAL_SERVICES);
+  } catch (err) {
+    out.inventory = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+  }
+  try {
+    out.deploy_stall = await deployStallAlarm(env, now);
+  } catch (err) {
+    out.deploy_stall = { outcome: "failed", error: String((err as Error)?.message ?? err).slice(0, 160) };
+  }
+  console.log(JSON.stringify({ service: SERVICE, event: "observer_run", ...out }));
+  return out;
+}
+
+/** The last complete hour's learning findings (control-plane-shared/src/learning-watch.ts), stored once; the new ones. */
+async function senseLearning(env: Env, now: number): Promise<Finding[]> {
+  if (!env.DB) return [];
+  const findings = learningFindings(await learningHour(env.DB, lastCompleteHourMs(now)));
+  return findings.length ? storeFindings(env.DB, findings, new Date(now).toISOString()) : [];
+}
+
+/**
+ * The deploy stall alarm (owner 2026-11-14; control-plane-shared/src/deploy-stall.ts), at :27 and :57. It needs only D1
+ * and AGENTS, not the analytics token. One warning report per stall episode as agent platform-api, never critical: an
+ * open critical report is the consensus brake and would block the deploy_commit that ends the stall. An alarm whose
+ * episode ended (a deploy_commit executed, or nothing is behind or due) is closed by a "Resolved:" info report with the
+ * same alert_key. The owner hears of it through the kernel's owner notice production_unhandled (Telegram).
+ */
+export async function deployStallAlarm(env: Env, now = Date.now()): Promise<Record<string, unknown>> {
+  if (!env.DB) return { outcome: "not_configured" };
+  const st = await stallState(env.DB, now);
+  const out: Record<string, unknown> = {
+    outcome: st.verdict.reason, alert_key: st.verdict.alert_key, active: st.active, main_sha: st.verdict.main_sha,
+    stalled_for_min: st.verdict.stalled_for_min, units_behind: st.verdict.units_behind.map((u) => u.unit),
+  };
+  if (!env.AGENTS) { if (st.raise || st.resolve.length) out.published = "no_agents_binding"; return out; }
+  const publish = async (input: Record<string, unknown>) => {
+    try { return String((await env.AGENTS!.syscall(STALL_AGENT, "reports.publish", input))?.outcome ?? "unknown"); } catch { return "unavailable"; }
+  };
+  const resolved: string[] = [];
+  for (const r of st.resolve) resolved.push(`${r.alarm.alert_key}:${await publish(stallResolvedReport(r.alarm, r.why, st.verdict))}`);
+  if (resolved.length) out.resolved = resolved;
+  if (st.raise) out.raised = await publish(stallReport(st.verdict));
+  return out;
+}
+
+/**
+ * One advisory report per sensing hour with new anomalies or early warnings, as this Worker's agent (reports.publish,
+ * tier 1, policy-gated by the kernel). Always a warning, never critical: the Observer does not engage the brake.
+ */
+async function publishAdvisory(env: Env, hour: string, findings: Finding[]): Promise<string> {
+  const notable = findings.filter((f) => f.kind === "anomaly" || f.kind === "early_warning");
+  if (!notable.length || !env.AGENTS) return "none";
+  try {
+    const r = await env.AGENTS.syscall("platform-api", "reports.publish", {
+      kind: "platform_digest", severity: "warning", ai_status: "not_used",
+      subject: `Observer: ${notable.length} anomaly finding(s) in the hour from ${hour.slice(11, 16)} UTC`.slice(0, 200),
+      body: {
+        source: "observer", hour,
+        findings: notable.slice(0, 10).map((f) => ({ worker: f.worker, metric: f.metric, value: f.value, baseline_7d: f.baseline_7d, z: f.z, since_deploy: f.since_deploy, detail: f.detail.slice(0, 300) })),
+      },
+    });
+    return String(r?.outcome ?? "unknown");
+  } catch {
+    return "unavailable";
+  }
+}

@@ -100,7 +100,10 @@ test("6. wiring: Workers route on the Nexus host, the UI is mount-relative, Acce
   assert.ok(deploy > 0 && route > deploy && verify > route, "deploy, then attach the route, then verify it through Access");
   assert.match(wf, /CLOUDFLARE_ACCESS_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_ACCESS_API_TOKEN \}\}\n\s+ZONE_NAME: cryptophys\.work\n\s+ROUTE_PATTERN: nexus\.cryptophys\.work\/console\*/);
   assert.match(toml, /NEXUS_ORIGIN = "https:\/\/nexus\.cryptophys\.work"/);
-  assert.match(readFileSync(new URL("workers/console/ui/vite.config.ts", ROOT), "utf8"), /base: "\.\/"/);
+  // Relative asset URLs (ADR-0010): build.mjs links ./assets/... and sets no absolute publicPath (esbuild since 2026-11-17).
+  const uiBuild = readFileSync(new URL("workers/console/ui/build.mjs", ROOT), "utf8");
+  assert.match(uiBuild, /const href = \(p\) => `\.\/\$\{relative\(dist/);
+  assert.doesNotMatch(uiBuild, /publicPath/);
   const shell = readFileSync(new URL("workers/console/ui/src/components/AppShell.tsx", ROOT), "utf8");
   assert.doesNotMatch(shell, /home\.cryptophys\.work|console\.cryptophys\.work/, "no links to retired hosts");
   const prov = readFileSync(new URL(".github/workflows/provision-access.yml", ROOT), "utf8");

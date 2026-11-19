@@ -1,0 +1,119 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0016",
+  "title": "Telos: a living vision, a self-model, and the Strategist",
+  "adr_file": "architecture/adr/0016-telos.md",
+  "lifecycle": "accepted",
+  "fits": [
+    "0019:P0"
+  ],
+  "phases": [
+    {
+      "id": "T0",
+      "title": "Vision schema, core draft, Console Vision page",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "reading",
+            "name": "vision_valid"
+          },
+          {
+            "kind": "doc_asserted",
+            "ref": "architecture/adr/0016-telos.md",
+            "quote": "T0 is built (see \"T0 as built\")"
+          }
+        ]
+      },
+      "built": [
+        "organism/vision.json",
+        "workers/control-plane-shared/src/vision.ts",
+        "workers/console/ui/src/pages/Vision.tsx"
+      ],
+      "doc_claim": {
+        "state": "done",
+        "ref": "architecture/adr/0016-telos.md",
+        "quote": "T0 is built (see \"T0 as built\")"
+      }
+    },
+    {
+      "id": "T1",
+      "title": "Self-model snapshot, daily",
+      "depends_on": [
+        "T0"
+      ],
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "not_measurable_yet",
+            "reason": "no self-model table or R2 snapshot exists yet"
+          },
+          {
+            "kind": "reading",
+            "name": "adr_index_live"
+          }
+        ]
+      },
+      "next": "Build the daily self-model; its Memory section reads the ADR Steward's documents",
+      "doc_claim": {
+        "state": "not_built",
+        "ref": "architecture/adr/0016-telos.md",
+        "quote": "T1–T5 are not built yet"
+      }
+    },
+    {
+      "id": "T2",
+      "title": "The Strategist, in shadow",
+      "depends_on": [
+        "T1"
+      ],
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "agent_registered",
+            "agent_id": "strategist"
+          },
+          {
+            "kind": "not_measurable_yet",
+            "reason": "no intents exist for the Strategist to write"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T3",
+      "title": "Intents to the evolver and the experience ledger",
+      "depends_on": [
+        "T2"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "no intents table or experience ledger"
+      }
+    },
+    {
+      "id": "T4",
+      "title": "Vision growth",
+      "depends_on": [
+        "T3"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    },
+    {
+      "id": "T5",
+      "title": "Morphogenesis",
+      "depends_on": [
+        "T4"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    }
+  ]
+}

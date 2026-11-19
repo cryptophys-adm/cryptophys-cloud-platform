@@ -5,7 +5,9 @@
 //
 // A run bundles every control-plane test file against the snapshot, with node:test, node:sqlite,
 // node:fs, node:os and node:child_process replaced by the shims in ./shims, and runs the bundles in
-// fresh Dynamic Workers, a few files per Worker (one request may make at most 32 Worker invocations).
+// Dynamic Workers, a few files per Worker (one request may make at most 32 Worker invocations). A test
+// Worker is addressed by the hash of its code, which holds no commit data (the snapshot comes in the
+// request), so an unchanged group reuses the same Worker ID across commits (billing: unique ID and code per day).
 
 export type Snapshot = Record<string, string>;
 export type ShimName = "test" | "sqlite" | "fs" | "os" | "child_process";
@@ -277,17 +279,36 @@ export function scanSecrets(snapshot: Snapshot): { files: number; findings: Secr
  * The main module of each test Worker. It runs the files it is given in order. Each file gets a
  * fresh test registry and scratch filesystem; sql.js and the snapshot are shared. Worker bundling
  * (TP-025) goes back to the Forge through env.BUNDLER, because the test Worker has no esbuild.
+ *
+ * 2026-11-14 (owner: Dynamic Workers are billed per unique Worker ID and code per day): the Worker's code
+ * holds nothing of the commit under test. The commit and its snapshot (what the node:fs shim serves) come in
+ * the POST body of each request, so the same group bundle keeps the same Worker ID across commits and runs,
+ * and a warm Worker may serve several requests. Requests are run one at a time (the runner keeps its state
+ * on globalThis), and every request starts from a fresh sql.js and drops the snapshot when it ends.
  */
 export const RUNNER_ENTRY = `
 import wasm from "./sql-wasm.wasm";
-import snapshotText from "./snapshot.json.txt";
 import initSqlJs from "./sql.js";
 import files from "./files.json";
 const loaders = { /*LOADERS*/ };
-export default { async fetch(request, env) {
-  globalThis.__VFS = JSON.parse(snapshotText);
+let queue = Promise.resolve();
+export default { fetch(request, env) {
+  const run = queue.then(() => runFiles(request, env));
+  queue = run.catch(() => undefined);
+  return run;
+} };
+async function runFiles(request, env) {
+  if (request.method !== "POST") return new Response("POST the run as JSON", { status: 405 });
+  const payload = await request.json();
+  if (!payload || typeof payload.snapshot !== "object" || payload.snapshot === null) return new Response("no snapshot", { status: 400 });
+  try { return await runWith(payload, env); }
+  finally { globalThis.__VFS = undefined; globalThis.__SQL = undefined; globalThis.__SQL_DATABASES = undefined; globalThis.__FORGE_BUNDLE = undefined; globalThis.__TESTS = undefined; globalThis.__MEMFS = undefined; }
+}
+async function runWith(payload, env) {
+  globalThis.__VFS = payload.snapshot;
+  globalThis.__SQL_DATABASES = undefined;
   if (!globalThis.location) globalThis.location = { href: "http://runner/" };
-  if (env && env.BUNDLER) globalThis.__FORGE_BUNDLE = (dir) => env.BUNDLER.bundleWorker(dir);
+  if (env && env.BUNDLER) globalThis.__FORGE_BUNDLE = (dir) => env.BUNDLER.bundleWorker(dir, payload.commit);
   globalThis.__SQL = await initSqlJs({ instantiateWasm(imports, done) { WebAssembly.instantiate(wasm, imports).then((i) => done(i)); return {}; } });
   await new Promise((r) => setTimeout(r, 5)); // advance the clock (it only moves on I/O)
   const cleanupSqlite = (keep = new Set()) => {
@@ -339,7 +360,7 @@ export default { async fetch(request, env) {
     out.sqlite_close_errors = cleanup.closeErrors;
   }
   return Response.json({ files: report });
-} };`;
+}`;
 
 export function testModuleName(file: string): string {
   return "test-" + file.split("/").pop()!.replace(/\W/g, "_") + ".js";
@@ -358,7 +379,7 @@ export interface FileReport {
   sqlite_close_errors?: number;
 }
 /** `isolated`: files rerun alone after their group's test Worker failed as a whole (absent when none). */
-export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[]; isolated?: number }
+export interface SuiteResult { files: number; pass: number; fail: number; skip: number; failures: string[]; isolated?: number; workers?: WorkerStats }
 
 export function emptyResult(): SuiteResult {
   return { files: 0, pass: 0, fail: 0, skip: 0, failures: [] };
@@ -394,37 +415,106 @@ export interface TestWorkerCode {
   modules: Record<string, unknown>;
   env?: Record<string, unknown>;
   globalOutbound: null;
+  /** The CPU limit of each request (the Forge's TEST_WORKER_CPU_MS); part of the Worker's identity. */
+  limits?: { cpuMs?: number };
 }
 
-/** The Dynamic Worker for one group of bundled test files. Tests get no network access. */
-export function testWorkerCode(group: Array<{ file: string; code: string }>, shared: { snapshotText: string; sqlJs: string; sqlWasm: unknown }, env?: Record<string, unknown>): TestWorkerCode {
+/** What one request to a test Worker carries: the Worker's content id, and the run's data as the JSON body. */
+export interface TestWorkerRequest { id: string; body: string }
+
+/**
+ * The protocol of env.BUNDLER (ForgeBundler.bundleWorker(dir, commit)). A binding cannot be hashed, so its
+ * names and this tag stand for it in the Worker's id; change the tag when the callback's contract changes.
+ */
+export const BUNDLER_PROTOCOL = "ForgeBundler.bundleWorker(dir, commit)/1";
+export const TEST_WORKER_ID_PREFIX = "forge-test-";
+
+/**
+ * The Dynamic Worker for one group of bundled test files. Tests get no network access. The code depends only
+ * on the group's bundles, the runner, sql.js and the limits: never on the commit or its snapshot, which the
+ * request carries (testWorkerRequest).
+ */
+export function testWorkerCode(group: Array<{ file: string; code: string }>, shared: { sqlJs: string; sqlWasm: unknown }, env?: Record<string, unknown>, limits?: { cpuMs?: number }): TestWorkerCode {
   const modules: Record<string, unknown> = {
     "entry.js": runnerEntry(group.map((g) => g.file)),
     "sql.js": shared.sqlJs,
     "sql-wasm.wasm": { wasm: shared.sqlWasm },
-    "snapshot.json.txt": { text: shared.snapshotText },
     "files.json": { json: group.map((g) => g.file) },
   };
   for (const g of group) modules[testModuleName(g.file)] = g.code;
-  return { compatibilityDate: COMPATIBILITY_DATE, mainModule: "entry.js", modules, env, globalOutbound: null };
+  return { compatibilityDate: COMPATIBILITY_DATE, mainModule: "entry.js", modules, env, globalOutbound: null, ...(limits ? { limits } : {}) };
 }
+
+/** The body of a request to a test Worker: the commit (for the bundler callback) and the snapshot the node:fs shim serves. */
+export function testWorkerRequest(id: string, snapshotText: string, commit?: string): TestWorkerRequest {
+  return { id, body: `{"commit":${JSON.stringify(commit ?? null)},"snapshot":${snapshotText}}` };
+}
+
+/** A stand-in for a compiled WebAssembly module, which has no bytes to hash: its import and export signature. */
+function wasmFingerprint(value: unknown): unknown {
+  if (typeof WebAssembly !== "undefined" && value instanceof WebAssembly.Module) {
+    return { imports: WebAssembly.Module.imports(value), exports: WebAssembly.Module.exports(value) };
+  }
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return { bytes: Array.from(new Uint8Array(value as ArrayBuffer)).join(",") };
+  return value ?? null;
+}
+
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stable);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(value as Record<string, unknown>).sort()) out[k] = stable((value as Record<string, unknown>)[k]);
+    return out;
+  }
+  return value;
+}
+
+/** The canonical text of a test Worker's code: every module, the compatibility date, the limits, the outbound and the env's names. */
+export function canonicalTestWorker(code: TestWorkerCode): string {
+  const modules = Object.keys(code.modules).sort().map((name) => {
+    const m = code.modules[name] as unknown;
+    const value = m && typeof m === "object" && "wasm" in (m as Record<string, unknown>) ? { wasm: wasmFingerprint((m as { wasm: unknown }).wasm) } : m;
+    return [name, stable(value)];
+  });
+  return JSON.stringify({
+    compatibilityDate: code.compatibilityDate, mainModule: code.mainModule, limits: stable(code.limits ?? null), globalOutbound: code.globalOutbound,
+    env: code.env ? Object.keys(code.env).sort() : null, bundler: code.env?.BUNDLER ? BUNDLER_PROTOCOL : null, modules,
+  });
+}
+
+/** The Worker ID of a test Worker: its content address. Equal code, equal id; any change, a new id. */
+export async function testWorkerId(code: TestWorkerCode): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalTestWorker(code)));
+  return TEST_WORKER_ID_PREFIX + Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The Dynamic Workers of a run: groups run, distinct Worker ids, and Worker requests (Worker Loader `get` calls). */
+export interface WorkerStats { groups: number; bundles: number; loads: number }
 
 export interface SuiteDeps {
   esbuild: EsbuildLike;
   shims: ShimSources;
   sqlJs: string;
   sqlWasm: unknown;
-  /** Runs one test Worker and returns its JSON report. */
-  runWorker(code: TestWorkerCode): Promise<{ files?: FileReport[] }>;
+  /** Runs one test Worker (`code`, by its content id) with the run's data in the request body; returns its JSON report. */
+  runWorker(code: TestWorkerCode, request: TestWorkerRequest): Promise<{ files?: FileReport[] }>;
   /** Passed to every test Worker as env.BUNDLER. */
   bundler?: unknown;
+  /** The test Workers' limits (the Forge: TEST_WORKER_CPU_MS). */
+  limits?: { cpuMs?: number };
 }
 
-/** Bundle and run the whole suite (or `only`) against a snapshot. Never throws for a failing test. */
-export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: string[]): Promise<SuiteResult> {
+/**
+ * Bundle and run the whole suite (or `only`) against a snapshot. Never throws for a failing test. Every
+ * test file is bundled from this snapshot and executed on every run; only the Worker that executes a group
+ * is reused when the group's bundles are byte-for-byte the same as an earlier run's.
+ */
+export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: string[], commit?: string): Promise<SuiteResult> {
   const files = only ?? testFiles(snapshot);
   const snapshotText = JSON.stringify(snapshot);
   const result = emptyResult();
+  const workers: WorkerStats = { groups: 0, bundles: 0, loads: 0 };
+  const ids = new Set<string>();
   for (const group of groupFiles(files)) {
     const bundled: Array<{ file: string; code: string }> = [];
     const unbundled: string[] = [];
@@ -433,11 +523,17 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
       catch (e) { result.files++; result.fail++; result.failures.push(`${file.split("/").pop()}: BUNDLE ${String((e as Error)?.message ?? e).slice(0, 300)}`); unbundled.push(file); }
     }
     if (bundled.length === 0) continue;
-    const shared = { snapshotText, sqlJs: deps.sqlJs, sqlWasm: deps.sqlWasm };
+    workers.groups++;
+    const shared = { sqlJs: deps.sqlJs, sqlWasm: deps.sqlWasm };
     const env = deps.bundler ? { BUNDLER: deps.bundler } : undefined;
     const run = async (part: Array<{ file: string; code: string }>): Promise<{ report: { files?: FileReport[] } | null; error?: string }> => {
-      try { return { report: await deps.runWorker(testWorkerCode(part, shared, env)) }; }
-      catch (e) { return { report: null, error: String((e as Error)?.message ?? e).slice(0, 300) }; }
+      try {
+        const code = testWorkerCode(part, shared, env, deps.limits);
+        const id = await testWorkerId(code);
+        ids.add(id);
+        workers.loads++;
+        return { report: await deps.runWorker(code, testWorkerRequest(id, snapshotText, commit)) };
+      } catch (e) { return { report: null, error: String((e as Error)?.message ?? e).slice(0, 300) }; }
     };
     const whole = await run(bundled);
     if (whole.error === undefined || bundled.length === 1) { tally(result, bundled.map((b) => b.file), whole.report, whole.error); continue; }
@@ -450,5 +546,7 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
       tally(result, [one.file], alone.report, alone.error);
     }
   }
+  workers.bundles = ids.size;
+  result.workers = workers;
   return result;
 }

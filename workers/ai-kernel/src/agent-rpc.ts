@@ -12,6 +12,7 @@ import { syscall, type SyscallEnv } from "./syscall.ts";
 import { KERNEL_HOST } from "./kernel.ts";
 import { CAPABILITIES, getAgent, type AgentRow } from "../../control-plane-shared/src/capabilities.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
+import { externalOriginOf, externalProposalRefusal } from "../../control-plane-shared/src/organism.ts";
 
 export const AGENT_RPC_TIER_MAX = 1;
 
@@ -61,6 +62,13 @@ export async function rpcObserve(env: SyscallEnv, props: unknown, agentId: strin
 export async function rpcSyscall(env: SyscallEnv, props: unknown, agentId: string, capability: string, input: JsonObject = {}): Promise<JsonObject> {
   const r = await resolve(env, props, agentId);
   if ("error" in r) return { outcome: "denied", capability, reason: r.error };
+  // An external origin's agent proposes only the consensus actions its ceiling names (organism.ts; Aether's
+  // knowledge-council: the two doctrine actions, owner 2026-11-14), whatever its grants say.
+  const origin = capability === "consensus.propose" ? externalOriginOf(r.agent.host_worker) : undefined;
+  if (origin) {
+    const refusal = externalProposalRefusal(origin, r.agent.agent_id, String(input.action ?? ""));
+    if (refusal) return { outcome: "denied", capability, reason: `external_ceiling: ${refusal}`.slice(0, 300) };
+  }
   // syscall() still applies grants, prohibitions, suspension, kill switch, rate limit and Policy Engine.
   return (await syscall(env, r.agent.agent_id, capability, input)) as unknown as JsonObject;
 }

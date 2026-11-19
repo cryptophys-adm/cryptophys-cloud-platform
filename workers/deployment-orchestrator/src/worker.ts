@@ -2,7 +2,7 @@
 // Runtime entry point: the Access-gated HTTP handler, the DeploymentLock Durable Object,
 // and the RPC health entrypoint used by the Drift Detector.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployForConsensus, deployForRecovery, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
+import worker, { accessForConsensus, accessPlanSummary, DeploymentLock, deployDestructiveForConsensus, deployForConsensus, deployForRecovery, destructiveMigrationsPending, forceDeployForRecovery, identityDrift, pendingDeploys, requestStatus, retireForConsensus, rollbackForConsensus, rollbackForRecovery, runStatus, type Env } from "./index.ts";
 import { healthBody, type HealthBody } from "../../control-plane-shared/src/http.ts";
 import { castDomainVote } from "../../control-plane-shared/src/consensus-vote.ts";
 import { resolveSecrets } from "../../control-plane-shared/src/secrets.ts";
@@ -36,6 +36,18 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   async deployForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>) {
     return deployForConsensus(await resolved(this.env), proposalId, decisionId, target, params);
   }
+  /** Gate 2026-11-15: the destructive D1 migrations main's head would apply, read only (for the Supervisor). */
+  async destructiveMigrations(commitSha: string) {
+    return destructiveMigrationsPending(await resolved(this.env), commitSha);
+  }
+  /** Gate 2026-11-15: an owner-approved deploy_destructive_migration (Time Travel bookmark first, named files only). */
+  async deployDestructiveForConsensus(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>) {
+    return deployDestructiveForConsensus(await resolved(this.env), proposalId, decisionId, target, params);
+  }
+  /** Owner 2026-11-16: the units whose Workers carry another identity value than the owner-saved row, read only (for the Supervisor). */
+  async identityDrift() {
+    return identityDrift(await resolved(this.env));
+  }
   /** ADR-0012 G6 gate 9: the Access plan, read only (for the Supervisor). */
   async accessPlan() {
     return accessPlanSummary(await resolved(this.env));
@@ -50,6 +62,10 @@ export class DeployRpc extends WorkerEntrypoint<Env> {
   /** Autonomous recovery: the Recovery Manager's lifecycle Workflow runs an approved plan's redeploy step. */
   async deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string) {
     return deployForRecovery(await resolved(this.env), planId, decisionId, serviceId, version);
+  }
+  /** Hardening (d): the break-glass step force_redeploy_unit of an owner-approved plan (recovery-deploy.ts), native only. */
+  async forceDeployForRecovery(planId: string, decisionId: string, serviceId: string, version: string) {
+    return forceDeployForRecovery(await resolved(this.env), planId, decisionId, serviceId, version);
   }
   async runStatus(workflow: string, commitSha: string) {
     return runStatus(await resolved(this.env), workflow, commitSha);

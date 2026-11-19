@@ -48,6 +48,24 @@ binding = "EXT_ORGANISM_XAUUSD"
 service = "xauusd-ai-trading-assistant"
 entrypoint = "OrganismDna"
 
+# Owner 2026-11-14 ("naikan batas kapabilitas aether"): Aether's DNA, read the same way. cryptophys-aether's
+# OrganismDna has one read-only method, dna(), returning its organism.json ({ schema: "aether-organism.v1",
+# organs }); what it declares is held to Aether's ceiling (organism.ts AETHER_CEILING). Until Aether serves it,
+# the census records external_dna_unavailable for "aether" and leaves its organs out (never "undeclared").
+[[services]]
+binding = "EXT_ORGANISM_AETHER"
+service = "cryptophys-aether"
+entrypoint = "OrganismDna"
+
+# Owner 2026-11-15/16 (cta is an external organ of the platform): cryptophys-cta's DNA, read the same way (deployed
+# 2026-11-16 by its own workflow, https://cta.cryptophys.work). Its OrganismDna has one read-only method, dna(),
+# returning { schema: "cta-organism.v1", organs }; what it declares is held to the general EXTERNAL_CEILING
+# (organism.ts EXTERNAL_ORIGINS "cta"). Until it answers, the census records external_dna_unavailable for "cta".
+[[services]]
+binding = "EXT_ORGANISM_CTA"
+service = "cryptophys-cta"
+entrypoint = "OrganismDna"
+
 # The test suite runs in Dynamic Workers, with no network access.
 [[worker_loaders]]
 binding = "LOADER"

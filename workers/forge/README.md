@@ -18,12 +18,13 @@ Artifacts repo after every push, so both hold the same commit SHAs. Deployed by 
 
 ## Forge checks (phase 3)
 
-A cron at `:04/:19/:34/:49` runs the control-plane suite against the next unchecked commit of `main`.
+A cron at `:04/:19/:34/:49` runs the control-plane suite against `main`'s head when it has no run of main yet,
+and once per UTC day again (2026-11-14). Commits a newer head superseded are not checked.
 It needs no GitHub at any step.
 
 1. **Snapshot.** The commit's text files are read from Artifacts (`src/checks.ts`).
 2. **Bundle.** Each test file is bundled by esbuild-wasm in this isolate (`src/runner/core.ts`). `node:test`, `node:sqlite`, `node:fs`, `node:os` and `node:child_process` are replaced by `src/runner/shims/`.
-3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 8 files per Worker, with no network access.
+3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 4 files per Worker, with no network access and a 60 s CPU limit. A test Worker is loaded with `LOADER.get(id)`, where the id is the SHA-256 of its code; the commit and its snapshot come in the request, so an unchanged group reuses its Worker across commits (billing counts unique Worker IDs and code per day).
 4. **Bundles.** Every Worker in the commit is bundled, as CI's dry run does. The Worker's `[[rules]]` apply, and `.wasm` and `node_modules` imports stay external.
 5. **Secret scan.** Well-known credential formats are scanned for. A finding records the rule, path and line, never the text.
 6. **Type-check.** `tsc --noEmit -p workers/control-plane-tsconfig.json` runs on Workers Builds from the Artifacts repository (`../forge-typecheck`), because the compiler needs about 190 MB and an isolate has 128 MB (owner, 2026-11-08). The build reports to `POST /v1/forge/typecheck-report` (`src/typecheck.ts`, migration 0035).
@@ -39,7 +40,7 @@ It needs no GitHub at any step.
 
 ## Organism census (ADR-0013)
 
-`src/census.ts` reads main's DNA (`workers/<dir>/organism.json`). It also reads the external organs' DNA over RPC: the XAUUSD Workers through `EXT_ORGANISM_XAUUSD`, the xauusd AI Worker's `OrganismDna.dna()`. Each census compares that DNA with the live registries.
+`src/census.ts` reads main's DNA (`workers/<dir>/organism.json`). It also reads the external organs' DNA over RPC: the XAUUSD Workers through `EXT_ORGANISM_XAUUSD`, the xauusd AI Worker's `OrganismDna.dna()`, and Aether through `EXT_ORGANISM_AETHER`, `cryptophys-aether`'s `OrganismDna.dna()` (owner 2026-11-14; held to Aether's own ceiling, `organism.ts` `AETHER_CEILING`), and `cryptophys-cta` through `EXT_ORGANISM_CTA`, its `OrganismDna.dna()` (2026-11-16; schema `cta-organism.v1`, the general external ceiling). Each census compares that DNA with the live registries.
 
 - External organs are held to the external ceiling (ADR-0013 §6).
 - An origin that does not answer is an `external_dna_unavailable` finding. Main's census still runs.
@@ -66,6 +67,18 @@ Forge merges nothing yet.
 Artifacts tree diffs against each unit's desired version, with the Orchestrator's shared rules
 (`control-plane-shared/src/deploy-units.ts`). The Orchestrator records its GitHub-based plan for the
 same commit and registry inputs; `GET /v1/forge/deploy-plans` lists both and the plan parity (target 10).
+
+Since 2026-11-14 (every automatic deploy was stuck: the Control Plane's version 3cd2f94 was an ancestor of
+main only through a merge's second parent, so it was not in `log(main)`):
+- a desired version is resolved by ancestry: main's first-parent window (`PLAN_HISTORY`, one `log` call),
+  then a breadth-first walk of every parent from main's head, at most `PLAN_ANCESTRY_READS` (500) commits;
+- a migration is pending when main's `workers/control-plane-migrations/*.sql` has a file that D1's
+  `d1_migrations` ledger does not list (an unreadable ledger counts as pending); the Control Plane then goes
+  first and alone, planned even when its own paths did not change since its version;
+- a desired version that is still not resolved (not found within the bound, or not an ancestor) is planned as a
+  full redeploy of its unit from main's head, reason `full_redeploy_unresolved_base`, under the same ordering
+  rules. `new_migration_control_plane_unavailable` remains only for a Control Plane that is unregistered,
+  disabled or has no valid desired version.
 
 ## The cron tick
 

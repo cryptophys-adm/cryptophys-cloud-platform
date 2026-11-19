@@ -1,6 +1,8 @@
 import { MERGE_ACTIONS } from "../../control-plane-shared/src/consensus-rules.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
+import { approvedBreakGlassPlan, hasBreakGlassStep, storedSteps } from "../../control-plane-shared/src/break-glass.ts";
 import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
+import { survivalDenies } from "../../control-plane-shared/src/power-mode.ts";
 import { describeResource, explainReason } from "../../control-plane-shared/src/plain.ts";
 import type { BaseEnv, D1Database } from "../../control-plane-shared/src/types.ts";
 import { publishAgentReport, type AgentRpcBinding } from "../../control-plane-shared/src/agents.ts";
@@ -54,13 +56,19 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     checks.push(check("explicit_confirmation", context.confirm_production === "DEPLOY", "confirm_production must equal DEPLOY"));
     checks.push(check("ci_green", context.ci_green === true, "commit statuses and the latest run of every GitHub Actions workflow must be successful"));
   } else if (action === "recovery.execute") {
-    const plan = await db.prepare("SELECT status, created_by, approved_by FROM recovery_plans WHERE plan_id = ?")
-      .bind(resource).first<{ status: string; created_by: string | null; approved_by: string | null }>();
+    const plan = await db.prepare("SELECT status, plan_version, created_by, approved_by, steps_json FROM recovery_plans WHERE plan_id = ?")
+      .bind(resource).first<{ status: string; plan_version: string; created_by: string | null; approved_by: string | null; steps_json: string | null }>();
     checks.push(check("plan_exists", Boolean(plan), "recovery plan must exist"));
     checks.push(check("plan_approved", plan?.status === "approved", "plan status must be approved"));
     checks.push(check("separation_of_duties", Boolean(plan?.approved_by) && Boolean(plan?.created_by) && plan!.approved_by !== plan!.created_by,
       "approver must differ from the plan author"));
     checks.push(check("operator_acknowledged", context.operator_acknowledged === true, "the executing operator must acknowledge the blast radius"));
+    // Hardening (d), 2026-11-14: the break-glass deploy (force_redeploy_unit) bypasses the deploy planner. It runs only
+    // from a plan a person wrote and another person (the owner's click) approved, for one full commit (break-glass.ts).
+    if (plan && hasBreakGlassStep(storedSteps(plan.steps_json) ?? [])) {
+      const bg = approvedBreakGlassPlan(plan);
+      checks.push(check("break_glass_owner_approved", bg.ok, `a force_redeploy_unit plan must be written and approved by people, for one full commit${bg.ok ? "" : ` (${bg.reason})`}`));
+    }
   } else if (action === "registry.update") {
     const m = (context.metadata ?? {}) as JsonObject;
     checks.push(check("service_id_valid", SERVICE_ID.test(resource), "service_id must be a lowercase identifier"));
@@ -72,13 +80,13 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     // Over HTTP the subject is the caller's Access identity, so a person cannot pose as an agent.
     checks.push(...(await agentSyscallChecks(db, String(context.__subject ?? ""), resource)));
     const powerMode = await getActivePowerMode(db);
-    if (powerMode === "survival") {
-      // Survival saves AI tokens only. consensus.propose is never throttled: deploys, rollbacks and
-      // agent suspensions must stay possible on weekends and in drawdowns (owner 2026-11-10).
-      const nonEssential = ["memory.remember", "knowledge.propose"];
-      if (nonEssential.includes(resource)) {
-        checks.push(check("power_mode_survival", false, `capability ${resource} is throttled in survival mode to conserve treasury runway`));
-      }
+    // Survival throttles AI-heavy work only (control-plane-shared/src/power-mode.ts). consensus.propose is never
+    // throttled: deploys, rollbacks and agent suspensions must stay possible on weekends and in drawdowns (owner
+    // 2026-11-10). Learning is the highest mandate (owner 2026-11-14): memory.remember and knowledge.propose are
+    // allowed in every mode, weekend survival included, have no rate_limit check (capabilities.ts hourlyLimit) and
+    // their model calls are never refused by an AI budget (ai-engine.ts, purpose "learning").
+    if (powerMode === "survival" && survivalDenies(resource)) {
+      checks.push(check("power_mode_survival", false, `capability ${resource} is AI-heavy work, throttled in survival mode`));
     }
   } else if (action === "consensus.execute") {
     // ADR-0009: the Policy Engine is a veto on every consensus outcome, whatever the vote.
@@ -97,10 +105,14 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     if (MERGE_ACTIONS.has(act)) {
       checks.push(check("merge_path_forge", (await mergePath(db)) === "forge", "the Forge merges into canonical main only after the cut-over (forge_controls.merge_path = forge)"));
     }
-    if (cls === "critical" && context.stage === "execute") {
+    // HAIC H4 (migration 0083): a routine action the owner's autonomy dial held at owner_click needs the same click; the
+    // level is read from the proposal itself, not taken from the caller.
+    const dialClick = context.stage === "execute" && cls === "routine"
+      && (await db.prepare("SELECT autonomy_level FROM consensus_proposals WHERE proposal_id = ?").bind(String(context.proposal_id ?? "")).first<{ autonomy_level: string | null }>().catch(() => null))?.autonomy_level === "owner_click";
+    if ((cls === "critical" && context.stage === "execute") || dialClick) {
       const owner = await db.prepare("SELECT decision FROM consensus_owner_decisions WHERE proposal_id = ?")
         .bind(String(context.proposal_id ?? "")).first<{ decision: string }>();
-      checks.push(check("owner_approved", owner?.decision === "approve", "a critical action needs one owner approval click (ADR-0009 phase 4)"));
+      checks.push(check("owner_approved", owner?.decision === "approve", dialClick ? "the autonomy dial holds this action at owner_click: it needs one owner approval click" : "a critical action needs one owner approval click (ADR-0009 phase 4)"));
     }
     const ks = await db.prepare("SELECT value FROM kernel_controls WHERE control = 'agents_enabled'").first<{ value: string }>();
     checks.push(check("agents_enabled", ks?.value === "1", "the global agent kill switch must be on"));
@@ -119,11 +131,12 @@ export async function evaluatePolicy(db: D1Database, action: string, resource: s
     const perHour = await readPolicyParameter(db, "target-actions-per-hour");
     checks.push(check("target_rate_limit", (sameTarget?.n ?? 0) < perHour, `at most ${perHour} executed action(s) per action and target per hour`));
     const platform = await db.prepare(
-      `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
+      `SELECT COUNT(*) AS n FROM consensus_proposals WHERE action IN ('deploy_commit','deploy_destructive_migration','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
     ).bind(day).first<{ n: number }>();
     // Council-adjustable inside hard bounds (control-plane-shared/src/policy-params.ts, owner 2026-11-10).
     const daily = await readPolicyParameter(db, "daily-deploy-limit");
-    checks.push(check("platform_daily_limit", !["deploy_commit", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < daily,
+    // Gate 2026-11-15: an owner-clicked destructive deploy is a deploy too: it counts and is counted.
+    checks.push(check("platform_daily_limit", !["deploy_commit", "deploy_destructive_migration", "rollback_worker_version", "redeploy_desired_version"].includes(act) || (platform?.n ?? 0) < daily,
       `at most ${daily} deploys or rollbacks per day across the platform`));
   } else {
     checks.push(check("known_action", false, `action must be one of ${ACTIONS.join(", ")}`));
@@ -179,6 +192,20 @@ async function sameDenyRecently(env: Env, decisionId: string, action: string, re
     `SELECT 1 AS hit FROM policy_decisions WHERE decision = 'deny' AND action = ? AND resource = ? AND reason = ? AND decision_id != ? AND created_at >= ? LIMIT 1`,
   ).bind(action, resource, reason, decisionId, since).first<{ hit: number }>();
   return row !== null;
+}
+
+/** A dry run's answer: the same decision, reason and checks as decide(), with no decision id because nothing is recorded. */
+export interface PolicyDryRun extends PolicyResult { dry_run: true; subject: string; action: string; resource: string }
+
+/**
+ * HAIC H1a (ADR-0017 H1, docs/design/HAIC-H0-H1.md §3.2 `policy_dry_run`): "would X be allowed?" for the read-only
+ * chat. The same evaluatePolicy() as decide(), with the subject passed out of band exactly as there, but nothing is
+ * written: no policy_decisions row, no audit event, no report. The chat audits it only as a conversation turn. Only
+ * the RPC entrypoint offers it (worker.ts PolicyRpc.dryRun); no HTTP route does.
+ */
+export async function dryRun(env: Pick<Env, "DB">, req: PolicyRequest): Promise<PolicyDryRun> {
+  const result = await evaluatePolicy(env.DB, req.action, req.resource, { ...req.context, __subject: req.subject });
+  return { dry_run: true, subject: req.subject, action: req.action, resource: req.resource, ...result };
 }
 
 /** Evaluate, persist the decision with its evidence, and append it to the audit chain. */

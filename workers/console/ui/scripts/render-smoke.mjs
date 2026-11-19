@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "proposals", "autonomy", "vision"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -19,6 +19,13 @@ const MOCK = {
       { email: "trader@example.com", kind: "user", privilege: null, status: "disabled", note: null, created_by: "owner@example.com", created_at: "2026-11-07T09:00:00Z", updated_by: "owner@example.com", updated_at: "2026-11-07T09:05:00Z" },
     ],
   },
+  // Owner 2026-11-16: the deploy-time identity lists' source (Users page).
+  "/api/registry/v1/identities": { schema: "identity-source.v1", migrated: true,
+    source: { status: "owner", operator_emails: ["owner@example.com", "second.owner.with.a.long.address@example-company.co.id"], approver_emails: ["owner@example.com", "second.owner.with.a.long.address@example-company.co.id"], revision: 3, updated_by: "owner@example.com", updated_at: "2026-11-16T09:00:00Z" },
+    in_effect: { uses: "identity_table", detail: "Each unit's next native deploy writes these lists (the CI service token's Client ID first in the operator list)." },
+    running_here: { approver_emails: ["owner@example.com"] }, limits: { max_emails: 20 },
+    history: [{ event_type: "identity_source.changed", actor: "owner@example.com", created_at: "2026-11-16T09:00:00Z", revision: 3, emails: ["owner@example.com", "second.owner.with.a.long.address@example-company.co.id"] },
+      { event_type: "identity_source.seeded", actor: "agent:deployment-orchestrator", created_at: "2026-11-16T03:10:00Z", revision: 1, emails: ["owner@example.com"] }] },
   "/api/kernel/v1/consensus": { mode: "shadow", stats_24h: {}, proposals: [] },
   "/api/forge/v1/forge/status": { configured: true, source: "https://github.com/cryptophys-adm/cryptophys-cloud-platform", repo: { name: "platform", default_branch: "main", last_push_at: null }, head: { sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" } },
   "/api/forge/v1/forge/checks": { parity: { target: 20, consecutive: 1, compared: 2, disagreements: ["8588e21c0ffee0000000000000000000000000000"] }, checks: [
@@ -36,7 +43,8 @@ const MOCK = {
     { main_sha: "188b6bb31ed1a17cdaec44ea6180da087395e973", forge_units: [], forge_skipped: [], forge_at: "2026-11-09T06:19:00.000Z", github_units: null, github_skipped: null, github_at: null, agrees: null },
   ] },
   "/api/forge/v1/forge/census": { census: [{ main_sha: "6872844" + "0".repeat(33), status: "changes", organs: 12, agents: 10, engines: 9, voters: 9, taken_at: "2026-11-09T12:04:00.000Z",
-    findings: [{ kind: "unregistered_agent", subject: "forge-steward", detail: "agent forge-steward on cryptophys-forge is in the DNA but not registered (asks for a council seat), which is a long line that wraps on a phone" }], genome: [] }] },
+    findings: [{ kind: "unregistered_agent", subject: "forge-steward", detail: "agent forge-steward on cryptophys-forge is in the DNA but not registered (asks for a council seat), which is a long line that wraps on a phone" }],
+    genome: [{ service: "cryptophys-platform-api", kind: "service", agents: [{ id: "platform-api", display_name: "Platform API AI Agent", capabilities: ["audit.verify", "memory.recall", "platform.observe", "reports.publish"], tier_max: 1, voter: true }], engines: ["summarize_platform_overview"] }] }] },
   "/api/forge/v1/forge/build-usage": { usage: { schema: "build-usage.v1", month: "2026-11", month_start: "2026-11-01T00:00:00.000Z", budget_minutes: 3000, included_minutes: { free: 3000, paid: 6000 }, warn_ratio: 0.8,
     minutes: 412, builds: 214, unmeasured_builds: 1, avg_minutes: 1.9, projected_minutes: 1030, status: "ok",
     by_worker: [{ worker: "cryptophys-forge-typecheck", builds: 120, minutes: 240, unmeasured: 0 }, { worker: "cryptophys-forge-typecheck-cr", builds: 90, minutes: 166, unmeasured: 1 }, { worker: "cryptophys-aether", builds: 4, minutes: 6, unmeasured: 0 }],
@@ -56,7 +64,9 @@ const MOCK = {
     runs: [
       { run_id: "gbk_3dbbead07e50_2", main_sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", day: "2026-11-12", ran_at: "2026-11-12T09:19:00.000Z", status: "failed", r2_key: null, bundle_sha256: null, bundle_bytes: null, pack_bytes: null, pack_sha1: null, pack_version: null, objects: null, refs: null, error: "discovery_failed:discovery_http_401", pruned_at: null },
       { run_id: "gbk_8588e21c0ffe_1", main_sha: "8588e21c0ffee0000000000000000000000000000", day: "2026-11-12", ran_at: "2026-11-12T00:04:00.000Z", status: "ok", r2_key: "git-backups/platform/2026-11-12-8588e21c0ffee0000000000000000000000000000.bundle", bundle_sha256: "5f1c0de2b7a94e3c8d6f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f", bundle_bytes: 2412345, pack_bytes: 2391000, pack_sha1: "c0ffee1234567890abcdef1234567890abcdef12", pack_version: 2, objects: 5114, refs: 41, error: null, pruned_at: null },
-    ], observed_at: "2026-11-12T09:20:00.000Z" } },
+    ], verify: { run_id: "gbk_8588e21c0ffe_1", r2_key: "git-backups/platform/2026-11-12-8588e21c0ffee0000000000000000000000000000.bundle", main_sha: "8588e21c0ffee0000000000000000000000000000", day: "2026-11-12", verified_at: "2026-11-12T00:04:30.000Z", verify_status: "verified",
+      details: { bundle_version: 2, pack_version: 2, objects: 5114, deltas: 3120, pack_sha1: "c0ffee1234567890abcdef1234567890abcdef12", refs: 41, reachable: 5098, commits: 360, trees: 2100, blobs: 2638, tags: 0, bundle_bytes: 2412345, duration_ms: 812 } },
+    observed_at: "2026-11-12T09:20:00.000Z" } },
   "/api/forge/v1/forge/commits": { commits: [{ sha: "3dbbead07e50e78fedd94db712f38a0f7eb0cdb4", title: "fix(forge): read Artifacts commit metadata defensively (#215)", author: "cryptophys-adm", date: "2026-11-08T05:18:00.000Z" }] },
   "/api/kernel/v1/notices": { email: "not_configured", notices: [
     { topic: "owner_attention", channel: "owner", active: true, fingerprint: "f", title: "3 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/owner", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor)", "Critical action: admit forge-steward to the council (proposed by supervisor)", "Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"] },
@@ -70,7 +80,8 @@ const MOCK = {
       proposals: [{ proposal_id: "cns_2", action: "deploy_commit", target: "cryptophys-deployment-orchestrator-with-a-long-name", class: "routine", status: "executing", approvals: 9, eligible: 9, created_at: "2026-11-08T14:01:00.000Z", decided_at: "2026-11-08T14:01:30.000Z" }],
     },
     requests: [{ request_id: "dep_0", service_id: "cryptophys-platform-api", version: "6fafa095ce3eea19679398a3b2bfb6e596270f7b", status: "failed", requested_by: "edecae24a56f7a12c78455585f23e707.access", origin: "deploy workflow", workflow: "deploy-platform-api.yml", proposal_id: null, run_url: "https://github.com/cryptophys-adm/cryptophys-cloud-platform/actions/runs/1", note: "stale: no workflow run finished within 3 hours", created_at: "2026-11-08T10:00:00.000Z", updated_at: "2026-11-08T13:00:00.000Z" }],
-    deploys: [{ service_id: "cryptophys-deployment-orchestrator", version: "e0bd92815ac9", previous: "6fafa095ce3e", origin: "deploy workflow", actor: "edecae24a56f7a12c78455585f23e707.access", at: "2026-11-08T14:24:17.000Z" }],
+    deploys: [{ service_id: "cryptophys-deployment-orchestrator", version: "e0bd92815ac9", previous: "6fafa095ce3e", origin: "deploy workflow", actor: "edecae24a56f7a12c78455585f23e707.access", at: "2026-11-08T14:24:17.000Z" },
+      { service_id: "cryptophys-platform-api", version: "d4c3b2a1f0e9", previous: "6fafa095ce3e", origin: "native deploy", actor: "native-deploy:dep_2", at: "2026-11-08T14:10:00.000Z" }],
     generated_at: "2026-11-08T14:30:00.000Z",
   },
   "/api/kernel/v1/consensus/report": { window_days: 7, total: 0, scored: 0, agree: 0, false_positive: 0, false_negative: 0, pending: 0, agreement_rate: null, by_action: {}, items: [] },
@@ -84,12 +95,22 @@ const STATUSES = ["executed", "shadow_passed", "shadow_blocked", "rejected", "fa
 const ACTIONS = ["deploy_commit", "observe_drift", "suspend_agent", "register_agent", "admit_voter", "rollback_worker_version"];
 Object.assign(MOCK, {
   "/api/platform/v1/overview": { overview: { observed_at: at(1), agents_enabled: true,
-    services: SVC.map((s, i) => ({ service_id: s, drifted: i === 3 || i === 9, persistent: i === 9, observed_at: at(i) })),
+    services: SVC.map((s, i) => ({ service_id: s, drifted: i === 3 || i === 9, persistent: i === 9, observed_at: at(i * 40), last_seen_at: at(i) })),
     open_agent_plans: [{ plan_id: "plan_00000000-0000-0000-0000-000000000000", service_id: SVC[9], status: "draft", created_at: at(40) }],
     agent_reports_24h: { counts: { critical: 1, warning: 4, info: 31, critical_acknowledged: 1 }, latest_attention: [
       { report_id: "r1", agent_id: "auditor", kind: "audit_digest", severity: "critical", subject: "Audit chain verified; 3 denied syscalls by platform-api in one hour, which is a long subject that wraps", created_at: at(30) },
       { report_id: "r2", agent_id: "supervisor", kind: "platform_digest", severity: "warning", subject: "Console drifts persistently", created_at: at(70) }] },
-    xauusd_latest: { decision: "HOLD", confidence: 0.61, candle_key: "XAUUSD:60:2026-11-09T12:00", decided_at: at(20), reported_at: at(19) } } },
+    xauusd_latest: { decision: "HOLD", confidence: 0.61, candle_key: "XAUUSD:60:2026-11-09T12:00", decided_at: at(20), reported_at: at(19) },
+    trading_organ_health: { report_id: "rpt_toh", reported_at: at(19), observed_at: at(19), bar_minutes: 60, stale: false, metrics: [
+      { metric: "decisions_24h", value: 24, baseline_7d: 23.8, z: 0.4 }, { metric: "share_buy_24h", value: 0.25, baseline_7d: 0.2, z: 1.1 },
+      { metric: "share_sell_24h", value: 0.125, baseline_7d: null, z: null }, { metric: "share_wait_24h", value: 0.625, baseline_7d: 0.7, z: -2.3 },
+      { metric: "share_no_trade_24h", value: 0, baseline_7d: 0, z: 0 }, { metric: "latest_decision_age_bars", value: 0.37, baseline_7d: 0.4, z: -0.2 },
+      { metric: "flips_24h", value: 4, baseline_7d: 0.6, z: 3.4 }, { metric: "confidence_mean_24h", value: 0.512, baseline_7d: null, z: null },
+      { metric: "confidence_p50_24h", value: 0.5, baseline_7d: null, z: null }, { metric: "confidence_min_24h", value: null, baseline_7d: null, z: null },
+      { metric: "confidence_max_24h", value: 0.9, baseline_7d: null, z: null },
+      { metric: "hit_rate_7d", value: null, baseline_7d: null, z: null, status: "no_scored_data", n_directional: 0, hit: 0, miss: 0, wait_accuracy: null, subject: "engine:15", as_of: at(19) },
+      { metric: "hit_rate_30d", value: 0.583, baseline_7d: 0.57, z: 0.3, status: "ok", n_directional: 12, hit: 7, miss: 5, wait_accuracy: 0.8, subject: "engine:15", as_of: at(19) },
+      { metric: "staleness_incidents_24h", value: 0, baseline_7d: 0.1, z: -0.3 }, { metric: "staleness_incidents_7d", value: 1, baseline_7d: 1, z: 0 }] } } },
   "/api/kernel/v1/consensus": { mode: "deploy", stats_24h: { executed: 6, shadow_passed: 3, shadow_blocked: 2, rejected: 1, failed: 1, pending_owner: 1, expired: 1 },
     proposals: Array.from({ length: 60 }, (_, i) => ({ proposal_id: `cns_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, proposer_agent_id: "supervisor",
       action: ACTIONS[i % ACTIONS.length], target: i % 6 === 3 ? "forge-steward" : SVC[i % SVC.length], class: i % 6 === 4 ? "critical" : "routine",
@@ -109,8 +130,15 @@ Object.assign(MOCK, {
     actor: i % 4 ? "agent:supervisor" : "owner@example.com", subject: SVC[i % SVC.length], outcome: i % 11 ? "succeeded" : "failed", event_hash: "ab".repeat(32), created_at: at(i * 9) })) },
   "/api/policy/v1/decisions": { decisions: Array.from({ length: 80 }, (_, i) => ({ decision_id: `dec_${i}`, subject: "agent:supervisor", action: ["consensus.execute", "agent.syscall", "deploy", "registry.update"][i % 4],
     resource: `deploy_commit:${SVC[i % SVC.length]}`, decision: i % 6 ? "allow" : "deny", reason: i % 6 ? "all policy checks passed" : "failed: target_rate_limit, platform_daily_limit", created_at: at(i * 14) })) },
-  "/api/registry/v1/services": { services: SVC.map((s, i) => ({ service_id: s, display_name: s.replace("cryptophys-", ""), status: i === 10 ? "disabled" : "healthy", desired_version: "7eaf570a4ed5" })) },
-  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, status: i === 3 ? "degraded" : "healthy", drifted: i === 3 || i === 9, desired_version: "7eaf570a4ed5", observed_version: i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", observed_at: at(i * 3) })) },
+  "/api/registry/v1/services": { services: SVC.map((s, i) => ({ service_id: s, display_name: s.replace("cryptophys-", ""), status: i === 10 ? "disabled" : i === 3 || i === 9 ? "degraded" : "healthy", desired_version: "7eaf570a4ed5",
+    observed_version: i === 10 || i === 9 ? null : i === 3 ? "c5b73b4c3711" : "7eaf570a4ed5", updated_at: at(i * 3), metadata: { owner: "cryptophys-adm" } })) },
+  // GET /v1/drift as the Drift Detector serves it: the latest recorded state per service (written on change) and
+  // last_seen_at, the heartbeat. SVC[9] runs an untagged version (a dashboard change since its last deploy).
+  "/api/drift/v1/drift": { services: SVC.slice(0, 10).map((s, i) => ({ service_id: s, observation_id: `obs_${i}`, drifted: i === 3 || i === 9, streak: i === 9 ? 1 : 2, observed_at: at(i * 60 + 300), last_seen_at: at(i * 3),
+    evidence: { run_id: `drift_${i}`, trigger: "scheduled", reasons: i === 3 ? ["version_mismatch"] : i === 9 ? ["observed_version_unavailable"] : [], desired_version: "7eaf570a4ed5" } })) },
+  "/api/drift/v1/drift/cryptophys-platform-api": { service_id: "cryptophys-platform-api", observations: [
+    { observation_id: "obs_0", drifted: false, streak: 2, observed_at: at(300), evidence: { reasons: [] } },
+    { observation_id: "obs_0b", drifted: true, streak: 2, observed_at: at(420), evidence: { reasons: ["version_mismatch"] } }] },
   "/api/recovery/v1/plans": { plans: Array.from({ length: 14 }, (_, i) => ({ plan_id: `plan_${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, service_id: SVC[i % 5], title: `Recover ${SVC[i % 5]} from version mismatch`, status: ["draft", "approved", "executing", "completed", "failed", "disabled"][i % 6], created_by: "agent:supervisor", created_at: at(i * 90), steps: [{}, {}] })) },
 });
 {
@@ -138,6 +166,9 @@ MOCK["/api/kernel/v1/metabolism"] = {
   burn_14d: SVC.slice(0, 6).map((s, i) => ({ service_id: s, cost_usd: 0.5 + i * 0.3, requests: 1000 * (i + 1), ai_neurons: 10 })),
   mode_changes: [{ actor: "agent:supervisor", mode: "survival", previous_mode: "homeostasis", reason: "market closed (weekend)", at: at(615) }],
   rules: ["Survival throttles only AI spending; it never blocks consensus.", "Growth applies only with the owner's override.", "Read only: no orders, no funds."],
+  // Owner 2026-11-14: learning observed, never blocked; its cost is not measured per call (null).
+  learning: { capabilities: ["memory.remember", "knowledge.propose"], last_hour: [{ agent_id: "auditor", capability: "memory.remember", count: 3 }, { agent_id: "aether-curator", capability: "knowledge.propose", count: 2 }],
+    ai_requests_today: 17, ai_requests_today_all: 64, cost_usd_month: null, cost_source: "not measured: Workers AI reports neurons per account and model, not per call", budget_usd_month: 30 },
 };
 MOCK["/api/aether/v1/overview"] = { service: "cryptophys-aether", generated_at: at(1),
   canon: { version: "canon-v1", content_sha256: "a".repeat(64), files: 4, kb_version: 4, kb_content_sha256: "b".repeat(64),
@@ -210,6 +241,19 @@ MOCK["/api/platform/v1/usage"] = { configured: true, observed_at: at(2), plan: "
     { key: "kv_writes", label: "KV writes", today: 0, limit: 1000, unit: "writes", pct: 0 },
   ],
   workers_today: SVC.map((s, i) => ({ script: s, requests: 9000 - i * 700 })), workers_errors_today: 4, source: "Cloudflare GraphQL Analytics & Billable Usage API" };
+// Owner 2026-11-14: the Observer on the Organism page (GET /v1/observer; measured vitals, one labelled estimate).
+MOCK["/api/platform/v1/observer"] = { schema: "observer.v1", observed_at: at(0), configured: true, available: true, cron: "27,57 * * * *",
+  organs: SVC.slice(0, 6).map((s, i) => ({ worker: s, last_hour: at(60), measured: { requests: 1200 - i * 100, errors: i, error_rate: i / 1000, cpu_p99_ms: 3.5 + i, exceptions: i, exceeded_cpu: 0, exceeded_memory: 0 },
+    series: Array.from({ length: 48 }, (_, h) => ({ hour: at(60 * (48 - h)), requests: 1000 + h, error_rate: h === 40 && i === 0 ? 0.3 : 0.002, cpu_p99_ms: 3 + (h % 5) })) })),
+  resources: [{ subject: "d1:5d6c1e2f-0000-4000-8000-000000000000-with-a-long-identifier", kind: "d1", last_hour: at(60), measured: { requests: 5500, rows_read: 900000, rows_written: 2000, neurons: null, rows_per_query: 163.6 }, series: Array.from({ length: 48 }, (_, h) => ({ hour: at(60 * (48 - h)), value: 10000 + h * 100 })) }],
+  estimates: { rows_per_request: { value: 41.2, hour: at(60), measured: false, basis: "estimated: all D1 rows read on the account divided by all Worker requests in the hour" } },
+  anomalies: [
+    { finding_id: "obs_1", worker: SVC[0], metric: "error_rate", kind: "anomaly", severity: "warning", bucket: at(120), value: 0.3, baseline_7d: 0.002, z: 41.5, since_deploy: { version: "e0bd92815ac9", deployed_at: at(150) }, sample: {}, detail: "300 errors in 1000 requests (30.0 %) in the hour; a long detail line that has to wrap on a phone screen", report_only: false, created_at: at(90) },
+    { finding_id: "obs_2", worker: "account", metric: "observability_permission_missing", kind: "capability", severity: "info", bucket: "2026-11-14", value: null, baseline_7d: null, z: null, since_deploy: null, sample: {}, detail: "The token may not read Workers Observability; needs Account > Workers Observability > Read", report_only: true, created_at: at(90) },
+  ],
+  deploys: [{ worker: SVC[0], version: "e0bd92815ac9", previous: "6fafa095ce3e", deployed_at: at(150), actor: "ci", rollback: false }],
+  last_senses: { bucket: at(120), ran_at: at(93), status: "partial", datasets: { workers: "ok", d1: "ok", d1_queries: "ok", kv: "no_data", do: "error: unknown field", ai: "ok", observability: "error: http 403" }, findings: [] },
+  last_inventory: { bucket: at(3), ran_at: at(3), status: "partial", datasets: {}, findings: [{ worker: "rogue-worker", metric: "undeclared_worker", severity: "warning", detail: "rogue-worker is live with 42 requests in 7 days but no DNA declares it" }] } };
 MOCK["/api/forge/v1/forge/checks"].checks.push(...Array.from({ length: 8 }, (_, i) => ({ commit: `${i}`.repeat(40), status: i === 5 ? "failed" : "passed", pass: 400 + i * 3, fail: i === 5 ? 2 : 0, duration_ms: 40000 + i * 1500, started_at: at(60 * (i + 2)), github: "success", agrees: i !== 5 })));
 
 // Owner 2026-11-13: the Owner page (#/owner) reads GET /v1/owner/inbox: approvals and open critical reports only.
@@ -238,11 +282,161 @@ MOCK["/api/kernel/v1/owner/inbox"] = { schema: "owner-inbox.v1", observed_at: at
     { code: "observations_stale", subject: "cryptophys-policy-engine", detail: "Policy Engine: not observed since 2026-11-13T01:00:00.000Z; the Drift Detector may have stopped", since: at(120), link: "#/infrastructure" },
     { code: "recovery_failed", subject: "plan_00000000-0000-4000-8000-000000000009", detail: "Recovery plan for Cerebrum Console failed at 2026-11-13T02:00:00.000Z", since: at(90), link: "#/recovery/plan_00000000-0000-4000-8000-000000000009" },
   ],
-  counts: { approvals: 4, critical_reports: 1, production_problems: 3 } };
+  counts: { approvals: 4, critical_reports: 1, production_problems: 3 },
+  // HAIC H0b/H0c: the same items ranked by the kernel (owner-inbox.rank.v1); the page orders by them and opens one by id.
+  items: [
+    { item_id: "critical_report:rpt_00000000-0000-4000-8000-000000000000", source: "critical_report", kind: "critical_report", what: "deployment-orchestrator: Rollback of Cerebrum Console to 6fafa095ce3e failed, which is a long subject that wraps",
+      metric: null, evidence_refs: ["ev:platform/report/rpt_00000000-0000-4000-8000-000000000000"], risk: null, blocks: ["deploys", "merges"], deadline: null, created_at: at(30), urgency: "critical",
+      score: 563, score_parts: { U: 1, B: 4.5, A: 1.25, D: 1 }, action: { kind: "acknowledge", route: "kernel.report_acknowledge", approver_only: true }, page: null, deep_link: "#/owner/critical_report:rpt_00000000-0000-4000-8000-000000000000" },
+    { item_id: "production_problem:self_unhealthy:cryptophys-ai-kernel", source: "production_problem", kind: "self_unhealthy", what: "AI Kernel is drifted or unhealthy (version_mismatch); the agents do not recover their own Worker",
+      metric: null, evidence_refs: ["ev:platform/production_problem/self_unhealthy:cryptophys-ai-kernel"], risk: null, blocks: ["deploys"], deadline: null, created_at: at(50), urgency: "critical",
+      score: 403, score_parts: { U: 1, B: 3, A: 1.03, D: 1 }, action: { kind: "none", route: null, approver_only: false }, page: "#/infrastructure", deep_link: "#/owner/production_problem:self_unhealthy:cryptophys-ai-kernel" },
+    { item_id: "consensus:cns_00000005-0000-4000-8000-000000000000", source: "consensus", kind: "admit_voter", what: "Critical action: give forge-steward a council seat (proposed by supervisor)",
+      metric: { name: "approvals", value: 7, of: 8, unit: "votes" }, evidence_refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], risk: { class: "critical", reversible: true, blast_radius: "agent" },
+      blocks: [], deadline: at(-60 * 22), created_at: at(90), urgency: "normal", score: 85, score_parts: { U: 0.4, B: 1, A: 1.06, D: 2 },
+      action: { kind: "approve_reject", route: "kernel.consensus_approve", approver_only: true }, page: null, deep_link: "#/owner/consensus:cns_00000005-0000-4000-8000-000000000000" },
+  ] };
+// ADR-0016 T0: the Vision page reads GET /v1/vision (organism/vision.json, validated by the kernel). A null baseline
+// or target is shown as "not measured yet", never as a number.
+MOCK["/api/kernel/v1/vision"] = { schema: "organism.vision-view.v1", source: "organism/vision.json", vision_schema: "organism.vision.v1", status: "valid", problems: [],
+  vision: { $comment: "DRAFT for the owner's review, a note long enough to wrap on a phone screen without any horizontal scrolling at all.", schema: "organism.vision.v1",
+    core: { mission: "A living, self-aware AI Operating System whose core is the AI Neuron, in a sentence long enough to wrap on a phone.",
+      identity: { core_organ: "AI Neuron (Workers AI inference by the agents)", organs: ["Cerebrum (Console)", "Nexus", "Aether", "AI Kernel (Supervisor)", "Forge", "Observer", "Strategist"] },
+      constitution: ["A trading action needs the owner's click.", "Guard paths and this core change only by the owner's click."] },
+    growth: { goals: [
+      { id: "g-accuracy", horizon: "quarter", organs: ["AI Neuron", "Nexus"], kpis: [
+        { id: "decision_hit_rate_15m_with_a_rather_long_identifier_that_wraps", baseline: null, target: null, source: "outcome_scores" },
+        { id: "agent_grounding_rate", baseline: null, target: 0.95, source: "metric_shadow" }], evidence: "owner 2026-11-14: AI must interpret metrics, not narrate" },
+      { id: "g-self-knowledge", horizon: "now", organs: ["Forge", "Observer"], kpis: [{ id: "undeclared_components", baseline: 3, target: 0, source: "census inventory diff" }], evidence: "owner 2026-11-13/14" },
+    ] } } };
+// ADR Steward step 5: the Vision page's ADR panel reads GET /v1/adr (kernel.adr) and an open row's GET /v1/adr/{id}
+// (kernel.adr_one). Every number and label comes from these responses; a planned ADR without phases draws no bar.
+const ADR_STEWARD = { agent_id: "adr-steward", status: "enabled", last_pass_at: "2026-11-17T22:37:00.000Z", last_full_pass_at: "2026-11-17T22:37:00.000Z", deployed_commit: "abc1234def56", ai_today: { used: null, cap: null } };
+const adrEntry = (o) => ({ title: null, lifecycle: "accepted", deferred: false, superseded_by: null, status: "in_progress", phases_total: 0, phases_proven: 0, phases_asserted: 0, percent: 0, percent_proven: 0,
+  next_step: null, blockers: [], owner_actions: [], drift_count: 0, stale: false, revision: 1, changed_at: "2026-11-17T08:00:00.000Z",
+  explanation: { schema: "adr.explanation.v1", source: "template", teks: `${o.adr}: automatic text.`, rujukan: [] }, ...o });
+const ADR_ROWS = [
+  adrEntry({ adr: "0001", title: "Cloudflare-native runtime", status: "done", phases_total: 1, phases_proven: 1, percent: 100, percent_proven: 100 }),
+  adrEntry({ adr: "0012", title: "Leave GitHub — the Forge, with a title long enough to wrap on a phone screen", status: "in_progress", phases_total: 26, phases_proven: 12, phases_asserted: 6, percent: 69, percent_proven: 46,
+    next_step: { phase: "G4B", text: "First live run of a part B path" }, blockers: ["G4B: built, not yet run live", "G10: built, not yet run live", "W24: earliest 2026-11-17T14:12Z"],
+    owner_actions: [{ phase: "G10", text: "Approve the first native retirement when one is proposed", href: "#/owner", outside_platform: false, proposal_id: null }], revision: 14, changed_at: "2026-11-17T21:56:00.000Z",
+    explanation: { schema: "adr.explanation.v1", source: "template", teks: "0012: 18 of 26 phases complete (12 proven, 6 asserted by document). Open: G4B, G10, W24 (earliest 2026-11-17 14:12 UTC). Next: G4B.", rujukan: [] } }),
+  adrEntry({ adr: "0014", title: "Evolution loop", lifecycle: "deferred", deferred: true, status: "in_progress", phases_total: 9, phases_proven: 1, percent: 11, percent_proven: 11, next_step: { phase: "E0", text: "intents" } }),
+  adrEntry({ adr: "0018", title: "External organs", lifecycle: "held", status: "held", phases_total: 5, phases_proven: 0, phases_asserted: 1, percent: 20, percent_proven: 0, next_step: { phase: "X3", text: "registry CR" } }),
+  adrEntry({ adr: "0019", title: "AI Mesh program", lifecycle: "planned", status: "planned" }),
+];
+MOCK["/api/kernel/v1/adr"] = { schema: "adr.progress-view.v1", available: true, steward: ADR_STEWARD, adrs: ADR_ROWS };
+MOCK["/api/kernel/v1/adr/0012"] = { schema: "adr.progress-doc.v1", adr: "0012", title: ADR_ROWS[1].title, lifecycle: "accepted", deferred: false, superseded_by: null, status: "in_progress",
+  phases_total: 26, phases_complete: 18, phases_proven: 12, phases_asserted: 6, phases_doc_asserted: 6, phases_external_asserted: 0, percent: 69, percent_proven: 46,
+  phases: [
+    { id: "G1", group: "gates", title: "Gate 1", weight: 1, state: "doc_asserted", reason: null, refs: ["ev:platform/doc/docs-GITHUB-CUTOVER.md"], built: true, depends_on: [], doc_claim: "done", drift: null, blockers: [], earliest: null },
+    { id: "G2", group: "gates", title: "Gate 2: the council merges", weight: 1, state: "proven", reason: null, refs: ["ev:platform/consensus/cns_00000000-0000-4000-8000-000000000001"], built: true, depends_on: [], doc_claim: "done", drift: null, blockers: [], earliest: null },
+    { id: "G4B", group: "gates", title: "Gate 4 part B: routes, DO migrations, Workflows natively", weight: 1, state: "open", reason: "built, not yet run live", refs: [], built: true, depends_on: [], doc_claim: "built", drift: null, blockers: ["G4B: built, not yet run live"], earliest: null },
+    { id: "W24", group: "window", title: "The 24 h window", weight: 1, state: "open", reason: "quiet window", refs: [], built: true, depends_on: [], doc_claim: null, drift: null, blockers: ["W24: earliest 2026-11-17T14:12Z"], earliest: "2026-11-17T14:12:00.000Z" },
+  ],
+  blockers: ["G4B: built, not yet run live", "G10: built, not yet run live", "W24: earliest 2026-11-17T14:12Z", "GB: the GitHub side is not dated"],
+  next_step: { phase: "G4B", text: "First live run of a part B path" },
+  owner_actions: [{ phase: "G10", text: "Approve the first native retirement when one is proposed", href: "#/owner", outside_platform: false, proposal_id: null },
+    { phase: "GB", text: "Delete GH_ACTIONS_TOKEN on the Orchestrator, then archive the GitHub repository", href: null, outside_platform: true, proposal_id: null }],
+  drift: [], stale: false, stale_sources: [], manifest_sha256: "0".repeat(64), deployed_commit: "abc1234def56",
+  revision: 14, changed_at: "2026-11-17T21:56:00.000Z", explanation: ADR_ROWS[1].explanation,
+  history: [{ revision: 14, status: "in_progress", percent: 69, created_at: "2026-11-17T21:56:00.000Z" }, { revision: 13, status: "in_progress", percent: 65, created_at: "2026-11-17T09:00:00.000Z" }] };
+// HAIC H1c: the owners' chat. A conversation with an answered turn (a cited number, a removed one, evidence chips) and a
+// refused one; the list with today's budget.
+const CNV = "cnv_0123456789abcdef";
+MOCK["/api/kernel/v1/conversations"] = { schema: "conversations.v1", enabled: true, model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", budget: { day: "2026-11-18", used: 3, limit: 40 },
+  conversations: [{ conversation_id: CNV, turns: 2, stripped: 1, last_status: "refused", created_at: at(30), updated_at: at(5) }] };
+MOCK[`/api/kernel/v1/conversations/${CNV}`] = { conversation_id: CNV, created_at: at(30), turns: [
+  { n: 1, status: "answered", question: "What needs me right now, and is anything blocking deploys?", answer: "2 items wait for you (as of 08:00 UTC): a merge of a guarded change and a knowledge proposal.\nNothing blocks deploys: 0 critical reports are open. — (not measured) deploys ran today.",
+    tools: [{ name: "owner_inbox", args: {}, ok: true }, { name: "reports", args: { severity: "critical" }, ok: true }], refs: ["ev:platform/owner_inbox@2026-11-18T08:00:00.000Z", "ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000", "ev:adr/0017#phases", "ev:platform/doc/docs/SSOT.md@8c3e826fe476#platform-rules"],
+    model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", usage: { input: 9000, cached: 6000, output: 900 }, citations: { kept: 2, stripped: 1 }, injection: [], latency_ms: 8400, created_at: at(20), rating: "up" },
+  { n: 2, status: "refused", reason: "secret_in_question", question: "use Bearer [redacted]", answer: "That message looks like it contains a secret (a token, a key or a password). It was not sent to the model, and only its redacted form is kept. Never paste secrets here.",
+    tools: [], refs: [], model: null, usage: { input: 0, cached: 0, output: 0 }, citations: { kept: 0, stripped: 0 }, injection: [], latency_ms: 3, created_at: at(5) },
+] };
+// HAIC H1.5c: Call for Councils. One council waits for the owner's pick (a verified and an unverified claim, an owner
+// message, three ranked options with "no change"), one is decided with a draft, one was aborted.
+const CS = "cs_00000000-0000-4000-8000-0000000000c1";
+const CS2 = "cs_00000000-0000-4000-8000-0000000000c2";
+const COUNCIL_LIMITS = { max_open_sessions: 2, max_started_per_utc_day: 4, max_model_calls: 16, max_messages: 60, max_owner_messages: 20, max_message_chars: 1200, max_usd: 0.1 };
+MOCK["/api/kernel/v1/councils"] = { schema: "councils.v1", available: true, limits: COUNCIL_LIMITS, councils: [
+  { session_id: CS, side: "cerebrum", topic: "Native deploys fail more often after a migration than without one", state: "awaiting_owner", owner_present: 1, created_by: "owner@example.com", spent_calls: 11, spent_usd: 0.024, reason: null, transcript_sha256: null, created_at: at(120), updated_at: at(60), deadline: at(-60 * 71) },
+  { session_id: CS2, side: "cerebrum", topic: "Knowledge proposals expire unreviewed", state: "decided", owner_present: 0, created_by: "owner@example.com", spent_calls: 9, spent_usd: 0.019, reason: null, transcript_sha256: "a".repeat(64), created_at: at(60 * 30), updated_at: at(60 * 28), deadline: at(-60 * 40) },
+  { session_id: "cs_00000000-0000-4000-8000-0000000000c3", side: "cerebrum", topic: "Too few positions", state: "aborted", owner_present: 0, created_by: "owner@example.com", spent_calls: 2, spent_usd: 0.003, reason: "too_few_positions", transcript_sha256: "b".repeat(64), created_at: at(60 * 50), updated_at: at(60 * 49), deadline: at(-60 * 20) },
+] };
+const msg = (seq, phase, role, author, text, extra = {}) => ({ schema: "council.message.v1", session_id: CS, seq, at: at(120 - seq * 5), phase, role, author, reply_to: [], stance: null, claims: [], text, options: null, model: null, tokens: { in: 0, cached: 0, out: 0 }, content_sha256: "0".repeat(64), ...extra });
+const OPTIONS = [
+  { option_id: "opt_1", rank: 1, title: "Run destructive-migration deploys through the workflow first", hypothesis: "Most native failures after a migration are the migration's own refusal, not the deploy.", change: { type: "repository_task", target: "deployment-orchestrator", params: {} },
+    expected_effect: { metric: "native_deploy_failure_rate", from: 0.12, to: 0.04, window: "14d" }, risk: { level: "low", reversible: true }, confidence: 0.62, evidence_refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], dissent: ["recovery-manager: the sample is small"] },
+  { option_id: "opt_2", rank: 2, title: "Lower the native deploy retry window", hypothesis: "Retries collide with the migration lock.", change: { type: "policy_parameter", target: "deploy_retry_minutes", params: { to: 10 } },
+    expected_effect: null, risk: { level: "medium", reversible: true, notes: "touches every deploy" }, confidence: 0.35, evidence_refs: [], dissent: [] },
+  { option_id: "opt_3", rank: 3, title: "No change", hypothesis: "The rate is within its usual range.", change: { type: "no_change", target: null, params: {} }, expected_effect: null, risk: { level: "low", reversible: true }, confidence: 0.2, evidence_refs: [], dissent: [] },
+];
+MOCK[`/api/kernel/v1/councils/${CS}`] = {
+  session: { schema: "council.session.v1", session_id: CS, side: "cerebrum", topic: "Native deploys fail more often after a migration than without one", question: "Is the migration the cause, and what should change?", trigger: { kind: "owner", ref: null },
+    convened: ["auditor", "supervisor", "recovery-manager", "platform-api", "signal-analyst"], state: "awaiting_owner", owner_present: true, created_at: at(120), deadline: at(-60 * 71), phase_deadline: null,
+    budget: { max_calls: 16, max_usd: 0.1 }, spent: { calls: 11, tokens_in: 52000, tokens_cached: 30000, tokens_out: 7000, usd_est: 0.024 }, decision: null, transcript_sha256: null, created_by: "owner@example.com", reason: null, messages: 4 },
+  messages: [
+    msg(1, "position", "participant", "agent:supervisor", "Native deploys after a migration fail three times as often in the last 14 days.", { stance: "change", claims: [
+      { metric: "native_deploy_failure_rate_after_migration", value: 0.12, window: "14d", n: 25, refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], verified: true },
+      { metric: "retry_collisions", value: 4, window: "14d", refs: ["ev:platform/report/rpt_missing"], verified: false }] }),
+    msg(2, "owner", "owner", "owner:owner@example.com", "Keep the destructive migration gate as it is."),
+    msg(3, "rebuttal", "participant", "agent:recovery-manager", "The sample of 25 deploys is small; the rate may be noise.", { reply_to: [1], stance: "keep" }),
+    msg(4, "synthesis", "moderator", "agent:auditor", "Two options change something, one changes nothing. The owner's constraint holds: the destructive migration gate stays.", { options: OPTIONS }),
+  ],
+};
+MOCK[`/api/kernel/v1/councils/${CS2}`] = {
+  session: { ...MOCK[`/api/kernel/v1/councils/${CS}`].session, session_id: CS2, topic: "Knowledge proposals expire unreviewed", state: "decided", owner_present: false, transcript_sha256: "a".repeat(64), transcript_key: `councils/${CS2}.json`,
+    decision: { schema: "council.decision.v1", session_id: CS2, option_id: "opt_1", chosen_by: "owner:owner@example.com", chosen_at: at(60 * 28), owner_note: null,
+      proposal_draft: { schema: "council.proposal_draft.v1", kind: "repository_task", origin: { council: CS2, option: "opt_1" }, target: "deployment-orchestrator", params: {}, measurement: {}, requires: ["owner_confirm", "owner_click_to_promote"] } } },
+  messages: [{ ...msg(4, "synthesis", "moderator", "agent:auditor", "One option was picked.", { options: OPTIONS }), session_id: CS2 }],
+};
+// HAIC H1.5d: a council the Signal Analyst proposed from a KPI regression, waiting for the owner to begin it.
+const CS4 = "cs_00000000-0000-4000-8000-0000000000c4";
+MOCK["/api/kernel/v1/councils"].councils.unshift({ session_id: CS4, side: "cerebrum", topic: "Trading organ KPI regression: decisions_24h", state: "proposed", owner_present: 0, created_by: "agent:signal-analyst",
+  spent_calls: 0, spent_usd: 0, reason: null, transcript_sha256: null, created_at: at(30), updated_at: at(30), deadline: at(-60 * 24 * 6), trigger_kind: "kpi_regression", started_at: null });
+MOCK[`/api/kernel/v1/councils/${CS4}`] = {
+  session: { ...MOCK[`/api/kernel/v1/councils/${CS}`].session, session_id: CS4, topic: "Trading organ KPI regression: decisions_24h", question: "The trading organ's decisions_24h moved away from its usual range. What explains it, and should anything change?",
+    trigger: { kind: "kpi_regression", ref: "ev:platform/report/rpt_s1#metrics" }, state: "proposed", owner_present: false, deadline: at(-60 * 24 * 6), created_by: "agent:signal-analyst",
+    spent: { calls: 0, tokens_in: 0, tokens_cached: 0, tokens_out: 0, usd_est: 0 }, messages: 1, decision: null,
+    proposal: { proposed_by: "agent:signal-analyst", refs: ["ev:platform/report/rpt_s1#metrics"], detail: "decisions_24h is 2 against a 7-day baseline of 40 (z -3.4)." } },
+  messages: [{ ...msg(1, "system", "system", "agent:signal-analyst", "Proposed by signal-analyst: decisions_24h is 2 against a 7-day baseline of 40 (z -3.4)."), session_id: CS4 }],
+};
+// HAIC H2: typed proposals: a draft from the decided council, waiting for the owner; one handed to the evolver.
+const TP = "tp_0123456789abcdef";
+const TP2 = "tp_fedcba9876543210";
+const tpBody = (id, kind, title, extra = {}) => ({ schema: "typed_proposal.v1", proposal_id: id, kind, title, rationale: "Most native failures after a migration are the migration's own refusal.",
+  target: kind === "policy_parameter" ? "daily-deploy-limit" : "platform", params: kind === "policy_parameter" ? { value: 12 } : { spec: "Route destructive-migration deploys through the workflow first." },
+  measurement: { metric: "native_deploy_failure_rate", baseline: 0.12, window: "14d", success_threshold: 0.04 }, origin: { source: "council", ref: `${CS2}#opt_1` },
+  evidence_refs: ["ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000"], requires: ["owner_confirm", "owner_click_to_promote"], ...extra });
+MOCK["/api/kernel/v1/proposals"] = { schema: "typed_proposals.v1", available: true, proposals: [
+  { proposal_id: TP, kind: "policy_parameter", state: "draft", title: "Raise the daily deploy limit to 12", origin_source: "council", origin_ref: `${CS2}#opt_1`, created_by: "owner:owner@example.com", created_at: at(30), updated_at: at(30), expires_at: at(-60 * 24 * 6), decided_by: null, decided_at: null, handoff_path: null, handoff_ref: null, reason: null, body: tpBody(TP, "policy_parameter", "Raise the daily deploy limit to 12"), what_happens: "The Supervisor proposes set_policy_parameter to the council; the agents vote; inside its hard bounds it executes as a routine action." },
+  { proposal_id: TP2, kind: "repository_task", state: "handed_off", title: "Run destructive-migration deploys through the workflow first", origin_source: "council", origin_ref: `${CS2}#opt_1`, created_by: "owner:owner@example.com", created_at: at(600), updated_at: at(500), expires_at: at(-60 * 24 * 5), decided_by: "owner@example.com", decided_at: at(500), handoff_path: "evolver", handoff_ref: "int_0123456789ab", reason: "evolution intent int_0123456789ab, queued for the evolver", body: tpBody(TP2, "repository_task", "Run destructive-migration deploys through the workflow first"), what_happens: "It becomes an evolution intent; the evolver writes a change request." },
+] };
+MOCK[`/api/kernel/v1/proposals/${TP}`] = MOCK["/api/kernel/v1/proposals"].proposals[0];
+MOCK[`/api/kernel/v1/proposals/${TP2}`] = MOCK["/api/kernel/v1/proposals"].proposals[1];
+// HAIC H4: the autonomy dial: deploys lowered after a regression, merges ready to rise, the rest at their ADR class.
+const grp = (group, label, level, ceiling, actions, extra = {}) => ({ group, label, level, level_label: level, ceiling, source: "adr", set_by: null, set_at: null, reason: null,
+  actions: actions.map(([action, cls, effective]) => ({ action, class: cls, ceiling: cls === "routine" ? "consensus" : "owner_click", effective })),
+  stats: { executions: 0, succeeded: 0, success_rate: null, regressions: 0 }, raise_to: null, regressions: [], ...extra });
+MOCK["/api/kernel/v1/autonomy"] = { available: true, raise_rule: { window_days: 14, min_executions: 30, min_success: 0.95 }, levels: [], held: [
+  { proposal_id: "cns_00000009-0000-4000-8000-000000000000", action: "deploy_commit", target: "cryptophys-console", autonomy_level: "suggest", created_at: at(20) }],
+  groups: [
+    grp("deploys", "Deploys", "suggest", "consensus", [["deploy_commit", "routine", "suggest"], ["redeploy_desired_version", "routine", "suggest"], ["deploy_destructive_migration", "critical", "suggest"]],
+      { source: "auto_downgrade", set_by: "system:autonomy-dial", set_at: at(40), reason: "cryptophys-console was rolled back after the deploy cns_00000008",
+        stats: { executions: 31, succeeded: 30, success_rate: 30 / 31, regressions: 1 }, regressions: [{ group: "deploys", kind: "rollback_after_deploy", at: at(45), ref: "cns_00000008", detail: "cryptophys-console was rolled back after the deploy cns_00000008" }] }),
+    grp("merges", "Merges into main", "owner_click", "consensus", [["merge_change", "routine", "owner_click"], ["merge_owner_change", "critical", "owner_click"]],
+      { source: "owner", set_by: "owner@example.com", set_at: at(60 * 24 * 15), reason: "watch merges", stats: { executions: 34, succeeded: 34, success_rate: 1, regressions: 0 }, raise_to: "consensus" }),
+    grp("protected", "Data, secrets and Access", "owner_click", "owner_click", [["rotate_secret", "critical", "owner_click"]]),
+    grp("trading", "Trading", "owner_click", "owner_click", []),
+  ] };
+MOCK[`/api/kernel/v1/councils/${CS2}`].session.typed_proposal = { proposal_id: TP2, errors: [] };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
 let OVERRIDE = {};
+/** HAIC push hub check: serve index.html with the Console's own CSP, so a same-origin WebSocket is proven allowed by it. */
+let CSP_ON = false;
+const CONSOLE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png" };
 
@@ -258,6 +452,7 @@ const server = http.createServer((req, res) => {
   const file = path.join(dist, u === "/" ? "index.html" : u);
   if (!file.startsWith(dist) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end(); }
   res.setHeader("content-type", TYPES[path.extname(file)] ?? "application/octet-stream");
+  if (CSP_ON && path.extname(file) === ".html") res.setHeader("content-security-policy", CONSOLE_CSP);
   res.end(fs.readFileSync(file));
 });
 
@@ -278,29 +473,212 @@ for (const width of [390, 1440]) {
     if (overflow > 1) problems.push(`${width}px #/${route}: horizontal scroll of ${overflow}px`);
     const text = await page.evaluate(() => document.body.innerText.length);
     if (text < 40) problems.push(`${width}px #/${route}: blank page`);
+    if (route === "") {
+      // Owner 2026-11-15: the trading organ health chips show a scored hit rate, and "no data yet" (not 0 %) for a
+      // window with nothing scored.
+      const body = await page.evaluate(() => document.body.innerText);
+      for (const want of ["no data yet", "58%"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/: trading organ health chips do not show "${want}"`);
+      }
+    }
+    if (route === "vision") {
+      // ADR-0016 T0: every section of the vision, and an unmeasured KPI as "not measured yet" (never a default number).
+      const body = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      for (const want of ["A living, self-aware AI Operating System", "AI Neuron (Workers AI inference by the agents)", "Guard paths and this core change only by the owner's click.", "g-accuracy", "agent_grounding_rate", "0.95", "not measured yet", "undeclared_components", "census inventory diff", "DRAFT for the owner's review"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/vision: does not show "${want}"`);
+      }
+      const unmeasured = (body.match(/not measured yet/g) ?? []).length;
+      if (unmeasured !== 3) problems.push(`${width}px #/vision: ${unmeasured} values shown as "not measured yet", expected the 3 null ones`);
+    }
     if (route === "code") {
       // ADR-0012 gate 8: the git backup panel shows the measured values of GET /v1/forge/git-backup.
       const body = await page.evaluate(() => document.body.innerText);
-      for (const want of ["5f1c0de2b7a94e3c", "5114 objects · 41 branches", "2.3 MiB", "discovery_failed:discovery_http_401"]) {
+      for (const want of ["5f1c0de2b7a94e3c", "5114 objects · 41 branches", "2.3 MiB", "discovery_failed:discovery_http_401", "5114 objects (3120 deltas resolved), 5098 reachable from 41 branches"]) {
         if (!body.includes(want)) problems.push(`${width}px #/code: git backup panel does not show "${want}"`);
+      }
+    }
+    if (route === "organism") {
+      // Owner 2026-11-14: the Observer panel shows the measured values of GET /v1/observer and labels the estimate.
+      const body = await page.evaluate(() => document.body.innerText);
+      for (const want of ["Measured once an hour", "30.0 %", "41.2 · estimated", "e0bd92815ac9", "rogue-worker is live"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/organism: Observer panel does not show "${want}"`);
+      }
+      // Owner 2026-11-14: the learning lines show the measured values and "not measured" for the cost.
+      for (const want of ["5 call(s) by 2 agent(s)", "17 of 64 AI requests", "not measured (budget $30/month)"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/organism: learning line does not show "${want}"`);
+      }
+    }
+    if (route === "pipelines") {
+      // Owner 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"):
+      // the page shows the read-only ledger of GET /v1/deployments and no manual deploy form.
+      const body = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      for (const want of ["Running now", "Deployed versions", "Deploy requests", "deploy_commit", "deploy-platform-api.yml", "stale: no workflow run finished within 3 hours"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/pipelines: does not show "${want}"`);
+      }
+      for (const gone of ["Manual deploy", "Open manual deploy", "Commit SHA (40 hex)", "Deploy…"]) {
+        if (body.includes(gone)) problems.push(`${width}px #/pipelines: still shows "${gone}"`);
       }
     }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });
   }
   await page.close();
 }
+// Owner 2026-11-16: the Users page's identity lists, with the edit button for an owner, read only for an operator, and
+// an invalid row shown as such (nothing deployed from it).
+const IDENTITY_CHECKS = [
+  { name: "owner", override: {}, want: ["Operator and approver emails", "saved by an owner", "second.owner.with.a.long.address@example-company.co.id", "revision 3", "Edit emails", "Each unit's next native deploy writes these lists"], not: ["Only an owner changes these emails."] },
+  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Operator and approver emails", "owner@example.com", "Only an owner changes these emails."], not: ["Edit emails"] },
+  { name: "invalid", override: { "/api/registry/v1/identities": { schema: "identity-source.v1", migrated: true, source: { status: "invalid", reason: "identity_lists_differ", revision: 4, updated_by: "owner@example.com", updated_at: "2026-11-16T09:00:00Z" },
+    in_effect: { uses: "active_version", detail: "Not a valid list (identity_lists_differ): nothing is deployed from it; each Worker keeps its deployed values." }, running_here: { approver_emails: [] }, limits: { max_emails: 20 }, history: [] } },
+    want: ["not a valid list", "nothing is deployed from it", "No list saved that is valid"], not: ["saved by an owner"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of IDENTITY_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px users/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}#/users`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px #/users (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px #/users (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/users (${check.name}): horizontal scroll of ${overflow}px`);
+    await page.close();
+  }
+}
+OVERRIDE = {};
 // The Owner page: both sections with their actions for an approver, read-only for an operator, and the empty state.
 const OWNER_CHECKS = [
   { name: "approver", override: {}, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "kernel or Drift Detector", "recovery failed", "Recovery plans", "Critical actions", "Learned knowledge", "Approve…", "Reject…", "Disable…", "Acknowledge…", "No platform executor"], not: ["Nothing needs you"] },
   { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Only an approver can decide.", "Only an approver can acknowledge."], not: ["Approve…", "Reject…", "Disable…", "Acknowledge…"] },
-  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…"] },
+  { name: "empty", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["Nothing needs you"], not: ["Waiting for your approval", "Open critical reports", "Production problems no agent is handling", "Approve…", "Needs you", "no longer waits"] },
+  // HAIC H0c: the ranked list on top, one item opened by its deep link, and a link to an item that is gone.
+  { name: "ranked", override: {}, want: ["Needs you", "ranked by score", "563", "deploys · merges", "Waiting for your approval"], not: ["no longer waits", "All items"] },
+  { name: "item", hash: "#/owner/consensus:cns_00000005-0000-4000-8000-000000000000", override: {},
+    want: ["All items", "= 100 × U 0.4 × B 1 × A 1.06 × D 2", "approvals: 7 of 8 votes", "critical · reversible · agent", "ev:platform/consensus/cns_00000005-0000-4000-8000-000000000000", "Approve…", "Needs you"], not: ["no longer waits"] },
+  { name: "item-gone", hash: "#/owner/consensus:cns_gone", override: {}, want: ["no longer waits", "All items", "Needs you"], not: [] },
+  { name: "item-gone-empty", hash: "#/owner/consensus:cns_gone", override: { "/api/kernel/v1/owner/inbox": EMPTY_INBOX }, want: ["no longer waits", "Nothing needs you"], not: [] },
+  // HAIC H1.5c: a council waiting for the owner's pick is listed, and its item opens a link to the council's page.
+  { name: "council", hash: `#/owner/council:${CS}`, override: { "/api/kernel/v1/owner/inbox": { ...EMPTY_INBOX, councils: [{ session_id: CS, topic: "Native deploys fail more often after a migration", since: at(60), deadline: at(-60 * 71) }],
+      counts: { ...EMPTY_INBOX.counts, councils: 1 },
+      items: [{ item_id: `council:${CS}`, source: "council", kind: "council_awaiting_pick", what: "Council waits for your pick: Native deploys fail more often after a migration", metric: null, evidence_refs: [`ev:platform/council/${CS}`], risk: null, blocks: [], deadline: at(-60 * 71), created_at: at(60), urgency: "normal", score: 42, score_parts: { U: 0.4, B: 1, A: 1.04, D: 1 }, action: { kind: "pick", route: "kernel.council_pick", approver_only: true }, page: `#/councils/${CS}`, deep_link: `#/owner/council:${CS}` }] } },
+    want: ["Councils waiting for your pick", "Open the options", "Council waits for your pick", "council_awaiting_pick", "All items"], not: ["Nothing needs you", "no longer waits"] },
+  // HAIC H1.5d: a council an agent proposed is listed, and its item opens a link to the proposal.
+  { name: "council-proposed", hash: `#/owner/council:${CS4}`, override: { "/api/kernel/v1/owner/inbox": { ...EMPTY_INBOX,
+      council_proposals: [{ session_id: CS4, topic: "Trading organ KPI regression: decisions_24h", proposed_by: "agent:signal-analyst", trigger_kind: "kpi_regression", refs: ["ev:platform/report/rpt_s1#metrics"], since: at(30), deadline: at(-60 * 24 * 6) }],
+      counts: { ...EMPTY_INBOX.counts, council_proposals: 1 },
+      items: [{ item_id: `council:${CS4}`, source: "council", kind: "council_proposed", what: "Council proposed by signal-analyst: Trading organ KPI regression: decisions_24h", metric: null, evidence_refs: [`ev:platform/council/${CS4}`], risk: null, blocks: [], deadline: at(-60 * 24 * 6), created_at: at(30), urgency: "low", score: 21, score_parts: { U: 0.2, B: 1, A: 1.02, D: 1 }, action: { kind: "start", route: "kernel.council_begin", approver_only: true }, page: `#/councils/${CS4}`, deep_link: `#/owner/council:${CS4}` }] } },
+    want: ["Councils proposed by agents", "Open the proposal", "Council proposed by signal-analyst", "council_proposed", "by signal-analyst"], not: ["Nothing needs you", "no longer waits"] },
+  // HAIC H2: a typed proposal draft waits for the owner's confirmation.
+  { name: "typed-proposal", hash: `#/owner/proposal:${TP}`, override: { "/api/kernel/v1/owner/inbox": { ...EMPTY_INBOX,
+      typed_proposals: [{ proposal_id: TP, kind: "policy_parameter", title: "Raise the daily deploy limit to 12", since: at(30), deadline: at(-60 * 24 * 6), origin_source: "council" }],
+      counts: { ...EMPTY_INBOX.counts, typed_proposals: 1 },
+      items: [{ item_id: `proposal:${TP}`, source: "proposal", kind: "typed_proposal_draft", what: "Confirm or reject: Raise the daily deploy limit to 12 (policy parameter, from a council)", metric: null, evidence_refs: [`ev:platform/proposal/${TP}`], risk: null, blocks: [], deadline: at(-60 * 24 * 6), created_at: at(30), urgency: "normal", score: 41, score_parts: { U: 0.4, B: 1, A: 1.02, D: 1 }, action: { kind: "confirm", route: "kernel.proposal_confirm", approver_only: true }, page: `#/proposals/${TP}`, deep_link: `#/owner/proposal:${TP}` }] } },
+    want: ["Proposals waiting for your confirmation", "Raise the daily deploy limit to 12", "Open the proposal to confirm or reject it", "typed_proposal_draft"], not: ["Nothing needs you", "no longer waits"] },
 ];
+const ASK_CHECKS = [
+  { name: "list", hash: "#/ask", override: {}, want: ["Ask the organism", "Conversations", "01234567", "3 of 40 turns", "deepseek-ai/deepseek-v4.1-flash-1017", "Ask about the platform in English", "Propose", "typed proposal draft"], not: ["owners only"] },
+  { name: "conversation", hash: `#/ask/${CNV}`, override: {}, want: ["What needs me right now", "2 items wait for you", "— (not measured)", "2 numbers cited, 1 removed as not measured", "owner_inbox", "adr/0017#phases", "doc/docs/SSOT.md#platform-rules", "refused", "only its redacted form is kept"], not: ["owners only"] },
+  { name: "operator", hash: "#/ask", override: { "/api/whoami": OPERATOR }, want: ["The chat is for owners only."], not: ["Send"] },
+  { name: "off", hash: "#/ask", override: { "/api/kernel/v1/conversations": { ...MOCK["/api/kernel/v1/conversations"], enabled: false } }, want: ["The chat is switched off."], not: [] },
+];
+for (const width of [390, 1440]) {
+  for (const check of ASK_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px ask/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}${check.hash}`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px ${check.hash} (${check.name}): horizontal scroll of ${overflow}px`);
+    if (check.name === "conversation") {
+      const links = await page.evaluate(() => [...document.querySelectorAll("main a[href^='#/']")].map((a) => a.getAttribute("href")));
+      for (const want of ["#/owner", "#/consensus", "#/vision/adr/0017", "#/code"]) if (!links.includes(want)) problems.push(`${width}px ask: no evidence link to ${want}`);
+    }
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-ask-${check.name}.png`), fullPage: true });
+    await page.close();
+  }
+}
+// HAIC H1.5c: the Councils page: the list with the convene form (owner), one council waiting for a pick with its claims,
+// options and dismiss, a decided one with its draft, and the read-only view of an operator.
+const COUNCIL_CHECKS = [
+  { name: "list", hash: "#/councils", override: {}, want: ["Call a council", "Convene…", "waits for your pick", "decided", "aborted", "11 calls · $0.024", "it never acts"], not: ["Pick…"] },
+  { name: "awaiting", hash: `#/councils/${CS}`, override: {}, want: ["Is the migration the cause", "persona of supervisor", "verified", "unverified", "n = 25", "Keep the destructive migration gate", "answers #1",
+    "Options", "Run destructive-migration deploys through the workflow first", "62%", "recovery-manager: the sample is small", "repository task", "no change", "Pick…", "Dismiss…", "11 of 16 model calls", "$0.024 of $0.100"], not: ["Proposal draft", "Call a council"] },
+  { name: "decided", hash: `#/councils/${CS2}`, override: {}, want: ["Proposal draft", "owner_confirm, owner_click_to_promote", "your pick", "It waits for your confirmation as", "sha256 aaaaaaaaaaaa", `R2 councils/${CS2}.json`], not: ["Pick…", "Dismiss…"] },
+  { name: "proposed", hash: `#/councils/${CS4}`, override: {}, want: ["Proposed by an agent", "signal-analyst", "a KPI regression", "z -3.4", "report/rpt_s1#metrics", "Begin…", "Dismiss…", "proposed, waits for you", "only you begin it"], not: ["Pick…", "Options"] },
+  { name: "proposed-operator", hash: `#/councils/${CS4}`, override: { "/api/whoami": OPERATOR }, want: ["Proposed by an agent"], not: ["Begin…", "Dismiss…"] },
+  { name: "proposal-draft", hash: `#/proposals/${TP}`, override: {}, want: ["Raise the daily deploy limit to 12", "waits for you", "policy parameter", "daily-deploy-limit", "value", "12", "native_deploy_failure_rate: 0.12 → 0.04 over 14d", "set_policy_parameter", "Confirm…", "Reject…", "a council", "Typed proposals"], not: [] },
+  { name: "proposal-handed-off", hash: `#/proposals/${TP2}`, override: {}, want: ["handed off", "the evolver", "int_0123456789ab", "decided"], not: ["Confirm…", "Reject…"] },
+  { name: "proposal-operator", hash: `#/proposals/${TP}`, override: { "/api/whoami": OPERATOR }, want: ["Raise the daily deploy limit to 12"], not: ["Confirm…", "Reject…"] },
+  { name: "autonomy", hash: "#/autonomy", override: {}, want: ["Autonomy dial", "Deploys", "lowered after a regression", "rolled back after the deploy", "Merges into main", "ready to rise to on consensus", "34 executions · 100% · 0 regression(s), 14 days", "your note: watch merges", "Trading", "never rises above your click", "Set…", "Held by the dial", "deploy_commit"], not: [] },
+  { name: "autonomy-operator", hash: "#/autonomy", override: { "/api/whoami": OPERATOR }, want: ["Autonomy dial", "Deploys"], not: ["Set…"] },
+  { name: "council-link", hash: `#/councils/${CS2}`, override: {}, want: [`typed proposal ${TP2}`], not: [] },
+  { name: "operator", hash: `#/councils/${CS}`, override: { "/api/whoami": OPERATOR }, want: ["Options", "Run destructive-migration deploys through the workflow first"], not: ["Pick…", "Dismiss…", "Call a council", "Send to the council"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of COUNCIL_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px councils/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}${check.hash}`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px ${check.hash} (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px ${check.hash} (${check.name}): horizontal scroll of ${overflow}px`);
+    if (check.name === "awaiting") {
+      const links = await page.evaluate(() => [...document.querySelectorAll("main a[href^='#/']")].map((a) => a.getAttribute("href")));
+      if (!links.includes("#/consensus")) problems.push(`${width}px councils: no evidence link to #/consensus`);
+    }
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-councils-${check.name}.png`), fullPage: true });
+    await page.close();
+  }
+}
+// HAIC push hub: under the Console's CSP, the council page opens one same-origin WebSocket, subscribes to its council,
+// shows "live", and reloads the council when the hub signals a change; the Owner page subscribes to the inbox.
+{
+  CSP_ON = true;
+  OVERRIDE = {};
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const csp = [];
+  page.on("console", (m) => { if (/Content Security Policy|Refused to connect/i.test(m.text())) csp.push(m.text()); });
+  page.on("pageerror", (e) => problems.push(`hub page error: ${e.message}`));
+  const subscribed = [];
+  let hubSocket = null;
+  await page.routeWebSocket(/\/console\/api\/kernel\/v1\/hub$/, (ws) => {
+    hubSocket = ws;
+    ws.onMessage((m) => { try { const o = JSON.parse(String(m)); subscribed.push(`${o.op} ${o.channel}`); ws.send(JSON.stringify({ kind: "subscribed", channel: o.channel })); } catch { /* not ours */ } });
+  });
+  let detailGets = 0;
+  page.on("request", (r) => { if (r.url().endsWith(`/api/kernel/v1/councils/${CS}`)) detailGets += 1; });
+  await page.goto(`${base}#/councils/${CS}`);
+  await page.waitForTimeout(900);
+  const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+  if (!main.includes("live")) problems.push(`hub: the council page does not show "live"`);
+  if (!subscribed.includes(`subscribe council:${CS}`) || !subscribed.includes("subscribe councils")) problems.push(`hub: subscriptions were ${JSON.stringify(subscribed)}`);
+  const before = detailGets;
+  hubSocket?.send(JSON.stringify({ channel: `council:${CS}`, seq: 1, at: at(0), kind: "council_changed", data: { session_id: CS, state: "awaiting_owner", messages: 5 } }));
+  await page.waitForTimeout(1500);
+  if (detailGets <= before) problems.push(`hub: a change signal did not reload the council (${before} -> ${detailGets})`);
+  await page.goto(`${base}#/owner`);
+  await page.waitForTimeout(900);
+  if (!subscribed.includes("subscribe inbox")) problems.push(`hub: the Owner page did not subscribe to the inbox (${JSON.stringify(subscribed)})`);
+  if (csp.length) problems.push(`hub: CSP refused: ${csp.join(" | ")}`);
+  await page.close();
+  CSP_ON = false;
+}
 for (const width of [390, 1440]) {
   for (const check of OWNER_CHECKS) {
     OVERRIDE = check.override;
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.on("pageerror", (e) => problems.push(`${width}px owner/${check.name} page error: ${e.message}`));
-    await page.goto(`${base}#/owner`);
+    await page.goto(`${base}${check.hash ?? "#/owner"}`);
     await page.waitForTimeout(700);
     // textContent, not innerText: section titles are upper-cased by CSS.
     const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
@@ -312,6 +690,137 @@ for (const width of [390, 1440]) {
     await page.close();
   }
 }
+// ADR Steward step 5 (docs/design/ADR-STEWARD.md §6): the Vision page's ADR panel, filled, with a row opened by
+// #/vision/adr/0012, and its honest states: no pass yet (an empty list), no table yet (available: false), and the
+// Steward not registered or suspended. The proven share of a bar is solid and the asserted share hatched; a planned
+// ADR without phases draws no bar; an empty or unavailable list shows no number at all. In English (owner 2026-11-17,
+// "all in english please").
+const ADR_PANEL_TITLE = "ADR — Architecture Decision Records";
+const adrList = (o) => ({ schema: "adr.progress-view.v1", available: true, steward: ADR_STEWARD, adrs: ADR_ROWS, ...o });
+const ADR_CHECKS = [
+  // Step 6: the AI explanations of the day against the cap, from steward.ai_today; "—" while the kernel cannot read them.
+  { name: "filled", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, ai_today: { used: 2, cap: 6 } } }) },
+    want: [ADR_PANEL_TITLE, "read-only · computed from evidence, not AI guesses · updated 2026-11-17 22:37 UTC", "Steward: active", "AI today: 2/6", "done", "in progress (18 of 26 phases)", "69%", "46% proven",
+      "deferred", "held (1 of 5 phases)", "planned", "Waiting for the owner's click: 1", "First live run of a part B path"],
+    not: ["No Steward pass yet", "The Steward has not run yet", "not recognized"], numbers: true },
+  { name: "open row", hash: "vision/adr/0012", override: {}, open: "0012",
+    want: [ADR_PANEL_TITLE, "Phases", "G1 ◆", "G2 ●", "G4B ○", "proven", "asserted by document", "open", "Blockers", "GB: the GitHub side is not dated", "Next step", "Waiting for the owner's click → Open the Owner page",
+      "outside the platform", "rev 14 · 2026-11-17 21:56 UTC", "rev 13 · in progress · 65%", "Explanation (automatic text)", "0012: 18 of 26 phases complete", "earliest 2026-11-17 14:12 UTC", "ev:consensus/cns_00000000…", "Gate 4 part B"],
+    not: ["could not be read"], numbers: true },
+  { name: "no pass yet", hash: "vision/adr", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
+    want: [ADR_PANEL_TITLE, "No Steward pass yet", "updated —", "Steward: active", "AI today: —"], not: ["done", "in progress", "proven", "0012"] },
+  { name: "unavailable", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ available: false, steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
+    want: [ADR_PANEL_TITLE, "The Steward has not run yet", "Steward: not registered", "Steward not registered: no new pass runs."], not: ["No Steward pass yet", "done", "in progress (", "proven", "Steward: active"] },
+  { name: "not registered", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "not_registered", last_pass_at: null, last_full_pass_at: null }, adrs: [] }) },
+    want: ["No Steward pass yet", "Steward: not registered"], not: ["Steward: active", "The Steward has not run yet"] },
+  { name: "suspended", hash: "vision", override: { "/api/kernel/v1/adr": adrList({ steward: { ...ADR_STEWARD, status: "suspended" } }) },
+    want: ["Steward: suspended", "Steward suspended: no new pass runs; the last stored documents are shown (last pass 2026-11-17 22:37 UTC)", "in progress (18 of 26 phases)"], not: ["Steward: active"], numbers: true },
+  // The Vision page's own panels fail to load: the ADR panel still renders (§6.2).
+  { name: "no vision", hash: "vision", override: { "/api/kernel/v1/vision": { schema: "organism.vision-view.v1", status: "invalid", vision: null, problems: ["vision.schema: x"] } },
+    want: [ADR_PANEL_TITLE, "in progress (18 of 26 phases)"], not: [], numbers: true },
+];
+for (const width of [390, 1440]) {
+  for (const check of ADR_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const requested = [];
+    page.on("pageerror", (e) => problems.push(`${width}px adr/${check.name} page error: ${e.message}`));
+    page.on("request", (r) => requested.push(new URL(r.url()).pathname));
+    await page.goto(`${base}#/${check.hash}`);
+    await page.waitForTimeout(800);
+    if (check.open) {
+      // The phase chips expand to the phase list.
+      await page.click(`[data-testid="adr-detail-${check.open}"] button[aria-expanded]`);
+      await page.waitForTimeout(200);
+    }
+    const panel = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="adr-panel"]');
+      if (!el) return null;
+      const seg = (k) => [...el.querySelectorAll(`[data-adr-seg="${k}"]`)];
+      return { text: el.textContent ?? "", proven: seg("proven").length, hatched: seg("asserted").filter((s) => getComputedStyle(s).backgroundImage.includes("repeating-linear-gradient")).length,
+        asserted: seg("asserted").length, dashed: ["0018", "0019"].filter((id) => document.getElementById(`adr-${id}`)?.className.includes("border-dashed")).length,
+        planned: document.getElementById("adr-0019")?.textContent ?? null, top: el.getBoundingClientRect().top,
+        bottom: Math.abs(window.scrollY + window.innerHeight - document.documentElement.scrollHeight) <= 2 };
+    });
+    if (!panel) { problems.push(`${width}px #/${check.hash} (adr ${check.name}): no ADR panel`); await page.close(); continue; }
+    for (const w of check.want) if (!panel.text.includes(w)) problems.push(`${width}px #/${check.hash} (adr ${check.name}): missing "${w}"`);
+    for (const w of check.not) if (panel.text.includes(w)) problems.push(`${width}px #/${check.hash} (adr ${check.name}): shows "${w}"`);
+    if (check.numbers) {
+      if (panel.proven !== 4 || panel.asserted !== 4 || panel.hatched !== 4) problems.push(`${width}px adr ${check.name}: bars ${panel.proven} solid / ${panel.asserted} asserted (${panel.hatched} hatched), expected 4 bars, the planned ADR without one`);
+      if (panel.dashed !== 2) problems.push(`${width}px adr ${check.name}: the held and planned rows are not drawn apart (${panel.dashed} of 2)`);
+      if (panel.planned === null || !panel.planned.includes("—") || /\d%/.test(panel.planned)) problems.push(`${width}px adr ${check.name}: the planned ADR shows a number: ${panel.planned}`);
+    } else if (/\d+ ?%|\d+ of \d+/.test(panel.text)) problems.push(`${width}px adr ${check.name}: a number without a document: ${panel.text.slice(0, 160)}`);
+    if (!requested.some((u) => u.endsWith("/api/kernel/v1/adr"))) problems.push(`${width}px adr ${check.name}: GET /v1/adr was not read`);
+    if (check.open && !requested.some((u) => u.endsWith(`/api/kernel/v1/adr/${check.open}`))) problems.push(`${width}px adr ${check.name}: GET /v1/adr/${check.open} was not read`);
+    if (!check.open && requested.some((u) => /\/api\/kernel\/v1\/adr\/\d{4}$/.test(u))) problems.push(`${width}px adr ${check.name}: a closed panel read a detail`);
+    // #/vision/adr and #/vision/adr/<id> scroll to the panel (or its row).
+    if (check.hash.startsWith("vision/adr") && panel.top > 450 && !panel.bottom) problems.push(`${width}px adr ${check.name}: #/${check.hash} did not scroll to the panel (top ${Math.round(panel.top)})`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/${check.hash} (adr ${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-adr-${check.name.replace(/ /g, "_")}.png`), fullPage: true });
+    await page.close();
+  }
+}
+OVERRIDE = {};
+// Owner 2026-11-15 ("tombol Edit tidak berfungsi"): Services & Drift is read only. A click on a service opens its
+// detail, a bottom sheet on a phone and a side panel on a desktop, with measured values only; a value that was not
+// measured reads "not measured", never a number. The Edit form is gone and an untagged version is labelled as such.
+const DETAIL_CHECKS = [
+  { name: "measured", service: "cryptophys-platform-api", override: {},
+    want: ["Drift", "in sync", "registry heartbeat", "version_mismatch", "Error rate", "CPU p99", "stored hours", "D1 is not attributed to a Worker", "account-wide 41.2 · estimated",
+      "d4c3b2a1f0e9", "native deploy", "6fafa095ce3e", "stale: no workflow run finished within 3 hours", "summarize_platform_overview", "council seat", "300 errors in 1000 requests"],
+    not: ["Edit", "Update service", "Set desired version"], sparks: 3 },
+  { name: "not measured", service: "cryptophys-home", override: {},
+    want: ["disabled", "not measured", "no vitals stored for this Worker", "none among the last 100 recorded", "not in the genome of main", "None for this Worker in the last 7 days."],
+    not: ["0.00 %", " ms", "registry heartbeat"], sparks: 0, unmeasured: 6 },
+  { name: "nothing measured", service: "cryptophys-platform-api",
+    override: { "/api/platform/v1/observer": { schema: "observer.v1", configured: false, available: false, organs: [], anomalies: [], deploys: [] }, "/api/forge/v1/forge/census": { census: [] }, "/api/orchestrator/v1/deployments": { requests: [], deploys: [] } },
+    want: ["the Observer is not configured", "no census taken", "none among the last 100 requests"], not: ["0.00 %", " ms", "41.2"], sparks: 0, unmeasured: 5 },
+];
+for (const width of [390, 1440]) {
+  const page = await browser.newPage({ viewport: { width, height: 900 } });
+  page.on("pageerror", (e) => problems.push(`${width}px infrastructure page error: ${e.message}`));
+  page.on("response", (r) => { if (r.status() >= 400) problems.push(`${width}px infrastructure HTTP ${r.status()} ${r.url()}`); });
+  OVERRIDE = {};
+  await page.goto(`${base}#/infrastructure`);
+  await page.waitForTimeout(700);
+  const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+  for (const w of ["Minutes since last probe", "untagged version (dashboard change)", "more · up to", "Observe now"]) if (!main.includes(w)) problems.push(`${width}px #/infrastructure: missing "${w}"`);
+  for (const w of ["Edit", "Update service", "Set desired version", "other ("]) if (main.includes(w)) problems.push(`${width}px #/infrastructure: still shows "${w}"`);
+  await page.close();
+  for (const check of DETAIL_CHECKS) {
+    OVERRIDE = check.override;
+    const p = await browser.newPage({ viewport: { width, height: 900 } });
+    p.on("pageerror", (e) => problems.push(`${width}px detail/${check.name} page error: ${e.message}`));
+    await p.goto(`${base}#/infrastructure`);
+    await p.waitForTimeout(700);
+    await p.click(`[aria-label="Details of ${check.service}"]`);
+    await p.waitForTimeout(500);
+    const sheet = await p.evaluate(() => {
+      const el = document.querySelector('[data-testid="service-detail"]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { text: el.textContent ?? "", top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, sparks: el.querySelectorAll("svg[role=img]").length, vw: window.innerWidth, vh: window.innerHeight };
+    });
+    if (!sheet) { problems.push(`${width}px detail (${check.name}): no detail panel opened`); await p.close(); continue; }
+    for (const w of check.want) if (!sheet.text.includes(w)) problems.push(`${width}px detail (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (sheet.text.includes(w)) problems.push(`${width}px detail (${check.name}): shows "${w}"`);
+    if (sheet.sparks < check.sparks) problems.push(`${width}px detail (${check.name}): ${sheet.sparks} sparklines, expected ${check.sparks}`);
+    if (check.sparks === 0 && sheet.sparks > 0) problems.push(`${width}px detail (${check.name}): draws ${sheet.sparks} sparklines without a measured series`);
+    const unmeasured = (sheet.text.match(/not measured/g) ?? []).length;
+    if (check.unmeasured && unmeasured < check.unmeasured) problems.push(`${width}px detail (${check.name}): ${unmeasured} "not measured", expected at least ${check.unmeasured}`);
+    // A bottom sheet on a phone (full width, on the bottom edge), a side panel on a desktop (right edge, full height).
+    if (width < 1024 && !(Math.abs(sheet.bottom - sheet.vh) <= 1 && sheet.left <= 1 && Math.abs(sheet.right - sheet.vw) <= 1 && sheet.top > 0)) problems.push(`${width}px detail (${check.name}): not a bottom sheet (${JSON.stringify(sheet).slice(-120)})`);
+    if (width >= 1024 && !(Math.abs(sheet.right - sheet.vw) <= 1 && sheet.top <= 1 && Math.abs(sheet.bottom - sheet.vh) <= 1 && sheet.width <= 520)) problems.push(`${width}px detail (${check.name}): not a side panel (${JSON.stringify(sheet).slice(-120)})`);
+    const overflow = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px detail (${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await p.screenshot({ path: path.join(process.env.SHOTS, `${width}-infrastructure-${check.name.replace(/ /g, "_")}.png`) });
+    await p.keyboard.press("Escape");
+    await p.waitForTimeout(200);
+    if (await p.$('[data-testid="service-detail"]')) problems.push(`${width}px detail (${check.name}): Escape does not close it`);
+    await p.close();
+  }
+}
 OVERRIDE = {};
 await browser.close();
 server.close();
@@ -319,4 +828,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, and the Owner page as approver, operator and empty.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);

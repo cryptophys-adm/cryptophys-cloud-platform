@@ -133,105 +133,110 @@ test("TP-012 kernel outage: throwing binding still completes, plan disabled, aud
   assert.ok(evts.includes("recovery.plan_expired"));
 });
 
-test("TP-012 orchestrator rejection: ci_not_green returns 409 and publishes one warning report", async () => {
-  const { fakeWorkflow } = await import("./harness.ts");
-  // setup github fetch
-  const github = { mainSha: SHA, runs: [{ workflow_id: 1, name: "Validate", status: "completed", conclusion: "failure", run_number: 7 }] };
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+// Owner 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"): the
+// manual POST /v1/deployments, whose refusals (ci_not_green, commit_not_current_main) were the Orchestrator's warning
+// reports, is removed. Its reports now come from the paths that stay; a failed native rollback is one of them.
+const ROLLBACK_SVC = "cryptophys-console";
+const ROLLBACK_ACCOUNT = "a".repeat(32);
+const ROLLBACK_PLAN = "plan_11111111-1111-1111-1111-111111111111";
+const ROLLBACK_DEC = "dec_22222222-2222-2222-2222-222222222222";
+
+async function rollbackEnv(extra: Record<string, unknown> = {}) {
+  const { appendAuditEvent } = await import("../src/audit.ts");
+  const { DeploymentLock } = await import("../../deployment-orchestrator/src/index.ts");
+  const db = migratedDb();
+  let prev: string | null = null;
+  for (const v of ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]) {
+    await appendAuditEvent(db as never, { event_type: "registry.desired_version_set", actor: "ci.access", subject: ROLLBACK_SVC, outcome: "success", payload: { previous: prev, desired_version: v } });
+    prev = v;
+  }
+  db.raw.prepare("UPDATE service_registry SET desired_version = 'bbbbbbbbbbbb' WHERE service_id = ?").run(ROLLBACK_SVC);
+  const now = new Date().toISOString();
+  db.raw.prepare(`INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, approved_by, last_execution_json, created_by, created_at, updated_at)
+    VALUES (?, ?, 'bbbbbbbbbbbb', 'executing', '{}', 'owner@example.com', ?, 'agent:supervisor', ?, ?)`).run(ROLLBACK_PLAN, ROLLBACK_SVC, JSON.stringify({ policy_decision_id: ROLLBACK_DEC }), now, now);
+  db.raw.prepare(`INSERT INTO policy_decisions (decision_id, subject, action, resource, decision, reason, evidence_json, created_at) VALUES (?, 'ai:recovery-manager', 'recovery.execute', ?, 'allow', 'ok', '{}', ?)`).run(ROLLBACK_DEC, ROLLBACK_PLAN, now);
+  const stores = new Map<string, Map<string, unknown>>();
+  const lockNs = { idFromName: (n: string) => n, get: (id: unknown) => {
+    const key = String(id); if (!stores.has(key)) stores.set(key, new Map()); const data = stores.get(key)!;
+    const lock = new DeploymentLock({ storage: { get: async (k: string) => data.get(k) as never, put: async (k: string, v: unknown) => { data.set(k, v); } }, blockConcurrencyWhile: (cb) => cb() });
+    return { fetch: (i: RequestInfo | URL, init?: RequestInit) => lock.fetch(new Request(i, init)) };
+  } };
+  const env = baseEnv("cryptophys-deployment-orchestrator", db, {
+    GH_ACTIONS_TOKEN: "gh-token", DEPLOYMENT_LOCK: lockNs, CF_DEPLOY_TOKEN: "deploy-token", CF_ACCOUNT_ID: ROLLBACK_ACCOUNT,
+    DRIFT: { probeService: async () => ({ reachable: true, healthy: true, version_tag: "bbbbbbbbbbbb", error: null }) },
+    REGISTRY: { recordRollback: async () => { throw new Error("must not record"); } },
+    ...extra,
+  });
+  return { db, env };
+}
+
+/** Cloudflare's Workers API with no version tagged for the rollback target: the native rollback fails without a deploy. */
+function untaggedCloudflare() {
+  const posted: unknown[] = [];
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes("access/certs")) return (await import("./harness.ts")).accessCertsResponse();
-    if (url.endsWith("/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: github.mainSha } }), { status: 200 });
-    if (url.endsWith("/status")) return new Response(JSON.stringify({ state: "success", total_count: 0 }), { status: 200 });
-    if (url.includes("/actions/runs?head_sha=")) return new Response(JSON.stringify({ total_count: github.runs.length, workflow_runs: github.runs }), { status: 200 });
+    assert.ok(url.startsWith(`https://api.cloudflare.com/client/v4/accounts/${ROLLBACK_ACCOUNT}/workers/scripts/${ROLLBACK_SVC}/`), url);
+    if (url.endsWith("/deployments") && (init?.method ?? "GET") === "GET") {
+      return Response.json({ success: true, result: { deployments: [{ created_on: "2026-11-08T00:00:00Z", versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }] }] } });
+    }
+    if (url.endsWith("/deployments") && init?.method === "POST") { posted.push(JSON.parse(String(init.body))); return Response.json({ success: true, result: { id: "dep" } }); }
+    if (url.includes("/versions?")) return Response.json({ success: true, result: { items: [{ id: "11111111-1111-4111-8111-111111111111", annotations: { "workers/tag": "bbbbbbbbbbbb" }, metadata: { created_on: "2026-11-07T00:00:00Z" } }] } });
     throw new Error(`unexpected ${url}`);
+  }) as typeof fetch;
+  return { fetcher, posted };
+}
+
+async function failNativeRollback(extra: Record<string, unknown>) {
+  const { rollbackForRecovery, runNativeRollbacks } = await import("../../deployment-orchestrator/src/index.ts");
+  const { SAFE_MINUTES } = await import("../../deployment-orchestrator/src/native-rollback.ts");
+  const { db, env } = await rollbackEnv(extra);
+  assert.equal((await rollbackForRecovery(env as never, ROLLBACK_PLAN, ROLLBACK_DEC, ROLLBACK_SVC)).dispatched, true);
+  let at = Math.ceil((Date.now() + 1_000) / 60_000) * 60_000;
+  while (!SAFE_MINUTES.includes(new Date(at).getUTCMinutes())) at += 60_000;
+  const cf = untaggedCloudflare();
+  const out = await runNativeRollbacks(env as never, at, cf.fetcher, { delayMs: 0 });
+  return { db, env, out, cf };
+}
+
+test("TP-012 orchestrator failure: a native rollback that cannot run publishes one critical report; the removed POST reports nothing", async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (isAccessCerts(url)) return accessCertsResponse();
+    throw new Error(`GitHub must not be called: ${url}`);
   }) as typeof fetch;
   try {
     const rec = recorder();
-    const db = migratedDb();
-    const e: any = {
-      SERVICE_NAME: "cryptophys-deployment-orchestrator",
-      SERVICE_ENVIRONMENT: "production",
-      API_CONTRACT_VERSION: "v1",
-      GH_ACTIONS_TOKEN: "gh-token",
-      DEPLOY_ALLOWED_IDENTITIES: "ci-client.access",
-      DEPLOYMENT_LOCK: (await import("../../deployment-orchestrator/src/index.ts")).DeploymentLock ? { idFromName: (n: string) => n, get: (id: any) => {
-        const data = new Map();
-        const lock = new ((require("../../deployment-orchestrator/src/index.ts")).DeploymentLock)({ storage: { get: async (k: string) => data.get(k), put: async (k: string, v: any) => { data.set(k, v); } }, blockConcurrencyWhile: (cb: any) => cb() });
-        return { fetch: (input: any, init: any) => lock.fetch(new Request(input, init)) };
-      } } : null,
-      DB: db,
-      AI: { calls: [], reply: { response: "{}" }, async run() { return { response: "{}" }; } },
-      AI_MODEL: "m",
-      ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com",
-      ACCESS_AUD: "test-audience-tag",
-      AGENTS: rec.binding,
-    };
-    // CI_JWT
+    const { env, out, cf } = await failNativeRollback({ AGENTS: rec.binding });
+    assert.deepEqual(out, { executed: 1, succeeded: 0 });
+    assert.equal(cf.posted.length, 0, "production unchanged");
+    assert.equal(rec.calls.length, 1);
+    assert.equal(rec.calls[0].agentId, "deployment-orchestrator");
+    assert.equal(rec.calls[0].capability, "reports.publish");
+    assert.equal(rec.calls[0].input.severity, "critical");
+    assert.equal(rec.calls[0].input.body.reason, "no_version_with_tag");
     const { CI_JWT } = await import("./harness.ts");
-    const res = await call(orchestrator, e, new Request("https://x/v1/deployments", {
+    const res = await call(orchestrator, env, new Request("https://x/v1/deployments", {
       method: "POST",
       headers: { "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" },
       body: JSON.stringify({ commit_sha: SHA, confirm_production: "DEPLOY" }),
     }));
-    assert.equal(res.status, 409);
-    assert.equal(res.body.error, "ci_not_green");
-    assert.equal(rec.calls.length, 1);
-    assert.equal(rec.calls[0].agentId, "deployment-orchestrator");
-    assert.equal(rec.calls[0].input.severity, "warning");
+    assert.deepEqual([res.status, res.body.error], [405, "method_not_allowed"]);
+    assert.equal(rec.calls.length, 1, "the removed manual POST publishes no report");
   } finally {
     globalThis.fetch = realFetch;
   }
 });
 
-test("TP-012 orchestrator kernel outage: missing/throwing binding leaves 409 unchanged", async () => {
+test("TP-012 orchestrator kernel outage: a missing or throwing binding leaves the failed outcome unchanged", async () => {
   // missing binding
-  const github = { mainSha: SHA, runs: [{ workflow_id: 1, name: "Validate", status: "completed", conclusion: "failure", run_number: 7 }] };
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("access/certs")) return (await import("./harness.ts")).accessCertsResponse();
-    if (url.endsWith("/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: github.mainSha } }), { status: 200 });
-    if (url.endsWith("/status")) return new Response(JSON.stringify({ state: "success", total_count: 0 }), { status: 200 });
-    if (url.includes("/actions/runs?head_sha=")) return new Response(JSON.stringify({ total_count: github.runs.length, workflow_runs: github.runs }), { status: 200 });
-    throw new Error(`unexpected ${url}`);
-  }) as typeof fetch;
-  try {
-    const db = migratedDb();
-    const { CI_JWT } = await import("./harness.ts");
-    const base = {
-      SERVICE_NAME: "cryptophys-deployment-orchestrator",
-      SERVICE_ENVIRONMENT: "production",
-      API_CONTRACT_VERSION: "v1",
-      GH_ACTIONS_TOKEN: "gh-token",
-      DEPLOY_ALLOWED_IDENTITIES: "ci-client.access",
-      DEPLOYMENT_LOCK: { idFromName: (n: string) => n, get: (id: any) => {
-        const data = new Map();
-        return { fetch: async (input: any, init: any) => new Response(JSON.stringify({ acquired: true }), { status: 200 }) };
-      } },
-      DB: db,
-      AI: { calls: [], reply: { response: "{}" }, async run() { return { response: "{}" }; } },
-      AI_MODEL: "m",
-      ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com",
-      ACCESS_AUD: "test-audience-tag",
-    };
-    // missing
-    let e: any = { ...base };
-    let res = await call(orchestrator, e, new Request("https://x/v1/deployments", {
-      method: "POST", headers: { "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" },
-      body: JSON.stringify({ commit_sha: SHA, confirm_production: "DEPLOY" }),
-    }));
-    assert.equal(res.status, 409);
-    assert.equal(res.body.error, "ci_not_green");
+  let run = await failNativeRollback({});
+  assert.deepEqual(run.out, { executed: 1, succeeded: 0 });
+  assert.equal((run.db.raw.prepare("SELECT status FROM deployment_requests").get() as any).status, "failed");
 
-    // throwing binding
-    const throwing: AgentRpcBinding = { whoami: async () => ({}), observe: async () => ({}), syscall: async () => { throw new Error("boom"); } };
-    e = { ...base, AGENTS: throwing };
-    res = await call(orchestrator, e, new Request("https://x/v1/deployments", {
-      method: "POST", headers: { "cf-access-jwt-assertion": CI_JWT, "content-type": "application/json" },
-      body: JSON.stringify({ commit_sha: SHA, confirm_production: "DEPLOY" }),
-    }));
-    assert.equal(res.status, 409);
-    assert.equal(res.body.error, "ci_not_green");
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+  // throwing binding
+  const throwing: AgentRpcBinding = { whoami: async () => ({}), observe: async () => ({}), syscall: async () => { throw new Error("boom"); } };
+  run = await failNativeRollback({ AGENTS: throwing });
+  assert.deepEqual(run.out, { executed: 1, succeeded: 0 });
+  assert.equal((run.db.raw.prepare("SELECT status FROM deployment_requests").get() as any).status, "failed");
+  assert.equal((run.db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'deployment.rollback_failed'").get() as any).n, 1, "the failure is audited either way");
 });

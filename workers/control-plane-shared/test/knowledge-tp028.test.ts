@@ -9,7 +9,8 @@ import { verifyAuditChain } from "../src/audit.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { rpcSyscall } from "../../ai-kernel/src/agent-rpc.ts";
-import { decideKnowledge, KNOWLEDGE_ITEM_VERSION, KNOWLEDGE_MAX_PER_DAY, validateKnowledgeItem } from "../../ai-kernel/src/knowledge.ts";
+import * as knowledgeModule from "../../ai-kernel/src/knowledge.ts";
+import { decideKnowledge, KNOWLEDGE_ITEM_VERSION, validateKnowledgeItem } from "../../ai-kernel/src/knowledge.ts";
 
 const AETHER = { host_worker: "cryptophys-aether" };
 const XAU = { host_worker: "xauusd-ai-trading-assistant" };
@@ -42,7 +43,7 @@ function env(db = migratedDb()) {
 test("0029 grants knowledge.propose and knowledge.status to the Aether curator and calibrator only", () => {
   const { db } = env();
   assert.equal(CAPABILITIES["knowledge.propose"]!.tier, 1);
-  assert.equal(CAPABILITIES["knowledge.propose"]!.max_per_hour, 6);
+  assert.equal(CAPABILITIES["knowledge.propose"]!.max_per_hour, undefined, "the learning mandate (owner 2026-11-14): no rate limit");
   assert.equal(CAPABILITIES["knowledge.status"]!.tier, 0);
   const rows = db.raw.prepare("SELECT agent_id, capabilities_json FROM agents").all() as Array<{ agent_id: string; capabilities_json: string }>;
   const holders = (cap: string) => rows.filter((r) => (JSON.parse(r.capabilities_json) as string[]).includes(cap)).map((r) => r.agent_id).sort();
@@ -100,9 +101,14 @@ test("Aether's curator proposes through AgentRpc; xauusd and the other Aether ag
   assert.equal((await rpcSyscall(e as never, AETHER, "aether-auditor", "knowledge.propose", { item: item({ item_id: "k-other" }) })).outcome, "denied", "not granted");
   const cross = await rpcSyscall(e as never, XAU, "aether-curator", "knowledge.propose", { item: item() }) as { outcome: string; reason: string };
   assert.deepEqual([cross.outcome, cross.reason], ["denied", "agent_not_hosted_by_caller"], "xauusd cannot act as an Aether agent");
+  // An exact duplicate is not refused (owner 2026-11-14, dedup not a cap): it returns the existing proposal.
   const dup = await rpcSyscall(e as never, AETHER, "aether-curator", "knowledge.propose", { item: item() });
-  assert.equal(dup.outcome, "failed");
-  assert.match((dup as { reason: string }).reason, /knowledge_item_version_exists/);
+  assert.equal(dup.outcome, "succeeded", JSON.stringify(dup));
+  assert.deepEqual([(dup as any).result.proposal.proposal_id, (dup as any).result.proposal.deduplicated], [proposal.proposal_id, true]);
+  // Different content under an existing item_id and version is still an identity error.
+  const clash = await rpcSyscall(e as never, AETHER, "aether-curator", "knowledge.propose", { item: item({ text: "On the hourly chart in the London session, the prophet agent was wrong in 79% of its decisive calls over 30 days." }) });
+  assert.equal(clash.outcome, "failed", JSON.stringify(clash));
+  assert.match((clash as { reason: string }).reason, /knowledge_item_version_exists/);
   const bad = await rpcSyscall(e as never, AETHER, "aether-calibrator", "knowledge.propose", { item: item({ item_id: "k-bad", text: "Held 4051 in 11 of 14 bars." }) });
   assert.equal(bad.outcome, "failed");
   assert.match((bad as { reason: string }).reason, /text_price_like_number/);
@@ -151,7 +157,7 @@ test("a person approves or rejects once, through the kernel API; operators and t
   await assert.rejects(decideKnowledge(db as never, idA, "approve", "agent:aether-curator", null), (err: { code?: string }) => err.code === "person_required", "an agent never reviews");
 });
 
-test("pending proposals expire after 14 days, and each agent proposes at most 20 a day", async () => {
+test("pending proposals expire after 14 days, and an agent proposes as many a day as it learns (no daily cap, owner 2026-11-14)", async () => {
   const { env: e, db } = env();
   const a = await rpcSyscall(e as never, AETHER, "aether-curator", "knowledge.propose", { item: item() });
   const id = String((a as any).result.proposal.proposal_id);
@@ -160,13 +166,14 @@ test("pending proposals expire after 14 days, and each agent proposes at most 20
   assert.equal(late.status, 409);
   assert.equal(late.body.error ?? late.body.code, "not_pending");
 
-  assert.equal(KNOWLEDGE_MAX_PER_DAY, 20);
+  assert.equal("KNOWLEDGE_MAX_PER_DAY" in knowledgeModule, false, "the learning mandate removed the daily cap");
   const today = new Date().toISOString();
   const insert = db.raw.prepare("INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decision_id, created_at) VALUES (?, 'aether-calibrator', ?, 1, 'caution', '{}', 'x', 'rejected', 'dec', ?)");
   for (let i = 0; i < 20; i++) insert.run(`knw_00000000-0000-4000-8000-0000000000${String(i).padStart(2, "0")}`, `k-fill-${i}`, today);
+  // The 21st proposal of the day is accepted: learning is never capped.
   const over = await rpcSyscall(e as never, AETHER, "aether-calibrator", "knowledge.propose", { item: item({ item_id: "k-over" }) });
-  assert.equal(over.outcome, "failed");
-  assert.match((over as { reason: string }).reason, /knowledge_daily_limit/);
+  assert.equal(over.outcome, "succeeded", JSON.stringify(over));
+  assert.doesNotMatch(JSON.stringify(over), /knowledge_daily_limit/);
 });
 
 

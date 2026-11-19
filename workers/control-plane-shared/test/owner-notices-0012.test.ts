@@ -11,13 +11,14 @@ const ROOT = new URL("../../../", import.meta.url);
 const NOW = Date.parse("2026-11-08T03:22:00Z");
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 
-/** Every non-disabled registered service observed in sync 5 minutes ago. */
+/** Every non-disabled registered service observed in sync 5 minutes ago (its row, and the registry heartbeat the run sets). */
 function healthy(db: any) {
   const services = db.raw.prepare("SELECT service_id FROM service_registry WHERE status != 'disabled'").all() as { service_id: string }[];
   let i = 0;
   for (const s of services) {
     db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES (?, ?, 'h', 'h', 0, '{"reasons":[]}', ?)`)
       .run(`obs_${i++}`, s.service_id, at(5 * 60_000));
+    db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at(5 * 60_000), s.service_id);
   }
   return services.map((s) => s.service_id);
 }
@@ -50,7 +51,7 @@ test("O2. a draft plan and a pending_owner proposal open owner_attention once; a
   assert.deepEqual(mail.sent[0].to, ["owner@example.com"], "only owner emails, never service tokens");
   assert.equal(mail.sent[0].from, "alerts@notify.example.com");
   assert.match(mail.sent[0].subject, /^\[Cryptophys\] 1 item\(s\) wait for your approval$/);
-  assert.match(mail.sent[0].text, /^- Recovery plan for Cerebrum Console \(by agent:supervisor\)$/m);
+  assert.match(mail.sent[0].text, /^- #\d Recovery plan for Cerebrum Console \(by agent:supervisor\) · blocks deploys · /m);
   assert.match(mail.sent[0].text, /^Open the Owner page of the Cerebrum Console: https:\/\/nexus\.cryptophys\.work\/console\/#\/owner$/m, "every owner email links to the Owner page");
   assert.doesNotMatch(mail.sent[0].text, /#\/recovery/, "no per-kind link: the item is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
@@ -60,7 +61,7 @@ test("O2. a draft plan and a pending_owner proposal open owner_attention once; a
     VALUES ('cns_1', 'supervisor', 'retire_worker', 'cryptophys-home', 'critical', '{}', '{}', 'deploy', 9, 6, 0, 1, NULL, NULL, 'pending_owner', NULL, ?, ?)`).run(now, now);
   r = await reconcileNotices(env as never, NOW);
   assert.equal(r[0].change, "changed");
-  assert.match(mail.sent[1].text, /^- Critical action: retire Home \(proposed by supervisor\)$/m);
+  assert.match(mail.sent[1].text, /^- #\d Critical action: retire Home \(proposed by supervisor\) · blocks cutover_gate, deploys · due in 2\d h · https:\/\/nexus\.cryptophys\.work\/console\/#\/owner\/consensus:/m);
   db.raw.prepare("UPDATE recovery_plans SET status = 'approved'").run();
   db.raw.prepare("UPDATE consensus_proposals SET status = 'executed'").run();
   r = await reconcileNotices(env as never, NOW);
@@ -77,7 +78,12 @@ test("O3. drift: drifted, never observed and stale services; disabled services a
   const [a, b] = services;
   db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES ('obs_d', ?, 'h', 'x', 1, ?, ?)`)
     .run(a, JSON.stringify({ reasons: ["version_mismatch"], probe: { version_tag: "bbbbbbbbbbbb" } }), at(60_000));
+  // b: the Drift Detector last observed it (its heartbeat, service_registry.updated_at) more than STALE_MS ago.
   db.raw.prepare("UPDATE drift_observations SET observed_at = ? WHERE service_id = ?").run(at(STALE_MS + 60_000), b);
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at(STALE_MS + 60_000), b);
+  // c: in sync for two days, so its only row is old (rows are recorded on change, 0061), but observed 5 minutes ago.
+  const c = services[2];
+  db.raw.prepare("UPDATE drift_observations SET observed_at = ? WHERE service_id = ?").run(at(48 * 3_600_000), c);
   db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, metadata_json, created_at, updated_at) VALUES ('cryptophys-new', 'New', 'production', 'registered', NULL, '{}', ?, ?)").run(at(0), at(0));
   db.raw.prepare("INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, metadata_json, created_at, updated_at) VALUES ('cryptophys-gone', 'Gone', 'production', 'disabled', NULL, '{}', ?, ?)").run(at(0), at(0));
   const d = (await collectNotices(db as never, NOW))[1];
@@ -85,6 +91,7 @@ test("O3. drift: drifted, never observed and stale services; disabled services a
   assert.equal(d.lines.length, 3);
   assert.ok(d.lines.some((l) => /running bbbbbbbbbbbb/.test(l) && /differs from the expected version/i.test(l)));
   assert.ok(d.lines.some((l) => /not observed since/.test(l)));
+  assert.equal(d.lines.filter((l) => /not observed since/.test(l)).length, 1, "an old row with a fresh heartbeat is not stale");
   assert.ok(d.lines.some((l) => /New: never observed/.test(l)));
   assert.ok(!d.lines.some((l) => /Gone/.test(l)));
 });
@@ -134,6 +141,12 @@ test("O7. invalid or future observation timestamps fail closed as drift notices"
   const d = (await collectNotices(db as never, NOW))[1];
   assert.equal(d.active, true);
   assert.equal(d.lines.filter((line) => /invalid observation timestamp/.test(line)).length, 2);
+  // The heartbeat fails closed the same way (0061: it is the freshness signal).
+  const [, , badSeen, futureSeen] = services;
+  db.raw.prepare('UPDATE service_registry SET updated_at = ? WHERE service_id = ?').run('not-a-date', badSeen);
+  db.raw.prepare('UPDATE service_registry SET updated_at = ? WHERE service_id = ?').run('2099-01-01T00:00:00.000Z', futureSeen);
+  const d2 = (await collectNotices(db as never, NOW))[1];
+  assert.equal(d2.lines.filter((line) => /invalid observation timestamp/.test(line)).length, 4);
 });
 
 test("O8. critical reports with future timestamps are not treated as current", async () => {
@@ -163,7 +176,8 @@ test("O9. repeated closure email failures keep retrying until delivered", async 
 test("O5. wiring: kernel schedule, kernel route, Console route and panel", () => {
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
   // Owner 2026-11-13 (Alerts page): the run also gets the AlertVault, which holds the alert channels' bot tokens.
-  assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(reconcileNotices\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}, event\.scheduledTime\)/);
+  // Owner 2026-11-16: the pass is also kept (fullPass) so the owner_attention pass after the cycle waits for it.
+  assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(fullPass = reconcileNotices\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}, event\.scheduledTime\)/);
   assert.match(idx, /path === "\/v1\/notices" && request\.method === "GET"/);
   assert.match(readFileSync(new URL("workers/console/src/ui/routes.ts", ROOT), "utf8"), /r\("kernel\.notices", "kernel", "GET", "\/v1\/notices", false, null\)/);
   const command = readFileSync(new URL("workers/console/ui/src/pages/Command.tsx", ROOT), "utf8");
@@ -196,7 +210,7 @@ test("O10. owner 2026-11-11: pending knowledge proposals wait for the owner too,
   assert.deepEqual([r[0].topic, r[0].change, r[0].delivery], ["owner_attention", "opened", "failed: rate_limited"]);
   assert.equal(tg[0].change, "opened");
   assert.equal(tg[0].title, "1 item(s) wait for your approval");
-  assert.deepEqual(tg[0].lines, ["Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"], "only the parameter proposal needs the owner");
+  assert.deepEqual(tg[0].lines, ["#1 Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator) · blocks learning · due in 14 d · https://nexus.cryptophys.work/console/#/owner/knowledge:knw_00000000-0000-4000-8000-000000000001"], "only the parameter proposal needs the owner");
   assert.equal(tg[0].link, "https://nexus.cryptophys.work/console/#/owner", "every kind is decided on the Owner page");
   r = await reconcileNotices(env as never, NOW);
   assert.deepEqual([r[0].change, r[0].delivery], ["delivery_retry", "sent"], "a failed Telegram send is retried");

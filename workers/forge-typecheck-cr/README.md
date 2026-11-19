@@ -19,7 +19,7 @@ unreviewed code next to the token. This project type-checks them with **no build
    commit equals the head. The Forge verdict of the change request then stops waiting on the type-check.
 4. The result comes from the change request's own code, which could change the check. A change request
    that touches the type-check harness (`workers/forge-typecheck*/`, the TypeScript configs, the
-   `package.json` and lockfiles of `control-plane-shared` and `console/ui`, the Vite config) is therefore
+   `package.json` and lockfiles of `control-plane-shared` and `console/ui`, the bundle build script `build.mjs`) is therefore
    an owner path: its verdict is `needs owner`.
 
 ## One-time setup (owner, Cloudflare dashboard)

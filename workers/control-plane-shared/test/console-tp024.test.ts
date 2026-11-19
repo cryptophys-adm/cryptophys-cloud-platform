@@ -52,6 +52,7 @@ async function run(env: unknown, r: Request) {
 const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][] = [
   ["platform.overview", "platform", "GET", "/v1/overview", false, null],
   ["platform.usage", "platform", "GET", "/v1/usage", false, null],
+  ["platform.observer", "platform", "GET", "/v1/observer", false, null],
   ["forge.status", "forge", "GET", "/v1/forge/status", false, null],
   ["forge.commits", "forge", "GET", "/v1/forge/commits", false, null],
   ["forge.checks", "forge", "GET", "/v1/forge/checks", false, null],
@@ -67,6 +68,37 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["kernel.owner_inbox", "kernel", "GET", "/v1/owner/inbox", false, null],
   ["kernel.metabolism", "kernel", "GET", "/v1/metabolism", false, null],
   ["kernel.mesh", "kernel", "GET", "/v1/mesh", false, null],
+  // ADR-0016 T0: the Vision page (read-only).
+  ["kernel.vision", "kernel", "GET", "/v1/vision", false, null],
+  // ADR Steward step 4: the ADR panel's two read-only routes (docs/design/ADR-STEWARD.md §5).
+  ["kernel.adr", "kernel", "GET", "/v1/adr", false, null],
+  ["kernel.adr_one", "kernel", "GET", "/v1/adr/{id}", false, null],
+  // HAIC H1c: "Ask the organism", owners only; no typed phrase (the chat cannot act).
+  ["kernel.conversations", "kernel", "GET", "/v1/conversations", true, null],
+  ["kernel.conversation", "kernel", "GET", "/v1/conversations/{id}", true, null],
+  ["kernel.conversation_turn", "kernel", "POST", "/v1/conversations/{id}/turns", true, null],
+  ["kernel.conversation_rate", "kernel", "POST", "/v1/conversations/{id}/turns/{id}/rating", true, null],
+  // HAIC H1.5c: councils; operators read, the owner convenes, joins, picks and dismisses (phrases on convene, pick, dismiss).
+  ["kernel.councils", "kernel", "GET", "/v1/councils", false, null],
+  ["kernel.council", "kernel", "GET", "/v1/councils/{id}", false, null],
+  ["kernel.council_start", "kernel", "POST", "/v1/councils", true, "CONVENE COUNCIL"],
+  ["kernel.council_message", "kernel", "POST", "/v1/councils/{id}/messages", true, null],
+  ["kernel.council_pick", "kernel", "POST", "/v1/councils/{id}/pick", true, "PICK {id13}"],
+  ["kernel.council_dismiss", "kernel", "POST", "/v1/councils/{id}/dismiss", true, "DISMISS {id13}"],
+  // HAIC H1.5d: the owner begins a proposed council (a typed phrase: it spends model calls).
+  ["kernel.council_begin", "kernel", "POST", "/v1/councils/{id}/start", true, "CONVENE {id13}"],
+  // HAIC push hub: the Console's WebSocket of change signals.
+  ["kernel.hub", "kernel", "GET", "/v1/hub", false, null],
+  // HAIC H2: typed proposals; the owner confirms or rejects a draft with a typed phrase.
+  ["kernel.proposals", "kernel", "GET", "/v1/proposals", false, null],
+  ["kernel.proposal", "kernel", "GET", "/v1/proposals/{id}", false, null],
+  ["kernel.proposal_confirm", "kernel", "POST", "/v1/proposals/{id}/confirm", true, "CONFIRM {id13}"],
+  ["kernel.proposal_reject", "kernel", "POST", "/v1/proposals/{id}/reject", true, "REJECT {id13}"],
+  // HAIC H2b: a chat directive into a draft (no phrase: only a draft).
+  ["kernel.proposal_draft", "kernel", "POST", "/v1/proposals", true, null],
+  // HAIC H4: the autonomy dial; the owner sets a group's level with a phrase naming the group.
+  ["kernel.autonomy", "kernel", "GET", "/v1/autonomy", false, null],
+  ["kernel.autonomy_set", "kernel", "POST", "/v1/autonomy/{id}", true, "SET {id}"],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
   ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
   // Owner 2026-11-13: the Alerts page (Telegram alert channels), approvers only.
@@ -103,27 +135,46 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   ["recovery.disable", "recovery", "POST", "/v1/plans/{id}/disable", false, "DISABLE {id13}"],
   ["registry.services", "registry", "GET", "/v1/services", false, null],
   ["registry.service", "registry", "GET", "/v1/services/{id}", false, null],
-  ["registry.upsert", "registry", "PUT", "/v1/services/{id}", true, "UPDATE {id}"],
-  ["registry.desired_version", "registry", "PUT", "/v1/services/{id}/desired-version", true, "VERSION {id}"],
+  // Owner 2026-11-15 ("tombol Edit tidak berfungsi"): registry.upsert and registry.desired_version are removed with
+  // the Infrastructure page's Edit form.
   ["registry.accounts", "registry", "GET", "/v1/accounts", false, null],
   ["registry.account_upsert", "registry", "POST", "/v1/accounts", true, "GRANT"],
   ["registry.account_disable", "registry", "POST", "/v1/accounts/{id}/disable", true, "REVOKE"],
   ["registry.accounts_sync", "registry", "POST", "/v1/accounts/sync-login", true, "SYNC"],
+  // Owner 2026-11-16: the deploy-time identity lists' source (Users page); the write is an owner's, with a typed phrase.
+  ["registry.identities", "registry", "GET", "/v1/identities", false, null],
+  ["registry.identities_update", "registry", "POST", "/v1/identities", true, "IDENTITIES"],
   ["policy.decisions", "policy", "GET", "/v1/decisions", false, null],
   ["policy.decision", "policy", "GET", "/v1/decisions/{id}", false, null],
-  ["policy.evaluate", "policy", "POST", "/v1/evaluate", false, null],
+  // HAIC H0a (ADR-0017 Decision 5): policy.evaluate is removed with the Policy page's "Evaluate" form.
   ["drift.list", "drift", "GET", "/v1/drift", false, null],
+  // Owner 2026-11-15: the service detail panel reads a service's recorded drift changes (read only).
+  ["drift.service", "drift", "GET", "/v1/drift/{id}", false, null],
   ["drift.observe", "drift", "POST", "/v1/observe", false, null],
   ["audit.events", "audit", "GET", "/v1/events", false, null],
   ["audit.event", "audit", "GET", "/v1/events/{id}", false, null],
   ["audit.verify", "audit", "GET", "/v1/verify", false, null],
   ["orchestrator.deployments", "orchestrator", "GET", "/v1/deployments", false, null],
-  ["orchestrator.deploy", "orchestrator", "POST", "/v1/deployments", false, "DEPLOY {sha12}"],
+  // Owner 2026-11-14 ("hapus aja, karena roadmap berikutnya kita kembangkan Human Ai Interaction & Collaboration"):
+  // orchestrator.deploy (POST /v1/deployments, "DEPLOY {sha12}") is removed.
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 68 ids with those fields, matching allow-list rows", async () => {
-  assert.equal(UI_ROUTES.length, 68);
+test("1. route table: exactly the 90 ids with those fields, matching allow-list rows", async () => {
+  // + the Observer's read-only view (owner 2026-11-14).
+  // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
+  // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
+  // + registry.identities and registry.identities_update (owner 2026-11-16).
+  // + kernel.adr and kernel.adr_one (ADR Steward step 4, read-only).
+  // - policy.evaluate (HAIC H0a: the Policy page only reads).
+  // + kernel.conversations, kernel.conversation, kernel.conversation_turn, kernel.conversation_rate (HAIC H1c).
+  // + kernel.councils, kernel.council, kernel.council_start, kernel.council_message, kernel.council_pick, kernel.council_dismiss (HAIC H1.5c).
+  // + kernel.council_begin (HAIC H1.5d).
+  // + kernel.hub (HAIC push hub).
+  // + kernel.proposals, kernel.proposal, kernel.proposal_confirm, kernel.proposal_reject (HAIC H2).
+  // + kernel.proposal_draft (HAIC H2b).
+  // + kernel.autonomy, kernel.autonomy_set (HAIC H4).
+  assert.equal(UI_ROUTES.length, 90);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -132,7 +183,13 @@ test("1. route table: exactly the 68 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 68);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 90);
+  assert.ok(!UI_ROUTES.some((r) => r.id === "policy.evaluate" || (r.service === "policy" && r.method !== "GET")), "no UI route writes to the Policy Engine (HAIC H0a)");
+  assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
+  assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
+  assert.ok(!UI_ROUTES.some((r) => r.service === "registry" && r.method === "PUT"), "no UI route writes a service record or a desired version");
+  assert.ok(!UI_ROUTES.some((r) => r.service === "orchestrator" && r.method !== "GET"), "no UI route writes to the Orchestrator");
+  assert.ok(!UI_ROUTES.some((r) => r.confirm?.includes("{sha12}")), "no phrase template needs a commit SHA any more");
   // every field equals §4, in order
   assert.deepEqual(
     UI_ROUTES.map((r) => ({ ...r })),
@@ -140,23 +197,25 @@ test("1. route table: exactly the 68 ids with those fields, matching allow-list 
   );
 });
 
-test("2. approver flags: exactly the twenty-one approverOnly ids (owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation and registry writes; since 2026-11-13 the acknowledgement of a critical report and the alert channels)", () => {
+test("2. approver flags: exactly the thirty-three approverOnly ids (since 2026-11-18 the owners' chat, HAIC H1c, the owner's council clicks, HAIC H1.5c and H1.5d, the typed proposal decisions, HAIC H2, and the autonomy dial, HAIC H4; owner clicks: approve, reject, raise mode, accounts, knowledge reviews; since 2026-11-08 also plan creation; since 2026-11-13 the acknowledgement of a critical report and the alert channels; the registry writes left on 2026-11-15; since 2026-11-16 the identity lists)", () => {
   const got = UI_ROUTES.filter((r) => r.approverOnly).map((r) => r.id).sort();
-  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.desired_version","registry.upsert"].sort());
+  assert.deepEqual(got, ["kernel.alert_create","kernel.alert_delete","kernel.alert_test","kernel.alert_update","kernel.agents_enabled","kernel.autonomy_set","kernel.conversation","kernel.conversation_rate","kernel.conversation_turn","kernel.conversations","kernel.consensus_approve","kernel.consensus_mode_raise","kernel.council_begin","kernel.council_dismiss","kernel.council_message","kernel.council_pick","kernel.council_start","kernel.consensus_reject","kernel.knowledge_approve","kernel.knowledge_reject","kernel.principal_add","kernel.principal_remove","kernel.proposal_confirm","kernel.proposal_draft","kernel.proposal_reject","kernel.report_acknowledge","kernel.resume","recovery.approve","recovery.create","registry.account_disable","registry.account_upsert","registry.accounts_sync","registry.identities_update"].sort());
 });
 
-test("3. confirmations: non-GET have confirm except policy.evaluate and drift.observe; GET have null", () => {
+test("3. confirmations: non-GET have confirm except drift.observe; GET have null", () => {
   for (const r of UI_ROUTES) {
     if (r.method === "GET") assert.equal(r.confirm, null, r.id);
     else {
-      if (r.id === "policy.evaluate" || r.id === "drift.observe") assert.equal(r.confirm, null, r.id);
+      // HAIC H1c: asking and rating the read-only chat need no typed phrase; it cannot act.
+      // HAIC H1.5c: a message to a running council needs none either; convening, picking and dismissing do.
+      if (r.id === "drift.observe" || r.id === "kernel.conversation_turn" || r.id === "kernel.conversation_rate" || r.id === "kernel.council_message" || r.id === "kernel.proposal_draft") assert.equal(r.confirm, null, r.id);
       else assert.ok(r.confirm, r.id);
     }
   }
 });
 
 // ---------------------------------------------------------------- UI source (React SPA, workers/console/ui)
-// Since the Nexus redesign the client is a React SPA built by Vite into Workers Static Assets.
+// Since the Nexus redesign the client is a React SPA built into Workers Static Assets (by esbuild since 2026-11-17).
 // These criteria keep TP-024's guarantees by checking the UI source the bundle is built from.
 const UI = new URL("../../console/ui/", import.meta.url).pathname;
 function walk(dir: string): string[] {
@@ -173,8 +232,14 @@ test("4. no unsafe DOM or eval in the UI source, and the HTML entry has no inlin
   const html = read("index.html");
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/);
   assert.doesNotMatch(html, /\sstyle=|\son[a-z]+=/i);
-  // The build emits no inline script or modulepreload polyfill (CSP script-src 'self').
-  assert.match(read("vite.config.ts"), /modulePreload:\s*\{\s*polyfill:\s*false\s*\}/);
+  // The build emits no inline script and no modulepreload polyfill (CSP script-src 'self'): build.mjs (esbuild since
+  // 2026-11-17) writes only an external module script and an external stylesheet into the shell, and refuses an
+  // index.html that lost its single entry script tag.
+  const build = read("build.mjs");
+  assert.match(build, /<script type="module" crossorigin src="\$\{href\(jsPath\)\}"><\/script>/);
+  assert.match(build, /<link rel="stylesheet" crossorigin href="\$\{href\(cssPath\)\}">/);
+  assert.match(build, /throw new Error\("index\.html no longer has the entry script tag"\)/);
+  assert.doesNotMatch(build, /modulepreload|<style|<script>/);
 });
 
 test("5. assets come only from the ASSETS binding, after the operator check, with the exact CSP", async () => {
@@ -220,8 +285,22 @@ test("7. the client is built from the same UI_ROUTES table the allow-list test c
 test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP, whoami, forwarding)", async () => {
   // + the Owner page's read-only inbox (owner 2026-11-13).
   // + the Alerts page's five rows (owner 2026-11-13).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 67);
+  // + the Vision page's read-only row (ADR-0016 T0).
+  // + the Observer's read-only view (owner 2026-11-14).
+  // - the manual deploy row, orchestrator POST /v1/deployments (owner 2026-11-14).
+  // - the two registry PUT rows, a service record and a desired version (owner 2026-11-15).
+  // + the registry's GET and POST /v1/identities (owner 2026-11-16).
+  // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4).
+  // - the policy's POST /v1/evaluate (HAIC H0a, ADR-0017 Decision 5).
+  // + the kernel's four chat rows (HAIC H1c).
+  // + the kernel's six council rows (HAIC H1.5c), its start row (HAIC H1.5d), the hub (HAIC push hub) and four typed proposal rows (HAIC H2).
+  // + the kernel's POST /v1/proposals (HAIC H2b).
+  // + the kernel's GET /v1/autonomy and POST /v1/autonomy/{id} (HAIC H4).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 88);
+  assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "policy" && a.method !== "GET"), "the Policy Engine is read only from the Console (HAIC H0a)");
+  assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));
+  assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "orchestrator" && a.method !== "GET"), "the Orchestrator is read only from the Console");
   const env = consoleEnv();
   const html = await run(env, creq("GET", "/", { jwt: OPERATOR_JWT }));
   assert.equal(html.headers.get("content-security-policy"), CSP);
@@ -232,6 +311,17 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   const mcp = await run(env, creq("GET", "/api/kernel/mcp", { jwt: OPERATOR_JWT }));
   assert.equal(mcp.status, 404);
   assert.equal(mcp.body.error, "not_allowed");
+  // Owner 2026-11-14: a deploy request through the Console is not forwarded, even with the Console's CSRF headers.
+  const orchestrator = recorder();
+  (env as Record<string, unknown>).ORCHESTRATOR = orchestrator.binding;
+  const deploy = creq("POST", "/api/orchestrator/v1/deployments", { jwt: APPROVER_JWT });
+  deploy.headers.set("origin", ORIGIN);
+  deploy.headers.set("x-cryptophys-console", "1");
+  const refused = await run(env, deploy);
+  assert.deepEqual([refused.status, refused.body.error], [404, "not_allowed"]);
+  assert.equal(orchestrator.calls.length, 0, "the Orchestrator is never reached");
+  assert.equal((await run(env, creq("GET", "/api/orchestrator/v1/deployments", { jwt: OPERATOR_JWT }))).status, 200, "the read-only list is still forwarded");
+  assert.equal(orchestrator.calls.length, 1);
 });
 
 test("9. SAFE principal identifiers containing @, + and : reach the Worker unencoded", async () => {
@@ -296,6 +386,7 @@ test("13. confirmation dialog traps Tab focus, cancels on Escape and enables onl
 
 test("14. Observe now stays disabled until its request settles, with no lock timer", () => {
   const inf = read("src/pages/Infrastructure.tsx");
+  assert.match(inf, /route: "drift\.observe"/, "Observe now stays (owner 2026-11-15)");
   assert.match(inf, /disabled=\{busy\}/);
   assert.match(inf, /after: \(\) => \{ setBusy\(false\)/);
   assert.match(inf, /onError: \(\) => setBusy\(false\)/);
@@ -318,4 +409,25 @@ test("10. Aether's overview: GET reaches the AETHER binding as GET /v1/overview;
   }
   assert.equal(aether.calls.length, 1, "refused requests never reach Aether");
   assert.equal(SERVICE_BINDINGS.aether, "AETHER");
+});
+
+test("15. owner 2026-11-15: the registry edit routes are gone; the Console refuses them without reaching the Registry", async () => {
+  const env = consoleEnv();
+  const registry = recorder();
+  (env as Record<string, unknown>).REGISTRY = registry.binding;
+  for (const path of ["/api/registry/v1/services/cryptophys-platform-api", "/api/registry/v1/services/cryptophys-platform-api/desired-version"]) {
+    const put = creq("PUT", path, { jwt: APPROVER_JWT });
+    put.headers.set("origin", ORIGIN);
+    put.headers.set("x-cryptophys-console", "1");
+    const refused = await run(env, put);
+    assert.deepEqual([refused.status, refused.body.error], [404, "not_allowed"], `PUT ${path} is not forwarded`);
+  }
+  assert.equal(registry.calls.length, 0, "the Registry is never reached");
+  // Reads stay: the list and one record; the detail panel's drift history is a GET of an allow-listed row.
+  assert.equal((await run(env, creq("GET", "/api/registry/v1/services", { jwt: OPERATOR_JWT }))).status, 200);
+  assert.equal((await run(env, creq("GET", "/api/registry/v1/services/cryptophys-platform-api", { jwt: OPERATOR_JWT }))).status, 200);
+  assert.equal(registry.calls.length, 2);
+  assert.equal((await run(env, creq("GET", "/api/drift/v1/drift/cryptophys-platform-api", { jwt: OPERATOR_JWT }))).status, 200);
+  // Owner 2026-11-16: the owner's identity lists are the one other Registry write (an owner's, with a typed phrase).
+  assert.ok(UI_ROUTES.every((r) => r.service !== "registry" || r.method === "GET" || r.id.startsWith("registry.account") || r.id === "registry.identities_update"), "only account routes and the identity lists write to the Registry");
 });

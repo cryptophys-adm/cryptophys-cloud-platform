@@ -7,10 +7,10 @@ This document is written for the owner of `cryptophys-adm/xauusd-ai-trading-assi
 | Platform capability | How it works |
 |---|---|
 | **Health monitoring** | The Drift Detector probes `/health` on the four xauusd Workers every 15 minutes through plain in-account Service Bindings. Drift Alert opens a GitHub issue when one is unhealthy. |
-| **Decision relay** (TP-017) | The AI Kernel's Signal Analyst reads `GET /api/decisions` (read-only) at minute 22 of every hour. It publishes `xauusd_digest` reports in these cases:<br>• a new decision;<br>• a BUY↔SELL flip (warning);<br>• a 6 h heartbeat;<br>• **stale analysis**: no decision for a closed H1 candle after 90 minutes;<br>• the API is unavailable or returns no items.<br><br>The relay is deterministic and adds no advice. It carries the decision, confidence, risk/reward ratio and reasoning. It never carries a price level: `entry_price`, `stop_loss`, `take_profit` and `position_size_pct` are dropped when the decisions are read, and price-like numbers in the reasoning become `[level]` (owner rule, 2026-11-07). |
+| **Trading organ health** (TP-017; metrics since 2026-11-15) | The AI Kernel's Signal Analyst reads `GET /api/engine/decisions` (falling back to `GET /api/decisions`; read-only, the newest 50) at minute 22 of every hour. It no longer relays each decision (Nexus and the Telegram heartbeat do). It publishes `xauusd_digest` reports in these cases:<br>• a BUY↔SELL flip (warning, once per flipped candle);<br>• **stale analysis**: no decision for a closed H1 candle after 90 minutes (warning);<br>• the API is unavailable or returns no items (warning);<br>• a metric snapshot (`trading_organ_health.v1`: decision shares, flips, confidence, the latest decision's age and staleness incidents, each with a 7-day baseline and z), on a material change or every 6 h.<br><br>The reports are deterministic and add no advice. They never carry a price level: `entry_price`, `stop_loss`, `take_profit` and `position_size_pct` are dropped when the decisions are read (owner rule, 2026-11-07). The 7- and 30-day hit rates come from the `outcome_summary` the decisions endpoint serves (xauusd 8a27029): subject `engine:15` (timeframe `15`) on `/api/engine/decisions`, `chain:h1` (timeframe `60`) on `/api/decisions`. The kernel keeps only its known, typed fields and only for the subject of the endpoint it read; a hit rate is `ok`, `no_scored_data` (nothing directional scored yet, for example while the market is closed) or `unavailable_source_field` (the summary is absent or null). |
 | **Execution hosts in the AI Mesh** (owner 2026-11-12) | The AI Mesh page (`GET /v1/mesh` → `execution_hosts`) shows Omega, the owner's MT5 VPS bridge and its EA. The kernel calls the xauusd AI Worker's RPC entrypoint `OmegaHealth.health()` (binding `XAUUSD_OMEGA_HEALTH`, schema `omega-health.v1`, 3 s timeout): the EA heartbeat's age and freshness, version, mode, trading allowed and open positions; the Omega control mode; the bridge's sync age and freshness, version, and the terminal's connected and trade-allowed. Only known fields of the expected type are kept (`execution-hosts.ts`); no control and no account figure. A host that does not answer is `unreachable`; without the binding it is `not_bound`. |
 | **Organism census and self-registration** (owner 2026-11-12, ADR-0013 §6) | The Forge reads the XAUUSD organs' DNA on each census (binding `EXT_ORGANISM_XAUUSD` → the AI Worker's `OrganismDna.dna()`, `xauusd-organism.v1`). The DNA covers the five Workers, the 13 kernel agents and the AI tasks of its code. A new XAUUSD agent within the external ceiling registers itself by consensus: tier 1, no seat, `signals.observe`, `reports.publish`, `memory.recall` and `memory.remember` only. Anything above the ceiling is a census finding, never a registration. Its AI tasks register as engines by consensus too, one per hour (since 2026-11-12, when the Policy Engine's trading guard stopped reading target names; ADR-0009 amendment). |
-| **Operator overview** (TP-019) | `/v1/overview`, `/v1/status` and MCP `platform_status` show `xauusd_latest`: decision, confidence, candle and time. |
+| **Operator overview** (TP-019) | `/v1/overview`, `/v1/status` and MCP `platform_status` show `xauusd_latest` (decision, confidence, candle and time, from the newest flip warning or snapshot) and, since 2026-11-15, `trading_organ_health` (the newest metric snapshot). |
 | **Agent registry** | 21 xauusd agents are registered in the kernel at tier 1 (migration 0016): 7 chain, bus and room agents, plus 14 HUD agents. They are subject to the global kill switch. They cannot publish until the binding below exists. |
 
 ## Connect the xauusd agents to the platform (instructions for the xauusd owner)
@@ -150,6 +150,46 @@ export function publishToPlatform(env: Env, ctx: ExecutionContext, agentId: stri
    - `status: "enabled"`;
    - the four capabilities above.
 2. Publish one `info` report from `xauusd-moderator`, then tell the platform orchestrator. The orchestrator verifies it in D1 `agent_reports` and in `/v1/overview` (`agent_reports_24h`).
+
+### 6. Relay to the Cerebrum chat (topic `ea_heartbeat`, owner 2026-11-16)
+
+Owner 2026-11-16 ("pakai cara 2 lewat kernel"): the EA's heartbeat and terminal-health messages (for example `src/omega-broker.mjs`'s "Cerebrum Self-Healing Action", directive `restart_terminal` or `remediate_algo_trading` with its reason, or the Decision Engine's hourly "still <stance>" heartbeat) stop going to the xauusd Worker's own `TELEGRAM_CHAT_ID` (the Cryptophys-Nexus chat). The xauusd Worker publishes each one as an agent report; the AI Kernel forwards it to the alert channels that list the topic `ea_heartbeat` (Console → Alerts), which today means the "Cerebrum alerts" channel once the owner ticks the topic there. Code: `workers/ai-kernel/src/report-relay.ts`.
+
+**The contract.** A report is relayed only when all of these hold; anything else is ignored (stored as an ordinary report, never sent):
+
+| Field | Required value |
+|---|---|
+| `agent_id` | A registered agent whose `host_worker` is a service of the xauusd origin (`EXTERNAL_ORIGINS`: `xauusd-ai-trading-assistant` and the other xauusd Workers). The binding's pinned `host_worker` is what proves it; no other check is needed on the xauusd side. Registered and enabled on 2026-11-16, each with `reports.publish`: `xauusd-reasoner`, `xauusd-moderator`, `xauusd-risk-manager` and the ten `hud-*` agents of §0. No new grant is needed |
+| capability | `reports.publish` (tier 1, 4 per hour per agent, unchanged) |
+| `kind` | `xauusd_digest` |
+| `severity` | `info` or `warning`. **Never `critical`**: a critical report is not relayed, and it counts toward the consensus brake |
+| `subject` | Any (at most 200 characters, as for every report); not sent |
+| `body.telegram_topic` | Exactly `"ea_heartbeat"` |
+| `body.text` | The message, a non-empty string. Sent as plain text (no `parse_mode`): HTML tags such as `<b>` and `<code>` are removed, control characters (except new lines) and invisible formatting characters are removed, runs of blank lines are collapsed, anything shaped like a bot token is replaced by `[redacted]`, and the result is cut to 2000 characters (the last one `…`). Send it without HTML. A text that is empty after this is dropped (`invalid_text`) |
+| other `body` fields | Allowed (16 KiB in all), not sent |
+
+**Delivery.**
+- At every kernel cron tick (:07, :22, :37, :52 UTC), so a message reaches the chat within about 15 minutes of its report.
+- Each report is sent once, as one Telegram message, to every enabled alert channel with its own bot whose topics list `ea_heartbeat`. Never through the default channel (the xauusd bot it came from): the kernel refuses `ea_heartbeat` on `alc_default`.
+- A report older than 2 hours when the kernel first sees it is dropped as `stale`. A report seen while no channel lists the topic is recorded as `no_channel` and is not sent later.
+- At most 20 messages per hour per topic are sent. When more arrive, the newest are sent, the excess is dropped and folded into one summary line on the next message sent ("(N more ea_heartbeat messages not forwarded: at most 20 an hour)").
+- A failed send is retried on the failed channel only, at most 3 times (`MAX_DELIVERY_RETRIES`).
+- Each step is audited (`owner.relay_forwarded`, `owner.relay_delivery_retry`, `owner.relay_dropped`, subject `relay:<report_id>`) with the report, agent and channel ids and the outcome, never the text.
+
+**The per-agent limit is the binding one.** `reports.publish` allows 4 reports per hour per agent (a guard path; this change does not raise it), and the kernel denies the fifth (`failed: rate_limit`), which rule 5 of §3 says not to work around. Terminal-health alerts can come every 3 minutes, about 20 an hour, so:
+- **Batch.** Publish at most one relay report per 15 minutes per agent, its `text` holding every message since the last one, separated by a blank line (2000 characters fit about ten such alerts).
+- **Choose the agent.** `xauusd-risk-manager` is the operational-risk agent, but it already publishes the health alerts (`src/health-alerts.mjs`, up to 3 an hour on 2026-11-15/16), so its budget is shared. The cleaner choice is a dedicated agent declared in the xauusd DNA (`organism.json`), for example `xauusd-ea-sentinel` with `signals.observe` and `reports.publish` and `tier_max: 1` (`reports.publish` is tier 1; a gene without `tier_max` registers at 0). The Forge's census reports it (`unregistered_agent`) and the Supervisor proposes the routine consensus action `register_agent`, within the external ceiling, with no owner click (ADR-0013). Once registered it has its own 4 an hour, and the kernel relays it like any other xauusd agent; until then publish as `xauusd-risk-manager`.
+
+**Call shape** (as in §2):
+
+```ts
+await env.AGENTS.syscall("xauusd-risk-manager", "reports.publish", {
+  kind: "xauusd_digest", severity: "info", subject: "EA terminal health", ai_status: "deterministic",
+  body: { telegram_topic: "ea_heartbeat", text: "Cerebrum Self-Healing Action\nDirective: restart_terminal\nReason: terminal_disconnected\nStatus: Dispatched to VPS Host Bridge" },
+});
+```
+
+Keep the xauusd-side Telegram send as a fallback only while the relay is not yet verified. Once a relayed message has reached the Cerebrum chat, stop sending these messages to `TELEGRAM_CHAT_ID`.
 
 ### What the platform needs to do
 

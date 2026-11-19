@@ -100,6 +100,11 @@ async function pendingFromForge(db: D1Database, nowMs: number): Promise<ForgePen
   const gate = await forgeReady(db, head.sha);
   out.ci_green = gate.ready;
   if (!gate.ready) { out.skipped.push({ unit: "*", reason: gate.reason }); return out; }
+  // After the cut-over the Forge merges a change request's head, whose run is the change check. Only the run of
+  // main stores the commit's bundles (G2a), and the native deploy needs them: proposing earlier sent the deploy
+  // to the GitHub workflow (no_bundle; 2026-11-14 04:53, be20645). The Forge checks the head as main next tick.
+  const run = await db.prepare("SELECT source FROM forge_check_runs WHERE commit_sha = ?").bind(head.sha).first<{ source: string | null }>();
+  if (run?.source === "change") { out.skipped.push({ unit: "*", reason: "forge_main_check_pending" }); return out; }
   const fingerprint = await registryFingerprint(db);
   let plan = await db.prepare("SELECT forge_units, forge_skipped FROM forge_deploy_plans WHERE main_sha = ? AND fingerprint = ? AND forge_at IS NOT NULL")
     .bind(head.sha, fingerprint.slice(0, 2000)).first<{ forge_units: string | null; forge_skipped: string | null }>();

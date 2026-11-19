@@ -1,0 +1,119 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0020",
+  "title": "Standing trading authorization: arming a strategy is the owner's standing click",
+  "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
+  "lifecycle": "accepted",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO, a risk-reducing Position Manager) and 2 (Council auto-arm); amendments 3 (risk profiles), 4 (TP ladder) and 5 (soft-downgrade veto) 2026-11-18. No platform build; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
+  "phases": [
+    {
+      "id": "D",
+      "title": "The decision recorded; the vision core's trading line amended",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "organism/vision.json",
+        "quote": "given per action or as a standing arm of one strategy"
+      },
+      "note": "a documented decision, not a build: this ADR changes no platform code"
+    },
+    {
+      "id": "A1",
+      "title": "Amendment 1 recorded: AUTO under Omega's live arm when nothing is armed; the Position Manager only reduces risk",
+      "evidence": {
+        "kind": "any_of",
+        "of": [
+          {
+            "kind": "agent_report",
+            "report_kind": "xauusd_digest",
+            "agent_id": "xauusd-risk-manager",
+            "body_schema": "strategy_arm.v1",
+            "origin": "xauusd-ai-trading-assistant",
+            "body": {
+              "$.mode": "auto"
+            }
+          },
+          {
+            "kind": "doc_asserted",
+            "ref": "organism/vision.json",
+            "quote": "as Omega's live arm for AUTO selection of the single best strategy"
+          }
+        ]
+      },
+      "note": "proven once a strategy_arm.v1 report shows mode auto (AUTO running with nothing armed); until then, the documented decision"
+    },
+    {
+      "id": "A2",
+      "title": "Amendment 2 recorded: while the owner's Council auto-arm is on, the council arms and disarms within its gates",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "organism/vision.json",
+        "quote": "while the owner's Council auto-arm is on, by the council within its gates"
+      },
+      "note": "a documented decision, not a build"
+    },
+    {
+      "id": "A3",
+      "title": "Amendment 3 recorded: an autonomous profile upgrade only up to the owner's ceiling, never mid-trade",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "The highest profile the agent may reach is set only by the owner"
+      },
+      "note": "a documented decision, not a build: xauusd builds the profiles and the profile agent"
+    },
+    {
+      "id": "A4",
+      "title": "Amendment 4 recorded: the Position Manager's TP ladder and partial closes, only once the stop locks a profit",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "but only while its stop loss already locks a profit"
+      },
+      "note": "a documented decision, not a build: xauusd builds the ladder and the partial closes"
+    },
+    {
+      "id": "A5",
+      "title": "Amendment 5 recorded: a council veto on soft-trigger downgrades only; kill switch and daily loss never vetoed",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "A council failure, an invalid verdict or a timeout means the downgrade applies."
+      },
+      "note": "a documented decision, not a build: xauusd builds it behind a flag, off until merged"
+    },
+    {
+      "id": "N",
+      "title": "Arm and disarm in Nexus: cap of 3, auto-disarm, Decision Engine veto",
+      "evidence": {
+        "kind": "agent_report",
+        "report_kind": "xauusd_digest",
+        "agent_id": "xauusd-risk-manager",
+        "body_schema": "strategy_arm.v1",
+        "origin": "xauusd-ai-trading-assistant",
+        "item": {
+          "event": [
+            "armed",
+            "disarmed"
+          ],
+          "reason": "owner"
+        }
+      },
+      "note": "proven by a strategy_arm.v1 report that mirrors an owner's arm or disarm click in Nexus"
+    },
+    {
+      "id": "R",
+      "title": "Arm and disarm mirrored as strategy_arm.v1 xauusd_digest reports",
+      "depends_on": [
+        "N"
+      ],
+      "evidence": {
+        "kind": "agent_report",
+        "report_kind": "xauusd_digest",
+        "agent_id": "xauusd-risk-manager",
+        "body_schema": "strategy_arm.v1",
+        "origin": "xauusd-ai-trading-assistant"
+      },
+      "note": "proven by any strategy_arm.v1 report of xauusd-risk-manager in agent_reports"
+    }
+  ]
+}

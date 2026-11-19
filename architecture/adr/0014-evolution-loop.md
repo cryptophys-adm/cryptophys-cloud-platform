@@ -1,6 +1,6 @@
 # ADR-0014: The evolution loop: the platform writes, merges and deploys its own improvements
 
-- **Status:** Accepted, **deferred** (owner, 2026-11-12: "tunda hingga berhasil lepas dari github", postpone until the platform is off GitHub). Building starts after ADR-0012 phase 5, the cut-over to Artifacts. The model and the cadence are decided (amendment 2026-11-13).
+- **Status:** Accepted. Building starts now (owner, 2026-11-17: "aktifkan evolver sekarang termasuk jalur balik", activate the evolver now, together with the return path; §11). It was deferred on 2026-11-12 ("tunda hingga berhasil lepas dari github", postpone until the platform is off GitHub) until ADR-0012 phase 5; the model and the cadence were decided in the amendment of 2026-11-13.
 - **Owner direction (2026-11-12):** "kekuatan organism ini adalah otak yang terus berkembang dan melakukan evolusi melalui auto-deployment untuk menyesuaikan dan terus meningkatkan kemampuan diri" (the organism's strength is a brain that keeps growing and evolves through auto-deployment, to adapt and keep improving its own abilities).
 - **Owner decisions (2026-11-12):** "tidak perlu shadow bisa langsung production dan merge dilakukan semua autonomous" (no shadow phase; straight to production; every merge is autonomous).
   1. **No shadow phase.** Each step goes live in production when it is built.
@@ -205,6 +205,78 @@ Owner, 2026-11-13: "terkait pemilihan model untuk coding tetapkan sama menggunak
 - **Enforced in code.** `evolution-limits.ts` (a guard path, §3) holds `MAX_IN_FLIGHT = 1` and `MIN_START_INTERVAL_HOURS = 4`. An evolution may not raise them (§4); only the owner can.
 - **Unchanged.** The diff limit (400 changed lines, 20 files), one evolution per Worker, the quiet conditions, the freeze, guard-path merges once per 24 h with a unanimous council, and the deferral until ADR-0012 phase 5.
 - **Scope.** This governs the platform's own evolver. It does not change how the orchestrator session (Claude Code) works on the owner's requests.
+
+### 10. Amendment 2026-11-13 (evening): AI decides; the organism knows itself and grows
+
+Owner, 2026-11-13, after eleven XAUUSD AI engines stayed in the DNA but unregistered for a day:
+- "bahkan system sendiri tidak mengenali kalau masih ada agent/worker/engine yang belum diketahui dan didaftarkan";
+- "itu karena sebagian engine masih bergantung kepada hardcoded bukan agentic ai dan memanfaatkan ai to ai protocol";
+- "mulai sekarang Ai harus memutuskan", with the choice **"AI memutuskan, pengaman tetap"** (AI decides; the safeguards stay rigid);
+- on the organism ("dari 1 sel yang akan menjadi jutaan sel ... membentuk organ-organ baru"): "setuju, tambahkan E5".
+
+The census had seen the eleven engines every 15 minutes. What failed was a fixed rule: their proposals were rejected only because the brake held, and a 24-hour cooldown then kept them waiting long after the brake was off. A reasoning agent would have read why it was rejected and asked again.
+
+**A. Agentic decisions (amends ADR-0007 §3 "AI never decides whether to act").**
+
+The platform gets two layers.
+
+| Layer | What it does | Who |
+|---|---|---|
+| **Nerves (agentic)** | Senses, diagnoses ("why is this stuck?"), proposes, casts council votes with reasons, chooses what to evolve, and talks to other agents | Workers AI agents over an agent-to-agent protocol |
+| **Bones (deterministic)** | Bounds every decision and cannot be talked out of it | The code paths below |
+
+The bones stay exactly as they are; an AI decision never passes them:
+- the Policy Engine's checks and hard bounds, and its veto;
+- the brake (an open critical report), the kill switch and the consensus mode;
+- the Forge's checks, guard paths and test guard;
+- the owner's click for critical actions;
+- no fund movement, ever (ADR-0009).
+
+Build order:
+1. **A1, agentic votes.** Each council seat's vote is reasoned by its agent over the same evidence, with its reasons recorded. The deterministic rules run first and keep their veto: an agent may reject what the rules allow, never approve what they refuse.
+2. **A2, diagnosis.** An agent reads what is stuck (registrations, deploys, merges, failed ticks) with its history and proposes the way out, which then goes through consensus.
+3. **A3, agent-to-agent protocol.** Agents exchange typed messages through the AI Kernel (MCP tools and RPC), and a council deliberation is a transcript, not one function call per seat. Every message is audited; no message carries authority by itself.
+
+**B. E0, self-inventory (before E2).**
+
+The census compares the DNA with the registry only. E0 compares it with what really exists in the Cloudflare account:
+- Workers (Scripts API), D1 databases, R2 buckets, Durable Object namespaces, routes and custom domains;
+- every Worker with no DNA (`undeclared_worker`), every DNA organ with no Worker (`missing_worker`), and every agent or engine registered nowhere else.
+
+Each finding becomes an intent: register, declare in DNA (an evolution), or retire. On 2026-11-13 the account had 18 Workers and the DNA 18 organs, but no code checked it.
+
+**C. E5, morphogenesis (after E2 and E3).**
+
+The organism grows new organs, not only repairs the ones it has.
+- **Stem cell.** A template organ in the Forge: a Worker with its DNA, `HealthRpc`, readiness, a vote entrypoint and tests.
+- **Morphogens.** Measured growth signals: an organ above its load or error budget, a capability asked for repeatedly with no organ to serve it, a recurring error no existing organ can fix.
+- **Birth.** An evolution may add a new Worker directory with its `wrangler.toml` and `organism.json`. This is a germline change: the owner clicks (`merge_owner_change`). The census registers the organ by consensus, and gate 9's private stub and Access update give it a body.
+- **Selection.** An organ that adds no measured value within its trial period is proposed for retirement (apoptosis).
+- **Nutrients.** Growth is bounded by the Metabolism budget and the account's Worker limits.
+
+The build order becomes E1 (done 2026-11-13), E0, E2, E3, E4, A1–A3 alongside, then E5.
+
+### 11. Amendment 2026-11-17: the deferral lifted; council tasks and the return path
+
+Owner, 2026-11-17: "aktifkan evolver sekarang termasuk jalur balik" (activate the evolver now, together with the return path). The orchestrator relayed it; the owner confirmed it directly in the platform session, with the answers below. The build is `docs/design/EVOLVER.md`.
+
+- **The deferral is lifted.** Canonical main has lived on the Forge since the cut-over, and E1 merges there. So §5's reason for waiting (no GitHub write credential) already holds. Building E2 starts now, in the order of the design's §9.
+- **A new intent source: the council.**
+  - A `repository_task` that the owner accepted in Nexus reaches the platform as a `typed_proposal.v1` report from `xauusd-moderator`, with `executor: "cryptophys"`.
+  - The kernel records it as an evolution intent, and Cerebrum's inbox lists it.
+  - E0's inventory findings and the census's unsettled findings are intents too.
+- **External repositories wait.** A task for a repository other than the platform's waits as `waiting_external` until ADR-0018 X1/X2 exist (owner, 2026-11-17: "Tunggu ADR-0018 X1/X2"). The evolver never writes to another repository, and the platform still deploys no external organ.
+- **The return path.**
+  - `council.decisions.read` is a tier 1, read-only capability under an xauusd-specific ceiling (`docs/design/HAIC-H0-H1.md` §5).
+  - xauusd pulls the state of each proposal it handed off: queued, waiting, proposed, merged, deployed, closed or refused. Cerebrum never calls into xauusd.
+- **Unchanged.**
+  - §4 and §9's cadence: one evolution in flight and at most one started per 4 hours. The owner first chose "10 CR/hari, 5 terbuka", then kept the 4-hour cycle ("Tetap 1 per 4 jam"), since fitness and revert (E3) are not built.
+  - §3, guard paths under unanimous consensus with no owner click ("Tetap §3 lama"). Until E3 is built, the evolver proposes routine paths only (`evolution-limits.ts`), so §3 does not yet come into play.
+  - The model (`gpt-oss` on Workers AI only), the diff limits, the quiet conditions, the freeze and every refusal of §3.
+- **New.**
+  - **A kill switch for the evolver alone**, `evolver_controls.mode` (`on` or `off`). Only the owner turns it on; any operator may turn it off as a brake. The platform kill switch and mode `shadow` stop it as well.
+  - **At most 3 AI calls per cycle.**
+  - **Until E3 is built**, a deployed evolution is recorded as deployed but unmeasured. The deploy's health check and automatic rollback stay its protection.
 
 ## Consequences
 

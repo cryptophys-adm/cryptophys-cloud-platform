@@ -145,7 +145,6 @@ test("TP-021 isolation", async () => {
   db.raw.prepare("INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at) VALUES (?,?,?,?,?,?,?,?,?)").run("e1", "t", "a", "s", "ok", "{}", null, "h", old);
   db.raw.prepare("INSERT INTO policy_decisions (decision_id, subject, action, resource, decision, reason, evidence_json, created_at) VALUES (?,?,?,?,?,?,?,?)").run("d1", "s", "deploy", "r", "deny", "r", "{}", old);
   db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, created_at) VALUES (?,?,?,?,?,?,?,?)").run("r1", "signal-analyst", "signal_digest", "info", "s", "{}", "deterministic", old);
-  db.raw.prepare("INSERT INTO market_candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume, source, ingested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run("BTCUSDT", "1h", 1, 2, 1, 2, 0.5, 1.5, 10, "k", old);
 
   // drift obs old
   for (let i = 0; i < 3; i++) db.raw.prepare("INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at) VALUES (?,?,?,?,?,?,?)").run(`do${i}`, "cryptophys-platform-api", "d", "o", 0, "{}", new Date(now - 100 * 86400000 - i * 1000).toISOString());
@@ -157,11 +156,10 @@ test("TP-021 isolation", async () => {
   const envK: any = baseEnv("cryptophys-ai-kernel", db);
   await pruneSyscallConsumptions(envK, now);
 
-  // audit_events, policy_decisions, agent_reports, market_candles untouched
+  // audit_events, policy_decisions, agent_reports untouched (market_candles was dropped by 0062)
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_id='e1'").get() as any).n, 1);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM policy_decisions WHERE decision_id='d1'").get() as any).n, 1);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_reports WHERE report_id='r1'").get() as any).n, 1);
-  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM market_candles WHERE source='k'").get() as any).n, 1);
 });
 
 test("TP-021 schedules", async () => {
@@ -198,4 +196,16 @@ test("TP-021 failure-safe", async () => {
   // prune should throw? Spec says log error, not throw. Our implementation throws because prepare throws. Hmm.
   // Accept either; main point logged. We'll just assert no crash of test.
   assert.ok(true);
+});
+
+test("TP-021 the retention counts at most 2 newer rows per candidate (resource audit 2026-11-14)", async () => {
+  const db = migratedDb();
+  // One service with many recent rows: every old row is pruned, the 2 newest stay, and the count stays bounded.
+  seedDrift(db, "cryptophys-platform-api", 30, 100, 400);
+  const env: any = baseEnv("cryptophys-drift-detector", db);
+  const res = await pruneDriftObservations(env, Date.now());
+  assert.equal(res.deleted, 30);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM drift_observations").get() as any).n, 400);
+  const src = (await import("node:fs")).readFileSync(new URL("../../drift-detector/src/index.ts", import.meta.url), "utf8");
+  assert.match(src, /SELECT COUNT\(\*\) FROM \(SELECT 1 FROM drift_observations i WHERE i\.service_id = o\.service_id AND i\.observed_at > o\.observed_at LIMIT 2\)\) = 2/);
 });

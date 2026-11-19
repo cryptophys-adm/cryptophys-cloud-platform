@@ -8,7 +8,7 @@ import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { proposeFromAgent } from "../../recovery-manager/src/index.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { DeploymentLock, accessForConsensus, accessPlanSummary } from "../../deployment-orchestrator/src/index.ts";
-import { ACCESS_APP_NAME, CloudflareApi, NEXUS_GROUP, PLATFORM_WORKERS, PUBLIC_HOSTNAMES, PUBLIC_PATHS, applyAccess, planAccess } from "../../deployment-orchestrator/src/native-access.ts";
+import { ACCESS_APP_NAME, CloudflareApi, NATIVE_ONLY_PATHS, NEXUS_GROUP, PLATFORM_WORKERS, PUBLIC_HOSTNAMES, PUBLIC_PATHS, applyAccess, planAccess } from "../../deployment-orchestrator/src/native-access.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
 import { ACCESS_CHECK_MINUTES, runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { ownerDecide } from "../../ai-kernel/src/consensus.ts";
@@ -38,7 +38,8 @@ interface World {
   puts: any[];
 }
 function workflowApp(w: World): any {
-  // Exactly what provision-access.yml writes (its body), as the API returns it (policies get ids).
+  // What provision-access.yml writes (its body), as the API returns it (policies get ids), with the native-only paths
+  // (NA7 starts from the workflow's own, without them).
   return {
     id: APP_ID, aud: "aud-1", name: ACCESS_APP_NAME, type: "self_hosted", session_duration: "8h", app_launcher_visible: false, auto_redirect_to_identity: false,
     destinations: [...PLATFORM_WORKERS.map((n) => ({ type: "worker", worker_id: w.scripts.get(n)!.tag })), ...PUBLIC_HOSTNAMES.map((uri) => ({ type: "public", uri })), ...PUBLIC_PATHS.map((uri) => ({ type: "public", uri }))],
@@ -111,7 +112,11 @@ test("NA1. the definition is provision-access.yml's: the same application, Worke
   const env = (k: string) => (new RegExp(`^  ${k}: >-\\n((?:    .*\\n)+)`, "m").exec(yml)?.[1] ?? new RegExp(`^  ${k}: (.*)$`, "m").exec(yml)![1]).trim().split(/\s+/);
   assert.deepEqual([...PLATFORM_WORKERS], env("PLATFORM_WORKERS"));
   assert.deepEqual([...PUBLIC_HOSTNAMES], env("PUBLIC_HOSTNAMES"));
-  assert.deepEqual([...PUBLIC_PATHS], env("PUBLIC_PATHS"));
+  // 2026-11-16: the cta studio paths are the one documented difference (agents never change .github/workflows/*).
+  assert.deepEqual([...NATIVE_ONLY_PATHS], ["cta.cryptophys.work/studio*", "cta.cryptophys.work/api/studio/*"]);
+  assert.deepEqual([...PUBLIC_PATHS].filter((p) => !(NATIVE_ONLY_PATHS as readonly string[]).includes(p)), env("PUBLIC_PATHS"));
+  assert.deepEqual([...PUBLIC_PATHS].slice(-NATIVE_ONLY_PATHS.length), [...NATIVE_ONLY_PATHS]);
+  for (const p of NATIVE_ONLY_PATHS) assert.ok(!yml.includes(p), `${p} is not (yet) in provision-access.yml`);
   assert.deepEqual([ACCESS_APP_NAME], env("ACCESS_APP_NAME"));
   assert.match(yml, new RegExp(`group_name="${NEXUS_GROUP}"`));
   assert.match(read(".github/scripts/find-agent-service-tokens.sh"), /^prefix="cryptophys-agent-"$/m);
@@ -295,5 +300,44 @@ test("NA6. without CF_ACCESS_TOKEN nothing is proposed; a plan that moved since 
     assert.equal(w.puts.length, 0);
     assert.equal(reports.at(-1).severity, "warning");
     assert.equal(reports.at(-1).body.changed, false);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test("NA7. the cta studio paths (2026-11-16): the definition holds them; from the live application the Supervisor proposes exactly their addition, under the same policies", async () => {
+  // Path destinations, never the whole host: cta.cryptophys.work's public pages, /api/public/*, /media/* and /health stay open.
+  for (const p of NATIVE_ONLY_PATHS) assert.match(p, /^cta\.cryptophys\.work\/(studio\*|api\/studio\/\*)$/);
+  assert.equal((PUBLIC_HOSTNAMES as readonly string[]).includes("cta.cryptophys.work"), false);
+  const db = migratedDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  const w = world();
+  // Live today: what provision-access.yml wrote, without the native-only paths.
+  w.apps[0].destinations = w.apps[0].destinations.filter((d: any) => !(NATIVE_ONLY_PATHS as readonly string[]).includes(d.uri));
+  const livePolicies = JSON.parse(JSON.stringify(w.apps[0].policies));
+  const { fetcher } = fakeCloudflare(w);
+  const { access, scripts } = clients(fetcher);
+  const plan = await planAccess(access, scripts);
+  assert.ok(plan.ok && !plan.in_sync, JSON.stringify(plan));
+  const expected = ["add destination public:cta.cryptophys.work/api/studio/*", "add destination public:cta.cryptophys.work/studio*"];
+  assert.deepEqual(plan.ok && plan.changes, expected, "only the two destinations; no policy, identity provider or session change");
+  assert.ok(plan.ok && expected.every((c) => plan.desired.destinations.includes(c.slice("add destination ".length))));
+  const { env, memory } = kernelEnv(db, fetcher);
+  globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => String(i).includes("access/certs") ? (await import("./harness.ts")).accessCertsResponse() : fetcher(i, init)) as typeof fetch;
+  try {
+    await runCycle(env as never, memory, "scheduled", hourStart());
+    const p = last(db);
+    assert.deepEqual([p.action, p.status], ["change_access", "pending_owner"], p.outcome_json);
+    const params = JSON.parse(p.params_json);
+    assert.deepEqual(params.changes, expected);
+    assert.equal(params.digest, plan.ok && plan.digest);
+    assert.equal(w.puts.length, 0, "nothing changes before the owner's click");
+    const r = await ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, "protect the cta studio");
+    assert.equal(r.status, "executed", JSON.stringify(r));
+    assert.equal(w.puts.length, 1);
+    const put = w.puts[0];
+    for (const uri of NATIVE_ONLY_PATHS) assert.ok(put.destinations.some((d: any) => d.type === "public" && d.uri === uri), `${uri} is a destination`);
+    assert.equal(put.destinations.length, PLATFORM_WORKERS.length + PUBLIC_HOSTNAMES.length + PUBLIC_PATHS.length);
+    // The same application and the same policies: ci-service-token, platform-operators (the live emails and the group), external-agents.
+    assert.deepEqual(put.policies.map((x: any) => [x.name, x.decision, x.precedence, x.include]), livePolicies.map((x: any) => [x.name, x.decision, x.precedence, x.include]));
+    assert.equal(w.apps.filter((a) => a.name === ACCESS_APP_NAME).length, 1);
   } finally { globalThis.fetch = realFetch; }
 });

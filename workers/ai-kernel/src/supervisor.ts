@@ -10,20 +10,34 @@
  *    agent plan for it, none proposed in the last 24 h) -> recovery.propose (tier 1).
  */
 import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
-import { appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
+import { appendAuditEvent, appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
 import { boundedString, engineFor, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
-import { RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
+import { CAPABILITIES, OWNER_ONLY_STEP_ACTIONS, RECOVERY_STEP_ACTIONS, agentsEnabled, getAgent } from "../../control-plane-shared/src/capabilities.ts";
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
-import { expireOwnerProposals } from "./consensus.ts";
+import { OWNER_DECISION_WINDOW_MS, expireOwnerProposals } from "./consensus.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
-import { latestCensusRow, proposalFor } from "./organism.ts";
+import { latestCensusRow, latestCensusRows, proposalFor, undeclaredEngineProven, undeclaredEnginePersistent, RETIRE_ENGINE_PERSIST_ROWS, type CensusRow } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "../../control-plane-shared/src/consensus-rules.ts";
+import { SCHEDULED_IDLE_REASON, idleWindowMs, isIdle } from "../../control-plane-shared/src/agent-idle.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
+import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
+import { DESTRUCTIVE_DEPLOY_ACTION, DESTRUCTIVE_DEPLOY_UNIT, destructiveChanges } from "../../control-plane-shared/src/destructive-deploy.ts";
+import { observerCycle } from "./observer-watch.ts";
+import { proposeIdentityRedeploys } from "./identity-redeploy.ts";
+import { nextPolicyHandoff, recordPolicyHandoff } from "./proposals.ts";
 
 /** ADR-0009 phase 3: deploy proposals per supervisor cycle (keeps an operator wake well under 30 s). */
 export const MAX_DEPLOY_PROPOSALS_PER_CYCLE = 1;
+/**
+ * Hardening 2026-11-15: a deploy_commit that executed but whose deploy failed with production restored (for example
+ * the native read-after-upload 404 of that day) may be proposed again for the same commit after this long, at most
+ * DEPLOY_RETRIES_PER_COMMIT more times. Before, "once per unit and commit" left such a commit undeployed until the
+ * next main commit. A failed deploy that did not restore production is never retried automatically.
+ */
+export const DEPLOY_RETRY_AFTER_MS = 3_600_000;
+export const DEPLOY_RETRIES_PER_COMMIT = 2;
 /** Default of the Policy Engine platform_daily_limit; the live value is the council-adjustable policy parameter. */
 export const DAILY_DEPLOY_LIMIT = POLICY_PARAMETERS["daily-deploy-limit"].default;
 /** Wave C: denied or failed syscalls in one hour before the supervisor proposes suspending an agent. */
@@ -69,9 +83,9 @@ export interface Proposal { title: string; rationale: string; steps: { action: s
  * Steps an AI-drafted plan may contain: only those the Recovery Manager can execute, plus manual
  * notes. Restoring D1 and rotating secrets are critical, owner-run actions (ADR-0009); an AI draft
  * never proposes them (2026-11-07: a healthy service with an untagged version got a plan that
- * included restore_d1_bookmark).
+ * included restore_d1_bookmark). The break-glass deploy (force_redeploy_unit) is owner-run too (2026-11-14).
  */
-export const AI_DRAFT_STEP_ACTIONS = RECOVERY_STEP_ACTIONS.filter((a) => a !== "restore_d1_bookmark" && a !== "rotate_secret");
+export const AI_DRAFT_STEP_ACTIONS = RECOVERY_STEP_ACTIONS.filter((a) => !OWNER_ONLY_STEP_ACTIONS.includes(a));
 
 /**
  * A healthy, reachable service whose only finding is a missing version tag is not a recovery case:
@@ -128,6 +142,26 @@ export function templateProposal(s: ServiceObs): Proposal {
   };
 }
 
+/**
+ * Owner 2026-11-14: consensus.propose's hourly window as the Policy Engine counts it (capabilities.ts, check
+ * rate_limit): the syscalls this agent CONSUMED in the last hour (agent_syscall_consumptions, written by
+ * verifySyscallDecision when an allowed call is dispatched) against max_per_hour (4). A denied attempt is never
+ * consumed, so it does not move the window; it only adds a denied syscall (19 in one day, measured 2026-11-14).
+ * The window reopens when its oldest counting consumption is an hour old. The Policy Engine stays the authority:
+ * this only avoids calls it is certain to refuse.
+ */
+export async function consensusProposeWindow(db: KernelEnv["DB"], agentId: string, now = Date.now()): Promise<{ used: number; limit: number; full: boolean; reopens_at: string | null }> {
+  const limit = CAPABILITIES["consensus.propose"].max_per_hour ?? Number.POSITIVE_INFINITY;
+  const rows = (await db.prepare(
+    "SELECT consumed_at FROM agent_syscall_consumptions WHERE agent_id = ? AND capability = 'consensus.propose' AND consumed_at >= ? ORDER BY consumed_at ASC",
+  ).bind(agentId, new Date(now - 3_600_000).toISOString()).all<{ consumed_at: string }>()).results ?? [];
+  const used = rows.length;
+  const full = used >= limit;
+  // With n >= limit consumptions, a call is allowed again once n - limit + 1 of them have left the window.
+  const reopens_at = full ? new Date(Date.parse(rows[used - limit].consumed_at) + 3_600_000).toISOString() : null;
+  return { used, limit, full, reopens_at };
+}
+
 export interface CycleReport {
   agent_id: string;
   trigger: string;
@@ -138,13 +172,24 @@ export interface CycleReport {
   actions: SyscallResult[];
 }
 
-/** Evaluates digital metabolism health, updates adaptive power mode, and appends a cycle audit. */
+/** The heartbeat interval of metabolism_cycles when nothing changes, with 2 minutes' slack for cycle jitter. */
+export const METABOLISM_HEARTBEAT_MS = 3_600_000 - 120_000;
+export const METABOLISM_RETENTION_MS = 30 * 86_400_000;
+
+/** Evaluates digital metabolism health, updates adaptive power mode, and records the cycle when it carries news. */
 export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()): Promise<JsonObject | null> {
   try {
     const obs = await observeMetabolism(env, now);
     const marketStatus = obs.market_status as "open" | "closed" | "holiday";
     const tradingNetPnl = (obs.trading_net_pnl_24h as number) ?? 0;
     const infraBurn = (obs.infra_burn_cost_24h as number) ?? 0.15;
+    // Owner 2026-11-14: a monthly budget (policy parameter infra-budget-usd-month, default $30), not the free tier. The
+    // platform stores a daily burn from the Billable Usage API, so the month is projected as burn x days of the UTC
+    // month (observeMetabolism); a burn that is only an estimate is not projected and never triggers survival.
+    const budget = typeof obs.infra_budget_usd_month === "number" ? obs.infra_budget_usd_month : POLICY_PARAMETERS["infra-budget-usd-month"].default;
+    const projected = typeof obs.infra_projected_month_usd === "number" ? obs.infra_projected_month_usd : null;
+    const projectionDays = typeof obs.infra_projection_days === "number" ? obs.infra_projection_days : null;
+    const overBudget = projected !== null && projected > budget;
     // No invented values: a placeholder or missing treasury has no runway, and runway rules are skipped.
     const treasuryReserve = typeof obs.treasury_reserve_usd === "number" ? obs.treasury_reserve_usd : 0;
     const runwayDays = typeof obs.runway_days === "number" ? obs.runway_days : null;
@@ -163,10 +208,10 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
     } else if (marketStatus === "closed") {
       targetMode = "survival";
       reason = "market closed (weekend): entering survival hibernation to conserve AI tokens and compute";
-    } else if (infraBurn > 0.20 || tradingNetPnl < -100 || (runwayDays !== null && runwayDays < 7)) {
+    } else if (overBudget || tradingNetPnl < -100 || (runwayDays !== null && runwayDays < 7)) {
       targetMode = "survival";
-      reason = infraBurn > 0.20
-        ? `billable infrastructure burn ($${infraBurn}/day exceeding free tier): entering survival mode to throttle compute and preserve free tier`
+      reason = overBudget
+        ? `projected infrastructure spend $${projected}/month ($${infraBurn}/day x ${projectionDays} days) exceeds the $${budget}/month budget: entering survival mode to throttle AI spending`
         : `drawdown or low runway (net 24h: $${tradingNetPnl}, ${runwayText}): throttling compute`;
     } else if (tradingNetPnl > 50 && (runwayDays === null || runwayDays > 90)) {
       // Growth raises budgets, so the supervisor never enters it on its own: it only reports that
@@ -187,22 +232,40 @@ export async function evaluateMetabolismState(env: KernelEnv, now = Date.now()):
       modeChanged = true;
     }
 
-    const cycleId = newId("mtb");
     const evaluatedAt = new Date(now).toISOString();
     const actionsJson = JSON.stringify({ mode_changed: modeChanged, previous_mode: currentMode, target_mode: targetMode });
+    const modeReason = reason.slice(0, 300);
 
-    await env.DB.prepare(
-      `INSERT INTO metabolism_cycles (
-        cycle_id, evaluated_at, market_status, trading_net_pnl_24h, infra_burn_cost_24h,
-        metabolic_ratio, treasury_reserve_usd, runway_days, power_mode, mode_reason, actions_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      cycleId, evaluatedAt, marketStatus, tradingNetPnl, infraBurn,
-      metabolicRatio, treasuryReserve, runwayDays, targetMode, reason.slice(0, 300), actionsJson
-    ).run();
+    // Resource audit (owner 2026-11-14): a cycle is recorded when something changed (the mode, the market status, the
+    // reason, the treasury reserve or the runway) and otherwise once an hour as the heartbeat, instead of every
+    // 15-minute cycle with the same state.
+    const last = await env.DB.prepare(
+      "SELECT cycle_id, evaluated_at, market_status, power_mode, mode_reason, treasury_reserve_usd, runway_days FROM metabolism_cycles ORDER BY evaluated_at DESC LIMIT 1",
+    ).first<{ cycle_id: string; evaluated_at: string; market_status: string; power_mode: string; mode_reason: string | null; treasury_reserve_usd: number | null; runway_days: number | null }>();
+    const record = modeChanged || !last || now - Date.parse(last.evaluated_at) >= METABOLISM_HEARTBEAT_MS
+      || last.market_status !== marketStatus || last.power_mode !== targetMode || last.mode_reason !== modeReason
+      || (last.treasury_reserve_usd ?? null) !== (treasuryReserve ?? null) || (last.runway_days ?? null) !== (runwayDays ?? null);
+    let cycleId = last?.cycle_id ?? null;
+    if (record) {
+      cycleId = newId("mtb");
+      await env.DB.prepare(
+        `INSERT INTO metabolism_cycles (
+          cycle_id, evaluated_at, market_status, trading_net_pnl_24h, infra_burn_cost_24h,
+          metabolic_ratio, treasury_reserve_usd, runway_days, power_mode, mode_reason, actions_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        cycleId, evaluatedAt, marketStatus, tradingNetPnl, infraBurn,
+        metabolicRatio, treasuryReserve, runwayDays, targetMode, modeReason, actionsJson
+      ).run();
+      // Retention: 30 days (the Console shows 14), swept once a day with the 03:00 UTC hour's record.
+      if (new Date(now).getUTCHours() === 3) {
+        await env.DB.prepare("DELETE FROM metabolism_cycles WHERE evaluated_at < ?").bind(new Date(now - METABOLISM_RETENTION_MS).toISOString()).run();
+      }
+    }
 
     return {
       cycle_id: cycleId,
+      recorded: record,
       market_status: marketStatus,
       power_mode: targetMode,
       mode_changed: modeChanged,
@@ -228,6 +291,25 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   report.actions.push(observed);
   if (observed.outcome !== "succeeded") { await memory.put("last_cycle", report); return report; }
   const obs = observed.result as unknown as Observation;
+
+  // Every consensus.propose of this cycle goes through here (same order as before: drift, agents, organism, deploy,
+  // merge, Access). When the hourly window is full the attempt is skipped and the cycle records ONE finding instead
+  // of a denied syscall per attempt. Date.now(), not `now`: the Policy Engine's rate_limit counts on its own clock.
+  let windowFull = false;
+  const proposeConsensus = async (input: JsonObject): Promise<SyscallResult | null> => {
+    if (!windowFull) {
+      const w = await consensusProposeWindow(env.DB, AGENT_ID, Date.now());
+      if (w.full) {
+        windowFull = true;
+        report.findings.push({
+          kind: "rate_window", action: "none", capability: "consensus.propose", used: w.used, limit: w.limit, reopens_at: w.reopens_at,
+          why: `consensus.propose window full until ${w.reopens_at ? w.reopens_at.slice(11, 16) : "later"} UTC (${w.used} of ${w.limit} in the last hour); proposals wait`,
+        });
+      }
+    }
+    if (windowFull) return null;
+    return syscall(env, AGENT_ID, "consensus.propose", input);
+  };
 
   // Drift -> tier 1 proposal.
   const proposals = (await memory.get<Record<string, number>>("proposals")) ?? {};
@@ -256,12 +338,14 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     // ADR-0009: the same remediation goes to the control-plane consensus. In shadow mode it is
     // voted, tallied and policy-checked but never executed.
     if (s.desired_version) {
-      const consensus = await syscall(env, AGENT_ID, "consensus.propose", {
+      const consensus = await proposeConsensus({
         action: "redeploy_desired_version", target: s.service_id,
         params: { version: s.desired_version, observed_version: s.observed_version, reasons: s.reasons.slice(0, 5) },
       });
-      report.actions.push(consensus);
-      report.findings.push({ kind: "drift", service_id: s.service_id, action: "consensus.propose", outcome: consensus.outcome });
+      if (consensus) {
+        report.actions.push(consensus);
+        report.findings.push({ kind: "drift", service_id: s.service_id, action: "consensus.propose", outcome: consensus.outcome });
+      }
     }
     if (result.outcome === "succeeded") {
       proposals[s.service_id] = now;
@@ -270,6 +354,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     }
   }
   await memory.put("proposals", proposals);
+
+  // Owner 2026-11-14: the account-wide Observer's findings. An error or exception spike right after a platform Worker's
+  // deploy may become one rollback_worker_version proposal (observer-watch.ts lists every safeguard); the rest is
+  // reported. It goes before deploys: a rollback of a bad deploy matters more than the next one.
+  await observerCycle(env, memory, report, trigger, proposeConsensus, now);
 
   // ADR-0009 phase 3: a CI-green main commit that production does not run yet is proposed for
   // deployment, once per deploy unit and commit. Executed only in the 'deploy' consensus mode.
@@ -291,22 +380,32 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       const recent = await env.DB.prepare("SELECT 1 AS x FROM consensus_proposals WHERE action = 'suspend_agent' AND target = ? AND created_at >= ? LIMIT 1")
         .bind(noisy.agent_id, new Date(now - 6 * 3_600_000).toISOString()).first();
       if (!recent) {
-        const r = await syscall(env, AGENT_ID, "consensus.propose", {
+        const r = await proposeConsensus({
           action: "suspend_agent", target: noisy.agent_id,
           params: { reason: `${noisy.n} denied or failed syscalls in the last hour` },
         });
-        report.actions.push(r);
-        report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
+        if (r) {
+          report.actions.push(r);
+          report.findings.push({ kind: "agent", service_id: noisy.agent_id, action: "consensus.propose", outcome: r.outcome, why: `${noisy.n} failures in 1 h` });
+        }
       }
     }
     // Owner 2026-11-11 ("dismantle dan delete agent yang sudah tidak berkontribusi"): one enabled agent per
     // cycle that has done nothing for RETIRE_IDLE_DAYS (no action, report or vote, registered before the
     // window) is proposed for retirement; at most once a week per agent. Kernel agents, council seats and
     // the exempt hosts are never proposed (consensus-rules.ts RETIRE_EXEMPT_HOSTS).
+    // Owner 2026-11-14 ("jangan pensiun aether calibrator karena cara kerjanya memang idle sampai jadwalnya kerja"):
+    // an agent whose DNA declares a schedule is idle only after SCHEDULE_IDLE_RUNS of its runs without activity, and
+    // never sooner than the fixed window (agent-idle.ts); an open retire_agent of a scheduled agent that its schedule
+    // does not find idle is closed. The schedules come from the latest census (main's DNA and the external organs').
+    const schedules = scheduledAgents(await latestCensusRow(env));
+    const closed = await closeScheduledRetirements(env, schedules, now);
+    if (closed.length) report.findings.push({ kind: "agent", action: "close", why: `${closed.join(", ")}: ${SCHEDULED_IDLE_REASON}`.slice(0, 300) });
     const idleSince = new Date(now - RETIRE_IDLE_DAYS * 86_400_000).toISOString();
     const exempt = [...KERNEL_AGENTS, ...RETIRE_EXEMPT_HOSTS];
-    const idle = await env.DB.prepare(
-      `SELECT g.agent_id FROM agents g
+    // The fixed window is the shortest, so these are every agent that may be idle; a scheduled one is checked again.
+    const candidates = (await env.DB.prepare(
+      `SELECT g.agent_id, g.created_at FROM agents g
        WHERE g.status = 'enabled' AND g.created_at < ?1
          AND g.agent_id NOT IN (${[...KERNEL_AGENTS].map((_, i) => `?${i + 3}`).join(", ")})
          AND g.host_worker NOT IN (${[...RETIRE_EXEMPT_HOSTS].map((_, i) => `?${i + 3 + KERNEL_AGENTS.size}`).join(", ")})
@@ -314,30 +413,77 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
          AND NOT EXISTS (SELECT 1 FROM agent_actions a WHERE a.agent_id = g.agent_id AND a.created_at >= ?1)
          AND NOT EXISTS (SELECT 1 FROM agent_reports r WHERE r.agent_id = g.agent_id AND r.created_at >= ?1)
          AND NOT EXISTS (SELECT 1 FROM consensus_proposals p WHERE p.action = 'retire_agent' AND p.target = g.agent_id AND p.created_at >= ?2)
-       ORDER BY g.created_at, g.agent_id LIMIT 1`,
-    ).bind(idleSince, new Date(now - 7 * 86_400_000).toISOString(), ...exempt).first<{ agent_id: string }>();
+       ORDER BY g.created_at, g.agent_id LIMIT 20`,
+    ).bind(idleSince, new Date(now - 7 * 86_400_000).toISOString(), ...exempt).all<{ agent_id: string; created_at: string }>()).results ?? [];
+    let idle: { agent_id: string; days: number } | null = null;
+    for (const c of candidates) {
+      const schedule = schedules.get(c.agent_id);
+      if (schedule && !isIdle({ createdAtMs: Date.parse(c.created_at), lastActivityMs: await lastActivityMs(env, c.agent_id), schedule }, now)) continue;
+      idle = { agent_id: c.agent_id, days: Math.round(idleWindowMs(schedule) / 86_400_000) };
+      break;
+    }
     if (idle) {
-      const r = await syscall(env, AGENT_ID, "consensus.propose", {
+      const r = await proposeConsensus({
         action: "retire_agent", target: idle.agent_id,
-        params: { reason: `no action, report or vote for ${RETIRE_IDLE_DAYS} days` },
+        params: { reason: `no action, report or vote for ${idle.days} days` },
       });
-      report.actions.push(r);
-      report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${RETIRE_IDLE_DAYS} days: retire_agent` });
+      if (r) {
+        report.actions.push(r);
+        report.findings.push({ kind: "agent", service_id: idle.agent_id, action: "consensus.propose", outcome: r.outcome, why: `idle ${idle.days} days: retire_agent` });
+      }
     }
     // ADR-0013 phase 3: what the Forge's census found declared in the DNA but not live (an agent,
     // an engine, a council seat) is proposed for registration, one per cycle, each action and
     // target (an engine: each task) at most once a day. Seats and privileged agents are critical: they reach the owner.
-    const census = await latestCensusRow(env);
+    const censusRows = await latestCensusRows(env, RETIRE_ENGINE_PERSIST_ROWS);
+    const census = censusRows[0] ?? null;
+    // Owner 2026-11-15 ("Aksi retire_engine"): an enabled engine its organ's DNA no longer declares is proposed for
+    // retire_engine only once the finding persisted (2 consecutive census rows, or 1 h seen without a gap here) and
+    // only for an organ whose DNA the census read. The first sighting of each proven finding is kept in memory; a
+    // finding that is absent or unproven in a cycle starts again.
+    const undeclaredSeen = (await memory.get<Record<string, number>>("undeclared_engines_seen")) ?? {};
+    const seenNow: Record<string, number> = {};
     for (const f of census?.findings ?? []) {
-      const prop = census ? proposalFor(census, f) : null;
+      if (f.kind === "undeclared_engine" && census && undeclaredEngineProven(census, f.subject)) seenNow[f.subject] = undeclaredSeen[f.subject] ?? now;
+    }
+    await memory.put("undeclared_engines_seen", seenNow);
+    const persistent = (subject: string) => undeclaredEnginePersistent(censusRows, subject, seenNow[subject], now);
+    // 2026-11-13: eleven XAUUSD engines stayed unregistered for a day. Their proposals were rejected 8-0 only because
+    // the brake held (an open critical report), and each rejection then held its engine for the 24 h cooldown although
+    // the brake was off hours later. So: nothing is proposed while the brake holds (every voter would reject it), and
+    // a registration rejected only by the brake is proposed again once it is off. Unreadable counts as on (fail closed).
+    let registrationBrakeOff = false;
+    try { registrationBrakeOff = (await openCriticalReportRows(env.DB, now, 1)).length === 0; } catch { registrationBrakeOff = false; }
+    // Registrations go first: a retirement is housekeeping and waits behind growth (one proposal per cycle).
+    const ordered = [...(census?.findings ?? [])].sort((a, b) => Number(a.kind === "undeclared_engine") - Number(b.kind === "undeclared_engine"));
+    const waiting = ordered.filter((f) => census && proposalFor(census, f, persistent)).length;
+    if (!registrationBrakeOff && waiting > 0) {
+      report.findings.push({ kind: "organism", action: "none", why: `${waiting} registration(s) wait: a critical report is open, so the council would reject them` });
+    }
+    for (const f of registrationBrakeOff ? ordered : []) {
+      const prop = census ? proposalFor(census, f, persistent) : null;
       if (!prop) continue;
+      // 2026-11-17: main's DNA can name a capability that the running kernel does not know yet, because the same
+      // change adds it and the kernel is deployed after the merge. The council then rejects the agent as holding an
+      // unknown capability (cns_211153f4: register_privileged_agent adr-steward, 8-0, adr.observe) although it is
+      // routine once deployed. Such a registration is not proposed: it waits as a finding until a kernel that knows
+      // every capability runs. Nothing is weakened: an unknown capability is never registered either way.
+      if ((prop.action === "register_agent" || prop.action === "register_privileged_agent" || prop.action === "update_agent_capabilities") && Array.isArray(prop.params.capabilities)) {
+        const unknown = (prop.params.capabilities as unknown[]).map(String).filter((c) => !Object.hasOwn(CAPABILITIES, c));
+        if (unknown.length) {
+          report.findings.push({ kind: "organism", service_id: prop.target, action: "none", why: `registration of ${prop.target} waits: ${unknown.join(", ")} is unknown to the running kernel (its deploy is pending)`.slice(0, 300) });
+          continue;
+        }
+      }
       // An engine's target is its service, so its task is part of the key: a Worker's second new AI task is not
       // held for a day behind its first (owner 2026-11-12). A proposal the Policy Engine vetoed (shadow_blocked,
       // e.g. its hourly limit per action and target) is retried after an hour, as deploy proposals are.
-      const task = prop.action === "register_engine" ? String(prop.params.task ?? "") : null;
+      // retire_engine mirrors register_engine: the same per-task cooldown and the same hourly limit per Worker.
+      const task = prop.action === "register_engine" || prop.action === "retire_engine" ? String(prop.params.task ?? "") : null;
       const recent = await env.DB.prepare(
         `SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND created_at >= ?
-           AND (status <> 'shadow_blocked' OR created_at >= ?)${task !== null ? " AND json_extract(params_json, '$.task') = ?" : ""} LIMIT 1`,
+           AND (status <> 'shadow_blocked' OR created_at >= ?)
+           AND NOT (status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0)${task !== null ? " AND json_extract(params_json, '$.task') = ?" : ""} LIMIT 1`,
       ).bind(...[prop.action, prop.target, new Date(now - REGISTRATION_COOLDOWN_MS).toISOString(), new Date(now - 3_600_000).toISOString(), ...(task !== null ? [task] : [])]).first();
       if (recent) continue;
       // The Policy Engine executes at most one action per action and target an hour (target-actions-per-hour).
@@ -350,7 +496,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         ).bind(prop.action, prop.target, new Date(now - 3_600_000).toISOString()).first<{ n: number }>();
         if ((ran?.n ?? 0) >= perHour) continue;
       }
-      const r = await syscall(env, AGENT_ID, "consensus.propose", prop);
+      const r = await proposeConsensus(prop);
+      if (!r) break;
       report.actions.push(r);
       report.findings.push({ kind: "organism", service_id: prop.target, action: "consensus.propose", outcome: r.outcome, why: `${prop.action}: ${f.detail}`.slice(0, 300) });
       break;
@@ -372,7 +519,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
       const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
       const daily = await env.DB.prepare(
-        `SELECT COUNT(*) AS n, MIN(decided_at) AS oldest FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
+        `SELECT COUNT(*) AS n, MIN(decided_at) AS oldest FROM consensus_proposals WHERE action IN ('deploy_commit','deploy_destructive_migration','rollback_worker_version','redeploy_desired_version') AND status IN ${ran} AND decided_at >= ?`,
       ).bind(dayAgo).first<{ n: number; oldest: string | null }>();
       const dailyLimit = await readPolicyParameter(env.DB, "daily-deploy-limit");
       if ((daily?.n ?? 0) >= dailyLimit && pending.units.length > 0) {
@@ -384,7 +531,23 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       // Unreadable counts as on (fail closed), so nothing is retried while the brake may hold.
       let brakeOff = false;
       try { brakeOff = (await openCriticalReportRows(env.DB, Date.now(), 1)).length === 0; } catch { brakeOff = false; }
-      for (const u of (daily?.n ?? 0) >= dailyLimit ? [] : pending.units) {
+      // 2026-11-17 (owner "ya"): the least recently deployed unit goes first. The plan lists units in DEPLOY_UNITS order
+      // and one deploy is proposed per cycle; every merge to main made the Control Plane pending again, so the Forge,
+      // last in that order, was not deployed from 02:23 to past 11:45 while its guard rules lagged main. The ordering
+      // rules of orderPending (executor first, the migration-bearing Control Plane alone) leave a single unit, so this
+      // only reorders units that are free to go in any order.
+      const lastDeployed = new Map<string, string>();
+      if (pending.units.length > 1) {
+        for (const u of pending.units) {
+          const services = [...(DEPLOY_UNITS.find((d) => d.unit === u.unit)?.services ?? [u.target])];
+          const row = await env.DB.prepare(
+            `SELECT MAX(decided_at) AS at FROM consensus_proposals WHERE action = 'deploy_commit' AND status IN ${ran} AND target IN (${services.map(() => "?").join(", ")})`,
+          ).bind(...services).first<{ at: string | null }>();
+          lastDeployed.set(u.unit, row?.at ?? "");
+        }
+      }
+      const byWait = [...pending.units].sort((a, b) => (lastDeployed.get(a.unit) ?? "").localeCompare(lastDeployed.get(b.unit) ?? ""));
+      for (const u of (daily?.n ?? 0) >= dailyLimit ? [] : byWait) {
         const recentTarget = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND status IN ${ran} AND decided_at >= ? LIMIT 1`,
         ).bind(u.target, hourAgo).first();
@@ -392,28 +555,99 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: "this service was changed in the last hour; it waits" });
           continue;
         }
+        // Owner 2026-11-14: a commit the Observer's rollback just took off a Worker of this unit is not deployed again
+        // by the same loop (no flapping); a newer commit deploys as usual.
+        const unitServices = [...(DEPLOY_UNITS.find((d) => d.unit === u.unit)?.services ?? [u.target])];
+        const rolledBack = pending.main_sha ? await env.DB.prepare(
+          `SELECT target FROM consensus_proposals WHERE action = 'rollback_worker_version' AND status IN ('executing','executed') AND decided_at >= ?
+             AND target IN (${unitServices.map(() => "?").join(", ")}) AND json_extract(params_json, '$.evidence.deployed.version') = ? LIMIT 1`,
+        ).bind(dayAgo, ...unitServices, pending.main_sha.slice(0, 12)).first<{ target: string }>() : null;
+        if (rolledBack) {
+          report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: `main ${pending.main_sha!.slice(0, 12)} was rolled back on ${rolledBack.target} by the Observer in the last 24 h; it waits for a newer commit` });
+          continue;
+        }
         if (proposed >= MAX_DEPLOY_PROPOSALS_PER_CYCLE) {
           report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: "deferred to the next cycle (one deploy proposal per cycle)" });
           continue;
         }
         if (!pending.main_sha) break;
+        // Cut-over gate (owner 2026-11-15, "1 setuju"): a Control Plane deploy whose pending D1 migrations include
+        // destructive ones is the owner's click, never a routine deploy_commit. One critical proposal per commit, naming
+        // each destructive file and its sha256; re-proposed only after a policy veto (an hour later), after the owner
+        // window lapsed, or after a rejection that only the brake caused. Unreadable: the routine proposal as before (the
+        // routine native deploy refuses every destructive file).
+        if (u.unit === DESTRUCTIVE_DEPLOY_UNIT && env.DEPLOY.destructiveMigrations) {
+          const d = await env.DEPLOY.destructiveMigrations(pending.main_sha).catch(() => null);
+          if (d && !d.ok) report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: `destructive migrations unreadable: ${String(d.reason).slice(0, 80)}; the routine deploy refuses any` });
+          if (d?.ok && d.migrations.length) {
+            const files = d.migrations.map((m) => ({ file: m.file, sha256: m.sha256 }));
+            const again = await env.DB.prepare(
+              `SELECT 1 AS x FROM consensus_proposals WHERE action = ? AND target = ? AND json_extract(params_json, '$.commit_sha') = ?
+                 AND (status NOT IN ('shadow_blocked', 'expired') OR created_at >= ?)
+                 AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
+            ).bind(DESTRUCTIVE_DEPLOY_ACTION, u.target, pending.main_sha, hourAgo, brakeOff ? 1 : 0).first();
+            if (again) {
+              report.findings.push({ kind: "deploy", service_id: u.target, action: "none", why: `main ${pending.main_sha.slice(0, 12)} has destructive migrations (${files.map((f) => f.file).join(", ")}); it waits for the owner's decision` });
+              continue;
+            }
+            const params: JsonObject = { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, destructive_migrations: files, reason: u.reason.slice(0, 200) };
+            // The Owner page lists params.changes; it is left out only when the proposal would exceed its size bound.
+            const withChanges: JsonObject = { ...params, changes: destructiveChanges(files) };
+            const r = await proposeConsensus({ action: DESTRUCTIVE_DEPLOY_ACTION, target: u.target, params: JSON.stringify(withChanges).length <= 1900 ? withChanges : params });
+            if (!r) break;
+            proposed += 1;
+            report.actions.push(r);
+            report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome, why: `destructive migrations need the owner: ${files.map((f) => f.file).join(", ")}`.slice(0, 300) });
+            continue;
+          }
+        }
         // Once per unit and commit, except that a proposal the Policy Engine vetoed (shadow_blocked,
         // e.g. a rate limit) is retried after an hour; otherwise a commit blocked once by the hourly
         // limit would never deploy (2026-11-07: #187 stayed undeployed after a target_rate_limit veto).
+        // HAIC H4: so is one the autonomy dial held (observe or suggest) or one whose owner window lapsed (expired), so
+        // the commit deploys once the owner raises the level again.
         const seen = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action = 'deploy_commit' AND target = ? AND json_extract(params_json, '$.commit_sha') = ?
-             AND (status <> 'shadow_blocked' OR created_at >= ?)
+             AND ((status NOT IN ('shadow_blocked', 'expired') AND NOT (status = 'shadow_passed' AND COALESCE(autonomy_level, '') IN ('observe', 'suggest'))) OR created_at >= ?)
              AND NOT (? = 1 AND status = 'rejected' AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0) LIMIT 1`,
         ).bind(u.target, pending.main_sha, new Date(Date.now() - 3_600_000).toISOString(), brakeOff ? 1 : 0).first();
-        if (seen) continue;
-        const r = await syscall(env, AGENT_ID, "consensus.propose", {
+        if (seen) {
+          // Retry a failed, restored deploy of this commit (hardening 2026-11-15), once the brake is off, an hour after
+          // the last attempt, and at most DEPLOY_RETRIES_PER_COMMIT times. Anything else seen stays seen.
+          const attempts = await env.DB.prepare(
+            `SELECT p.proposal_id, p.decided_at, p.status AS prop_status, json_extract(p.outcome_json, '$.executed') AS executed, d.status AS dep_status, json_extract(d.details_json, '$.outcome.restored') AS restored
+               FROM consensus_proposals p LEFT JOIN deployment_requests d ON d.approval_id = p.proposal_id
+              WHERE p.action = 'deploy_commit' AND p.target = ? AND json_extract(p.params_json, '$.commit_sha') = ?
+              ORDER BY p.created_at DESC`,
+          ).bind(u.target, pending.main_sha).all<{ proposal_id: string; decided_at: string | null; prop_status: string | null; executed: number | boolean | null; dep_status: string | null; restored: number | boolean | null }>();
+          const rows = attempts.results ?? [];
+          const last = rows[0];
+          // An attempt counts as retryable when its deploy failed and restored production, or (2026-11-15) when the
+          // passed proposal failed before anything was dispatched (no deployment request, executed false; e.g.
+          // github_main_not_mirrored), so nothing changed in production.
+          const restoredFailure = (r: (typeof rows)[number]) => r.dep_status === "failed" && (r.restored === 1 || r.restored === true);
+          const undispatched = (r: (typeof rows)[number]) => r.dep_status === null && r.prop_status === "failed" && (r.executed === 0 || r.executed === false);
+          const allFailedRestored = rows.length > 0 && rows.every((r) => restoredFailure(r) || undispatched(r));
+          const retryable = brakeOff && allFailedRestored && rows.length <= DEPLOY_RETRIES_PER_COMMIT
+            && Boolean(last?.decided_at) && Date.now() - Date.parse(last!.decided_at!) >= DEPLOY_RETRY_AFTER_MS;
+          if (!retryable) continue;
+          report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", why: `retry ${rows.length} of ${DEPLOY_RETRIES_PER_COMMIT}: the deploy of main ${pending.main_sha.slice(0, 12)} failed ${rows.every(undispatched) ? "before anything was dispatched" : "and production was restored"}` });
+        }
+        const r = await proposeConsensus({
           action: "deploy_commit", target: u.target,
           params: { commit_sha: pending.main_sha, unit: u.unit, workflow: u.workflow, reason: u.reason.slice(0, 200) },
         });
+        if (!r) break;
         proposed += 1;
         report.actions.push(r);
         report.findings.push({ kind: "deploy", service_id: u.target, action: "consensus.propose", outcome: r.outcome });
       }
+      // Owner 2026-11-16 ("1. Ya"): a unit whose Workers carry another identity value than the owner-saved list is
+      // redeployed at its running commit, once per identity revision, within the same limits (identity-redeploy.ts).
+      proposed += await proposeIdentityRedeploys(env, {
+        pendingUnits: pending.units.map((u) => u.unit), capacity: MAX_DEPLOY_PROPOSALS_PER_CYCLE - proposed,
+        dailyFull: (daily?.n ?? 0) >= dailyLimit, brakeOff, ran, now: Date.now(), propose: proposeConsensus, findings: report.findings, actions: report.actions,
+      });
     } catch (err) {
       report.findings.push({ kind: "deploy", action: "none", why: `pending deploys unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
@@ -421,34 +655,78 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
 
   // ADR-0012 G3b: after the cut-over (merge path forge), a change request on platform-work whose every check passed is
   // proposed for merge, one per cycle: merge_change for routine paths, merge_owner_change (the owner's click) when it
-  // touches a guard path. Once per request and head; a policy veto (shadow_blocked) is retried after an hour.
+  // touches a guard path. Once per request and head; a policy veto (shadow_blocked) is retried after an hour, and so is
+  // a proposal the council rejected while a critical report held the brake (evidence critical_reports_24h > 0), once
+  // the brake is off (2026-11-16: four checked requests rejected at 14:52-15:22 during rpt_c71112c0 were never
+  // proposed again after the owner acknowledged it, because the head had not changed).
+  // A request the Forge refused is never proposed: not based on main (blocked_reason), or main merged in as the second
+  // parent (history_blocked_reason main_not_first_parent, the linear-history guard of 2026-11-14). The Forge's live
+  // state is the last word: changeState reports such a head as verdict blocked, which maps to no action below.
+  // While a merge_owner_change waits for the owner's click (pending_owner, or executing it, within the 24 h owner
+  // window), no other request is proposed for merge: a merge of another request moves main, and the owner's merge is
+  // then refused (2026-11-17 00:08: the owner approved cns_c2470c88, ADR-0020, in the minute fdc6025 merged; the
+  // Forge refused it as merge_refused:not_fast_forward and the click was lost). The waiting request itself may still
+  // be proposed again; deploys are not held, as they do not move main.
+  const mergeBrakeOff = async (db: Parameters<typeof openCriticalReportRows>[0]): Promise<boolean> => {
+    try { return (await openCriticalReportRows(db, Date.now(), 1)).length === 0; } catch { return false; }
+  };
   if (env.FORGE_MERGE && trigger !== "operator" && (await mergePath(env.DB)) === "forge") {
     try {
       const open = (await env.DB.prepare(
-        "SELECT cr_id, head_sha FROM forge_change_requests WHERE status = 'open' AND source = 'forge' AND blocked_reason IS NULL ORDER BY updated_at ASC LIMIT 10",
+        "SELECT cr_id, head_sha FROM forge_change_requests WHERE status = 'open' AND source = 'forge' AND blocked_reason IS NULL AND history_blocked_reason IS NULL ORDER BY updated_at ASC LIMIT 10",
       ).all<{ cr_id: string; head_sha: string }>()).results ?? [];
       const hourAgo = new Date(now - 3_600_000).toISOString();
+      const ownerWaiting = await env.DB.prepare(
+        `SELECT target FROM consensus_proposals WHERE action = 'merge_owner_change' AND status IN ('pending_owner', 'executing') AND created_at >= ?
+           ORDER BY created_at ASC LIMIT 1`,
+      ).bind(new Date(now - OWNER_DECISION_WINDOW_MS).toISOString()).first<{ target: string }>();
       for (const cr of open) {
+        if (ownerWaiting && cr.cr_id !== ownerWaiting.target) {
+          report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "none", why: `held: ${ownerWaiting.target} waits for the owner's click (merge_owner_change); merging another request first would refuse it` });
+          continue;
+        }
         if (!TARGET.test(cr.cr_id)) {
           report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "none", why: "the change request's id cannot name a consensus target (letters, digits and dashes only)" });
           continue;
         }
         const seen = await env.DB.prepare(
           `SELECT 1 AS x FROM consensus_proposals WHERE action IN ('merge_change', 'merge_owner_change') AND target = ? AND json_extract(params_json, '$.head_sha') = ?
-             AND (status <> 'shadow_blocked' OR created_at >= ?) LIMIT 1`,
-        ).bind(cr.cr_id, cr.head_sha, hourAgo).first();
+             AND (created_at >= ? OR NOT (status = 'shadow_blocked' OR (status = 'rejected' AND ? = 1 AND COALESCE(json_extract(evidence_json, '$.critical_reports_24h'), 0) > 0)
+               OR (action = 'merge_change' AND (status = 'expired' OR (status = 'shadow_passed' AND COALESCE(autonomy_level, '') IN ('observe', 'suggest')))))) LIMIT 1`,
+        ).bind(cr.cr_id, cr.head_sha, hourAgo, await mergeBrakeOff(env.DB) ? 1 : 0).first();
         if (seen) continue;
         const state = await env.FORGE_MERGE.changeState(cr.cr_id);
         if (!state || state.head_sha !== cr.head_sha || !state.contains_main) continue;
         const action = state.verdict === "would_merge" ? "merge_change" : state.verdict === "needs_owner" ? "merge_owner_change" : null;
         if (!action) continue;
-        const r = await syscall(env, AGENT_ID, "consensus.propose", { action, target: cr.cr_id, params: { head_sha: cr.head_sha } });
+        const r = await proposeConsensus({ action, target: cr.cr_id, params: { head_sha: cr.head_sha } });
+        if (!r) break;
         report.actions.push(r);
         report.findings.push({ kind: "merge", service_id: cr.cr_id, action: "consensus.propose", outcome: r.outcome });
         break;
       }
     } catch (err) {
       report.findings.push({ kind: "merge", action: "none", why: `merge proposals unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
+    }
+  }
+
+  // HAIC H2 (owner 2026-11-18: "Konsensus rutin"): a policy_parameter typed proposal the owner confirmed is proposed to
+  // consensus as set_policy_parameter, one per cycle; the owner's confirmation was the click. The proposal records the
+  // consensus proposal id, or why it failed (a full rate window leaves it waiting for the next cycle).
+  if (trigger !== "operator") {
+    try {
+      const next = await nextPolicyHandoff(env.DB);
+      if (next) {
+        const r = await proposeConsensus({ action: "set_policy_parameter", target: next.target, params: { value: next.value, typed_proposal: next.proposal_id } });
+        if (r) {
+          report.actions.push(r);
+          const consensusId = r.outcome === "succeeded" && typeof (r.result as { proposal_id?: unknown }).proposal_id === "string" ? (r.result as { proposal_id: string }).proposal_id : null;
+          await recordPolicyHandoff(env.DB, next.proposal_id, consensusId ? { ok: true, consensus_id: consensusId } : { ok: false, reason: r.outcome === "succeeded" ? "no consensus proposal id" : r.reason });
+          report.findings.push({ kind: "typed_proposal", service_id: next.proposal_id, action: "consensus.propose", outcome: r.outcome });
+        }
+      }
+    } catch (err) {
+      report.findings.push({ kind: "typed_proposal", action: "none", why: `typed proposal hand-off unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
   }
 
@@ -473,9 +751,11 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
           report.findings.push({ kind: "access", action: "none", why: "the Access change is already proposed; it waits for the owner" });
         } else {
           const changes = (plan.changes ?? []).slice(0, 12).map((c) => String(c).slice(0, 120));
-          const r = await syscall(env, AGENT_ID, "consensus.propose", { action: "change_access", target: "platform", params: { digest: plan.digest, changes } });
-          report.actions.push(r);
-          report.findings.push({ kind: "access", action: "consensus.propose", outcome: r.outcome, why: `${changes.length} Access change(s): ${changes.slice(0, 3).join("; ")}`.slice(0, 300) });
+          const r = await proposeConsensus({ action: "change_access", target: "platform", params: { digest: plan.digest, changes } });
+          if (r) {
+            report.actions.push(r);
+            report.findings.push({ kind: "access", action: "consensus.propose", outcome: r.outcome, why: `${changes.length} Access change(s): ${changes.slice(0, 3).join("; ")}`.slice(0, 300) });
+          }
         }
       }
     } catch (err) {
@@ -495,7 +775,8 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     });
   }
 
-  // Audit real billable usage overages and report throttling intent to maintain free tier
+  // Report the billable costs recorded in the last 30 days (Workers Paid). The monthly budget above decides the mode;
+  // this finding throttles nothing.
   try {
     const thirtyDaysAgo = new Date(now - 30 * 86_400_000).toISOString().slice(0, 10);
     const overages = await env.DB.prepare(
@@ -506,13 +787,55 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
         kind: "billable_usage_overage",
         service_id: o.service_id,
         period_day: o.period_day,
-        action: "throttle_free_tier",
-        outcome: "throttled",
-        why: `incurred billable cost of ${o.estimated_cost_usd.toFixed(2)} USD on ${o.period_day}; throttled to preserve Free Tier`,
+        action: "report_billable_cost",
+        outcome: "reported",
+        why: `billable cost of ${o.estimated_cost_usd.toFixed(2)} USD a day recorded on ${o.period_day}; the power mode follows the monthly infrastructure budget`,
       });
     }
   } catch {}
 
   await memory.put("last_cycle", report);
   return report;
+}
+
+/** The agents whose DNA (in the latest census) declares a schedule, with it. */
+export function scheduledAgents(census: CensusRow | null): Map<string, { cron: string }> {
+  const out = new Map<string, { cron: string }>();
+  for (const organ of census?.genome ?? []) {
+    for (const a of organ.agents ?? []) if (a?.schedule && typeof a.schedule.cron === "string") out.set(a.id, { cron: a.schedule.cron });
+  }
+  return out;
+}
+
+/** An agent's latest recorded activity (an action or a report), or null. */
+async function lastActivityMs(env: SyscallEnv, agentId: string): Promise<number | null> {
+  const row = await env.DB.prepare(
+    `SELECT MAX(at) AS at FROM (SELECT MAX(created_at) AS at FROM agent_actions WHERE agent_id = ?1
+       UNION ALL SELECT MAX(created_at) AS at FROM agent_reports WHERE agent_id = ?1)`,
+  ).bind(agentId).first<{ at: string | null }>();
+  return row?.at ? Date.parse(row.at) : null;
+}
+
+/**
+ * Owner 2026-11-14: a retire_agent waiting for the owner's click whose target declares a schedule and is not idle by
+ * it is closed (status expired) with SCHEDULED_IDLE_REASON, and audited. Returns the closed targets.
+ */
+export async function closeScheduledRetirements(env: SyscallEnv, schedules: Map<string, { cron: string }>, now = Date.now()): Promise<string[]> {
+  if (schedules.size === 0) return [];
+  const open = (await env.DB.prepare("SELECT proposal_id, target FROM consensus_proposals WHERE action = 'retire_agent' AND status = 'pending_owner'")
+    .all<{ proposal_id: string; target: string }>()).results ?? [];
+  const closed: string[] = [];
+  for (const p of open) {
+    const schedule = schedules.get(p.target);
+    if (!schedule) continue;
+    const agent = await env.DB.prepare("SELECT created_at FROM agents WHERE agent_id = ?").bind(p.target).first<{ created_at: string }>();
+    if (!agent || isIdle({ createdAtMs: Date.parse(agent.created_at), lastActivityMs: await lastActivityMs(env, p.target), schedule }, now)) continue;
+    const at = new Date(now).toISOString();
+    const res = await env.DB.prepare("UPDATE consensus_proposals SET status = 'expired', decided_at = ?, outcome_json = ? WHERE proposal_id = ? AND status = 'pending_owner'")
+      .bind(at, JSON.stringify({ executed: false, reason: SCHEDULED_IDLE_REASON, schedule }), p.proposal_id).run();
+    if ((res.meta.changes ?? 0) !== 1) continue;
+    await appendAuditEvent(env.DB, { event_type: "consensus.proposal_closed", actor: `agent:${AGENT_ID}`, subject: p.proposal_id, outcome: "expired", payload: { action: "retire_agent", target: p.target, reason: SCHEDULED_IDLE_REASON, schedule } });
+    closed.push(p.target);
+  }
+  return closed;
 }

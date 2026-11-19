@@ -1,0 +1,17 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0004",
+  "title": "Operational control-plane services",
+  "adr_file": "architecture/adr/0004-operational-control-plane.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "M3",
+      "title": "The control-plane services on one D1 database (migration 0003)",
+      "evidence": {
+        "kind": "migration_applied",
+        "name": "0003_control_plane_services.sql"
+      }
+    }
+  ]
+}

@@ -15,10 +15,14 @@
 //   production_unhandled - a production problem no agent is handling (owner-inbox.ts unhandledProblems: the kernel
 //                      or the Drift Detector itself unhealthy, stale observations, a persistent drift with no plan or
 //                      deploy under way or with agents off, a failed or expired recovery, a critical runtime advisory,
-//                      the Workers Builds budget used up).
+//                      the Workers Builds budget used up, a break-glass deploy that succeeded in the last 24 hours,
+//                      deploys stalled for 2 hours on a green main).
 // Every scheduled run (:22 and :52) compares each topic with its last notice event in the audit
 // chain. It records owner.notice_opened, owner.notice_changed or owner.notice_closed, so the state
 // needs no table of its own. The Console shows the live notices at GET /v1/notices.
+// Owner 2026-11-16: after every Supervisor cycle (:07, :22, :37, :52) owner_attention alone is also reconciled when an
+// item newer than its last notice event waits (reconcileOwnerAttentionNow), so an approval request reaches the owner
+// in the same tick instead of up to 30 minutes later.
 //
 // The owner channel (owner 2026-11-13: "Batasi User/Owner hanya untuk critical dan permintaan approval only"):
 // only OWNER_CHANNEL_TOPICS, the approvals (owner_attention), the open critical reports (critical_reports) and the
@@ -34,7 +38,10 @@ import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audi
 import { describeAction, explainReason, serviceName } from "../../control-plane-shared/src/plain.ts";
 import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit, NOTICE_SEVERITIES } from "../../control-plane-shared/src/dependency-audit.ts";
-import { STALE_MS, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
+import { FUTURE_SKEW_MS, STALE_MS, councilProposals, councilsAwaitingOwner, openCriticalReportRows, pendingApprovals, unhandledProblems } from "./owner-inbox.ts";
+import { rankInbox, type InboxItem, type RankInput } from "../../control-plane-shared/src/owner-inbox-rank.ts";
+import { draftsAwaitingOwner } from "./proposals.ts";
+import { autonomyNotices } from "./autonomy.ts";
 import { listChannels, sendToChannel, type AlertVault } from "./alert-channels.ts";
 
 export const CONSOLE_URL = "https://nexus.cryptophys.work/console/";
@@ -62,6 +69,29 @@ export interface Notice {
   title: string;
   lines: string[];
   link: string;
+  /** How many items the notice is about. For the owner topics `lines` lists only the top TOP_LINES of them (HAIC H0d). */
+  count: number;
+}
+
+/**
+ * HAIC H0d (docs/design/HAIC-H0-H1.md §2.5): an owner notice lists its top items by the inbox's score, each with a deep
+ * link to that item on the Owner page. A link only opens the Console, where Access, the click, the typed phrase and
+ * CSRF apply: no notice carries a URL that acts, and there are no inline buttons or callbacks.
+ */
+export const TOP_LINES = 5;
+const EMPTY_RANK: RankInput = { approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [] };
+function dueText(deadline: string | null, now: number): string {
+  const t = Date.parse(String(deadline ?? ""));
+  if (!Number.isFinite(t)) return "no deadline";
+  const h = Math.round((t - now) / 3_600_000);
+  return h <= 0 ? "due now" : h < 48 ? `due in ${h} h` : `due in ${Math.round(h / 24)} d`;
+}
+/** `#<rank> <what> · blocks <…> · <due> · <deep link>`, the top TOP_LINES, and one line for the rest. */
+export function rankedLines(items: InboxItem[], now: number): string[] {
+  const lines = items.slice(0, TOP_LINES).map((i, n) =>
+    `#${n + 1} ${i.what} · blocks ${i.blocks.length ? i.blocks.join(", ") : "nothing"} · ${dueText(i.deadline, now)} · ${CONSOLE_URL}${i.deep_link}`);
+  if (items.length > TOP_LINES) lines.push(`and ${items.length - TOP_LINES} more on the Owner page`);
+  return lines;
 }
 
 export interface SendEmailBinding {
@@ -92,26 +122,34 @@ const channelOn = (env: NoticeEnv, name: "email" | "telegram") =>
 
 const fp = async (parts: string[]) => (parts.length ? (await sha256Hex([...parts].sort().join("\n"))).slice(0, 32) : "");
 
-async function ownerAttention(db: D1Database): Promise<Notice> {
-  const { recovery_plans: plans, consensus: critical, knowledge } = await pendingApprovals(db);
-  const lines = [
-    ...plans.map((p) => `Recovery plan for ${serviceName(p.service_id)} (by ${p.created_by})`),
-    ...critical.map((c) => `Critical action: ${describeAction(c.action, c.target)} (proposed by ${c.proposer_agent_id})`),
-    ...knowledge.map((k) => `Knowledge proposal ${k.item_id}@${k.item_version} (${String(k.kind).replace(/_/g, " ")}, by ${k.proposer_agent_id})`),
-  ];
-  const n = lines.length;
+async function ownerAttention(db: D1Database, now: number): Promise<Notice> {
+  const approvals = await pendingApprovals(db);
+  const { recovery_plans: plans, consensus: critical, knowledge } = approvals;
+  // HAIC H1.5c (§4.6, "Telegram source for council notices"): a council waiting for the owner's pick is part of this
+  // notice, the single source for councils; the xauusd bot sends none.
+  const councils = await councilsAwaitingOwner(db, now);
+  // HAIC H1.5d (Q9): a council an agent proposed waits for the owner to begin it, so it is listed here too.
+  const proposals = await councilProposals(db, now);
+  // HAIC H2: a typed proposal draft waits for the owner's confirmation.
+  const drafts = await draftsAwaitingOwner(db, now);
+  // HAIC H4: a group a regression lowered waits for the owner to look (raise-ready groups stay in the inbox only).
+  const lowered = (await autonomyNotices(db, now)).filter((a) => a.kind === "lowered");
+  const n = plans.length + critical.length + knowledge.length + councils.length + proposals.length + drafts.length + lowered.length;
+  const lines = rankedLines(rankInbox({ ...EMPTY_RANK, approvals, councils, council_proposals: proposals, typed_proposals: drafts, autonomy: lowered }, now), now);
   return {
     topic: "owner_attention", channel: channelOf("owner_attention"), active: n > 0,
-    fingerprint: await fp([...plans.map((p) => p.plan_id), ...critical.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id)]),
+    fingerprint: await fp([...plans.map((p) => p.plan_id), ...critical.map((c) => c.proposal_id), ...knowledge.map((k) => k.proposal_id), ...councils.map((c) => c.session_id), ...proposals.map((c) => c.session_id), ...drafts.map((d) => d.proposal_id), ...lowered.map((a) => `autonomy:${a.group}:${a.since}`)]),
     title: n ? `${n} item(s) wait for your approval` : "Nothing waits for your approval",
     // Every item is decided on the Owner page (owner 2026-11-13), whatever its kind.
-    lines, link: OWNER_PANEL_URL,
+    lines, link: OWNER_PANEL_URL, count: n,
   };
 }
 
 async function drift(db: D1Database, now: number): Promise<Notice> {
-  const services = await db.prepare("SELECT service_id, desired_version FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
-    .all<{ service_id: string; desired_version: string | null }>();
+  // updated_at is the Drift Detector's heartbeat: every run sets it for every service, while drift rows are recorded
+  // only when a service's state changes (0061), so the newest row's observed_at can be days old for a healthy service.
+  const services = await db.prepare("SELECT service_id, desired_version, updated_at FROM service_registry WHERE status != 'disabled' ORDER BY service_id")
+    .all<{ service_id: string; desired_version: string | null; updated_at: string }>();
   // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
   const latest = await db.prepare(
     `SELECT d.service_id, d.drifted, d.evidence_json, d.observed_at FROM service_registry r
@@ -128,10 +166,14 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     const reasons = Array.isArray(ev.reasons) ? ev.reasons.filter((r): r is string => typeof r === "string") : [];
     if (reasons.includes("disabled")) continue;
     const observedAt = Date.parse(o.observed_at);
-    if (!Number.isFinite(observedAt) || observedAt > now) {
-      problems.push({ service: s.service_id, code: "invalid_observation_time", line: `${serviceName(s.service_id)}: invalid observation timestamp ${o.observed_at}` });
-    } else if (now - observedAt > STALE_MS) {
-      problems.push({ service: s.service_id, code: "stale_observation", line: `${serviceName(s.service_id)}: not observed since ${o.observed_at} (check the Drift Detector cron)` });
+    const seenAt = Date.parse(s.updated_at);
+    // A time a little after `now` (the cron's scheduledTime) is a write made while this pass ran (FUTURE_SKEW_MS).
+    const ahead = now + FUTURE_SKEW_MS;
+    if (!Number.isFinite(observedAt) || observedAt > ahead || !Number.isFinite(seenAt) || seenAt > ahead) {
+      const bad = !Number.isFinite(observedAt) || observedAt > ahead ? o.observed_at : s.updated_at;
+      problems.push({ service: s.service_id, code: "invalid_observation_time", line: `${serviceName(s.service_id)}: invalid observation timestamp ${bad}` });
+    } else if (now - seenAt > STALE_MS) {
+      problems.push({ service: s.service_id, code: "stale_observation", line: `${serviceName(s.service_id)}: not observed since ${s.updated_at} (check the Drift Detector cron)` });
     } else if (o.drifted) {
       const running = typeof ev.probe?.version_tag === "string" ? ev.probe.version_tag : "unknown";
       problems.push({ service: s.service_id, code: reasons.join(",") || "drifted",
@@ -142,7 +184,7 @@ async function drift(db: D1Database, now: number): Promise<Notice> {
     topic: "drift", channel: channelOf("drift"), active: problems.length > 0,
     fingerprint: await fp(problems.map((p) => `${p.service}:${p.code}:${p.line}`)),
     title: problems.length ? `Drift in production: ${problems.length} service(s)` : "All services are healthy and at their expected versions",
-    lines: problems.map((p) => p.line), link: `${CONSOLE_URL}#/infrastructure`,
+    lines: problems.map((p) => p.line), link: `${CONSOLE_URL}#/infrastructure`, count: problems.length,
   };
 }
 
@@ -157,8 +199,8 @@ async function criticalReports(db: D1Database, now: number): Promise<Notice> {
     topic: "critical_reports", channel: channelOf("critical_reports"), active: n > 0,
     fingerprint: await fp(rows.map((r) => r.report_id)),
     title: n ? `${n} open critical agent report(s) in the last 24 hours` : "No open critical agent report in the last 24 hours",
-    lines: rows.slice(0, 5).map((r) => `${r.created_at} ${r.agent_id}: ${r.subject.slice(0, 160)}`),
-    link: OWNER_PANEL_URL,
+    lines: rankedLines(rankInbox({ ...EMPTY_RANK, critical_reports: rows }, now), now),
+    link: OWNER_PANEL_URL, count: n,
   };
 }
 
@@ -184,7 +226,7 @@ async function organism(db: D1Database): Promise<Notice> {
     title: findings.length
       ? `The platform's DNA and its registries differ: ${findings.length} item(s)${findings.every((f) => SELF_REGISTERING_FINDINGS.has(f.kind)) ? ", all being registered automatically" : ""}`
       : "Every organ and agent in the DNA is registered",
-    lines: findings.slice(0, 10).map((f) => f.detail), link: `${CONSOLE_URL}#/agents`,
+    lines: findings.slice(0, 10).map((f) => f.detail), link: `${CONSOLE_URL}#/agents`, count: findings.length,
   };
 }
 
@@ -207,7 +249,7 @@ async function buildMinutes(db: D1Database, now: number): Promise<Notice> {
       : active
       ? `Workers Builds minutes: ${u.status === "over" ? "over" : "near"} the free-tier budget (${u.minutes}/${u.budget_minutes} this month)`
       : `Workers Builds minutes within the free-tier budget (${u.minutes}/${u.budget_minutes} this month)`,
-    lines, link: `${CONSOLE_URL}#/code`,
+    lines, link: `${CONSOLE_URL}#/code`, count: lines.length,
   };
 }
 
@@ -236,7 +278,7 @@ async function dependencies(db: D1Database, now: number): Promise<Notice> {
       : n ? `Vulnerable npm dependencies: ${n} high or critical advisor${n === 1 ? "y" : "ies"} in Worker or Console builds${a.stale ? "; the audit is also stale" : ""}`
       : a.stale ? "The npm dependency audit has not succeeded for 72 hours"
       : `No high or critical advisory in Worker or Console builds (${a.findings.length} finding(s) in total)`,
-    lines, link: `${CONSOLE_URL}#/code`,
+    lines, link: `${CONSOLE_URL}#/code`, count: lines.length,
   };
 }
 
@@ -248,13 +290,20 @@ async function productionUnhandled(db: D1Database, now: number): Promise<Notice>
     topic: "production_unhandled", channel: channelOf("production_unhandled"), active: n > 0,
     fingerprint: await fp(problems.map((p) => `${p.code}:${p.subject}`)),
     title: n ? `A production problem no agent is handling: ${n} item(s)` : "Every production problem is handled by an agent or waits for your approval",
-    lines: problems.slice(0, 20).map((p) => p.detail), link: OWNER_PANEL_URL,
+    lines: rankedLines(rankInbox({ ...EMPTY_RANK, production_problems: problems }, now), now), link: OWNER_PANEL_URL, count: n,
   };
 }
 
-/** The live notices, for the Console and for reconcileNotices. Read-only. */
-export async function collectNotices(db: D1Database, now = Date.now()): Promise<Notice[]> {
-  return [await ownerAttention(db), await drift(db, now), await criticalReports(db, now), await organism(db), await buildMinutes(db, now), await dependencies(db, now), await productionUnhandled(db, now)];
+const COLLECTORS: Record<Topic, (db: D1Database, now: number) => Promise<Notice>> = {
+  owner_attention: ownerAttention, drift, critical_reports: criticalReports, organism: (db) => organism(db),
+  build_minutes: buildMinutes, dependencies, production_unhandled: productionUnhandled,
+};
+
+/** The live notices, for the Console and for reconcileNotices, in TOPICS order (only `topics`, when given). Read-only. */
+export async function collectNotices(db: D1Database, now = Date.now(), topics: readonly Topic[] = TOPICS): Promise<Notice[]> {
+  const out: Notice[] = [];
+  for (const t of TOPICS) if (topics.includes(t)) out.push(await COLLECTORS[t](db, now));
+  return out;
 }
 
 const owners = (env: NoticeEnv) => (env.APPROVER_IDENTITIES ?? "").split(",").map((v) => v.trim().toLowerCase()).filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));
@@ -358,10 +407,14 @@ async function lastState(db: D1Database, topic: Topic): Promise<{ open: boolean;
   };
 }
 
-/** Open, update or close each topic's notice (idempotent; at most one event per topic per run). */
-export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promise<{ topic: Topic; change: string; delivery?: string }[]> {
+/**
+ * Open, update or close each topic's notice (idempotent; at most one event per topic per run). `topics` limits the
+ * run to those topics (owner 2026-11-16: the owner_attention pass right after a Supervisor cycle); the others keep
+ * their :22/:52 cadence.
+ */
+export async function reconcileNotices(env: NoticeEnv, now = Date.now(), opts: { topics?: readonly Topic[] } = {}): Promise<{ topic: Topic; change: string; delivery?: string }[]> {
   const out: { topic: Topic; change: string; delivery?: string }[] = [];
-  for (const n of await collectNotices(env.DB, now)) {
+  for (const n of await collectNotices(env.DB, now, opts.topics)) {
     const last = await lastState(env.DB, n.topic);
     const change = n.active && !last.open ? "opened" : n.active && last.fingerprint !== n.fingerprint ? "changed" : !n.active && last.open ? "closed" : null;
     if (!change) {
@@ -379,7 +432,7 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
       const allSent = Object.values(merged).every((r) => r === "sent");
       await appendAuditEvent(env.DB, {
         event_type: "owner.notice_delivery_retry", actor: "agent:supervisor", subject: n.topic, outcome: "delivery_retry",
-        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.lines.length, title: n.title, delivery: allSent ? "sent" : delivery, channels: merged, retries: last.retries + 1 },
+        payload: { fingerprint: n.active ? n.fingerprint : "", state: n.active ? "open" : "closed", count: n.count, title: n.title, delivery: allSent ? "sent" : delivery, channels: merged, retries: last.retries + 1 },
       });
       out.push({ topic: n.topic, change: "delivery_retry", delivery });
       continue;
@@ -387,9 +440,43 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now()): Promis
     const { delivery, channels } = await deliver(env, change, n);
     await appendAuditEvent(env.DB, {
       event_type: `owner.notice_${change}`, actor: "agent:supervisor", subject: n.topic, outcome: change,
-      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.lines.length, title: n.title, delivery, channels },
+      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.count, title: n.title, delivery, channels },
     });
     out.push({ topic: n.topic, change, delivery });
   }
   return out;
+}
+
+/**
+ * Owner 2026-11-16 (cns_dea7a710 was created 7 s after the 10:52:46 notice pass and approved before any notice opened):
+ * whether something waits for the owner (a consensus proposal in pending_owner, a draft recovery plan, a pending
+ * knowledge proposal: owner-inbox.ts pendingApprovals, the owner_attention items, or since H1.5c a council waiting for
+ * the owner's pick) that is newer than the topic's last
+ * notice event, i.e. not yet in any notice the owner received. Read-only; false when nothing new waits.
+ */
+export async function ownerAttentionHasNewItems(db: D1Database): Promise<boolean> {
+  const { recovery_plans: plans, consensus: critical, knowledge } = await pendingApprovals(db);
+  const councils = await councilsAwaitingOwner(db);
+  const proposals = await councilProposals(db);
+  const drafts = await draftsAwaitingOwner(db);
+  const lowered = (await autonomyNotices(db)).filter((a) => a.kind === "lowered");
+  const created = [...plans, ...critical, ...knowledge].map((i) => Date.parse(i.created_at))
+    .concat(councils.map((c) => Date.parse(String(c.since ?? ""))), proposals.map((c) => Date.parse(c.since)), drafts.map((d) => Date.parse(d.since)), lowered.map((a) => Date.parse(a.since))).filter(Number.isFinite);
+  if (!created.length) return false;
+  const last = await db.prepare("SELECT created_at FROM audit_events WHERE event_type IN ('owner.notice_opened','owner.notice_changed','owner.notice_closed','owner.notice_delivery_retry') AND subject = 'owner_attention' ORDER BY rowid DESC LIMIT 1")
+    .first<{ created_at: string }>();
+  const lastAt = last ? Date.parse(last.created_at) : Number.NEGATIVE_INFINITY;
+  return created.some((t) => t > lastAt);
+}
+
+/**
+ * Owner 2026-11-16: the owner_attention notice right after a Supervisor cycle, not up to 30 minutes later. Runs the
+ * ordinary reconcile for owner_attention alone (same fingerprint dedup, MAX_DELIVERY_RETRIES, channels and closing),
+ * and only when an item newer than the last notice event waits; otherwise it sends nothing and records nothing.
+ * The kernel's scheduled handler calls it after the cycle and after that tick's :22/:52 pass have settled, so two
+ * passes never race on the topic.
+ */
+export async function reconcileOwnerAttentionNow(env: NoticeEnv, now = Date.now()): Promise<{ topic: Topic; change: string; delivery?: string } | null> {
+  if (!(await ownerAttentionHasNewItems(env.DB))) return null;
+  return (await reconcileNotices(env, now, { topics: ["owner_attention"] }))[0] ?? null;
 }

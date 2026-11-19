@@ -1,14 +1,23 @@
+// The Deployment Orchestrator's HTTP surface. Owner 2026-11-14: "hapus aja, karena roadmap berikutnya kita kembangkan
+// Human Ai Interaction & Collaboration". The manual POST /v1/deployments (a GitHub ref lookup and CI gate, then a
+// dispatch of deploy-platform-api.yml) is removed. Every scenario its gate used to decide is kept below and must now
+// reach nothing: no GitHub call, no dispatch, no ledger row, no audit event, no lock claim, no AI and no report.
+// What stays is tested here and elsewhere: readiness and the read-only list (below, and pipelines.test.ts); the CI
+// evidence the consensus fallback's GitHub gate shares (latestRunPerWorkflow, ciGreen; below and consensus-phase3);
+// consensus deploys and their workflow fallback (consensus-phase3, native-deploy-g2b/g2c1); native rollback
+// (native-rollback-0012).
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, OPERATOR_EMAIL, accessCertsResponse, call, fakeAi, isAccessCerts, migratedDb, signAccessJwt } from "./harness.ts";
-import orchestrator, { DeploymentLock } from "../../deployment-orchestrator/src/index.ts";
+import orchestrator, { ciGreen, DeploymentLock, latestRunPerWorkflow } from "../../deployment-orchestrator/src/index.ts";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
-/** Durable Object namespace backed by real DeploymentLock instances with in-memory storage. */
+/** Durable Object namespace backed by real DeploymentLock instances with in-memory storage; counts every lock call. */
 function lockNamespace() {
   const objects = new Map<string, DeploymentLock>();
-  return {
+  const ns = {
+    calls: 0,
     idFromName: (name: string) => name,
     get(id: unknown) {
       const key = String(id);
@@ -19,16 +28,19 @@ function lockNamespace() {
           blockConcurrencyWhile: (cb) => cb(),
         }));
       }
-      return { fetch: (input: RequestInfo | URL, init?: RequestInit) => objects.get(key)!.fetch(new Request(input as string, init)) };
+      return { fetch: (input: RequestInfo | URL, init?: RequestInit) => { ns.calls++; return objects.get(key)!.fetch(new Request(input as string, init)); } };
     },
   };
+  return ns;
 }
 
 interface GithubState {
   mainSha: string;
-  runs: { workflow_id: number; name: string; path?: string; event?: string; status: string; conclusion: string | null; run_number: number }[];
+  runs: { workflow_id: number; name: string; path?: string; event?: string; head_branch?: string; status: string; conclusion: string | null; run_number: number; run_attempt?: number }[];
   dispatchStatus: number;
   dispatched: unknown[];
+  /** Every GitHub API URL requested. */
+  calls: string[];
   actionsForbidden?: boolean;
 }
 
@@ -41,16 +53,18 @@ beforeEach(() => {
     runs: [{ workflow_id: 1, name: "Validate", status: "completed", conclusion: "success", run_number: 7 }],
     dispatchStatus: 204,
     dispatched: [],
+    calls: [],
   };
+  // The same GitHub fake the manual path was tested against: had it survived, these requests would succeed.
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (isAccessCerts(url)) return accessCertsResponse();
+    github.calls.push(url);
     const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
     assert.match(String((init?.headers as Record<string, string>)?.authorization), /^Bearer gh-token$/);
     if (url.endsWith("/git/ref/heads/main")) return reply({ object: { sha: github.mainSha } });
     if (url.endsWith("/status")) return reply({ state: "success", total_count: 0 });
     if (url.includes("/actions/runs?head_sha=")) {
-      assert.ok(url.includes(`head_sha=${SHA}`));
       if (github.actionsForbidden) return reply({ message: "Resource not accessible by personal access token" }, 403);
       return reply({ total_count: github.runs.length, workflow_runs: github.runs });
     }
@@ -67,140 +81,158 @@ afterEach(() => {
 });
 
 function env(db = migratedDb()) {
+  const reports: unknown[] = [];
   return {
     SERVICE_NAME: "cryptophys-deployment-orchestrator",
     SERVICE_ENVIRONMENT: "production",
     API_CONTRACT_VERSION: "v1",
     GH_ACTIONS_TOKEN: "gh-token",
-    DEPLOY_ALLOWED_IDENTITIES: `${CI_CLIENT_ID}, ${OPERATOR_EMAIL.toUpperCase()}`,
     DEPLOYMENT_LOCK: lockNamespace(),
     DB: db,
     AI: fakeAi({ response: '{"summary":"Routine API release.","risk_level":"low","notes":["All checks passed"]}' }),
     AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast",
     ACCESS_TEAM_DOMAIN: "cryptophys.cloudflareaccess.com",
     ACCESS_AUD: "test-audience-tag",
+    OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL}`,
+    AGENTS: { whoami: async () => ({}), observe: async () => ({}), syscall: async (...args: unknown[]) => { reports.push(args); return {}; } },
+    reports,
   };
 }
+/** The deploy workflow still sets the old allow-list as a var until the owner removes that line; it must change nothing. */
+const staleEnv = () => ({ ...env(), DEPLOY_ALLOWED_IDENTITIES: `${CI_CLIENT_ID}, ${OPERATOR_EMAIL.toUpperCase()}` });
+const rows = (e: ReturnType<typeof env>, table: "deployment_requests" | "audit_events") =>
+  (e.DB.raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as any).n as number;
 
-const deploy = (body: unknown, jwt: string | null = CI_JWT, query = "") =>
+const deploy = (body: unknown, jwt: string | null = CI_JWT, query = "", method = "POST") =>
   new Request(`https://cryptophys-deployment-orchestrator.example.workers.dev/v1/deployments${query}`, {
-    method: "POST",
+    method,
     headers: { ...(jwt ? { "cf-access-jwt-assertion": jwt } : {}), "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: typeof body === "string" ? body : JSON.stringify(body),
   });
 const ready = () => new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/ready", { headers: { "cf-access-jwt-assertion": CI_JWT } });
 
-test("readiness requires the migrated schema and AI binding in addition to secrets and lock", async () => {
-  assert.equal((await call(orchestrator, env(), ready())).body.production_dispatch_enabled, true);
+test("readiness requires the migrated schema, the AI binding and the GitHub token (the consensus fallback); no deploy allow-list", async () => {
+  const ok = await call(orchestrator, env(), ready());
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.production_dispatch_enabled, true);
+  assert.equal("deploy_identities_configured" in ok.body.checks, false, "the manual path's allow-list is no readiness check any more");
   const noSchema = await call(orchestrator, env(migratedDb({ recordLedger: false })), ready());
   assert.deepEqual([noSchema.status, noSchema.body.checks.database_schema], [503, false]);
   assert.equal((await call(orchestrator, { ...env(), AI: undefined }, ready())).status, 503);
-  const noIdentities = await call(orchestrator, { ...env(), DEPLOY_ALLOWED_IDENTITIES: " " }, ready());
-  assert.deepEqual([noIdentities.status, noIdentities.body.checks.deploy_identities_configured], [503, false]);
+  const noToken = await call(orchestrator, { ...env(), GH_ACTIONS_TOKEN: "" }, ready());
+  assert.deepEqual([noToken.status, noToken.body.checks.github_token_configured], [503, false], "the workflow fallback still needs its token");
+  assert.equal((await call(orchestrator, { ...env(), DEPLOY_ALLOWED_IDENTITIES: " " }, ready())).status, 200, "a leftover allow-list var changes nothing");
 });
 
-test("authenticated, CI-green request is ledgered, audited, dispatched once and advised", async () => {
-  const e = env();
+test("an allow-listed, CI-green request with ?advisory=true is no longer served: nothing is looked up, ledgered, dispatched or advised", async () => {
+  const e = staleEnv();
   const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY", requested_by: "spoofed@evil" }, OPERATOR_JWT, "?advisory=true"));
-  assert.equal(res.status, 202);
-  assert.equal(res.body.status, "production_dispatch_accepted");
-  assert.equal(res.body.advisory.status, "ok");
-  assert.equal(res.body.advisory.data.risk_level, "low");
-  assert.deepEqual(github.dispatched, [{ ref: "main", inputs: { confirm_production: "DEPLOY", commit_sha: SHA } }]);
-
-  const row = e.DB.raw.prepare("SELECT status, requested_by, requested_version FROM deployment_requests WHERE request_id = ?").get(res.body.request_id) as any;
-  assert.deepEqual([row.status, row.requested_by, row.requested_version], ["running", OPERATOR_EMAIL, SHA]);
-  const evt = e.DB.raw.prepare("SELECT event_type, outcome FROM audit_events WHERE event_id = ?").get(res.body.audit_event_id) as any;
-  assert.deepEqual([evt.event_type, evt.outcome], ["deployment.dispatched", "running"]);
-
+  assert.equal(res.status, 405);
+  assert.equal(res.body.error, "method_not_allowed");
+  assert.equal(res.body.advisory, undefined, "no AI risk summary");
+  assert.equal(res.body.request_id, undefined, "no request is created");
+  assert.deepEqual(github.dispatched, []);
+  assert.deepEqual(github.calls, [], "GitHub is not asked for main's ref or CI");
+  assert.equal(rows(e, "deployment_requests"), 0);
+  assert.equal(rows(e, "audit_events"), 0);
+  assert.equal(e.DEPLOYMENT_LOCK.calls, 0, "no deployment lock is claimed");
   const again = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([again.status, again.body.error], [409, "duplicate_production_deployment_request"]);
-  assert.equal(github.dispatched.length, 1);
+  assert.deepEqual([again.status, again.body.error], [405, "method_not_allowed"], "nor for the CI service token");
 });
 
-test("AI is never consulted for the gate: a red check blocks even with a glowing advisory", async () => {
-  const e = env();
+test("AI is never consulted and nothing is reported: a red check meets the same 405 as a green one", async () => {
+  const e = staleEnv();
   github.runs.push({ workflow_id: 2, name: "Validate Control Plane Workers", status: "completed", conclusion: "failure", run_number: 3 });
   const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, CI_JWT, "?advisory=true"));
-  assert.deepEqual([res.status, res.body.error], [409, "ci_not_green"]);
+  assert.deepEqual([res.status, res.body.error], [405, "method_not_allowed"]);
   assert.equal(github.dispatched.length, 0);
   assert.equal((e.AI as any).calls.length, 0);
-  const evt = e.DB.raw.prepare("SELECT outcome, payload_json FROM audit_events WHERE event_type = 'deployment.rejected'").get() as any;
-  assert.equal(evt.outcome, "ci_not_green");
-  assert.match(evt.payload_json, /Validate Control Plane Workers/);
+  assert.equal(e.DB.raw.prepare("SELECT outcome FROM audit_events WHERE event_type = 'deployment.rejected'").get(), undefined, "no rejection is audited");
+  assert.equal(e.reports.length, 0, "no agent report is published");
 });
 
-test("stale SHA, bad auth, bad input and dispatch failures are handled without dispatching twice", async () => {
-  const e = env();
-  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, null))).status, 403, "no Access JWT");
+test("no identity, body or main state reaches the removed gate; Access still runs first", async () => {
+  const e = staleEnv();
+  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, null))).status, 403, "no Access JWT: Access refuses before routing");
   const stranger = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, await signAccessJwt({ common_name: "other-token.access" })));
-  assert.deepEqual([stranger.status, stranger.body.error], [403, "forbidden"], "valid Access identity that is not on the allow-list");
+  assert.deepEqual([stranger.status, stranger.body.error], [405, "method_not_allowed"], "there is no allow-list left to consult");
   const nobody = await call(orchestrator, { ...e, DEPLOY_ALLOWED_IDENTITIES: "" }, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.equal(nobody.status, 403, "an empty allow-list admits nobody");
-  assert.equal((await call(orchestrator, e, deploy({ commit_sha: "abc", confirm_production: "DEPLOY" }))).status, 400);
-  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "yes" }))).status, 400);
+  assert.equal(nobody.status, 405);
+  assert.equal((await call(orchestrator, e, deploy({ commit_sha: "abc", confirm_production: "DEPLOY" }))).status, 405, "the body is not read");
+  assert.equal((await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "yes" }))).status, 405);
+  assert.equal((await call(orchestrator, e, deploy("{not json"))).status, 405);
 
   github.mainSha = "f".repeat(40);
   const stale = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([stale.status, stale.body.error], [409, "commit_not_current_main"]);
+  assert.deepEqual([stale.status, stale.body.error], [405, "method_not_allowed"]);
 
   github.mainSha = SHA;
   github.dispatchStatus = 422;
   const failed = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([failed.status, failed.body.manual_reconciliation_required], [502, true]);
-  const row = e.DB.raw.prepare("SELECT status FROM deployment_requests WHERE request_id = ?").get(failed.body.request_id) as any;
-  assert.equal(row.status, "failed");
+  assert.deepEqual([failed.status, failed.body.manual_reconciliation_required], [405, undefined]);
+  assert.equal(rows(e, "deployment_requests"), 0);
   const types = e.DB.raw.prepare("SELECT event_type FROM audit_events ORDER BY rowid").all().map((r: any) => r.event_type);
-  assert.deepEqual(types, ["deployment.rejected", "deployment.dispatch_failed"]);
+  assert.deepEqual(types, [], "neither deployment.rejected nor deployment.dispatch_failed");
+  assert.deepEqual(github.calls, []);
 });
 
-test("a CI lookup the token may not read fails closed and names the missing permission", async () => {
-  const e = env();
+test("the rest of the surface is unchanged: the read-only list, other methods 405, other paths 404", async () => {
+  const e = staleEnv();
   github.actionsForbidden = true;
-  const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([res.status, res.body.error], [502, "github_ci_lookup_failed"]);
-  assert.deepEqual(res.body.lookups.workflow_runs, { http_status: 403, required_permission: "Actions: Read" });
-  assert.equal(res.body.lookups.commit_status.http_status, 200);
-  assert.equal(github.dispatched.length, 0);
-  assert.doesNotMatch(JSON.stringify(res.body), /gh-token/);
+  const list = await call(orchestrator, e, deploy(undefined, OPERATOR_JWT, "?limit=5", "GET"));
+  assert.equal(list.status, 200, "GET /v1/deployments, the ledger the Pipelines page shows, stays");
+  assert.deepEqual(list.body.requests, []);
+  for (const method of ["PUT", "PATCH", "DELETE"]) {
+    const res = await call(orchestrator, e, deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }, CI_JWT, "", method));
+    assert.deepEqual([method, res.status], [method, 405]);
+  }
+  const other = await call(orchestrator, e, new Request("https://cryptophys-deployment-orchestrator.example.workers.dev/v1/deploy", { method: "POST", headers: { "cf-access-jwt-assertion": CI_JWT } }));
+  assert.deepEqual([other.status, other.body.error], [404, "not_found"]);
+  assert.deepEqual(github.calls, []);
+  assert.doesNotMatch(JSON.stringify(list.body), /gh-token/);
 });
 
-test("scheduled monitoring runs neither block nor satisfy the CI gate", async () => {
+test("the consensus fallback's CI evidence: scheduled monitoring runs neither block nor satisfy it", async () => {
+  // latestRunPerWorkflow is shared by ciGreen, the GitHub-side CI check kept beside the consensus fallback.
   github.runs = [
     { workflow_id: 1, name: "Validate", path: ".github/workflows/validate.yml", event: "push", status: "completed", conclusion: "success", run_number: 8 },
     { workflow_id: 77, name: "Drift Alert", path: ".github/workflows/drift-alert.yml", event: "schedule", status: "completed", conclusion: "failure", run_number: 3 },
     { workflow_id: 77, name: "Drift Alert", path: ".github/workflows/drift-alert.yml", event: "schedule", status: "in_progress", conclusion: null, run_number: 4 },
   ];
-  const ok = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.equal(ok.status, 202, "a scheduled run on main must not block a deployment");
-  const dispatchedBefore = github.dispatched.length;
-  github.runs = [{ workflow_id: 77, name: "Drift Alert", path: ".github/workflows/drift-alert.yml", event: "schedule", status: "completed", conclusion: "success", run_number: 5 }];
-  const onlyScheduled = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([onlyScheduled.status, onlyScheduled.body.error], [409, "ci_not_green"], "a scheduled run alone is not CI evidence");
-  assert.equal(github.dispatched.length, dispatchedBefore);
+  assert.deepEqual(latestRunPerWorkflow(github.runs as never).map((r) => r.name), ["Validate"], "a scheduled run on main does not block");
+  assert.deepEqual(latestRunPerWorkflow([{ workflow_id: 77, name: "Drift Alert", event: "schedule", status: "completed", conclusion: "success", run_number: 5 }] as never), [], "a scheduled run alone is not CI evidence");
+  github.runs = [
+    { workflow_id: 1, name: "Validate Control Plane Workers", event: "push", head_branch: "main", status: "completed", conclusion: "success", run_number: 9 },
+    { workflow_id: 77, name: "Drift Alert", event: "schedule", head_branch: "main", status: "completed", conclusion: "failure", run_number: 3 },
+  ];
+  const gate = await ciGreen("gh-token", SHA);
+  assert.equal(gate.green, true, "ciGreen still reads GitHub with the Orchestrator's token");
+  assert.deepEqual(gate.workflows, [{ name: "Validate Control Plane Workers", conclusion: "success" }]);
+  assert.ok(github.calls.some((u) => u.includes(`/actions/runs?head_sha=${SHA}&event=push`)));
 });
 
-
-test("gate uses the latest run of each workflow, requires runs, and blocks in-progress work", async () => {
+test("the consensus fallback's CI evidence: the latest run of each workflow decides; none at all is not green", () => {
   // A failed deploy attempt superseded by a later successful run of the same workflow does not block.
-  github.runs = [
+  const superseded = latestRunPerWorkflow([
     { workflow_id: 1, name: "Validate", status: "completed", conclusion: "success", run_number: 7 },
     { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "failure", run_number: 2 },
     { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "success", run_number: 3 },
-  ];
-  assert.equal((await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }))).status, 202);
+  ]);
+  assert.deepEqual(superseded.map((r) => [r.name, r.conclusion]), [["Validate", "success"], ["Deploy Control Plane", "success"]]);
 
   // ...but a failure in the latest run of a workflow blocks.
-  github.runs = [
+  const latestFailed = latestRunPerWorkflow([
     { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "success", run_number: 3 },
     { workflow_id: 9, name: "Deploy Control Plane", status: "completed", conclusion: "failure", run_number: 4 },
-  ];
-  const latestFailed = await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }));
-  assert.deepEqual([latestFailed.status, latestFailed.body.error], [409, "ci_not_green"]);
+  ]);
+  assert.deepEqual(latestFailed.map((r) => r.conclusion), ["failure"]);
 
-  github.runs = [{ workflow_id: 1, name: "Validate", status: "in_progress", conclusion: null, run_number: 8 }];
-  assert.equal((await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }))).status, 409);
+  // A re-run attempt of the same run number supersedes the first attempt.
+  const rerun = latestRunPerWorkflow([
+    { workflow_id: 1, name: "Validate", status: "completed", conclusion: "failure", run_number: 8, run_attempt: 1 },
+    { workflow_id: 1, name: "Validate", status: "in_progress", conclusion: null, run_number: 8, run_attempt: 2 },
+  ]);
+  assert.deepEqual(rerun.map((r) => [r.status, r.run_attempt]), [["in_progress", 2]]);
 
-  github.runs = [];
-  assert.equal((await call(orchestrator, env(), deploy({ commit_sha: SHA, confirm_production: "DEPLOY" }))).status, 409, "no CI at all is not green");
+  assert.deepEqual(latestRunPerWorkflow([]), [], "no CI at all is no evidence");
 });

@@ -12,6 +12,7 @@ import {
 import { Badge, Dot, Empty, Panel } from "../components/ui";
 import { useOverview } from "../lib/overview";
 import CloudflareUsage from "../components/CloudflareUsage";
+import ObserverVitals from "../components/ObserverVitals";
 import { usePoll } from "../lib/usePoll";
 import { call } from "../lib/api";
 import { ago, listOf } from "../lib/format";
@@ -51,6 +52,19 @@ export default function Organism() {
   const burn = listOf(data, "burn_14d");
   const changes = listOf(data, "mode_changes");
   const rules: string[] = Array.isArray(data?.rules) ? data.rules : [];
+  // Owner 2026-11-14: what the mode does, from the kernel (GET /v1/metabolism `mode`); a value it did not measure is null
+  // and shown as "not measured", never as a default.
+  const pm: any = data?.mode ?? {};
+  const blocked: string[] | null = Array.isArray(pm.blocked_capabilities) ? pm.blocked_capabilities : null;
+  const learning: string[] | null = Array.isArray(pm.learning_capabilities) ? pm.learning_capabilities : null;
+  const aiShare = typeof pm.ai_budget?.ratio === "number" ? `${Math.round(pm.ai_budget.ratio * 100)}% of each daily AI budget${typeof pm.ai_budget.max_per_service === "number" ? ` (at most ${pm.ai_budget.max_per_service} per service, ${pm.ai_budget.max_account} per account)` : ""}` : "not measured";
+  const budget: any = pm.budget ?? {};
+  // Owner 2026-11-14: learning observed, never blocked (GET /v1/metabolism `learning`). A value the kernel did not
+  // measure is null and shown as "not measured"; learning's cost is not measured per call, so it is never estimated here.
+  const lrn: any = data?.learning ?? {};
+  const learningHour: any[] | null = Array.isArray(lrn.last_hour) ? lrn.last_hour : null;
+  const learningCalls = learningHour === null ? null : learningHour.reduce((n: number, r: any) => n + (typeof r.count === "number" ? r.count : 0), 0);
+  const learningAgents = learningHour === null ? 0 : new Set(learningHour.map((r: any) => r.agent_id)).size;
   const { buckets, bin } = bucketize(cycles, (c: any) => c.evaluated_at, (c: any) => modeKey(c.power_mode));
 
   const isWeekend = live.market_status === "closed" || live.market_status === "holiday";
@@ -60,7 +74,8 @@ export default function Organism() {
   // placeholder; it is labelled so, dimmed, and no runway is shown (the kernel reports none).
   const placeholder = live.treasury_source === "placeholder";
   const balance = usd(live.treasury_reserve_usd);
-  const burnRate = typeof live.infra_burn_cost_24h === "number" ? `${usd(live.infra_burn_cost_24h)}/day` : "—";
+  // A burn the kernel only estimated (no Billable Usage reading) is labelled so.
+  const burnRate = typeof live.infra_burn_cost_24h === "number" ? `${usd(live.infra_burn_cost_24h)}/day${live.infra_burn_source === "estimate" ? " · estimate" : ""}` : "—";
   const runwayDays = typeof live.runway_days === "number" ? Math.floor(live.runway_days) : "—";
   const lastCycle: any = cycles[0] ?? null;
   const xauusdService = services.find((s) => s.service_id === "xauusd-ai-trading-assistant");
@@ -140,13 +155,47 @@ export default function Organism() {
                 <span>Last heartbeat cycle:</span>
                 <span className="mono text-slate-200" title={lastCycle?.evaluated_at ?? ""}>{lastCycle ? ago(lastCycle.evaluated_at) : "—"}</span>
               </div>
-              <div className="flex justify-between text-slate-400">
-                <span>Its reason:</span>
-                <span className="text-right text-slate-300">{lastCycle?.mode_reason ?? "—"}</span>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Its reason:</span>
+                <span className="text-right text-slate-300" title={pm.reason_at ?? ""}>{typeof pm.reason === "string" ? pm.reason : "not measured"}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Blocked in this mode:</span>
+                <span className="mono text-right text-slate-200">{blocked === null ? "not measured" : blocked.length === 0 ? "no capability" : blocked.join(", ")}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">AI requests:</span>
+                <span className="mono text-right text-slate-200">{aiShare}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Always allowed:</span>
+                <span className="mono text-right text-emerald-300">{learning === null ? "not measured" : learning.join(", ")}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Learning, last hour:</span>
+                <span className="mono text-right text-slate-200">{learningCalls === null ? "not measured" : `${learningCalls} call(s) by ${learningAgents} agent(s)`}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Learning AI requests today:</span>
+                <span className="mono text-right text-slate-200">{typeof lrn.ai_requests_today === "number" ? `${lrn.ai_requests_today}${typeof lrn.ai_requests_today_all === "number" ? ` of ${lrn.ai_requests_today_all} AI requests` : ""}` : "not measured"}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Learning AI cost:</span>
+                <span className="mono text-right text-slate-200">{typeof lrn.cost_usd_month === "number" ? `${usd(lrn.cost_usd_month)} of ${usd(lrn.budget_usd_month)}/month` : `not measured${typeof lrn.budget_usd_month === "number" ? ` (budget ${usd(lrn.budget_usd_month)}/month)` : ""}`}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Monthly budget:</span>
+                <span className="mono text-right text-slate-200">{typeof budget.usd_month === "number" ? `${usd(budget.usd_month)}/month` : "not measured"}</span>
+              </div>
+              <div className="flex justify-between gap-3 text-slate-400">
+                <span className="shrink-0">Projected month:</span>
+                <span className={`mono text-right ${typeof budget.projected_month_usd === "number" && typeof budget.usd_month === "number" && budget.projected_month_usd > budget.usd_month ? "text-amber-300" : "text-slate-200"}`}>
+                  {typeof budget.projected_month_usd === "number" ? `${usd(budget.projected_month_usd)} (${usd(budget.burn_usd_day)}/day × ${num(budget.projection_days)} days)` : "not measured"}
+                </span>
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Policy (rule, not a reading): survival saves AI spending (memory and knowledge proposals, AI budgets at a quarter) and never blocks consensus; growth applies only with the owner's override.
+              Policy (rule, not a reading): survival throttles AI-heavy work only (AI request budgets) and never blocks consensus or learning (memory and knowledge proposals); learning is the highest mandate: no rate limit, no daily cap and no AI budget refusal, only observed (a spike or a repeated subject is an Observer finding, nothing is throttled); it starts when the market is closed, the projected month exceeds the budget (policy parameter {budget.parameter ?? "infra-budget-usd-month"}), on a large loss of the deal results, or under 7 days of runway; growth applies only with the owner's override. The projection is the Billable Usage daily burn × the days of the UTC month; Cloudflare's billing cycle may differ.
             </p>
           </div>
         </Panel>
@@ -174,6 +223,9 @@ export default function Organism() {
 
       {/* Real Cloudflare Usage & Throttling Intents */}
       <CloudflareUsage />
+
+      {/* The account-wide Observer (owner 2026-11-14): measured vitals per organ, anomalies and deploys */}
+      <ObserverVitals />
 
       {/* Metabolism Historical Telemetry (Integrated from Metabolism) */}
       <div className="grid gap-4 lg:grid-cols-2">
@@ -240,7 +292,7 @@ export default function Organism() {
             <p className="text-slate-400 leading-relaxed">
               Verifies SHA-256 hash alignment between trading assistant indicator knowledge base and Aether canon. Doctrinal adjustments are promoted strictly through deterministically reviewed PRs.
             </p>
-            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded">
+            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded-sm">
               Status: checked by the XAUUSD repository CI; not reported to this Console
             </div>
           </div>
@@ -253,7 +305,7 @@ export default function Organism() {
             <p className="text-slate-400 leading-relaxed">
               Audits weighting and parameter candidates in shadow. The rule in force (xauusd SHADOW_MIN_SAMPLE and HOLDOUT_BARS): at least 200 paired rooms for discovery, a Holm-adjusted one-sided sign test (α = 0.05), and the newest 100 rooms as a holdout.
             </p>
-            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded">
+            <div className="mono text-[11px] text-slate-400 bg-white/5 px-2 py-1 rounded-sm">
               Gate: Holm-Bonferroni α=0.05 (rule, not a live status)
             </div>
           </div>

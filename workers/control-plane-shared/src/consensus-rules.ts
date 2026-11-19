@@ -9,6 +9,8 @@ import { POLICY_PARAMETERS, isPolicyParameter, validPolicyValue } from "./policy
 import { DOCTRINE_ACTIONS, doctrineProblem } from "./doctrine.ts";
 import { EXTERNAL_ORIGINS, externalCeilingViolations } from "./organism.ts";
 import type { ChangeEvidence } from "./merge-path.ts";
+import { DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployParams } from "./destructive-deploy.ts";
+import { unitForService } from "./deploy-units.ts";
 
 export type ConsensusClass = "routine" | "critical" | "prohibited";
 export type ConsensusMode = "shadow" | "routine" | "deploy" | "critical";
@@ -19,6 +21,10 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   redeploy_desired_version: { class: "routine", target: "service", description: "Redeploy the registry desired version of a Worker" },
   rollback_worker_version: { class: "routine", target: "service", description: "Roll a Worker back to a version recorded as healthy" },
   deploy_commit: { class: "routine", target: "service", description: "Deploy a CI-green commit from main" },
+  // Cut-over gate (owner 2026-11-15, "1 setuju"): a Control Plane deploy whose pending D1 migrations include destructive
+  // ones (DESTRUCTIVE_SQL) is never routine. The params name the commit and each destructive file with its sha256; after
+  // the owner's click the native deploy records a D1 Time Travel bookmark first, then applies exactly those files.
+  deploy_destructive_migration: { class: "critical", target: "service", description: "Deploy a CI-green commit of main whose D1 migrations drop, delete or rewrite data: the named files only, after a Time Travel bookmark is recorded; one owner approval click" },
   set_desired_version: { class: "routine", target: "service", description: "Record a desired version in the Platform Registry" },
   registry_disable_service: { class: "routine", target: "service", description: "Mark a service disabled in the registry" },
   registry_enable_service: { class: "routine", target: "service", description: "Mark a disabled service registered again" },
@@ -35,7 +41,11 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   register_principal: { class: "critical", target: "agent", description: "Register an external agent principal" },
   // ADR-0013 phase 3: self-registration from the DNA census (owner decisions 2026-11-09).
   register_agent: { class: "routine", target: "agent", description: "Register an agent its Worker's DNA declares (no privileged capability)" },
+  // ADR-0014 §11 (docs/design/EVOLVER.md §8, 2026-11-17): the census finding agent_capabilities_changed had no way out.
+  update_agent_capabilities: { class: "routine", target: "agent", description: "Set a registered agent's capabilities to what its Worker's DNA now declares (no privileged capability; within its origin's ceiling)" },
   register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
+  // Owner 2026-11-15 ("Aksi retire_engine"): the mirror of register_engine, for an engine its Worker's DNA no longer declares.
+  retire_engine: { class: "routine", target: "service", description: "Retire an AI engine (task) its Worker's DNA no longer declares (status retired; no data deleted)" },
   register_privileged_agent: { class: "critical", target: "agent", description: "Register a DNA-declared agent that asks for a privileged capability" },
   admit_voter: { class: "critical", target: "agent", description: "Give a registered agent a council seat (one per Worker)" },
   // Owner 2026-11-10: the council may change Policy Engine parameters by consensus alone, inside hard bounds in code.
@@ -70,6 +80,19 @@ export function mergeVote(p: Proposal, e: Evidence): { vote: Vote["vote"]; reaso
 }
 
 /**
+ * Every voter's rule for deploy_destructive_migration (owner 2026-11-15): malformed params, or a target outside the
+ * Control Plane unit, are rejected by every seat; otherwise null and the voter's domain rule applies as for
+ * deploy_commit. The Orchestrator re-checks all of it against main and D1 (deployDestructiveForConsensus).
+ */
+export function destructiveDeployVote(p: Proposal): { vote: Vote["vote"]; reason: string } | null {
+  if (p.action !== DESTRUCTIVE_DEPLOY_ACTION) return null;
+  const d = destructiveDeployParams(p.params);
+  if ("problem" in d) return { vote: "reject", reason: d.problem };
+  if (unitForService(p.target)?.unit !== d.unit) return { vote: "reject", reason: `${p.target} is not a Worker of the ${d.unit} unit` };
+  return null;
+}
+
+/**
  * The founding council (ADR-0009 §2). Since ADR-0013 phase 3 the council is data: the agents with
  * agents.voter = 1 (migration 0041 seeds exactly these nine). This list keeps each founder's domain
  * rule below and the identity check of the voting Workers' RPC. XAUUSD agents never vote.
@@ -80,7 +103,8 @@ export const VOTERS = [
 ] as const;
 export type Voter = string;
 
-export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor"]);
+/** The agents the AI Kernel hosts (its DNA; organism-dna-0013 O6 keeps them equal): consensus never suspends or retires one. */
+export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor", "adr-steward", "evolver"]);
 /**
  * Hosts whose agents are never retired for idleness (owner 2026-11-11):
  *  - xauusd-ai-trading-assistant: its agents speak in its own rooms and report to the kernel only on a
@@ -91,7 +115,10 @@ export const KERNEL_AGENTS = new Set(["supervisor", "signal-analyst", "auditor"]
  * owner's click).
  */
 export const RETIRE_EXEMPT_HOSTS = new Set(["xauusd-ai-trading-assistant"]);
-/** An agent registered this long ago with no action, report or vote in this window is proposed for retirement. */
+/**
+ * An agent registered this long ago with no action, report or vote in this window is proposed for retirement. An agent
+ * whose DNA declares a schedule gets a window of 3 of its runs if that is longer (agent-idle.ts, owner 2026-11-14).
+ */
 export const RETIRE_IDLE_DAYS = 14;
 export const HEX_VERSION = /^[0-9a-f]{7,40}$/;
 export const COMMIT = /^[0-9a-f]{40}$/;
@@ -126,14 +153,40 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
     const privileged = privilegedCapabilities(caps);
     if (p.action === "register_agent" && privileged.length) return { vote: "reject", reason: `privileged capabilities need register_privileged_agent: ${privileged.join(", ")}` };
-    // An external organ's agent (its DNA came over RPC) stays within the external ceiling (owner 2026-11-12).
-    if (EXTERNAL_ORIGINS.some((o) => o.services.includes(host))) {
-      const over = externalCeilingViolations({ tier_max: Number(p.params.tier_max), capabilities: caps });
-      if (over.length || p.action !== "register_agent") return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ") || "privileged registration"}` };
+    // An external organ's agent (its DNA came over RPC) stays within its origin's ceiling (owner 2026-11-12). Only a
+    // capability that ceiling names for this agent can make it privileged (Aether's knowledge-council, owner
+    // 2026-11-14: consensus.propose); such a registration is critical, so it still waits for the owner's click.
+    const origin = EXTERNAL_ORIGINS.find((o) => o.services.includes(host));
+    if (origin) {
+      const over = externalCeilingViolations({ id: p.target, tier_max: Number(p.params.tier_max), capabilities: caps }, origin);
+      if (over.length || (p.action !== "register_agent" && privileged.length === 0)) return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ") || "privileged registration"}` };
     }
     return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
   }
-  if (p.action === "register_engine") {
+  // update_agent_capabilities: the checks of register_agent on an agent that is already registered on that host. A set
+  // that holds a privileged capability is never routine; it needs a registration the owner clicks (not this action).
+  if (p.action === "update_agent_capabilities") {
+    const agent = e.agents[p.target];
+    if (!agent) return { vote: "reject", reason: "agent is not registered" };
+    const host = String(p.params.service ?? "");
+    if (agent.host_worker !== host) return { vote: "reject", reason: `agent is registered on ${agent.host_worker}, not ${host || "(none)"}` };
+    const reg = e.registry[host];
+    if (!reg || !ACTIVE_SERVICE_STATUSES.has(reg.status)) return { vote: "reject", reason: `host Worker ${host || "(none)"} is not an active registered service` };
+    const caps = Array.isArray(p.params.capabilities) ? p.params.capabilities.map(String) : null;
+    if (!caps || caps.length === 0) return { vote: "reject", reason: "capabilities must be a non-empty list" };
+    const forbidden = forbiddenCapabilities(caps);
+    if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
+    const privileged = privilegedCapabilities(caps);
+    if (privileged.length) return { vote: "reject", reason: `privileged capabilities are never updated as routine: ${privileged.join(", ")}` };
+    const origin = EXTERNAL_ORIGINS.find((o) => o.services.includes(host));
+    if (origin) {
+      const over = externalCeilingViolations({ id: p.target, tier_max: Number(p.params.tier_max), capabilities: caps }, origin);
+      if (over.length) return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ")}` };
+    }
+    return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "capability update is consistent" };
+  }
+  // retire_engine mirrors register_engine: the same checks every voter can make; the executor proves the DNA side.
+  if (p.action === "register_engine" || p.action === "retire_engine") {
     if (!ENGINE_TASK.test(String(p.params.task ?? ""))) return { vote: "reject", reason: "task must be a lowercase identifier" };
     const reg = e.registry[p.target];
     if (!reg || !ACTIVE_SERVICE_STATUSES.has(reg.status)) return { vote: "reject", reason: `host Worker ${p.target} is not an active registered service` };
@@ -208,6 +261,8 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   if (registration) return v(registration.vote, registration.reason);
   const merge = mergeVote(p, e);
   if (merge) return v(merge.vote, merge.reason);
+  const destructive = destructiveDeployVote(p);
+  if (destructive) return v(destructive.vote, destructive.reason);
   const svc = e.services[p.target];
   const reg = e.registry[p.target];
   const version = String(p.params.version ?? "");
@@ -226,7 +281,7 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
         if (!svc) return v("reject", "no drift observation for the target");
         return svc.drifted ? v("approve", `target drifted${svc.persistent ? " persistently" : ""}`) : v("reject", "target is in sync; nothing to remediate");
       }
-      if (p.action === "deploy_commit") {
+      if (p.action === "deploy_commit" || p.action === DESTRUCTIVE_DEPLOY_ACTION) {
         const persistent = Object.values(e.services).filter((s) => s.persistent && s.service_id !== p.target);
         return persistent.length ? v("reject", `other services drift persistently: ${persistent.map((s) => s.service_id).join(", ")}`) : v("approve", "platform is stable");
       }
@@ -241,6 +296,7 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
       return v("approve", "no executing recovery plan on the target");
     case "deployment-orchestrator":
       if (p.action === "deploy_commit") return COMMIT.test(String(p.params.commit_sha ?? "")) ? v("approve", "commit is a full SHA") : v("reject", "commit_sha must be a full 40-hex SHA");
+      if (p.action === DESTRUCTIVE_DEPLOY_ACTION) return v("approve", "full commit and named destructive files; a Time Travel bookmark is recorded before they apply, and the owner decides");
       if (p.action === "redeploy_desired_version") return reg?.desired_version ? v("approve", `desired version ${reg.desired_version} is recorded`) : v("reject", "no desired version recorded");
       if (p.action === "rollback_worker_version") return HEX_VERSION.test(version) ? v("approve", "rollback version is a recorded tag") : v("reject", "rollback version must be a 7-40 hex tag");
       return v("approve", "no deployment objection");

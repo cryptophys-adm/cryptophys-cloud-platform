@@ -1,6 +1,6 @@
 // ADR-0012 G2c-2 (§5l): the Console's static assets without GitHub.
 //
-// The Console UI (workers/console/ui, Vite) is built on Workers Builds by workers/forge-typecheck, which posts
+// The Console UI (workers/console/ui, esbuild since 2026-11-17) is built on Workers Builds by workers/forge-typecheck, which posts
 // the built `dist` to the Forge (POST /v1/forge/console-dist, workers/forge/src/console-dist.ts). The Forge
 // keeps it in R2 next to the commit's modules: `bundles/<sha>/console-dist/<path>` and a list,
 // `bundles/<sha>/console-dist.json` (path, sha256, size, content type). This module uploads such a file set as

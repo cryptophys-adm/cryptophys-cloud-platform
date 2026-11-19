@@ -70,6 +70,8 @@ Each platform Worker owns its own Workers AI engine: a binding, a task allow-lis
 - **AI Kernel.** `draft_recovery_proposal`, used by the supervisor agent.
 - **The rest.** Registry, Policy Engine, Drift Detector, Audit Ledger, Recovery Manager, Deployment Orchestrator and Signal Engine keep their existing engines.
 
+*Amended 2026-11-13 (owner: "mulai sekarang Ai harus memutuskan", choice "AI memutuskan, pengaman tetap"): agents decide inside rigid safeguards; see ADR-0014 §10 A. Until that is built, the rule below holds.*
+
 AI never decides whether to act:
 - **Deterministic triggers.** The supervisor acts on persistent drift (two consecutive drifted observations of a managed service) and on stale or failing ingestion.
 - **AI writes; templates back it up.** The AI drafts the proposal's title, rationale and steps. These are schema-validated, and a deterministic template is used when AI is unavailable.

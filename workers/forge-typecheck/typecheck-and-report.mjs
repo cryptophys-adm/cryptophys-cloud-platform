@@ -1,5 +1,5 @@
 // Workers Builds build command (ADR-0012 §5c). Runs the control-plane type-check with the locked
-// toolchain, then the Console UI build (its own type-check and the Vite build, as GitHub CI's
+// toolchain, then the Console UI build (its own type-check and the bundle build (esbuild, build.mjs), as GitHub CI's
 // "Build the Console UI" step), reports both for this commit to the Forge, then exits non-zero if
 // either failed so the build shows the same outcome. ADR-0012 §5l step 7: on a build of main whose Console
 // UI built, it first posts the built dist to the Forge (POST /v1/forge/console-dist), which keeps it for the
@@ -42,8 +42,8 @@ export function summarize(status, output, toolchain) {
 }
 
 /**
- * The Console UI build: `npm run build` (tsc --noEmit, then vite build). Its diagnostics are the
- * TypeScript errors, or, when Vite fails without one, the last lines of its output.
+ * The Console UI build: `npm run build` (tsc --noEmit, then node build.mjs). Its diagnostics are the
+ * TypeScript errors, or, when the bundle build fails without one, the last lines of its output.
  */
 export function summarizeConsoleBuild(status, output, bytes) {
   let diagnostics = parseDiagnostics(output);

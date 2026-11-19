@@ -1,0 +1,51 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0013",
+  "title": "The living platform: DNA, census and self-registration",
+  "adr_file": "architecture/adr/0013-living-platform.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "1",
+      "title": "DNA for every Worker, every static list equal to it",
+      "evidence": {
+        "kind": "census_clean"
+      },
+      "note": "live: reads open while the newest census has differences"
+    },
+    {
+      "id": "2",
+      "title": "Census of each main commit",
+      "depends_on": [
+        "1"
+      ],
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "forge.organism_census"
+      }
+    },
+    {
+      "id": "3",
+      "title": "Self-registration by consensus",
+      "depends_on": [
+        "2"
+      ],
+      "evidence": {
+        "kind": "consensus_executed",
+        "action": "register_agent"
+      }
+    },
+    {
+      "id": "4",
+      "title": "Dynamic council from admitted seats",
+      "depends_on": [
+        "3"
+      ],
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0013-living-platform.md",
+        "quote": "**4. Dynamic council (done with phase 3)**"
+      }
+    }
+  ]
+}

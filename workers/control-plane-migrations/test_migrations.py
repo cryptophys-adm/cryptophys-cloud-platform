@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated SQLite tests for the control-plane D1 migrations; never connects to Cloudflare."""
 from pathlib import Path
+import json
 import re
 import sqlite3
 
@@ -411,3 +412,466 @@ cut_code = "\n".join(line.split("--", 1)[0] for line in cut_sql.splitlines()).up
 assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT)\b", cut_code) and cut_code.count("UPDATE ") == 1 and "WHERE CONTROL = 'MERGE_PATH'" in cut_code, "0058 changes one row"
 cut_db.close()
 print("PASS: 0058 cut-over (merge path forge, one row)")
+
+# Migration 0059 (resource audit 2026-11-14): an index on drift_observations(observed_at); additive, no row changes.
+idx_db = sqlite3.connect(":memory:")
+idx_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    idx_db.executescript(migration.read_text(encoding="utf-8"))
+assert idx_db.execute("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_drift_observed'").fetchone()[0].replace(" ", "") == "CREATEINDEXidx_drift_observedONdrift_observations(observed_at)", "0059 indexes observed_at"
+plan = " ".join(r[3] for r in idx_db.execute("EXPLAIN QUERY PLAN SELECT observation_id FROM drift_observations WHERE observed_at < '2026-01-01' ORDER BY observed_at LIMIT 10").fetchall())
+assert "idx_drift_observed" in plan, f"the retention scan uses the index: {plan}"
+idx_sql = (ROOT / "0059_drift_observed_index.sql").read_text(encoding="utf-8")
+idx_code = "\n".join(line.split("--", 1)[0] for line in idx_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT|UPDATE)\b", idx_code) and idx_code.count("CREATE INDEX") == 1, "0059 only adds an index"
+idx_db.close()
+print("PASS: 0059 drift observed_at index (additive)")
+
+# Migration 0060 (resource audit 2026-11-14): indexes for the hot Supervisor, Auditor and Policy queries; additive.
+hot_db = sqlite3.connect(":memory:")
+hot_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    hot_db.executescript(migration.read_text(encoding="utf-8"))
+def plan_of(sql):
+    return " ".join(r[3] for r in hot_db.execute("EXPLAIN QUERY PLAN " + sql).fetchall())
+for sql, index in [
+    ("SELECT proposal_id FROM consensus_proposals WHERE status = 'pending_owner' AND created_at < '2026-01-01'", "idx_consensus_proposals_status_created"),
+    ("SELECT COUNT(*) FROM consensus_proposals WHERE action IN ('deploy_commit','rollback_worker_version') AND status IN ('executing','executed') AND decided_at >= '2026-01-01'", "idx_consensus_proposals_action_decided"),
+    ("SELECT main_sha FROM forge_deploy_plans WHERE forge_at IS NOT NULL ORDER BY forge_at DESC LIMIT 1", "idx_forge_deploy_plans_forge_at"),
+    ("SELECT COUNT(*) FROM recovery_plans WHERE created_by LIKE 'agent:%' AND created_at >= '2026-01-01'", "idx_recovery_plans_created"),
+    ("SELECT * FROM policy_decisions ORDER BY created_at DESC LIMIT 50", "idx_policy_decisions_created"),
+    ("SELECT action, COUNT(*) FROM policy_decisions WHERE decision = 'deny' AND created_at >= '2026-01-01' GROUP BY action", "idx_policy_decisions_decision_created"),
+]:
+    assert index in plan_of(sql), f"{index} serves its query: {plan_of(sql)}"
+hot_sql = (ROOT / "0060_hot_query_indexes.sql").read_text(encoding="utf-8")
+hot_code = "\n".join(line.split("--", 1)[0] for line in hot_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|ALTER|INSERT|UPDATE)\b", hot_code) and hot_code.count("CREATE INDEX") == 6, "0060 only adds indexes"
+hot_db.close()
+print("PASS: 0060 hot query indexes (additive, each used by its query)")
+
+
+# Migration 0061 (resource audit decision 1, 2026-11-14): drift rows are recorded on change; streak counts the runs
+# that saw a row's state. Additive: a NOT NULL column with default 1 and CHECK (streak >= 1); existing rows keep 1.
+streak_db = sqlite3.connect(":memory:")
+streak_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name >= "0061_":
+        continue
+    streak_db.executescript(migration.read_text(encoding="utf-8"))
+streak_db.execute(
+    """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+       VALUES ('obs-legacy', 'cryptophys-platform-api', 'd', 'o', 1, '{}', '2026-11-01T00:00:00.000Z')"""
+)
+streak_sql = (ROOT / "0061_drift_streak.sql").read_text(encoding="utf-8")
+streak_db.executescript(streak_sql)
+column = [c for c in streak_db.execute("PRAGMA table_info(drift_observations)").fetchall() if c[1] == "streak"]
+assert len(column) == 1 and column[0][2].upper() == "INTEGER" and column[0][3] == 1 and column[0][4] == "1", f"0061 adds streak INTEGER NOT NULL DEFAULT 1: {column}"
+assert streak_db.execute("SELECT streak FROM drift_observations WHERE observation_id = 'obs-legacy'").fetchone() == (1,), "existing rows keep streak 1"
+streak_db.execute(
+    """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+       VALUES ('obs-new', 'cryptophys-platform-api', 'd', 'o', 0, '{}', '2026-11-14T00:00:00.000Z')"""
+)
+assert streak_db.execute("SELECT streak FROM drift_observations WHERE observation_id = 'obs-new'").fetchone() == (1,), "a new row starts at streak 1"
+streak_db.execute("UPDATE drift_observations SET streak = 2 WHERE observation_id = 'obs-new'")
+for bad in (0, -1):
+    expect_integrity_error(f"0061 streak {bad}", lambda bad=bad: streak_db.execute("UPDATE drift_observations SET streak = ? WHERE observation_id = 'obs-new'", (bad,)))
+expect_integrity_error("0061 streak NULL", lambda: streak_db.execute("UPDATE drift_observations SET streak = NULL WHERE observation_id = 'obs-new'"))
+streak_code = "\n".join(line.split("--", 1)[0] for line in streak_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", streak_code) and streak_code.count("ALTER TABLE DRIFT_OBSERVATIONS ADD COLUMN STREAK") == 1, "0061 only adds the column"
+# The Forge's destructive-SQL rule (workers/forge/src/changes.ts DESTRUCTIVE_SQL) must not match the file.
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", streak_sql, re.I), "0061 is not destructive"
+streak_db.close()
+print("PASS: 0061 drift streak (additive, default 1, CHECK streak >= 1)")
+
+# Migration 0062 (owner 2026-11-14): the five retired signal tables are dropped after their verified R2 archive.
+RETIRED = ["market_candles", "signal_indicators", "signal_confluence", "signal_ingest_runs", "macro_context"]
+drop_db = sqlite3.connect(":memory:")
+drop_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0062":
+        drop_db.executescript(migration.read_text(encoding="utf-8"))
+before = {r[0] for r in drop_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+assert set(RETIRED) <= before, "the five tables exist until 0062"
+drop_db.execute("INSERT INTO market_candles (symbol, timeframe, open_time, close_time, open, high, low, close, volume, source, ingested_at) VALUES ('BTCUSDT', '1h', 1, 2, 1, 2, 0.5, 1.5, 1, 'k', 't')")
+drop_db.executescript((ROOT / "0062_drop_retired_signal_tables.sql").read_text(encoding="utf-8"))
+after = {r[0] for r in drop_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+assert before - after == set(RETIRED), f"0062 drops exactly the five retired tables: {sorted(before - after)}"
+assert not [r for r in drop_db.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('market_candles','signal_indicators','signal_confluence','signal_ingest_runs','macro_context')")]
+drop_code = "\n".join(line.split("--", 1)[0] for line in (ROOT / "0062_drop_retired_signal_tables.sql").read_text(encoding="utf-8").splitlines()).upper()
+assert drop_code.count("DROP TABLE IF EXISTS") == 5 and not re.search(r"\b(DELETE|UPDATE|ALTER|INSERT|CREATE)\b", drop_code), "0062 only drops the five tables"
+drop_db.close()
+print("PASS: 0062 retired signal tables dropped (exactly five, after their archive)")
+
+
+# Migration 0063 (owner 2026-11-14): the account-wide Observer's vitals, findings and runs. Additive: three tables and
+# their indexes only; one vitals row per subject and hour, one finding per worker, metric and bucket; retention in code.
+obs_db = sqlite3.connect(":memory:")
+obs_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0063_":
+        obs_db.executescript(migration.read_text(encoding="utf-8"))
+before_tables = {r[0] for r in obs_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+obs_sql = (ROOT / "0063_observer.sql").read_text(encoding="utf-8")
+obs_db.executescript(obs_sql)
+after_tables = {r[0] for r in obs_db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+assert after_tables - before_tables == {"observer_vitals", "observer_findings", "observer_runs"}, f"0063 adds exactly the three tables: {sorted(after_tables - before_tables)}"
+assert before_tables <= after_tables, "0063 removes nothing"
+obs_idx = {r[0] for r in obs_db.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_observer_%'")}
+assert obs_idx == {"idx_observer_vitals_hour", "idx_observer_findings_created", "idx_observer_findings_kind_created", "idx_observer_runs_kind_ran"}, sorted(obs_idx)
+obs_db.execute("""INSERT INTO observer_vitals (subject, kind, hour, requests, errors, cpu_p99_ms, recorded_at)
+                  VALUES ('cryptophys-console', 'worker', '2026-11-14T10:00:00.000Z', 1200, 3, 4.5, '2026-11-14T11:27:00.000Z')""")
+obs_db.execute("""INSERT INTO observer_vitals (subject, kind, hour, rows_read, rows_written, requests, recorded_at)
+                  VALUES ('d1:abc', 'd1', '2026-11-14T10:00:00.000Z', 90000, 400, 3000, '2026-11-14T11:27:00.000Z')""")
+row = obs_db.execute("SELECT requests, errors, rows_read, neurons, sample_json FROM observer_vitals WHERE subject = 'cryptophys-console'").fetchone()
+assert row == (1200, 3, None, None, "{}"), f"unmeasured is NULL, never zero; sample defaults to {{}}: {row}"
+expect_integrity_error("0063 one vitals row per subject and hour", lambda: obs_db.execute(
+    "INSERT INTO observer_vitals (subject, kind, hour, requests, recorded_at) VALUES ('cryptophys-console', 'worker', '2026-11-14T10:00:00.000Z', 1, 't')"))
+expect_integrity_error("0063 vitals kind", lambda: obs_db.execute(
+    "INSERT INTO observer_vitals (subject, kind, hour, requests, recorded_at) VALUES ('x', 'r2', '2026-11-14T10:00:00.000Z', 1, 't')"))
+expect_integrity_error("0063 negative requests", lambda: obs_db.execute(
+    "INSERT INTO observer_vitals (subject, kind, hour, requests, recorded_at) VALUES ('y', 'worker', '2026-11-14T10:00:00.000Z', -1, 't')"))
+obs_db.execute("""INSERT INTO observer_findings (finding_id, worker, metric, kind, severity, bucket, value, baseline_7d, z, since_deploy_json, detail, created_at)
+                  VALUES ('obs_1', 'cryptophys-console', 'error_rate', 'anomaly', 'warning', '2026-11-14T10:00:00.000Z', 0.2, 0.01, 9.5,
+                          '{"version":"aaaaaaaaaaaa","deployed_at":"2026-11-14T09:50:00.000Z"}', 'spike', '2026-11-14T11:27:00.000Z')""")
+assert obs_db.execute("SELECT report_only, sample_json FROM observer_findings WHERE finding_id = 'obs_1'").fetchone() == (0, "{}")
+expect_integrity_error("0063 one finding per worker, metric and bucket", lambda: obs_db.execute(
+    """INSERT INTO observer_findings (finding_id, worker, metric, kind, severity, bucket, detail, created_at)
+       VALUES ('obs_2', 'cryptophys-console', 'error_rate', 'anomaly', 'warning', '2026-11-14T10:00:00.000Z', 'again', 't')"""))
+for bad_kind, bad_sev in (("guess", "warning"), ("anomaly", "critical")):
+    expect_integrity_error(f"0063 finding {bad_kind}/{bad_sev}", lambda k=bad_kind, s=bad_sev: obs_db.execute(
+        "INSERT INTO observer_findings (finding_id, worker, metric, kind, severity, bucket, detail, created_at) VALUES ('obs_x', 'w', 'm', ?, ?, 'b', 'd', 't')", (k, s)))
+obs_db.execute("INSERT INTO observer_runs (run_id, kind, bucket, ran_at, status) VALUES ('obr_1', 'senses', '2026-11-14T10:00:00.000Z', '2026-11-14T11:27:00.000Z', 'ok')")
+expect_integrity_error("0063 one run per kind and bucket", lambda: obs_db.execute(
+    "INSERT INTO observer_runs (run_id, kind, bucket, ran_at, status) VALUES ('obr_2', 'senses', '2026-11-14T10:00:00.000Z', 't', 'ok')"))
+expect_integrity_error("0063 run status", lambda: obs_db.execute(
+    "INSERT INTO observer_runs (run_id, kind, bucket, ran_at, status) VALUES ('obr_3', 'inventory', 'b', 't', 'not_configured')"))
+def obs_plan(sql):
+    return " ".join(r[3] for r in obs_db.execute("EXPLAIN QUERY PLAN " + sql).fetchall())
+assert "idx_observer_vitals_hour" in obs_plan("SELECT subject FROM observer_vitals WHERE hour >= '2026-11-12' ORDER BY hour"), obs_plan("SELECT subject FROM observer_vitals WHERE hour >= '2026-11-12' ORDER BY hour")
+assert "idx_observer_findings_created" in obs_plan("SELECT * FROM observer_findings WHERE created_at >= '2026-11-14' ORDER BY created_at DESC LIMIT 50")
+assert "idx_observer_runs_kind_ran" in obs_plan("SELECT * FROM observer_runs WHERE kind = 'senses' ORDER BY ran_at DESC LIMIT 1")
+obs_code = "\n".join(line.split("--", 1)[0] for line in obs_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|RENAME)\b", obs_code), "0063 is additive: CREATE TABLE and CREATE INDEX only"
+assert obs_code.count("CREATE TABLE IF NOT EXISTS") == 3 and obs_code.count("CREATE INDEX IF NOT EXISTS") == 4
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", obs_sql, re.I), "0063 is not destructive"
+obs_db.close()
+print("PASS: 0063 observer vitals, findings and runs (additive, unique per bucket, retention in code)")
+# Migration 0064 (owner 2026-11-14): cryptophys-signal-engine and cryptophys-home are retired for good. Their rows
+# stay (the parent of their history) and stay disabled; metadata_json only gains retired_at, retired_by and
+# retired_reason, and updated_at records when. No other row or table changes; a second run changes nothing; a
+# row that is no longer disabled, or whose metadata is not JSON, is left alone.
+RETIRE_64 = ("cryptophys-home", "cryptophys-signal-engine")
+retire64_sql = (ROOT / "0064_retire_signal_engine_and_home.sql").read_text(encoding="utf-8")
+retire64_code = "\n".join(line.split("--", 1)[0] for line in retire64_sql.splitlines()).upper()
+assert not re.search(r"\b(DELETE|DROP|INSERT|ALTER|CREATE)\b", retire64_code), "0064 deletes, drops and creates nothing"
+assert retire64_code.count("UPDATE SERVICE_REGISTRY") == 1 and retire64_code.count(";") == 1, "0064 is one registry update"
+# It rewrites rows, so the Forge's destructive-SQL rule (workers/forge/src/changes.ts) routes its merge to the owner.
+assert re.search(r"\bUPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET\b", retire64_code), "0064 is an owner-reviewed rewrite"
+
+def pre_0064_db():
+    d = sqlite3.connect(":memory:")
+    d.execute("PRAGMA foreign_keys = ON")
+    for migration in sorted(ROOT.glob("*.sql")):
+        if migration.name < "0064":
+            d.executescript(migration.read_text(encoding="utf-8"))
+    return d
+
+r64 = pre_0064_db()
+assert [r[0] for r in r64.execute(
+    "SELECT status FROM service_registry WHERE service_id IN (?, ?) ORDER BY service_id", RETIRE_64
+)] == ["disabled", "disabled"], "0020 and 0055 left both disabled"
+# Their history, as production has it: drift rows, a deploy request, a recovery plan and an audit event naming them.
+r64.execute("UPDATE service_registry SET desired_version = 'abcdefabcdef' WHERE service_id = 'cryptophys-home'")
+for i, svc in enumerate(RETIRE_64):
+    r64.execute(
+        """INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
+           VALUES (?, ?, 'd', 'o', 0, '{"reasons":["disabled"]}', 't0')""", (f"obs-r64-{i}", svc))
+r64.execute(
+    """INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at)
+       VALUES ('dep-r64', 'cryptophys-home', 'abcdefabcdef', 'workflow', 'succeeded', 'k-r64', '{}', 't0', 't0')""")
+r64.execute(
+    """INSERT INTO recovery_plans (plan_id, service_id, plan_version, status, steps_json, created_at, updated_at)
+       VALUES ('plan-r64', 'cryptophys-signal-engine', 'v1', 'disabled', '[]', 't0', 't0')""")
+r64.execute(
+    """INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at)
+       VALUES ('ev-r64', 'registry.service_status_set', 'test', 'cryptophys-home', 'disabled', '{}', NULL, 'hash-r64', 't0')""")
+r64.commit()
+HISTORY_64 = ("drift_observations", "deployment_requests", "recovery_plans", "idempotency_records", "ai_usage", "infra_burn_metrics", "audit_events", "agents")
+def r64_snapshot():
+    return {t: r64.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in HISTORY_64}
+others_64 = r64.execute("SELECT * FROM service_registry WHERE service_id NOT IN (?, ?) ORDER BY service_id", RETIRE_64).fetchall()
+before_64 = {r[0]: r for r in r64.execute(
+    "SELECT service_id, display_name, endpoint, desired_version, observed_version, environment, status, metadata_json, created_at FROM service_registry WHERE service_id IN (?, ?)", RETIRE_64)}
+history_64 = r64_snapshot()
+count_64 = r64.execute("SELECT COUNT(*) FROM service_registry").fetchone()[0]
+for run in range(2):
+    r64.executescript(retire64_sql)
+    for svc in RETIRE_64:
+        row = r64.execute(
+            "SELECT service_id, display_name, endpoint, desired_version, observed_version, environment, status, metadata_json, created_at, updated_at FROM service_registry WHERE service_id = ?", (svc,)
+        ).fetchone()
+        old = before_64[svc]
+        assert row[:7] == old[:7] and row[8] == old[8], f"0064 changes only metadata_json and updated_at of {svc}: {row}"
+        assert row[6] == "disabled" and row[9] == "2026-11-14T12:00:00.000Z", f"{svc} stays disabled, retired at 0064's time"
+        meta, old_meta = json.loads(row[7]), json.loads(old[7])
+        assert {k: v for k, v in meta.items() if not k.startswith("retired_")} == old_meta, f"{svc}: every earlier key is kept"
+        assert meta["retired_at"] == "2026-11-14T12:00:00.000Z" and meta["retired_by"] == "migration:0064" and meta["retired_reason"].endswith("Worker deleted"), meta
+    assert r64.execute("SELECT * FROM service_registry WHERE service_id NOT IN (?, ?) ORDER BY service_id", RETIRE_64).fetchall() == others_64, "0064 changes no other service"
+    assert r64.execute("SELECT COUNT(*) FROM service_registry").fetchone()[0] == count_64, "no registry row is added or deleted"
+    assert r64_snapshot() == history_64, f"run {run + 1}: every history row is kept unchanged"
+    assert r64.execute("SELECT COUNT(*) FROM service_registry WHERE json_extract(metadata_json, '$.retired_at') IS NOT NULL").fetchone()[0] == 2, "only the two are retired"
+assert r64.execute("PRAGMA foreign_key_check").fetchall() == []
+# A second run does not move the retirement time.
+r64.execute("UPDATE service_registry SET updated_at = 'later' WHERE service_id = 'cryptophys-home'")
+r64.executescript(retire64_sql)
+assert r64.execute("SELECT updated_at FROM service_registry WHERE service_id = 'cryptophys-home'").fetchone() == ("later",), "0064 is idempotent"
+r64.close()
+
+# Guards: a row someone re-enabled is not retired; a row whose metadata is not JSON is left alone (no error).
+guard64 = pre_0064_db()
+guard64.execute("UPDATE service_registry SET status = 'registered' WHERE service_id = 'cryptophys-home'")
+guard64.execute("UPDATE service_registry SET metadata_json = 'not json' WHERE service_id = 'cryptophys-signal-engine'")
+guard_before = guard64.execute("SELECT * FROM service_registry ORDER BY service_id").fetchall()
+guard64.executescript(retire64_sql)
+assert guard64.execute("SELECT * FROM service_registry ORDER BY service_id").fetchall() == guard_before, "0064 touches only disabled rows with JSON metadata"
+guard64.close()
+print("PASS: 0064 retire signal-engine and home (rows kept and disabled, marker only, history kept, idempotent, guarded)")
+
+
+# Migration 0069 (owner 2026-11-14: monthly infrastructure budget $30): policy_parameters is rebuilt, as in 0050, to admit
+# infra-budget-usd-month with its own bound (5-50, the same as control-plane-shared/src/policy-params.ts); every row is
+# kept, the other parameters keep 1-40, and the owner's 30 is seeded.
+bud_db = sqlite3.connect(":memory:")
+bud_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0069_":
+        bud_db.executescript(migration.read_text(encoding="utf-8"))
+bud_db.execute("UPDATE policy_parameters SET value = 40, updated_by = 'owner', updated_at = 't1' WHERE name = 'daily-deploy-limit'")
+before_rows = sorted(bud_db.execute("SELECT name, value, updated_by, updated_at FROM policy_parameters").fetchall())
+expect_integrity_error("before 0069 the budget name is refused", lambda: bud_db.execute(
+    "INSERT INTO policy_parameters (name, value, updated_by, updated_at) VALUES ('infra-budget-usd-month', 30, 'x', 't')"))
+bud_sql = (ROOT / "0069_infra_budget_parameter.sql").read_text(encoding="utf-8")
+bud_db.executescript(bud_sql)
+after_rows = sorted(bud_db.execute("SELECT name, value, updated_by, updated_at FROM policy_parameters").fetchall())
+assert [r for r in after_rows if r[0] != "infra-budget-usd-month"] == before_rows, f"0069 keeps every row: {after_rows}"
+assert ("infra-budget-usd-month", 30, "migration:0069", "2026-11-14T12:00:00.000Z") in after_rows, "0069 seeds the owner's $30"
+for bad_value in (4, 51, 0, -30):
+    expect_integrity_error(f"0069 budget {bad_value}", lambda v=bad_value: bud_db.execute(
+        "UPDATE policy_parameters SET value = ? WHERE name = 'infra-budget-usd-month'", (v,)))
+for good_value in (5, 50, 30):
+    bud_db.execute("UPDATE policy_parameters SET value = ? WHERE name = 'infra-budget-usd-month'", (good_value,))
+expect_integrity_error("0069 keeps daily-deploy-limit at most 40", lambda: bud_db.execute(
+    "UPDATE policy_parameters SET value = 41 WHERE name = 'daily-deploy-limit'"))
+expect_integrity_error("0069 keeps target-actions-per-hour at least 1", lambda: bud_db.execute(
+    "UPDATE policy_parameters SET value = 0 WHERE name = 'target-actions-per-hour'"))
+expect_integrity_error("0069 admits only the three names", lambda: bud_db.execute(
+    "INSERT INTO policy_parameters (name, value, updated_by, updated_at) VALUES ('free-tier-burn', 1, 'x', 't')"))
+assert {r[0] for r in bud_db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'policy_parameters%'")} == {"policy_parameters"}, "no copy left behind"
+bud_db.close()
+print("PASS: 0069 infra-budget-usd-month (rows kept, bound 5-50, other parameters still 1-40, owner's 30 seeded)")
+
+
+# Migration 0070 (owner 2026-11-14, the learning mandate: dedup, not a cap; observe, don't block): additive only. Two
+# nullable dedup_sha256 columns with NON-unique lookup indexes (production may already hold exact duplicates and old
+# rows have no hash, so a UNIQUE index would need a destructive DELETE first), and ai_usage.learning_requests.
+dd_db = sqlite3.connect(":memory:")
+dd_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0070_":
+        dd_db.executescript(migration.read_text(encoding="utf-8"))
+dd_db.execute("INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, updated_by, created_at, updated_at) VALUES ('dd-agent', 'DD', 'cryptophys-ai-kernel', 'test', 1, '[]', 'enabled', 'x', 't', 't') ON CONFLICT(agent_id) DO NOTHING")
+# Two exact duplicate memories and two proposals already in production before 0070.
+for mid in ("mem_dup_1", "mem_dup_2"):
+    dd_db.execute("INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at) VALUES (?, 'dd-agent', 'note', 'same text', NULL, 't')", (mid,))
+dd_db.execute("INSERT OR IGNORE INTO service_registry (service_id, display_name, environment, status, created_at, updated_at) VALUES ('cryptophys-ai-kernel', 'AI Kernel', 'production', 'registered', 't', 't')")
+dd_db.execute("INSERT INTO ai_usage (service_id, day, requests, failures) VALUES ('cryptophys-ai-kernel', '2026-11-14', 7, 1)")
+before_mem = dd_db.execute("SELECT memory_id, agent_id, kind, text, source_ref, created_at FROM agent_memories ORDER BY memory_id").fetchall()
+dd_sql = (ROOT / "0070_learning_dedup_observe.sql").read_text(encoding="utf-8")
+assert not re.search(r"\b(DROP|DELETE\s+FROM|UPDATE\s+\w+\s+SET|UNIQUE)\b", re.sub(r"--[^\n]*", "", dd_sql), re.I), "0070 is additive and creates no unique index"
+dd_db.executescript(dd_sql)
+after_mem = dd_db.execute("SELECT memory_id, agent_id, kind, text, source_ref, created_at FROM agent_memories ORDER BY memory_id").fetchall()
+assert after_mem == before_mem, "0070 keeps every memory row, duplicates included"
+assert dd_db.execute("SELECT COUNT(*) FROM agent_memories WHERE dedup_sha256 IS NULL").fetchone()[0] == 2, "old rows have no hash"
+# Not unique: two rows with the same hash are accepted (a concurrent duplicate is never refused).
+for mid in ("mem_new_1", "mem_new_2"):
+    dd_db.execute("INSERT INTO agent_memories (memory_id, agent_id, kind, text, source_ref, created_at, dedup_sha256) VALUES (?, 'dd-agent', 'note', 'x', NULL, 't', 'h')", (mid,))
+cols = {r[1] for r in dd_db.execute("PRAGMA table_info(knowledge_proposals)")}
+assert "dedup_sha256" in cols, cols
+indexes = {r[1]: r[2] for r in dd_db.execute("SELECT * FROM pragma_index_list('agent_memories')")}
+assert indexes.get("idx_agent_memories_dedup") == 0, f"the memory dedup index is not unique: {indexes}"
+kindexes = {r[1]: r[2] for r in dd_db.execute("SELECT * FROM pragma_index_list('knowledge_proposals')")}
+assert kindexes.get("idx_knowledge_proposals_dedup") == 0, f"the knowledge dedup index is not unique: {kindexes}"
+assert dd_db.execute("SELECT requests, failures, learning_requests FROM ai_usage WHERE service_id = 'cryptophys-ai-kernel'").fetchone() == (7, 1, 0), "existing usage kept, learning_requests 0"
+expect_integrity_error("0070 learning_requests is never negative", lambda: dd_db.execute(
+    "UPDATE ai_usage SET learning_requests = -1 WHERE service_id = 'cryptophys-ai-kernel'"))
+dd_db.close()
+print("PASS: 0070 learning dedup columns (non-unique lookups, duplicate rows kept) and ai_usage.learning_requests (additive)")
+# Migration 0068 (owner 2026-11-15, "tambahkan"): the Observer's binding index. Additive: one table only; one row per
+# listed Worker with its read status; bindings_json is a JSON array; "is KV X bound" is answerable with json_each.
+bind_db = sqlite3.connect(":memory:")
+bind_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0068_":
+        bind_db.executescript(migration.read_text(encoding="utf-8"))
+bind_before = {r[0] for r in bind_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+bind_before_rows = {t: bind_db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("service_registry", "observer_runs", "observer_findings")}
+bind_sql = (ROOT / "0068_observer_worker_bindings.sql").read_text(encoding="utf-8")
+for _ in range(2):
+    bind_db.executescript(bind_sql)
+bind_after = {r[0] for r in bind_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert bind_after - bind_before == {"observer_worker_bindings", "sqlite_autoindex_observer_worker_bindings_1"}, sorted(bind_after - bind_before)
+assert bind_before <= bind_after, "0068 removes nothing"
+assert {t: bind_db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in bind_before_rows} == bind_before_rows, "0068 changes no rows"
+bind_db.execute("""INSERT INTO observer_worker_bindings (worker, status, bindings_json, observed_at) VALUES
+    ('mt5-mcp', 'ok', '[{"type":"kv_namespace","name":"OAUTH_KV","id":"49d3a958aaaabbbbccccddddeeeeffff"},{"type":"d1","name":"DB","id":"u1"}]', '2026-11-15T10:27:00.000Z'),
+    ('cryptophys-console', 'ok', '[]', '2026-11-15T10:27:00.000Z')""")
+bind_db.execute("INSERT INTO observer_worker_bindings (worker, status, detail, observed_at) VALUES ('xauusd-omega', 'permission_missing', 'http 403', '2026-11-15T10:27:00.000Z')")
+assert bind_db.execute("SELECT bindings_json FROM observer_worker_bindings WHERE worker = 'xauusd-omega'").fetchone() == ("[]",)
+expect_integrity_error("0068 one row per Worker", lambda: bind_db.execute(
+    "INSERT INTO observer_worker_bindings (worker, status, observed_at) VALUES ('mt5-mcp', 'ok', 't')"))
+expect_integrity_error("0068 status", lambda: bind_db.execute(
+    "INSERT INTO observer_worker_bindings (worker, status, observed_at) VALUES ('w', 'guessed', 't')"))
+for bad in ("{}", "not json", '{"type":"kv_namespace"}'):
+    expect_integrity_error(f"0068 bindings_json {bad!r}", lambda b=bad: bind_db.execute(
+        "INSERT INTO observer_worker_bindings (worker, status, bindings_json, observed_at) VALUES ('w2', 'ok', ?, 't')", (b,)))
+# The operator's question, as the report gives it: who binds KV 49d3a958…, and which Workers were not read.
+is_bound = """SELECT w.worker, w.status FROM observer_worker_bindings w
+  WHERE w.status <> 'ok' OR EXISTS (SELECT 1 FROM json_each(w.bindings_json) b
+    WHERE json_extract(b.value, '$.type') = 'kv_namespace' AND json_extract(b.value, '$.id') LIKE ?) ORDER BY w.worker"""
+assert bind_db.execute(is_bound, ("49d3a958%",)).fetchall() == [("mt5-mcp", "ok"), ("xauusd-omega", "permission_missing")]
+assert bind_db.execute(is_bound, ("8044368b%",)).fetchall() == [("xauusd-omega", "permission_missing")], "unbound, except for the Worker not read"
+bind_code = "\n".join(line.split("--", 1)[0] for line in bind_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|RENAME)\b", bind_code), "0068 is additive: CREATE TABLE only"
+assert bind_code.count("CREATE TABLE IF NOT EXISTS") == 1 and bind_code.count(";") == 1
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", bind_sql, re.I), "0068 is not destructive"
+bind_db.close()
+print("PASS: 0068 observer worker bindings (additive, one row per Worker, JSON array, is-bound query)")
+# Migration 0071 (owner-approved hardening (a), incident 2026-11-14): the Forge's linear-history guard. Additive: one
+# nullable column on forge_change_requests that admits only 'main_not_first_parent'; every existing row is kept and reads NULL.
+lh_db = sqlite3.connect(":memory:")
+lh_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0071_":
+        lh_db.executescript(migration.read_text(encoding="utf-8"))
+lh_db.execute(
+    """INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, status, created_at, updated_at, repo, blocked_reason)
+       VALUES ('fg-old', 'forge', 0, 'claude/old', 'claude/old', 't', 'a', ?, ?, 'open', 't0', 't0', 'platform-work', 'not_based_on_main')""",
+    ("a" * 40, "b" * 40),
+)
+lh_before = lh_db.execute("SELECT * FROM forge_change_requests").fetchall()
+lh_sql = (ROOT / "0071_forge_linear_history_guard.sql").read_text(encoding="utf-8")
+lh_db.executescript(lh_sql)
+cols = [r[1] for r in lh_db.execute("PRAGMA table_info(forge_change_requests)")]
+assert cols[-1] == "history_blocked_reason", cols
+assert [r[:-1] for r in lh_db.execute("SELECT * FROM forge_change_requests").fetchall()] == lh_before, "0071 keeps every row"
+assert lh_db.execute("SELECT history_blocked_reason FROM forge_change_requests WHERE cr_id = 'fg-old'").fetchone() == (None,)
+lh_db.execute("UPDATE forge_change_requests SET history_blocked_reason = 'main_not_first_parent' WHERE cr_id = 'fg-old'")
+for bad in ("not_based_on_main", "x", ""):
+    expect_integrity_error(f"0071 history_blocked_reason {bad!r}", lambda bad=bad: lh_db.execute("UPDATE forge_change_requests SET history_blocked_reason = ? WHERE cr_id = 'fg-old'", (bad,)))
+lh_db.execute("UPDATE forge_change_requests SET history_blocked_reason = NULL WHERE cr_id = 'fg-old'")
+lh_code = "\n".join(line.split("--", 1)[0] for line in lh_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", lh_code) and lh_code.count("ALTER TABLE FORGE_CHANGE_REQUESTS ADD COLUMN HISTORY_BLOCKED_REASON") == 1, "0071 only adds the column"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", lh_sql, re.I), "0071 is not destructive"
+lh_db.close()
+print("PASS: 0071 linear-history guard (additive column, CHECK main_not_first_parent, rows kept)")
+# Migration 0072 (ADR-0012 gate 8, owner 2026-11-15): the daily verify of a stored git bundle. Additive: three nullable
+# columns on forge_git_backups (verified_at, verify_status in ('verified', 'failed'), verify_details) and an index;
+# every existing row is kept and reads NULL (not verified yet).
+gv_db = sqlite3.connect(":memory:")
+gv_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0072_":
+        gv_db.executescript(migration.read_text(encoding="utf-8"))
+gv_db.execute(
+    """INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, objects, refs)
+       VALUES ('gb-ok', ?, '2026-11-15', 't0', 'ok', 'git-backups/platform/x.bundle', ?, 10, 1, 1)""",
+    ("a" * 40, "b" * 64),
+)
+gv_before = gv_db.execute("SELECT * FROM forge_git_backups").fetchall()
+gv_sql = (ROOT / "0072_forge_git_backup_verify.sql").read_text(encoding="utf-8")
+gv_db.executescript(gv_sql)
+cols = [r[1] for r in gv_db.execute("PRAGMA table_info(forge_git_backups)")]
+assert cols[-3:] == ["verified_at", "verify_status", "verify_details"], cols
+assert [r[:-3] for r in gv_db.execute("SELECT * FROM forge_git_backups").fetchall()] == gv_before, "0072 keeps every row"
+assert gv_db.execute("SELECT verified_at, verify_status, verify_details FROM forge_git_backups").fetchone() == (None, None, None)
+for ok in ("verified", "failed"):
+    gv_db.execute("UPDATE forge_git_backups SET verified_at = 't1', verify_status = ?, verify_details = '{}' WHERE run_id = 'gb-ok'", (ok,))
+for bad in ("ok", "pending", ""):
+    expect_integrity_error(f"0072 verify_status {bad!r}", lambda bad=bad: gv_db.execute("UPDATE forge_git_backups SET verify_status = ? WHERE run_id = 'gb-ok'", (bad,)))
+assert "idx_forge_git_backups_verified" in {row[1] for row in gv_db.execute("PRAGMA index_list(forge_git_backups)")}
+gv_code = "\n".join(line.split("--", 1)[0] for line in gv_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME)\b", gv_code) and gv_code.count("ALTER TABLE FORGE_GIT_BACKUPS ADD COLUMN") == 3, "0072 only adds the columns"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", gv_sql, re.I), "0072 is not destructive"
+gv_db.close()
+print("PASS: 0072 git backup verify (additive columns, CHECK verified/failed, rows kept)")
+# Migration 0073 (owner 2026-11-16): the native source of the deploy-time identity lists. Additive: one new table
+# platform_identities with no row (nothing changes on day one), at most the one row id 'access', source 'seed' or
+# 'owner', a revision of at least 1. Every earlier table and row is kept.
+pi_db = sqlite3.connect(":memory:")
+pi_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0073_":
+        pi_db.executescript(migration.read_text(encoding="utf-8"))
+pi_tables_before = {r[0]: pi_db.execute(f"SELECT COUNT(*) FROM \"{r[0]}\"").fetchone()[0] for r in pi_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert "platform_identities" not in pi_tables_before
+pi_sql = (ROOT / "0073_platform_identities.sql").read_text(encoding="utf-8")
+pi_db.executescript(pi_sql)
+pi_tables_after = {r[0]: pi_db.execute(f"SELECT COUNT(*) FROM \"{r[0]}\"").fetchone()[0] for r in pi_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert {k: v for k, v in pi_tables_after.items() if k != "platform_identities"} == pi_tables_before, "0073 keeps every table and row"
+assert pi_tables_after["platform_identities"] == 0, "0073 seeds no row: the deploys carry the active values until a seed or an owner's save"
+assert [r[1] for r in pi_db.execute("PRAGMA table_info(platform_identities)")] == ["id", "operator_emails", "approver_emails", "source", "revision", "updated_by", "updated_at"]
+pi_ok = ("access", "a@example.com,b@example.com", "a@example.com,b@example.com", "seed", 1, "agent:deployment-orchestrator", "t0")
+pi_db.execute("INSERT INTO platform_identities VALUES (?, ?, ?, ?, ?, ?, ?)", pi_ok)
+pi_db.execute("UPDATE platform_identities SET source = 'owner', revision = 2, updated_by = 'a@example.com' WHERE id = 'access'")
+expect_integrity_error("0073 holds one row", lambda: pi_db.execute("INSERT INTO platform_identities VALUES (?, ?, ?, ?, ?, ?, ?)", pi_ok))
+for bad_id in ("other", "", "ACCESS"):
+    expect_integrity_error(f"0073 id {bad_id!r}", lambda b=bad_id: pi_db.execute("INSERT INTO platform_identities VALUES (?, ?, ?, ?, ?, ?, ?)", (b,) + pi_ok[1:]))
+for bad_source in ("agent", "", "OWNER", None):
+    expect_integrity_error(f"0073 source {bad_source!r}", lambda b=bad_source: pi_db.execute("UPDATE platform_identities SET source = ? WHERE id = 'access'", (b,)))
+for bad_revision in (0, -1, None):
+    expect_integrity_error(f"0073 revision {bad_revision!r}", lambda b=bad_revision: pi_db.execute("UPDATE platform_identities SET revision = ? WHERE id = 'access'", (b,)))
+for column in ("operator_emails", "approver_emails"):
+    for bad_list in ("", "a@b.c", "x" * 5201, None):
+        expect_integrity_error(f"0073 {column} {str(bad_list)[:12]!r}", lambda c=column, b=bad_list: pi_db.execute(f"UPDATE platform_identities SET {c} = ? WHERE id = 'access'", (b,)))
+pi_code = "\n".join(line.split("--", 1)[0] for line in pi_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER)\b", pi_code) and pi_code.count("CREATE TABLE") == 1, "0073 only creates the table"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", pi_sql, re.I), "0073 is not destructive"
+pi_db.close()
+print("PASS: 0073 platform identities (new table, no row, one row 'access', source seed/owner, revision >= 1, rows kept)")
+# Migration 0074 (2026-11-16): register cryptophys-cta (repository cryptophys-adm/cryptophys-cta, origin cta), live at
+# https://cta.cryptophys.work. Additive: one new service_registry row, status 'registered', health-managed (desired and
+# observed version NULL, like Aether); no agent is registered (register_agent stays the census/consensus path). Every
+# earlier table and row is kept, and applying it again changes nothing.
+ct_db = sqlite3.connect(":memory:")
+ct_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0074_":
+        ct_db.executescript(migration.read_text(encoding="utf-8"))
+def ct_snapshot():
+    return {r[0]: ct_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in ct_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+ct_before = ct_snapshot()
+assert ct_db.execute("SELECT COUNT(*) FROM service_registry WHERE service_id = 'cryptophys-cta'").fetchone()[0] == 0
+ct_sql = (ROOT / "0074_register_cta.sql").read_text(encoding="utf-8")
+ct_db.executescript(ct_sql)
+ct_after = ct_snapshot()
+assert set(ct_after) == set(ct_before), "0074 creates and drops no table"
+for table, rows in ct_before.items():
+    if table != "service_registry":
+        assert ct_after[table] == rows, f"0074 keeps every row of {table}"
+ct_rows = {r[0]: r for r in ct_after["service_registry"]}
+assert {k: v for k, v in ct_rows.items() if k != "cryptophys-cta"} == {r[0]: r for r in ct_before["service_registry"]}, "0074 keeps every other service row"
+ct_row = ct_db.execute(
+    "SELECT display_name, endpoint, desired_version, observed_version, environment, status, metadata_json FROM service_registry WHERE service_id = 'cryptophys-cta'"
+).fetchone()
+assert ct_row[:6] == ("Cryptophys CTA · content studio", "https://cta.cryptophys.work", None, None, "production", "registered"), ct_row
+ct_meta = json.loads(ct_row[6])
+assert ct_meta["repository"] == "cryptophys-adm/cryptophys-cta" and ct_meta["origin"] == "cta" and ct_meta["owner"] == "cryptophys-adm", ct_meta
+assert "retired_at" not in ct_meta and "health_path" not in ct_meta, "active, and probed over RPC, not HTTP"
+assert ct_db.execute("SELECT COUNT(*) FROM agents WHERE host_worker = 'cryptophys-cta'").fetchone()[0] == 0, "0074 registers no agent"
+ct_db.executescript(ct_sql)
+assert ct_snapshot() == ct_after, "0074 applied again changes nothing"
+ct_code = "\n".join(line.split("--", 1)[0] for line in ct_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", ct_code) and ct_code.count("INSERT OR IGNORE INTO SERVICE_REGISTRY") == 1 and ct_code.count("INSERT") == 1, "0074 only inserts the one row"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", ct_sql, re.I), "0074 is not destructive"
+ct_db.close()
+print("PASS: 0074 register cryptophys-cta (additive, row present and active, versions unset, no agent, rows kept)")

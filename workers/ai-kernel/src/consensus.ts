@@ -25,6 +25,21 @@ import { verifyConsensusExecution } from "../../control-plane-shared/src/consens
 import { executeRegistration } from "./organism.ts";
 import { isPolicyParameter, readPolicyParameter, validPolicyValue } from "../../control-plane-shared/src/policy-params.ts";
 import { DOCTRINE_ACTIONS, DOCTRINE_COUNCIL_AGENT, doctrineProblem } from "../../control-plane-shared/src/doctrine.ts";
+import { effectiveLevel, groupOf, isAutonomyLevel, type AutonomyGroup, type AutonomyLevel } from "../../control-plane-shared/src/autonomy-dial.ts";
+
+/**
+ * HAIC H4 (ADR-0017 §5; owner 2026-11-18): the owner's dial level for a group (autonomy_dial, migration 0083). No row,
+ * or no table yet, means the group is at its ceiling: the ADR-0009 class decides, as before H4.
+ */
+export async function dialLevel(env: { DB: SyscallEnv["DB"] }, group: AutonomyGroup | null): Promise<AutonomyLevel | null> {
+  if (!group) return null;
+  try {
+    const r = await env.DB.prepare("SELECT level FROM autonomy_dial WHERE group_id = ?").bind(group).first<{ level: string }>();
+    return r && isAutonomyLevel(r.level) ? r.level : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Owner 2026-11-11: Cerebrum executes the Knowledge Council's doctrine amendment. It records the
@@ -65,7 +80,7 @@ async function setPolicyParameter(env: SyscallEnv, proposalId: string, decisionI
 }
 
 /** ADR-0013 phase 3 registrations: routine ones run in phase 2's set, seats and privileged agents after an owner click. */
-const ROUTINE_REGISTRATIONS = ["register_agent", "register_engine", "set_policy_parameter"];
+const ROUTINE_REGISTRATIONS = ["register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "set_policy_parameter"];
 const CRITICAL_REGISTRATIONS = ["register_privileged_agent", "admit_voter"];
 
 
@@ -174,7 +189,9 @@ async function executeAction(env: SyscallEnv, proposalId: string, decisionId: st
       if (!env.DRIFT) throw new Error("drift_binding_missing");
       return await env.DRIFT.observeForConsensus(proposalId, decisionId);
     case "register_agent":
+    case "update_agent_capabilities":
     case "register_engine":
+    case "retire_engine":
       return await executeRegistration(env, proposalId, decisionId, p, actor, (id) => canVote(env, id));
     case "set_policy_parameter":
       return await setPolicyParameter(env, proposalId, decisionId, p, actor);
@@ -225,17 +242,26 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   }
   const mode = await consensusMode(env);
   const allowed = passed && policy?.decision === "allow";
-  const executable = allowed && cls === "routine" && executableIn(mode).has(action);
+  // HAIC H4: the dial only makes an action stricter than its class. observe and suggest record a passed proposal and
+  // execute nothing; owner_click makes a routine action wait for the owner's click like a critical one.
+  const group = groupOf(action);
+  const level = cls === "prohibited" ? null : effectiveLevel(action, await dialLevel(env, group));
+  const held = allowed && mode !== "shadow" && (level === "observe" || level === "suggest");
+  const routineClick = allowed && !held && cls === "routine" && level === "owner_click" && executableIn(mode).has(action);
+  const executable = allowed && !held && !routineClick && cls === "routine" && executableIn(mode).has(action);
   let status = !allowed ? (cls === "prohibited" || !passed ? "rejected" : "shadow_blocked")
     : mode === "shadow" ? "shadow_passed"
-    : cls === "critical" ? (OWNER_CLICK_MODES.has(mode) ? "pending_owner" : "shadow_passed")
+    : held ? "shadow_passed"
+    : cls === "critical" || routineClick ? (OWNER_CLICK_MODES.has(mode) ? "pending_owner" : "shadow_passed")
     : executable ? "executing"
     : "shadow_passed"; // a passed routine action with no executor yet (deploys arrive in phase 3)
   let outcome: JsonObject = {
     executed: false,
     reason: mode === "shadow" ? "shadow mode: phase 1 records only"
-      : cls === "critical" && allowed ? (OWNER_CLICK_MODES.has(mode) ? "waiting for an owner approval click" : "critical actions reach the owner only in mode deploy or critical")
+      : held ? `autonomy dial: ${group} is at ${level}; recorded, not executed`
+      : (cls === "critical" || routineClick) && allowed ? (OWNER_CLICK_MODES.has(mode) ? (routineClick ? `autonomy dial: ${group} is at owner_click; waiting for an owner approval click` : "waiting for an owner approval click") : "critical actions reach the owner only in mode deploy or critical")
       : allowed && !executable ? `no executor for ${action} in this phase` : "not executed",
+    ...(level ? { autonomy: { group, level } } : {}),
   };
 
   const proposalId = newId("cns");
@@ -249,11 +275,11 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   };
   await env.DB.prepare(
     `INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible,
-       approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at, autonomy_level)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(proposalId, proposer, action, target, cls, JSON.stringify(params), JSON.stringify(evidenceSummary), mode, eligible.length,
     approvals, rejections, passed ? 1 : 0, policy?.decision_id ?? null, policy?.decision ?? null, status,
-    JSON.stringify(outcome), at, nowIso()).run();
+    JSON.stringify(outcome), at, nowIso(), level).run();
   for (const x of votes) {
     await env.DB.prepare("INSERT INTO consensus_votes (proposal_id, voter_agent_id, vote, reason, created_at) VALUES (?, ?, ?, ?, ?)")
       .bind(proposalId, x.voter, x.vote, x.reason, at).run();
@@ -276,7 +302,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
   }
   await appendAuditEvent(env.DB, {
     event_type: "consensus.tallied", actor: `agent:${proposer}`, subject: `${action}:${target}`, outcome: status,
-    payload: { proposal_id: proposalId, class: cls, mode, eligible: eligible.length, approvals, rejections, passed, policy: policy?.decision ?? null, policy_decision_id: policy?.decision_id ?? null },
+    payload: { proposal_id: proposalId, class: cls, mode, eligible: eligible.length, approvals, rejections, passed, policy: policy?.decision ?? null, policy_decision_id: policy?.decision_id ?? null, autonomy_level: level },
   });
   return { proposal_id: proposalId, class: cls, mode, eligible: eligible.length, approvals, rejections, passed, policy_decision: policy?.decision ?? null, status };
 }
@@ -316,12 +342,14 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  *  - retire_agent (owner 2026-11-11, ADR-0013 §3): the kernel deletes an agent no row refers to, or
  *    suspends it as retired; kernel agents, council seats and exempt hosts are refused;
  *  - change_access (ADR-0012 G6 gate 9, owner 2026-11-13): the Deployment Orchestrator applies exactly the Access
- *    plan whose digest the proposal carries (native-access.ts), with the owner's CF_ACCESS_TOKEN.
+ *    plan whose digest the proposal carries (native-access.ts), with the owner's CF_ACCESS_TOKEN;
+ *  - deploy_destructive_migration (cut-over gate, owner 2026-11-15): the Deployment Orchestrator records D1's Time
+ *    Travel bookmark, then applies exactly the named destructive migrations and deploys the Control Plane natively.
  * Restoring D1, rotating secrets and turning agents back on stay manual:
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", "deploy_destructive_migration", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -344,6 +372,11 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
     if (!env.DEPLOY?.accessForConsensus) throw new Error("deploy_binding_missing");
     return await env.DEPLOY.accessForConsensus(proposalId, decisionId, String(p.params.digest ?? ""));
   }
+  if (p.action === "deploy_destructive_migration") {
+    // Gate 2026-11-15: the Orchestrator re-verifies, reads D1's Time Travel bookmark and queues the named files only.
+    if (!env.DEPLOY?.deployDestructiveForConsensus) throw new Error("deploy_binding_missing");
+    return await env.DEPLOY.deployDestructiveForConsensus(proposalId, decisionId, p.target, p.params);
+  }
   if (p.action === "merge_owner_change") {
     if (!env.FORGE_MERGE) throw new Error("forge_merge_binding_missing");
     return await env.FORGE_MERGE.mergeForConsensus(proposalId, decisionId, p.target, p.params);
@@ -365,10 +398,12 @@ export async function ownerDecide(env: SyscallEnv, proposalId: string, decision:
   // A person decides: Access service tokens (CI, agents) are never owners.
   if (!/^[^@\s]{1,100}@[^@\s]{1,100}$/.test(approver)) throw new OwnerDecisionError(403, "person_required", "an owner decision needs a person's Access identity");
   const reason = typeof reasonRaw === "string" && reasonRaw.trim() ? reasonRaw.trim().slice(0, 500) : null;
-  const p = await env.DB.prepare("SELECT proposal_id, proposer_agent_id, action, target, class, params_json, passed, status, created_at FROM consensus_proposals WHERE proposal_id = ?")
-    .bind(proposalId).first<{ proposal_id: string; proposer_agent_id: string; action: string; target: string; class: string; params_json: string; passed: number; status: string; created_at: string }>();
+  const p = await env.DB.prepare("SELECT proposal_id, proposer_agent_id, action, target, class, params_json, passed, status, created_at, autonomy_level FROM consensus_proposals WHERE proposal_id = ?")
+    .bind(proposalId).first<{ proposal_id: string; proposer_agent_id: string; action: string; target: string; class: string; params_json: string; passed: number; status: string; created_at: string; autonomy_level: string | null }>();
   if (!p) throw new OwnerDecisionError(404, "not_found", "unknown proposal");
-  if (p.class !== "critical" || p.status !== "pending_owner") throw new OwnerDecisionError(409, "not_pending_owner", `proposal is ${p.status}`);
+  // HAIC H4: a routine action the dial held at owner_click waits for the same click as a critical one.
+  const routineClick = p.class === "routine" && p.autonomy_level === "owner_click";
+  if ((p.class !== "critical" && !routineClick) || p.status !== "pending_owner") throw new OwnerDecisionError(409, "not_pending_owner", `proposal is ${p.status}`);
   if (now - Date.parse(p.created_at) > OWNER_DECISION_WINDOW_MS) {
     await env.DB.prepare("UPDATE consensus_proposals SET status = 'expired', decided_at = ? WHERE proposal_id = ? AND status = 'pending_owner'").bind(nowIso(), proposalId).run();
     throw new OwnerDecisionError(409, "expired", "the 24 h owner window has passed; the agents must propose again");
@@ -377,7 +412,8 @@ export async function ownerDecide(env: SyscallEnv, proposalId: string, decision:
   if (decision === "approve") {
     // The code stays mode_not_critical (the API's error code since phase 4); the modes are OWNER_CLICK_MODES.
     if (!OWNER_CLICK_MODES.has(await consensusMode(env))) throw new OwnerDecisionError(409, "mode_not_critical", "critical actions execute only in consensus mode 'deploy' or 'critical'");
-    if (!PHASE4_EXECUTABLE.has(p.action)) throw new OwnerDecisionError(409, "manual_only", `${p.action} has no platform executor; carry it out by its runbook and reject this proposal`);
+    const mode = await consensusMode(env);
+    if (routineClick ? !executableIn(mode).has(p.action) : !PHASE4_EXECUTABLE.has(p.action)) throw new OwnerDecisionError(409, "manual_only", `${p.action} has no platform executor; carry it out by its runbook and reject this proposal`);
   }
   try {
     await env.DB.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, ?, ?, ?, ?)")
@@ -399,7 +435,7 @@ export async function ownerDecide(env: SyscallEnv, proposalId: string, decision:
   let policy: { decision: "allow" | "deny"; decision_id: string; reason: string } | null = null;
   try {
     policy = await env.POLICY.evaluate({ subject: `owner:${approver}`, action: "consensus.execute", resource: subject,
-      context: { class: "critical", passed: p.passed === 1, stage: "execute", proposal_id: proposalId } });
+      context: { class: routineClick ? "routine" : "critical", passed: p.passed === 1, stage: "execute", proposal_id: proposalId, ...(routineClick ? { autonomy_level: "owner_click" } : {}) } });
   } catch { policy = null; }
   if (policy?.decision !== "allow") {
     const outcome = { executed: false, error: `policy_denied: ${policy?.reason ?? "policy_unavailable"}`, approved_by: approver };
@@ -413,7 +449,11 @@ export async function ownerDecide(env: SyscallEnv, proposalId: string, decision:
   let status = "executed";
   let outcome: JsonObject;
   try {
-    outcome = { executed: true, approved_by: approver, result: await executeCritical(env, proposalId, policy.decision_id, { action: p.action, target: p.target, params: JSON.parse(p.params_json) }, approver) };
+    const params = JSON.parse(p.params_json);
+    const result = routineClick
+      ? await executeAction(env, proposalId, policy.decision_id, { action: p.action, target: p.target, params, class: "routine" })
+      : await executeCritical(env, proposalId, policy.decision_id, { action: p.action, target: p.target, params }, approver);
+    outcome = { executed: true, approved_by: approver, result };
   } catch (err) {
     status = "failed";
     outcome = { executed: false, approved_by: approver, error: String((err as Error)?.message ?? err).slice(0, 300) };
@@ -438,7 +478,13 @@ export async function expireOwnerProposals(env: SyscallEnv, now = Date.now()): P
  * For each proposal older than its scoring delay, did people do the same thing on their own?
  *  - deploy_commit X@S: the registry recorded S as X's desired version within 24 h (a person,
  *    or a deploy workflow a person dispatched, deployed it).
- *  - redeploy_desired_version / rollback_worker_version X: X was observed in sync within 2 h.
+ *  - redeploy_desired_version / rollback_worker_version X: X was observed in sync within 2 h. Drift rows are
+ *    recorded on change (0061), so "observed in sync in [created, created + 2 h]" is: a drifted = 0 row recorded in
+ *    the window, or no row recorded in the window while the newest row before it is drifted = 0 (the in-sync state
+ *    held through the window) and the Drift Detector observed X after the window opened (its heartbeat,
+ *    service_registry.updated_at, is at or after created). Per-run history from before 0061 has a row in every
+ *    window and reads as before. In sync at the start and then drifted inside the window, never back, reads as not
+ *    acted: the rows cannot show that a run saw the in-sync state before the drift.
  *  - other actions: a non-agent audit event on X within 24 h.
  * agree = (passed and people acted) or (not passed and people did not); a passed proposal people
  * did not act on is a false positive; a refused one they acted on, a false negative.
@@ -479,6 +525,13 @@ export async function agreementReport(env: SyscallEnv, days = 7, now = Date.now(
           "SELECT COUNT(*) AS n FROM drift_observations WHERE service_id = ? AND drifted = 0 AND observed_at BETWEEN ? AND ?",
         ).bind(p.target, p.created_at, end).first<{ n: number }>();
         acted = (ok?.n ?? 0) > 0;
+        if (!acted) {
+          const held = await env.DB.prepare(
+            `SELECT o.drifted, o.observed_at, r.updated_at AS last_seen_at FROM drift_observations o JOIN service_registry r ON r.service_id = o.service_id
+             WHERE o.service_id = ? AND o.observed_at <= ? ORDER BY o.observed_at DESC, o.rowid DESC LIMIT 1`,
+          ).bind(p.target, end).first<{ drifted: number; observed_at: string; last_seen_at: string }>();
+          acted = held !== null && held.drifted === 0 && held.observed_at < p.created_at && held.last_seen_at >= p.created_at;
+        }
         evidence = acted ? `${p.target} back in sync within 2 h` : `${p.target} still drifted after 2 h`;
       } else {
         const ev = await env.DB.prepare(

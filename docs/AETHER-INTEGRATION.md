@@ -21,6 +21,22 @@ Aether is the Knowledge Guardian cluster of the AI Mesh.
 
 They publish `knowledge_audit` reports, `info` or `warning` only, advisory, never with price levels.
 
+## Aether's DNA and ceiling (owner 2026-11-14)
+
+- **Ceiling** ("naikan batas kapabilitas aether"): `control-plane-shared/src/organism.ts` `AETHER_CEILING`, exactly the
+  table above, per agent, tier 1, no seat. `knowledge-council` may propose `amend_doctrine` and `amend_constitution`
+  only (also refused at `AgentRpc`, `ai-kernel/src/agent-rpc.ts`). An Aether agent not named there may hold only
+  `signals.observe` and `reports.publish`. xauusd keeps `EXTERNAL_CEILING`.
+- **DNA read by the census**: the Forge binds `EXT_ORGANISM_AETHER` to `cryptophys-aether`, entrypoint `OrganismDna`;
+  `dna()` returns Aether's `organism.json` (`{ schema: "aether-organism.v1", organs: [...] }`). Until Aether serves
+  it, the census records `external_dna_unavailable aether` and leaves Aether's organ out (never `undeclared_agent`).
+- **Schedules** ("jangan pensiun aether calibrator karena cara kerjanya memang idle sampai jadwalnya kerja"): an agent
+  gene may declare `"schedule": { "cron": "52 2 * * *" }` (hourly, daily, weekly or monthly; see `parseDna`). The
+  Supervisor then proposes `retire_agent` only after 3 of its runs without an action or a report, and never sooner
+  than the fixed 14 days (`control-plane-shared/src/agent-idle.ts`); an open `retire_agent` of a scheduled agent that
+  is not idle by its schedule is closed as `expired` with "scheduled agent, idle by design until its run (owner
+  2026-11-14)". A tier-0 read (`knowledge.status`) is not recorded, so it is not activity.
+
 ## How Aether reaches the kernel
 
 The same pattern as xauusd: one RPC Service Binding in Aether's Wrangler configuration, with no secret.

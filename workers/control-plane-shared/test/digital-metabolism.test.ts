@@ -21,6 +21,30 @@ test("P2-M4 computeMarketStatus accurately detects gold market schedule", () => 
   assert.equal(computeMarketStatus(Date.UTC(2026, 10, 10, 14, 0, 0)), "open");
 });
 
+test("market clock: gold's week follows New York time, so the UTC close and open move with US daylight saving", () => {
+  const at = (y: number, m: number, d: number, h: number, min = 0) => computeMarketStatus(Date.UTC(y, m - 1, d, h, min));
+  // Winter (EST, UTC-5): Friday 2026-11-13 closes at 22:00 UTC, Sunday 2026-11-15 opens at 23:00 UTC.
+  assert.equal(at(2026, 11, 13, 21, 59), "open");
+  assert.equal(at(2026, 11, 13, 22, 0), "closed");
+  assert.equal(at(2026, 11, 15, 22, 30), "closed", "Sunday 17:30 New York: not open yet (the fixed 22:00 UTC said open)");
+  assert.equal(at(2026, 11, 15, 23, 0), "open");
+  // Summer (EDT, UTC-4): Friday 2026-07-10 closes at 21:00 UTC, Sunday 2026-07-12 opens at 22:00 UTC.
+  assert.equal(at(2026, 7, 10, 20, 59), "open");
+  assert.equal(at(2026, 7, 10, 21, 30), "closed", "Friday 17:30 New York: closed (the fixed 22:00 UTC said open)");
+  assert.equal(at(2026, 7, 12, 21, 59), "closed");
+  assert.equal(at(2026, 7, 12, 22, 0), "open");
+  // The transition Sundays: DST starts 2026-03-08 (open at 22:00 UTC), ends 2026-11-01 (open at 23:00 UTC).
+  assert.equal(at(2026, 3, 8, 21, 59), "closed");
+  assert.equal(at(2026, 3, 8, 22, 0), "open");
+  assert.equal(at(2026, 11, 1, 22, 30), "closed");
+  assert.equal(at(2026, 11, 1, 23, 0), "open");
+  // The daily 17:00–18:00 New York break is not a closure: Wednesday 2026-11-11 22:30 UTC is open.
+  assert.equal(at(2026, 11, 11, 22, 30), "open");
+  // Saturday is closed all day on both clocks.
+  assert.equal(at(2026, 7, 11, 3, 0), "closed");
+  assert.equal(at(2026, 7, 11, 23, 0), "closed");
+});
+
 test("P2-M4 observeMetabolism returns treasury balance, burn rate, and ratio", async () => {
   const db = migratedDb();
   const mockXauusd = {
@@ -71,7 +95,7 @@ test("P2-M8 an owner ledger entry makes the treasury measured; cycles before it 
   assert.equal(earlier.runway_days, null, "a cycle of the placeholder period shows no runway");
 });
 
-test("P2-M4 policy engine throttles non-essential capabilities during Survival Mode", async () => {
+test("P2-M4 policy engine: survival mode no longer throttles learning (owner 2026-11-14: learning is core)", async () => {
   const db = migratedDb();
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
 
@@ -84,12 +108,13 @@ test("P2-M4 policy engine throttles non-essential capabilities during Survival M
   const mode1 = await getActivePowerMode(db);
   assert.equal(mode1, "survival");
 
-  // In survival mode, non-essential Tier 1 syscalls like memory.remember are denied
+  // Owner 2026-11-14: until then survival denied memory.remember (and knowledge.propose); learning is core now, and
+  // survival throttles AI-heavy work only (power-mode.ts: the AI request budgets at 25%).
   const res = await evaluatePolicy(db, "agent.syscall", "memory.remember", { __subject: "agent:signal-analyst" });
-  assert.equal(res.decision, "deny");
+  assert.equal(res.decision, "allow", res.reason);
   const survivalCheck = res.checks.find((c) => c.id === "power_mode_survival");
-  assert.ok(survivalCheck, "power_mode_survival check present");
-  assert.equal(survivalCheck?.passed, false);
+  assert.equal(survivalCheck, undefined, "no power_mode_survival check for a learning capability");
+  assert.equal(res.checks.every((c) => c.passed), true);
 
   // Restore homeostasis
   await db.prepare("UPDATE metabolism_controls SET value = 'homeostasis' WHERE control = 'power_mode'").run();
@@ -136,6 +161,30 @@ test("P2-M4 supervisor evaluates digital metabolism and writes cycle records", a
   assert.equal(modeDb.value, "survival");
 });
 
+test("P2-M9 metabolism_cycles records a change at once, the same state once an hour, and keeps 30 days (2026-11-14)", async () => {
+  const db = migratedDb();
+  const env: any = { ...baseEnv("cryptophys-ai-kernel", db), POLICY: { evaluate: async () => ({ decision: "allow" }) } };
+  const n = () => ((db as any).raw.prepare("SELECT COUNT(*) AS n FROM metabolism_cycles").get() as any).n;
+  const t0 = Date.UTC(2026, 10, 10, 14, 8, 0); // Tuesday, market open
+  const first: any = await evaluateMetabolismState(env, t0);
+  assert.deepEqual([first.recorded, n()], [true, 1]);
+  for (const m of [15, 30, 45]) {
+    const again: any = await evaluateMetabolismState(env, t0 + m * 60_000);
+    assert.deepEqual([again.recorded, again.cycle_id], [false, first.cycle_id], `same state ${m} min later is not recorded`);
+  }
+  assert.equal(n(), 1);
+  const hourly: any = await evaluateMetabolismState(env, t0 + 60 * 60_000);
+  assert.deepEqual([hourly.recorded, n()], [true, 2], "the hourly heartbeat");
+  // Friday 22:00 UTC the market closes: a change is recorded at once.
+  const closed: any = await evaluateMetabolismState(env, Date.UTC(2026, 10, 13, 22, 8, 0));
+  assert.deepEqual([closed.recorded, closed.mode_changed, n()], [true, true, 3]);
+  // An old row goes with the 03:00 UTC hour's record; the 14 days the Console shows stay.
+  (db as any).raw.prepare("INSERT INTO metabolism_cycles (cycle_id, evaluated_at, market_status, trading_net_pnl_24h, infra_burn_cost_24h, metabolic_ratio, treasury_reserve_usd, runway_days, power_mode, mode_reason, actions_json) VALUES ('mtb_old', '2026-10-01T00:00:00.000Z', 'open', 0, 0.15, NULL, 0, NULL, 'homeostasis', 'x', '{}')").run();
+  await evaluateMetabolismState(env, Date.UTC(2026, 10, 14, 3, 8, 0));
+  assert.equal(((db as any).raw.prepare("SELECT COUNT(*) AS n FROM metabolism_cycles WHERE cycle_id = 'mtb_old'").get() as any).n, 0);
+  assert.equal(n(), 4);
+});
+
 // Owner 2026-11-10: the power mode may save AI tokens, never block the platform's own safety, and
 // never expand budgets from trading results.
 test("P2-M5 survival mode never throttles consensus.propose (deploys, rollbacks, suspensions)", async () => {
@@ -145,7 +194,7 @@ test("P2-M5 survival mode never throttles consensus.propose (deploys, rollbacks,
   assert.equal(res.checks.find((c) => c.id === "power_mode_survival"), undefined);
   assert.equal(res.decision, "allow", res.reason);
   const mem = await evaluatePolicy(db, "agent.syscall", "memory.remember", { __subject: "agent:supervisor" });
-  assert.ok(mem.checks.some((c) => c.id === "power_mode_survival" && !c.passed), "memory still throttled");
+  assert.ok(!mem.checks.some((c) => c.id === "power_mode_survival" && !c.passed), "learning is not throttled in survival (owner 2026-11-14)");
 });
 
 test("P2-M5 the supervisor never enters growth on its own, and every mode change is audited", async () => {
@@ -217,7 +266,8 @@ test("P2-M7 supervisor reports billable usage overages from infra_burn_metrics a
   const overageFinding = report.findings.find((f: any) => f.kind === "billable_usage_overage");
   assert.ok(overageFinding);
   assert.equal(overageFinding.service_id, "cryptophys-ai-kernel");
-  assert.equal(overageFinding.action, "throttle_free_tier");
-  assert.equal(overageFinding.outcome, "throttled");
+  // Owner 2026-11-14: the account is on Workers Paid; the finding reports the cost and throttles nothing.
+  assert.equal(overageFinding.action, "report_billable_cost");
+  assert.equal(overageFinding.outcome, "reported");
   assert.match(String(overageFinding.why ?? ""), /1\.41 USD/);
 });

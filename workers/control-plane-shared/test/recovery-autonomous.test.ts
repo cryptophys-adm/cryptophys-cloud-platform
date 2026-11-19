@@ -71,10 +71,16 @@ function envFor(db: Db = migratedDb(), extra: Record<string, unknown> = {}) {
   return { env, db, wf };
 }
 
-function observe(db: Db, serviceId: string, drifted: boolean, tag = MAIN.slice(0, 12)) {
+/** A Drift Detector run that saw a new state: a row, and the registry heartbeat it sets in the same batch (0061). */
+function observe(db: Db, serviceId: string, drifted: boolean, tag = MAIN.slice(0, 12), at = new Date().toISOString()) {
   db.raw.prepare(`INSERT INTO drift_observations (observation_id, service_id, desired_hash, observed_hash, drifted, evidence_json, observed_at)
     VALUES (?, ?, 'd', 'o', ?, ?, ?)`).run(`obs_${Math.random().toString(16).slice(2)}`, serviceId, drifted ? 1 : 0,
-    JSON.stringify({ reasons: drifted ? ["version_mismatch"] : [], probe: { version_tag: drifted ? "000000000000" : tag } }), new Date().toISOString());
+    JSON.stringify({ reasons: drifted ? ["version_mismatch"] : [], probe: { version_tag: drifted ? "000000000000" : tag } }), at);
+  heartbeat(db, serviceId, at);
+}
+/** A Drift Detector run that saw the same state: no row since 0061, only service_registry.updated_at. */
+function heartbeat(db: Db, serviceId: string, at = new Date().toISOString()) {
+  db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at, serviceId);
 }
 
 async function approvedPlan(env: Record<string, unknown>, steps: { action: string; description: string }[], version = MAIN.slice(0, 12), serviceId = "cryptophys-console") {
@@ -195,4 +201,24 @@ test("8. Console: approved and executing plans show the AI pipeline; no manual s
   assert.match(src, /Pipeline/);
   assert.doesNotMatch(src, /recovery\.execute_start/);
   assert.match(src, /last_execution\?\.autonomous|autonomous/);
+});
+
+test("7b. verification freshness is the Drift Detector heartbeat: an unchanged in-sync row verifies when the service was observed lately (0061)", async () => {
+  const { env, db, wf } = envFor();
+  const threeHoursAgo = new Date(Date.now() - 3 * 3_600_000).toISOString();
+  // In sync for three hours: the only row is that old, but the last run (the heartbeat) just confirmed it.
+  observe(db, "cryptophys-console", false, MAIN.slice(0, 12), threeHoursAgo);
+  heartbeat(db, "cryptophys-console");
+  const id = await approvedPlan(env, [{ action: "manual", description: "Confirm health and drift" }]);
+  await run(env, wf, id);
+  assert.deepEqual(stages(db, id), ["approval:succeeded", "policy:succeeded", "step-1:skipped", "verify:succeeded"]);
+  assert.match(planRow(db, id).exec.pipeline[3].detail, new RegExp(`in sync since ${threeHoursAgo}`));
+
+  // No run for three hours: the same row is not fresh evidence, whatever its drifted flag says.
+  const other = envFor();
+  observe(other.db, "cryptophys-console", false, MAIN.slice(0, 12), threeHoursAgo);
+  const stale = await approvedPlan(other.env, [{ action: "manual", description: "Confirm health and drift" }]);
+  await run(other.env, other.wf, stale);
+  assert.deepEqual(stages(other.db, stale), ["approval:succeeded", "policy:succeeded", "step-1:skipped", "verify:failed"]);
+  assert.match(planRow(other.db, stale).exec.pipeline[3].detail, /no fresh drift observation/);
 });

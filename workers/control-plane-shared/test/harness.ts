@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { AiBinding, D1Database, D1PreparedStatement, D1Result } from "../src/types.ts";
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "../../control-plane-migrations");
+const WORKERS = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const norm = (v: unknown): string | number | bigint | null | Uint8Array => {
   if (v === undefined || v === null) return null;
@@ -81,6 +82,63 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
   }
   return new FakeD1(raw);
 }
+
+/**
+ * ADR-0013 phase 3 (migration 0041): "from here on, new agents, engines and seats are added only by consensus actions,
+ * never by hand". The agents and engines main's DNA declared after 0041, which the census registers by consensus
+ * (register_agent, register_engine), with no migration seeding them. A test that compares the repository's DNA with the
+ * live registries applies them with registeredByConsensus(): the registries once consensus has registered what main
+ * declares. organism-dna-0013 O8 checks each is declared, routine (no privileged capability) and seeded by no migration.
+ */
+/** The kernel's wrangler.toml without the ConversationAgent (HAIC H1b), the CouncilAgent (H1.5b), the ConsoleHub (push hub) and the transcripts bucket (H1.5e): what the earlier steps' wiring tests compare. */
+export const withoutConversation = (toml: string): string => toml
+  .replace(/\n# HAIC push hub \(docs\/design\/HAIC-H0-H1\.md §4\.5[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "HUB"\nclass_name = "ConsoleHub"\n/, "\n")
+  .replace(/\n\[\[migrations\]\]\ntag = "v9"\nnew_sqlite_classes = \["ConsoleHub"\]\n/, "\n")
+  .replace(/\n# HAIC H1\.5b \(docs\/design\/HAIC-H0-H1\.md §4\)[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "COUNCIL"\nclass_name = "CouncilAgent"\n/, "\n")
+  .replace(/\n\[\[migrations\]\]\ntag = "v8"\nnew_sqlite_classes = \["CouncilAgent"\]\n/, "\n")
+  .replace(/\n# HAIC H1b \(docs\/design\/HAIC-H0-H1\.md §3\.1\)[^\n]*\n\[\[durable_objects\.bindings\]\]\nname = "CONVERSATION"\nclass_name = "ConversationAgent"\n/, "\n")
+  .replace(/\n\[\[migrations\]\]\ntag = "v7"\nnew_sqlite_classes = \["ConversationAgent"\]\n/, "\n");
+
+export const CONSENSUS_REGISTERED: { agents: ReadonlyArray<{ service: string; agent_id: string; privileged?: true }>; engines: ReadonlyArray<{ service: string; task: string }> } = {
+  // ADR Steward (docs/design/ADR-STEWARD.md §4.1, step 3). The evolver (ADR-0014 §11, docs/design/EVOLVER.md step V5)
+  // holds code.propose (tier 2): register_privileged_agent, consensus and then the owner's click.
+  agents: [{ service: "cryptophys-ai-kernel", agent_id: "adr-steward" }, { service: "cryptophys-ai-kernel", agent_id: "evolver", privileged: true }],
+  engines: [
+    { service: "cryptophys-ai-kernel", task: "draft_adr_explanation" },
+    { service: "cryptophys-ai-kernel", task: "evolve_plan" },
+    { service: "cryptophys-ai-kernel", task: "evolve_write" },
+    // HAIC H1b (docs/design/HAIC-H0-H1.md §3): the chat's two model tasks, registered by consensus after the deploy.
+    { service: "cryptophys-ai-kernel", task: "chat_plan" },
+    { service: "cryptophys-ai-kernel", task: "chat_answer" },
+    // HAIC H1.5b (docs/design/HAIC-H0-H1.md §4): the council's three model tasks.
+    { service: "cryptophys-ai-kernel", task: "council_position" },
+    { service: "cryptophys-ai-kernel", task: "council_rebuttal" },
+    { service: "cryptophys-ai-kernel", task: "council_synthesis" },
+    // HAIC H2b: a chat directive into a typed proposal draft.
+    { service: "cryptophys-ai-kernel", task: "directive_draft" },
+  ],
+};
+
+/** Write the CONSENSUS_REGISTERED rows as the registration executors do (ai-kernel/src/organism.ts), each gene from its DNA. */
+export function registeredByConsensus(db: FakeD1): FakeD1 {
+  const at = "2026-11-17T12:00:00.000Z";
+  const dirOf = (service: string) => service.replace(/^cryptophys-/, "");
+  for (const a of CONSENSUS_REGISTERED.agents) {
+    const dna = JSON.parse(readFileSync(join(WORKERS, dirOf(a.service), "organism.json"), "utf8")) as { agents: Array<{ id: string; display_name: string; capabilities: string[]; tier_max: number }> };
+    const gene = dna.agents.find((g) => g.id === a.agent_id);
+    if (!gene) throw new Error(`${a.agent_id} is not in ${a.service}'s DNA`);
+    db.raw.prepare(`INSERT OR IGNORE INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at, voter)
+      VALUES (?, ?, ?, ?, ?, ?, 'enabled', NULL, 'consensus:test', ?, ?, 0)`)
+      .run(gene.id, gene.display_name, a.service, `Declared in ${a.service}'s DNA; registered by consensus (test).`, gene.tier_max, JSON.stringify(gene.capabilities), at, at);
+  }
+  for (const e of CONSENSUS_REGISTERED.engines) {
+    db.raw.prepare("INSERT OR IGNORE INTO engines (service_id, task, status, registered_by, created_at, updated_at) VALUES (?, ?, 'enabled', 'consensus:test', ?, ?)").run(e.service, e.task, at, at);
+  }
+  return db;
+}
+
+/** A migrated database whose registries also hold what consensus registers from main's DNA (CONSENSUS_REGISTERED). */
+export const registeredDb = (options: { recordLedger?: boolean } = {}): FakeD1 => registeredByConsensus(migratedDb(options));
 
 export interface FakeAi extends AiBinding {
   calls: { model: string; input: Record<string, unknown> }[];

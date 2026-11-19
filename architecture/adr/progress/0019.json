@@ -1,0 +1,9 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0019",
+  "title": "AI Mesh program",
+  "adr_file": null,
+  "lifecycle": "planned",
+  "lifecycle_note": "Owner-confirmed, not drafted; the number is reserved (ADR-0020). The ADR Steward is placed in its P0 (docs/design/ADR-STEWARD.md §1.3, Q10).",
+  "phases": []
+}

@@ -6,15 +6,23 @@
  *    recorded in agent_actions and the audit chain whatever the outcome.
  * The kernel fails closed: no policy answer, no action.
  */
+import type { IdentityDrift } from "../../control-plane-shared/src/identity-redeploy.ts";
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
 import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
-import { appendAuditEvent, verifyAuditChain } from "../../control-plane-shared/src/audit.ts";
+import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
+import { LEARNING_CAPABILITIES } from "../../control-plane-shared/src/power-mode.ts";
+import { appendAuditEvent, verifyAuditChain, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
 import { newId, nowIso } from "../../control-plane-shared/src/http.ts";
+import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift } from "../../control-plane-shared/src/drift-state.ts";
+import { notRetiredSql } from "../../control-plane-shared/src/retired.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
 import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
+import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
+import { observeAdr } from "./adr-observe.ts";
+import { readCouncilDecisions } from "./council-decisions.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -36,6 +44,11 @@ export interface DeployRpcBinding {
   /** ADR-0012 G6 gate 9: the Access plan (read only) and an owner-approved change_access. */
   accessPlan?(): Promise<{ configured: boolean; ok: boolean; in_sync?: boolean; digest?: string; changes?: string[]; reason?: string }>;
   accessForConsensus?(proposalId: string, decisionId: string, digest: string): Promise<JsonObject>;
+  /** Gate 2026-11-15: the destructive D1 migrations a commit would apply (read only), and an owner-approved deploy of them. */
+  destructiveMigrations?(commitSha: string): Promise<{ ok: true; commit_sha: string; migrations: Array<{ file: string; sha256: string }> } | { ok: false; reason: string; file?: string }>;
+  deployDestructiveForConsensus?(proposalId: string, decisionId: string, target: string, params: Record<string, unknown>): Promise<JsonObject>;
+  /** Owner 2026-11-16: the units whose Workers carry another identity value than the owner-saved row (read only). */
+  identityDrift?(): Promise<IdentityDrift>;
 }
 
 export interface SyscallEnv extends BaseEnv {
@@ -49,6 +62,11 @@ export interface SyscallEnv extends BaseEnv {
   /** ADR-0013 §3 (#262): the Forge's head of canonical main, read from Artifacts at call time. */
   CANONICAL_MAIN?: { mainHead(): Promise<{ main_sha: string | null }> };
   /** ADR-0012 G3b: the Forge's change-request state for a merge vote, and the merge executor (MergeRpc). */
+  /** ADR-0014 §11 (EVOLVER.md §6): the Forge's EvolutionRpc, the evolver's only read and write path to the repository. */
+  FORGE_EVOLUTION?: {
+    read(input: { paths?: unknown; prefix?: unknown }): Promise<Record<string, unknown>>;
+    propose(agentId: string, decisionId: string, input: JsonObject): Promise<Record<string, unknown>>;
+  };
   FORGE_MERGE?: {
     changeState(crId: string): Promise<import("../../control-plane-shared/src/merge-path.ts").ChangeEvidence | null>;
     mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<JsonObject>;
@@ -66,6 +84,22 @@ export type SyscallResult =
   | { outcome: "succeeded"; capability: string; tier: number; decision_id: string | null; result: JsonObject }
   | { outcome: "denied" | "failed"; capability: string; tier: number; decision_id: string | null; reason: string };
 
+/**
+ * Owner 2026-11-14: a warning that its own agent has since reported resolved is not open. Agents that track an
+ * alert carry its key in the report body (xauusd-risk-manager's health alerts: body.alert_key, body.state "open" |
+ * "resolved", and a "Resolved: <subject>" info report when the alert clears). A warning report `r` is resolved
+ * when the same agent published a later report with the same body.alert_key whose body.state is "resolved" or
+ * whose subject starts with "Resolved:". A warning without an alert_key, or one reopened after its resolution
+ * (a newer warning), stays open. Critical reports are untouched: only an approver's acknowledgement closes them.
+ */
+export function resolvedLaterSql(r: string): string {
+  return `(${r}.severity = 'warning' AND json_extract(${r}.body_json, '$.alert_key') IS NOT NULL AND EXISTS (
+    SELECT 1 FROM agent_reports z WHERE z.agent_id = ${r}.agent_id
+      AND z.created_at >= ${r}.created_at AND (z.created_at > ${r}.created_at OR z.rowid > ${r}.rowid)
+      AND json_extract(z.body_json, '$.alert_key') = json_extract(${r}.body_json, '$.alert_key')
+      AND (json_extract(z.body_json, '$.state') = 'resolved' OR z.subject LIKE 'Resolved:%')))`;
+}
+
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -74,21 +108,25 @@ async function sha256Hex(value: string): Promise<string> {
 /** Tier 0: a consistent read of the platform state the agents reason about. */
 export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
   // Latest observation per registered service through the (service_id, observed_at) index: about 3 rows read per service instead of the whole table (2026-11-11: 24,480 rows per call at 12,240 observations).
+  // A retired service (retired.ts, migration 0064) is no longer observed and is left out of the platform's view.
   const latest = await env.DB.prepare(
-    `SELECT o.service_id, o.drifted, o.evidence_json, o.observed_at FROM service_registry r
+    `SELECT o.service_id, o.drifted, o.evidence_json, o.observed_at, r.updated_at AS last_seen_at FROM service_registry r
      JOIN drift_observations o ON o.observation_id = (
        SELECT i.observation_id FROM drift_observations i WHERE i.service_id = r.service_id ORDER BY i.observed_at DESC, i.rowid DESC LIMIT 1)
+     WHERE ${notRetiredSql("r.")}
      ORDER BY r.service_id`,
-  ).all<{ service_id: string; drifted: number; evidence_json: string; observed_at: string }>();
+  ).all<{ service_id: string; drifted: number; evidence_json: string; observed_at: string; last_seen_at: string }>();
   const services = [];
   for (const r of latest.results) {
     const ev = JSON.parse(r.evidence_json) as JsonObject;
-    // Persistent drift: the two most recent observations of the service both drifted.
-    const lastTwo = await env.DB.prepare("SELECT drifted FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 2")
-      .bind(r.service_id).all<{ drifted: number }>();
+    // Persistent drift: two runs in a row saw the service drifted (drift-state.ts: the newest row drifted and either
+    // its streak is 2 or the row before it drifted too). Rows are recorded on change (0061), so observed_at is when
+    // the state was first seen; last_seen_at (service_registry.updated_at, set by every run) is when it was last seen.
+    const lastTwo = await env.DB.prepare(LAST_TWO_OBSERVATIONS_SQL)
+      .bind(r.service_id).all<{ drifted: number; streak: number; observed_at: string }>();
     services.push({
-      service_id: r.service_id, drifted: r.drifted === 1, observed_at: r.observed_at,
-      persistent: lastTwo.results.length === 2 && lastTwo.results.every((x) => x.drifted === 1),
+      service_id: r.service_id, drifted: r.drifted === 1, observed_at: r.observed_at, last_seen_at: r.last_seen_at,
+      persistent: isPersistentDrift(lastTwo.results),
       reasons: (ev.reasons as string[] | undefined) ?? [], desired_version: (ev.desired_version as string | null | undefined) ?? null,
       observed_version: ((ev.probe as JsonObject | undefined)?.version_tag as string | null | undefined) ?? null,
     });
@@ -107,23 +145,31 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     const acks = await acknowledgementsReadable(env.DB);
     const ackJoin = acks ? "LEFT JOIN agent_report_acknowledgements a ON a.report_id = r.report_id" : "";
     const open = acks ? "a.report_id IS NULL" : "1 = 1";
+    // counts.warning and latest_attention hold open warnings only; warnings_resolved_24h counts the alerts (agent and
+    // alert_key) whose warning in the window was later reported resolved (resolvedLaterSql, owner 2026-11-14).
     const countRows = await env.DB.prepare(
-      `SELECT r.severity AS severity, COUNT(*) AS n, SUM(CASE WHEN ${open} THEN 0 ELSE 1 END) AS acknowledged
+      `SELECT r.severity AS severity, COUNT(*) AS n, SUM(CASE WHEN ${open} THEN 0 ELSE 1 END) AS acknowledged,
+         SUM(CASE WHEN r.severity = 'warning' AND ${resolvedLaterSql("r")} THEN 1 ELSE 0 END) AS resolved,
+         COUNT(DISTINCT CASE WHEN r.severity = 'warning' AND ${resolvedLaterSql("r")} THEN r.agent_id || ':' || json_extract(r.body_json, '$.alert_key') END) AS resolved_alerts
        FROM agent_reports r ${ackJoin} WHERE r.created_at > ? GROUP BY r.severity`,
-    ).bind(since).all<{ severity: string; n: number; acknowledged: number | null }>();
+    ).bind(since).all<{ severity: string; n: number; acknowledged: number | null; resolved: number | null; resolved_alerts: number | null }>();
     const counts = { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 };
+    let warningsResolved = 0;
     for (const r of countRows.results) {
       if (r.severity === "critical") {
         const acknowledged = Number(r.acknowledged ?? 0);
         counts.critical = Number(r.n) - acknowledged;
         counts.critical_acknowledged = acknowledged;
-      } else if (r.severity === "warning" || r.severity === "info") {
-        counts[r.severity] = Number(r.n);
+      } else if (r.severity === "warning") {
+        counts.warning = Number(r.n) - Number(r.resolved ?? 0);
+        warningsResolved = Number(r.resolved_alerts ?? 0);
+      } else if (r.severity === "info") {
+        counts.info = Number(r.n);
       }
     }
     const latestRows = await env.DB.prepare(
       `SELECT r.report_id, r.agent_id, r.kind, r.severity, r.subject, r.created_at FROM agent_reports r ${ackJoin}
-       WHERE r.created_at > ? AND (r.severity = 'warning' OR (r.severity = 'critical' AND ${open})) ORDER BY r.created_at DESC, r.rowid DESC LIMIT 5`,
+       WHERE r.created_at > ? AND ((r.severity = 'warning' AND NOT ${resolvedLaterSql("r")}) OR (r.severity = 'critical' AND ${open})) ORDER BY r.created_at DESC, r.rowid DESC LIMIT 5`,
     ).bind(since).all<{ report_id: string; agent_id: string; kind: string; severity: string; subject: string; created_at: string }>();
     const latestAttention = latestRows.results.map((r) => ({
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, severity: r.severity,
@@ -144,13 +190,13 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
       report_id: r.report_id, agent_id: r.agent_id, kind: r.kind, created_at: r.created_at,
     }));
     agentReports24h = {
-      since, counts, latest_attention: latestAttention,
+      since, counts, warnings_resolved_24h: warningsResolved, latest_attention: latestAttention,
       critical_fingerprint: criticalFingerprint, latest_critical: latestCritical,
     };
   } catch (err) {
     console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "agent_reports_overview_failed", message: String((err as Error)?.message ?? err) }));
     agentReports24h = {
-      since, counts: { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 }, latest_attention: [],
+      since, counts: { critical: 0, warning: 0, info: 0, critical_acknowledged: 0 }, warnings_resolved_24h: 0, latest_attention: [],
       critical_fingerprint: null, latest_critical: [], error: "reports_unavailable",
     };
   }
@@ -159,11 +205,13 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
   let xauusdLatest: JsonObject | null | { error: string } = null;
   try {
     const row = await env.DB.prepare(
-      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND json_extract(body_json, '$.decision') IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      // A flip warning carries the decision at the top level; the metric snapshot (2026-11-15) in `latest`.
+      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND (json_extract(body_json, '$.decision') IS NOT NULL OR json_extract(body_json, '$.latest.decision') IS NOT NULL) ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).first<{ report_id: string; created_at: string; body_json: string }>();
     if (row) {
       let body: any = {};
       try { body = JSON.parse(row.body_json); } catch { body = {}; }
+      if (body?.decision === undefined && body?.latest && typeof body.latest === "object") body = body.latest;
       const decisionRaw = body?.decision;
       const decision = ["BUY","SELL","WAIT","NO_TRADE"].includes(decisionRaw) ? decisionRaw : "UNKNOWN";
       const conf = typeof body?.confidence === "number" && body.confidence >= 0 && body.confidence <= 1 ? body.confidence : null;
@@ -181,6 +229,18 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     xauusdLatest = { error: "xauusd_latest_unavailable" };
   }
 
+  // trading_organ_health (owner 2026-11-15): the Signal Analyst's newest metric snapshot, for the overview chips.
+  let tradingOrganHealth: JsonObject | null = null;
+  try {
+    const row = await env.DB.prepare(
+      "SELECT report_id, created_at, body_json FROM agent_reports WHERE agent_id = 'signal-analyst' AND kind = 'xauusd_digest' AND json_extract(body_json, '$.schema') = 'trading_organ_health.v1' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    ).first<{ report_id: string; created_at: string; body_json: string }>();
+    if (row) tradingOrganHealth = { report_id: row.report_id, reported_at: row.created_at, ...presentOrganHealth(row.body_json) };
+  } catch (err) {
+    console.error(JSON.stringify({ service: "cryptophys-ai-kernel", event: "trading_organ_health_unavailable", message: String((err as Error)?.message ?? err) }));
+    tradingOrganHealth = { error: "trading_organ_health_unavailable" };
+  }
+
   return {
     observed_at: new Date(now).toISOString(),
     services,
@@ -188,6 +248,35 @@ export async function observe(env: BaseEnv, now = Date.now()): Promise<JsonObjec
     agents_enabled: await agentsEnabled(env.DB),
     agent_reports_24h: agentReports24h,
     xauusd_latest: xauusdLatest,
+    trading_organ_health: tradingOrganHealth,
+  };
+}
+
+const finiteOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const HIT_RATE_STATUSES: ReadonlySet<unknown> = new Set(["ok", "no_scored_data", "unavailable_source_field"]);
+
+/** Only the known fields of a trading_organ_health.v1 body, each of the expected type: numbers and names, no text. */
+export function presentOrganHealth(bodyJson: string): JsonObject {
+  let body: any = {};
+  try { body = JSON.parse(bodyJson); } catch { body = {}; }
+  const metrics = (Array.isArray(body?.metrics) ? body.metrics : []).slice(0, 32)
+    .filter((m: any) => m && typeof m.metric === "string" && /^[a-z0-9_]{1,40}$/.test(m.metric))
+    .map((m: any) => {
+      const out: JsonObject = { metric: m.metric, value: finiteOrNull(m.value), baseline_7d: finiteOrNull(m.baseline_7d), z: finiteOrNull(m.z) };
+      if (HIT_RATE_STATUSES.has(m.status)) out.status = m.status;
+      // The hit rates' scoring context (2026-11-15): counts, the WAIT accuracy, the scored subject and its time.
+      if (/^hit_rate_/.test(m.metric)) {
+        for (const k of ["n_directional", "hit", "miss", "wait_accuracy"]) if (k in m) out[k] = finiteOrNull(m[k]);
+        if ("subject" in m) out.subject = typeof m.subject === "string" && /^[a-z0-9:_-]{1,40}$/.test(m.subject) ? m.subject : null;
+        if ("as_of" in m) out.as_of = typeof m.as_of === "string" && /^[0-9TZ:.+-]{10,40}$/.test(m.as_of) ? m.as_of : null;
+      }
+      return out;
+    });
+  return {
+    observed_at: typeof body?.observed_at === "string" ? body.observed_at.slice(0, 40) : null,
+    bar_minutes: finiteOrNull(body?.bar_minutes),
+    stale: typeof body?.stale === "boolean" ? body.stale : null,
+    metrics,
   };
 }
 
@@ -366,6 +455,57 @@ async function fetchXauusd(
   }
 }
 
+/**
+ * The outcome subject each decisions endpoint scores (xauusd 8a27029): /api/engine/decisions is the Decision Engine
+ * on M15, /api/decisions the H1 chain. A summary for any other subject is not this source's and is dropped.
+ */
+export const OUTCOME_SUBJECT_BY_ENDPOINT: Readonly<Record<string, { subject: string; timeframe: string }>> = Object.freeze({
+  engine: { subject: "engine:15", timeframe: "15" },
+  legacy: { subject: "chain:h1", timeframe: "60" },
+});
+export const OUTCOME_SCORING_VERSION = /^cryptophys\.outcome-scoring\.v\d{1,3}$/;
+const OUTCOME_WINDOWS = ["7d", "30d"] as const;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+const countOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1e9 ? v : null);
+const rateOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1 ? v : null);
+
+/**
+ * xauusd's `outcome_summary`, strictly: only the known fields, each of its type (counts are non-negative integers,
+ * rates are in [0, 1], anything else is null); every other field, a price or level included, is dropped. Null when
+ * the field is absent (an older deploy), null (the scorecard read failed), malformed, of an unknown scoring version,
+ * or for a subject other than the one the decisions came from.
+ */
+export function normalizeOutcomeSummary(raw: unknown, endpoint: string): JsonObject | null {
+  const expected = OUTCOME_SUBJECT_BY_ENDPOINT[endpoint];
+  if (!expected || !raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.scoring_version !== "string" || !OUTCOME_SCORING_VERSION.test(r.scoring_version)) return null;
+  if (r.subject !== expected.subject) return null;
+  const rawWindows = r.windows && typeof r.windows === "object" && !Array.isArray(r.windows) ? (r.windows as Record<string, unknown>) : {};
+  const windows: JsonObject = {};
+  for (const name of OUTCOME_WINDOWS) {
+    const w = rawWindows[name];
+    if (!w || typeof w !== "object" || Array.isArray(w)) { windows[name] = null; continue; }
+    const x = w as Record<string, unknown>;
+    windows[name] = {
+      n_directional: countOrNull(x.n_directional),
+      hit: countOrNull(x.hit),
+      miss: countOrNull(x.miss),
+      hit_rate: rateOrNull(x.hit_rate),
+      wait_n: countOrNull(x.wait_n),
+      wait_accuracy: rateOrNull(x.wait_accuracy),
+    };
+  }
+  return {
+    scoring_version: r.scoring_version,
+    subject: expected.subject,
+    timeframe: r.timeframe === expected.timeframe ? expected.timeframe : null,
+    windows,
+    as_of: typeof r.as_of === "string" && r.as_of.length <= 40 && ISO_TIME.test(r.as_of) ? r.as_of : null,
+  };
+}
+
 /** Tier 0: latest XAUUSD advisory decisions and execution deals from xauusd-ai-trading-assistant (read-only). */
 export async function observeSignals(
   env: BaseEnv & { XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> } },
@@ -450,6 +590,8 @@ export async function observeSignals(
     endpoint_used: usedEndpoint,
     latest: latest as unknown as JsonObject,
     recent: items,
+    // xauusd 8a27029: the outcome scores of the subject these decisions come from; null when absent or invalid.
+    outcome_summary: normalizeOutcomeSummary(body?.outcome_summary, usedEndpoint),
   };
 
   if (opts.includeDeals) {
@@ -470,19 +612,28 @@ export function withoutLevels(text: string): string {
   return text.replace(/\$?(?:\d{1,3}(?:[.,\s_'’]\d{3})+(?:[.,]\d+)?|\d{3,}(?:[.,]\d+)?)/g, "[level]");
 }
 
-/** Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only). */
-export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonObject> {
-  const chain = await verifyAuditChain(env.DB);
+/**
+ * Tier 0: verify the audit hash chain and count governance events over the last 24 hours (read-only).
+ * `mode` "incremental" verifies from the last checkpoint (re-hashing the checkpointed event) instead of the whole
+ * table: the Auditor's hourly cycles use it, and its 00:37 UTC cycle, operator wakes, the Audit Ledger and every
+ * deploy verification keep the full pass (resource audit, owner 2026-11-14). Anything else is a full pass.
+ */
+export async function verifyAudit(env: BaseEnv, now = Date.now(), mode: "full" | "incremental" = "full"): Promise<JsonObject> {
+  const chain = mode === "incremental" ? await verifyAuditChainIncremental(env.DB) : await verifyAuditChain(env.DB);
   const since = new Date(now - 24 * 3_600_000).toISOString();
-  const actionRows = await env.DB.prepare(
-    `SELECT agent_id, outcome, COUNT(*) AS count FROM agent_actions
-     WHERE outcome IN ('denied', 'failed') AND created_at >= ?
-     GROUP BY agent_id, outcome ORDER BY agent_id, outcome`,
-  ).bind(since).all<{ agent_id: string; outcome: "denied" | "failed"; count: number }>();
+  // Denied rows carry their policy reason so the Auditor can tell expected guard outcomes apart (denials.ts), and a
+  // learning capability (memory.remember, knowledge.propose) so a blocked learning call is counted on its own.
+  const learningSlots = LEARNING_CAPABILITIES.map((_, i) => `?${i + 2}`).join(", ");
+  const agentOutcomeRows = await env.DB.prepare(
+    `SELECT agent_id, outcome, CASE WHEN outcome = 'denied' THEN json_extract(result_json, '$.reason') END AS reason,
+       CASE WHEN outcome = 'denied' AND capability IN (${learningSlots}) THEN capability END AS learning_capability, COUNT(*) AS count
+     FROM agent_actions WHERE outcome IN ('denied', 'failed') AND created_at >= ?1
+     GROUP BY agent_id, outcome, reason, learning_capability ORDER BY agent_id, outcome`,
+  ).bind(since, ...LEARNING_CAPABILITIES).all<AgentOutcomeRow>();
   const byAgentMap = new Map<string, { agent_id: string; denied: number; failed: number }>();
   let deniedTotal = 0;
   let failedTotal = 0;
-  for (const r of actionRows.results) {
+  for (const r of agentOutcomeRows.results) {
     const cur = byAgentMap.get(r.agent_id) ?? { agent_id: r.agent_id, denied: 0, failed: 0 };
     if (r.outcome === "denied") {
       cur.denied += r.count;
@@ -493,11 +644,6 @@ export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonO
     }
     byAgentMap.set(r.agent_id, cur);
   }
-  const policyRows = await env.DB.prepare(
-    `SELECT action, COUNT(*) AS count FROM policy_decisions
-     WHERE decision = 'deny' AND created_at >= ?
-     GROUP BY action ORDER BY action`,
-  ).bind(since).all<{ action: string; count: number }>();
   const govRows = await env.DB.prepare(
     `SELECT event_type, COUNT(*) AS count FROM audit_events
      WHERE event_type IN ('agent.suspended', 'agent.resumed', 'kernel.agents_enabled') AND created_at >= ?
@@ -514,31 +660,61 @@ export async function verifyAudit(env: BaseEnv, now = Date.now()): Promise<JsonO
   const planRow = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM recovery_plans WHERE created_by LIKE 'agent:%' AND created_at >= ?",
   ).bind(since).first<{ count: number }>();
+  // Owner 2026-11-14: denials classified as expected guard outcomes or unexpected, with the 7 days before the last
+  // 24 h as the baseline (denials.ts). Grouped rows only, through the (decision, created_at) index (0060).
+  const baselineSince = new Date(now - (DENIAL_BASELINE_DAYS + 1) * 86_400_000).toISOString();
+  const denialSlots = LEARNING_CAPABILITIES.map((_, i) => `?${i + 3}`).join(", ");
+  const denialRows = await env.DB.prepare(
+    `SELECT subject, action, reason, CASE WHEN action = 'agent.syscall' AND resource IN (${denialSlots}) THEN resource END AS learning_capability,
+       CASE WHEN created_at >= ?1 THEN 1 ELSE 0 END AS recent, COUNT(*) AS count FROM policy_decisions
+     WHERE decision = 'deny' AND created_at >= ?2
+     GROUP BY subject, action, reason, learning_capability, recent`,
+  ).bind(since, baselineSince, ...LEARNING_CAPABILITIES).all<DenialRow>();
+  const policyByAction = new Map<string, number>();
+  for (const r of denialRows.results) if (Number(r.recent) === 1) policyByAction.set(r.action, (policyByAction.get(r.action) ?? 0) + Number(r.count));
+  const policyRows = [...policyByAction.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([action, count]) => ({ action, count }));
 
   return {
     observed_at: new Date(now).toISOString(),
     since,
     chain: chain as unknown as JsonObject,
+    chain_mode: mode,
     valid: chain.valid,
     events_checked: chain.events_checked,
     counts_24h: {
       agent_actions_by_agent: [...byAgentMap.values()],
       denied_agent_syscalls: deniedTotal,
       failed_agent_syscalls: failedTotal,
-      policy_denies_by_action: policyRows.results,
+      policy_denies_by_action: policyRows,
       governance_audit_events: governanceEvents,
       agent_recovery_plans: planRow?.count ?? 0,
     },
+    denials: classifyDenials(denialRows.results, agentOutcomeRows.results) as unknown as JsonObject,
   };
 }
 
+// Gold's trading week runs on New York time: it opens Sunday 18:00 and closes Friday 17:00 America/New_York
+// (COMEX/Globex hours; spot XAUUSD brokers follow the same week). In UTC that moves with US daylight saving:
+// the close is Friday 21:00 UTC in summer (EDT) and 22:00 UTC in winter (EST), the open Sunday 22:00 UTC in
+// summer and 23:00 UTC in winter. The fixed 22:00 UTC used before was an hour off on one side in each season.
+// The daily 17:00–18:00 maintenance break is not a closure here: the metabolism reacts to the weekend only.
+const NEW_YORK_CLOCK = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hourCycle: "h23" });
+const WEEKDAYS: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+/** The weekday (0 = Sunday) and hour (0–23) of an instant on the New York wall clock. */
+export function newYorkWeekdayHour(now: number): { day: number; hour: number } {
+  const parts = NEW_YORK_CLOCK.formatToParts(new Date(now));
+  const day = WEEKDAYS[parts.find((p) => p.type === "weekday")?.value ?? ""];
+  const hour = Number(parts.find((p) => p.type === "hour")?.value);
+  if (day === undefined || !Number.isInteger(hour)) throw new Error("new_york_clock_unavailable");
+  return { day, hour };
+}
+
 export function computeMarketStatus(now = Date.now()): "open" | "closed" | "holiday" {
-  const date = new Date(now);
-  const day = date.getUTCDay();
-  const hour = date.getUTCHours();
+  const { day, hour } = newYorkWeekdayHour(now);
   if (day === 6) return "closed";
-  if (day === 5 && hour >= 22) return "closed";
-  if (day === 0 && hour < 22) return "closed";
+  if (day === 5 && hour >= 17) return "closed";
+  if (day === 0 && hour < 18) return "closed";
   return "open";
 }
 
@@ -604,7 +780,11 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     } catch {}
   }
 
+  // The daily burn comes from the Billable Usage API (cf-usage.ts persistBillableMetrics: the billing cycle's cost to
+  // date divided by the days observed, written to infra_burn_metrics on every GET /v1/usage). When no row exists, the
+  // old fallback estimate stays for the runway figure, and is marked as an estimate: it never decides the budget rule.
   let infraBurn24h = 0.15;
+  let burnSource: "billable_usage" | "billable_usage_recent" | "estimate" = "estimate";
   try {
     const dayStr = new Date(now).toISOString().slice(0, 10);
     const burnRow = await env.DB.prepare(
@@ -612,12 +792,17 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     ).bind(dayStr).first<{ total_burn: number }>();
     if (burnRow && typeof burnRow.total_burn === "number" && burnRow.total_burn > 0) {
       infraBurn24h = Math.round(burnRow.total_burn * 100) / 100;
+      burnSource = "billable_usage";
     } else {
+      // No reading today (GET /v1/usage writes one when it is called): the newest day of the last 7 that has one. Each
+      // day's row is already the cycle's average daily cost, so it is taken as is; dividing a few days' rows by 7 (the
+      // rule until 2026-11-14) understated the burn whenever fewer than 7 days had a reading.
       const recentBurn = await env.DB.prepare(
-        "SELECT SUM(estimated_cost_usd) AS total_burn FROM infra_burn_metrics WHERE period_day >= ? AND estimated_cost_usd > 0"
-      ).bind(new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)).first<{ total_burn: number }>();
+        "SELECT period_day, SUM(estimated_cost_usd) AS total_burn FROM infra_burn_metrics WHERE period_day >= ? AND estimated_cost_usd > 0 GROUP BY period_day ORDER BY period_day DESC LIMIT 1"
+      ).bind(new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)).first<{ period_day: string; total_burn: number }>();
       if (recentBurn && typeof recentBurn.total_burn === "number" && recentBurn.total_burn > 0) {
-        infraBurn24h = Math.round((recentBurn.total_burn / 7) * 100) / 100;
+        infraBurn24h = Math.round(recentBurn.total_burn * 100) / 100;
+        burnSource = "billable_usage_recent";
       } else {
         const aiUsage = await env.DB.prepare(
           "SELECT SUM(requests) AS total_requests FROM ai_usage WHERE day = ?"
@@ -627,6 +812,14 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
       }
     }
   } catch {}
+
+  // Owner 2026-11-14: a monthly budget, not the free tier. The platform stores a daily burn, not the month's spend, so
+  // the month is projected as that burn x the days of the current UTC month (Cloudflare's billing cycle may differ).
+  // Only a burn read from the Billable Usage API is projected; an estimate is "not measured" (null).
+  const budgetUsdMonth = await readPolicyParameter(env.DB, "infra-budget-usd-month");
+  const d = new Date(now);
+  const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  const projectedMonthUsd = burnSource === "estimate" ? null : Math.round(infraBurn24h * daysInMonth * 100) / 100;
 
   const metabolicRatio = infraBurn24h > 0 ? Math.round((tradingNetPnl24h / infraBurn24h) * 100) / 100 : null;
   const runwayDays = treasurySource === "ledger" && treasuryReserve !== null && infraBurn24h > 0 ? Math.round((treasuryReserve / infraBurn24h) * 10) / 10 : null;
@@ -642,6 +835,10 @@ export async function observeMetabolism(env: SyscallEnv, now = Date.now()): Prom
     treasury_source: treasurySource,
     runway_days: runwayDays,
     infra_burn_cost_24h: infraBurn24h,
+    infra_burn_source: burnSource,
+    infra_budget_usd_month: budgetUsdMonth,
+    infra_projected_month_usd: projectedMonthUsd,
+    infra_projection_days: daysInMonth,
     trading_net_pnl_24h: tradingNetPnl24h,
     metabolic_ratio: metabolicRatio,
   };
@@ -657,10 +854,19 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
     dealsLimit: typeof input.deals_limit === "number" ? input.deals_limit : undefined,
   }),
   "metabolism.observe": (env, input) => observeMetabolism(env, typeof input.now === "number" ? input.now : Date.now()),
-  "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now()),
+  "audit.verify": (env, input) => verifyAudit(env, typeof input.now === "number" ? input.now : Date.now(), input.mode === "incremental" ? "incremental" : "full"),
   "memory.recall": (env, input, agentId) => recallMemories(env, agentId, input),
   "knowledge.status": (env, input, agentId) => knowledgeStatus(env.DB, agentId, input),
   "doctrine.status": (env, input) => doctrineStatus(env.DB, input),
+  // ADR Steward (docs/design/ADR-STEWARD.md §4.2): the bundled ADR progress manifests evaluated against D1, read only.
+  "adr.observe": (env, input) => observeAdr(env, input),
+  // ADR-0014 §11, docs/design/EVOLVER.md §5: the evolver reads canonical main through the Forge (evolvable paths only).
+  "code.read": async (env, input) => {
+    if (!env.FORGE_EVOLUTION) return { available: false, reason: "forge_evolution_binding_missing" };
+    return await env.FORGE_EVOLUTION.read({ paths: input.paths, prefix: input.prefix }) as JsonObject;
+  },
+  // ADR-0014 §11, docs/design/EVOLVER.md §8: the return path, scoped to the calling agent's origin.
+  "council.decisions.read": (env, input, agentId) => readCouncilDecisions(env, agentId, input),
 };
 
 /**
@@ -688,6 +894,11 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
     case "consensus.propose": return { proposal: await consensusPropose(env, agentId, decisionId, input) };
     case "knowledge.propose": return { proposal: await proposeKnowledge(env.DB, agentId, decisionId, input) };
+    // ADR-0014 §11 (EVOLVER.md §6): the Forge verifies and consumes the decision, re-checks everything, writes evo/<id>.
+    case "code.propose": {
+      if (!env.FORGE_EVOLUTION) throw new Error("forge_evolution_binding_missing");
+      return { evolution: await env.FORGE_EVOLUTION.propose(agentId, decisionId, input) as JsonObject };
+    }
     default: throw new Error("capability_not_dispatchable");
   }
 }

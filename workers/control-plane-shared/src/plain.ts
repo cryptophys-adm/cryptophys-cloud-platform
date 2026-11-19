@@ -99,6 +99,7 @@ export function explainReason(reason: string | null | undefined): string {
 
 const ACTION_TEXT: Record<string, string> = {
   deploy_commit: "deploy the latest code to",
+  deploy_destructive_migration: "apply destructive database migrations (after a restore point) and deploy the latest code to",
   rollback_worker_version: "roll back",
   redeploy_desired_version: "redeploy the expected version of",
   observe_drift: "check for drift on",
@@ -106,9 +107,11 @@ const ACTION_TEXT: Record<string, string> = {
   resume_agent: "resume the agent",
   retire_agent: "dismantle the idle agent",
   register_principal: "register an external agent for",
+  update_agent_capabilities: "set, as its DNA declares, the capabilities of the agent",
   register_agent: "register the new agent",
   register_privileged_agent: "register the new privileged agent",
   register_engine: "register a new AI engine on",
+  retire_engine: "retire an AI engine its DNA no longer declares on",
   admit_voter: "give a council seat to",
   set_policy_parameter: "change the policy parameter",
   retire_worker: "retire",
@@ -124,6 +127,19 @@ const ACTION_TEXT: Record<string, string> = {
 export function describeAction(action: string, target?: string | null): string {
   const verb = ACTION_TEXT[action] ?? words(action);
   return target ? `${verb} ${target.startsWith("cryptophys-") || target.startsWith("xauusd-") ? serviceName(target) : target}` : verb;
+}
+
+/**
+ * A proposal in plain English, from its params where they change what it does. Owner 2026-11-16: a deploy_commit with
+ * `redeploy: "identity_vars"` (identity-redeploy.ts) deploys no new code, so it is not "deploy the latest code to".
+ */
+export function describeProposal(action: string, target?: string | null, params?: Record<string, unknown> | null): string {
+  if (action === "deploy_commit" && params?.redeploy === "identity_vars") {
+    const unit = typeof params.unit === "string" && params.unit ? params.unit : target ? (target.startsWith("cryptophys-") ? serviceName(target) : target) : "the unit";
+    const rev = typeof params.identity_revision === "number" ? ` (revision ${params.identity_revision})` : "";
+    return `Redeploy ${unit} at its running commit to apply the identity lists${rev}`;
+  }
+  return describeAction(action, target);
 }
 
 /** "deploy_commit:cryptophys-x" style resources. */

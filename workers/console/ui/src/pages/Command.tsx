@@ -7,6 +7,7 @@ import { ago, listOf } from "../lib/format";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import CognitionPanel from "../components/CognitionPanel";
+import OrganHealthChips from "../components/OrganHealthChips";
 import { statusTone } from "./Consensus";
 import { DataTable, STATUS, StatusBar, VoteBar } from "../components/viz";
 
@@ -28,6 +29,9 @@ export default function Command() {
   // Live digital metabolism (GET /v1/metabolism); nothing here is computed in the browser.
   const metabolism = usePoll(() => call("kernel.metabolism"), 60_000);
   const mtb: any = (metabolism.data as any)?.live ?? {};
+  // Owner 2026-11-14: the mode's reason and what it blocks, as the kernel reports them; "not measured" otherwise.
+  const pm: any = (metabolism.data as any)?.mode ?? {};
+  const blocked: string[] | null = Array.isArray(pm.blocked_capabilities) ? pm.blocked_capabilities : null;
 
   return (
     <div className="flex flex-col gap-3">
@@ -43,13 +47,13 @@ export default function Command() {
               <div key={n.topic} className="glass-inner px-3 py-2.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <Dot tone={n.topic === "owner_attention" ? "amber" : "red"} pulse />
-                  <span className="min-w-0 flex-1 break-words text-[12px] text-slate-200">{n.title}</span>
+                  <span className="min-w-0 flex-1 wrap-break-word text-[12px] text-slate-200">{n.title}</span>
                   {/* Owner 2026-11-13: only approvals and critical reports reach the owner; the kernel says which channel each notice uses. */}
                   <Badge tone={n.channel === "owner" ? "amber" : "slate"}>{n.channel === "owner" ? "owner channel" : n.channel === "console" ? "Console only" : "—"}</Badge>
                   <a href={String(n.link ?? "").replace(/^.*#/, "#")} className="text-[10px] uppercase tracking-widest text-cyan-300 hover:underline">Open →</a>
                 </div>
                 <ul className="mt-1.5 space-y-1 pl-4 text-[11px] leading-relaxed text-slate-400">
-                  {(Array.isArray(n.lines) ? n.lines : []).slice(0, 8).map((l: string, i: number) => <li key={i} className="list-disc break-words">{l}</li>)}
+                  {(Array.isArray(n.lines) ? n.lines : []).slice(0, 8).map((l: string, i: number) => <li key={i} className="list-disc wrap-break-word">{l}</li>)}
                 </ul>
               </div>
             ))}
@@ -86,6 +90,9 @@ export default function Command() {
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               Treasury: <strong className={`mono ${mtb.treasury_source === "placeholder" ? "text-slate-500" : "text-emerald-300"}`}>{typeof mtb.treasury_reserve_usd === "number" ? `$${mtb.treasury_reserve_usd.toFixed(2)}${mtb.treasury_source === "placeholder" ? " (placeholder)" : ""}` : "—"}</strong> · Burn: <strong className="mono text-amber-300">{typeof mtb.infra_burn_cost_24h === "number" ? `$${mtb.infra_burn_cost_24h.toFixed(2)}/day` : "—"}</strong> · Runway: <strong className="mono text-cyan-300">{typeof mtb.runway_days === "number" ? `${Math.floor(mtb.runway_days)} Days` : "—"}</strong> · Power: <strong className="mono text-emerald-400">{mtb.power_mode ? String(mtb.power_mode).toUpperCase() : "—"}</strong>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5 wrap-break-word">
+              Reason: <span className="text-slate-300">{typeof pm.reason === "string" ? pm.reason : "not measured"}</span> · Blocked in this mode: <strong className="mono text-slate-200">{blocked === null ? "not measured" : blocked.length === 0 ? "no capability" : blocked.join(", ")}</strong>{typeof pm.ai_budget?.ratio === "number" && pm.ai_budget.ratio < 1 ? <> · AI requests at <strong className="mono text-amber-300">{Math.round(pm.ai_budget.ratio * 100)}%</strong></> : null}
             </div>
           </div>
         </div>
@@ -155,7 +162,7 @@ export default function Command() {
               <div key={s.service_id} className={`glass-inner flex items-center gap-2.5 px-3 py-2.5 ${s.drifted ? "border-rose-400/20" : ""}`}>
                 <Dot tone={s.drifted ? (s.persistent ? "red" : "amber") : "green"} pulse={s.drifted} />
                 <span className="mono min-w-0 flex-1 truncate text-[11px] text-slate-200">{s.service_id}</span>
-                <span className="shrink-0 text-[10px] text-slate-600">{ago(s.observed_at)}</span>
+                <span className="shrink-0 text-[10px] text-slate-600">{ago(s.last_seen_at ?? s.observed_at)}</span>
               </div>
             ))}
           </div>
@@ -187,6 +194,7 @@ export default function Command() {
               </div>
             </div>
           )}
+          <div className="mt-3 border-t border-white/5 pt-3"><OrganHealthChips h={ov?.trading_organ_health} /></div>
           <p className="mt-3 text-[10px] uppercase tracking-widest text-slate-600">Advisory relay · not an order</p>
         </Panel>
       </div>

@@ -9,6 +9,12 @@ enabled = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
+# The account-wide Observer (owner 2026-11-14; control-plane-shared/src/observer.ts): senses at :27 (the last
+# complete UTC hour, from the GraphQL Analytics API with the CF_ANALYTICS_TOKEN this Worker already holds) and the
+# account inventory at :27 and :57. Both minutes are off every other platform cron (docs/SSOT.md).
+[triggers]
+crons = ["27,57 * * * *"]
+
 [vars]
 PLATFORM_NAME = "cryptophys-cloud-platform"
 PLATFORM_ENVIRONMENT = "production"

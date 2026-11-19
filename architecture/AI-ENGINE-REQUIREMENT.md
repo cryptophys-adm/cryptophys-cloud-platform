@@ -20,7 +20,7 @@ This means six independently governed AI Engines:
 
 The engine logic may use a common source-code library for safe shared mechanics, but each Worker must instantiate and configure its own engine locally. A shared library is not a shared runtime service. No central AI Engine Worker is part of this architecture.
 
-Platform Registry, Policy Engine, Drift Detector, Audit Ledger, Recovery Manager and Deployment Orchestrator each have their own `AI` binding, task allow-list, validators, D1-enforced budget, tests and failure telemetry (`ai_usage`). The Deployment Orchestrator has its own engine as well (`summarize_deployment_risk`), invoked only after the deterministic CI gate, lock and dispatch, and only with `?advisory=true`.
+Platform Registry, Policy Engine, Drift Detector, Audit Ledger, Recovery Manager and Deployment Orchestrator each have their own `AI` binding, task allow-list, validators, D1-enforced budget, tests and failure telemetry (`ai_usage`). The Deployment Orchestrator has its own engine as well (`summarize_deployment_risk`), invoked only after the deterministic CI gate, lock and dispatch, and only with `?advisory=true`. *(2026-11-14: its only caller, the manual `POST /v1/deployments`, was removed by the owner; the engine stays declared, with no caller, until the owner rewires or retires it. The same holds for the Registry's `suggest_tags` since 2026-11-15: its only caller, `PUT /v1/services/{id}` with `?advisory=true`, was removed with the Console's Edit form.)*
 
 ## Free-tier constraints
 

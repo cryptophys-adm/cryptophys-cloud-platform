@@ -20,6 +20,9 @@
 //     binding, one file per D1 batch with the row `wrangler d1 migrations apply` writes to `d1_migrations`.
 //     The ledger must list exactly the running version's files first. Migrations are forward-only: a failure
 //     stops before any Worker deploys and fails the request with a critical report for the owner.
+//     Gate 2026-11-15: a destructive migration is applied only when an owner-approved request names it
+//     (deploy_destructive_migration, or a break-glass plan), and only after D1's Time Travel bookmark is read and
+//     recorded (`restorePoint`, d1-restore-point.ts); a bookmark that cannot be read stops before any change.
 //   - Multi-module Workers: every extra module the Forge stored (WebAssembly, text, data, ES modules), uploaded
 //     as its own multipart part under the name the bundle imports it by.
 //
@@ -39,6 +42,46 @@
 // and the zone route the workflow attaches with a zone token (ZONE_ROUTES) is reported for the script, read only.
 // The assets are uploaded before the version and sent as `assets: { jwt, config }`, also when the build is
 // unchanged: keep_assets is not used, because it is not verified that it keeps `run_worker_first`.
+//
+// Gate 4 part B (topology.ts, owner 2026-11-15): routes and custom domains, Durable Object migrations and Workflows,
+// which the G2c-2 plan refused, are planned against the live state (`planTopology`). Custom domains and Workflows are
+// applied after the live check, like the script settings, and undone first on a later failure; an additive Durable
+// Object migration deploys the Worker through the Script Upload API (forward-only: Cloudflare refuses a rollback across
+// it). Removals and destructive migrations are refused with a reason naming them, unless the owner-approved
+// break-glass plan names them in `destructive_topology` (opts.destructiveTopology; recovery-deploy.ts): then they are
+// applied, each one audited first, the irreversible ones (a deleted Durable Object class, a deleted Workflow) saying so.
+//
+// Gate 4 part A (owner 2026-11-15) adds two checks from the deploy workflows, in their own modules:
+//   - deploy-vars.ts: the deploy-time `--var` values, kept from the active version, checked before the upload
+//     (present, well formed, consistent; a value no platform source holds refuses the deploy) and after it (the
+//     new version binds exactly the kept text), when `deployVars` is given. Owner 2026-11-16: the identity lists come
+//     from D1 `platform_identities` once an owner saved it; a changed value is written as the version's `plain_text`
+//     binding (code only: every plain-text binding sent, the rest kept; a plan: the planned binding's text) and the
+//     binding check expects exactly the active set with that text replaced;
+//   - native-smoke.ts: the workflows' smoke tests through Cloudflare Access with a service token, after each
+//     Worker's live check (before its script settings and topology) and after the whole unit (after every
+//     Worker's topology, before the desired version), when `smoke` is given; a failed probe restores the applied
+//     topology, the script settings and every changed Worker, like a failed live check.
+//
+// 2026-11-16 (binding props lost out of band, owner-approved): every Worker's service bindings end equal to the ones
+// its wrangler.toml declares, as the Forge stored it for the target commit (control-plane-shared/src/service-bindings.ts).
+// On 2026-11-15 a version made out of band (a dashboard secret edit) dropped the AGENTS binding's `props`, and every
+// native deploy after it kept the loss, because both paths copied the active version's records. Now, right before the
+// upload, the active version's service bindings are compared with the declared ones (names, service, entrypoint,
+// props): a code-only upload whose active version differs sends the declared service bindings (and keeps every other
+// type), a configuration plan plans them from the config (config-diff.ts `service_bindings`), and the uploaded
+// version must bind exactly the declared values before any traffic moves. Each restored binding is a step
+// `<worker>:service_bindings_restored:<NAME>` and an audit event (deployment.binding_drift_detected before the upload,
+// deployment.binding_drift_repaired once the Worker is verified live). An active service binding the config does not
+// declare (`service_binding_undeclared:<NAME>`), a declared name bound as another type, or a restored binding whose
+// target script the account does not list (`service_binding_target_missing:<NAME>`) refuses the deploy before
+// anything is uploaded; the failure is reported like any failed native deploy. No path drops such a binding, the
+// break-glass deploy included: it stays refused and reported, and the owner decides case by case (owner 2026-11-16).
+// Props unknown: an API record with no `props` key for a binding declared with props is not drift by itself (it is not
+// verified live that the versions API returns props). The declared binding is still sent, the step
+// `<worker>:service_binding_props_unverifiable:<NAME>` is recorded once, no drift audit is written, and a new version
+// whose record has no `props` key is accepted. If the new version's record carries the declared props, the active
+// version's missing key was a real loss and is reported as restored (step, binding_drift, repaired audit).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import type { DeployUnit } from "../../control-plane-shared/src/deploy-units.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -46,14 +89,28 @@ import {
   D1_MIGRATION_INSERT, D1_MIGRATIONS_TABLE, destructiveMigration, splitSqlStatements, unsupportedStatement,
 } from "../../control-plane-shared/src/migration-rules.ts";
 import {
-  CloudflareWorkers, MODULE_NAME, MODULE_TYPES, nativeRollbackConfigured, sameDeployment, sleep, VERIFY_ATTEMPTS, VERIFY_DELAY_MS,
+  bindingSetOf, CloudflareWorkers, MODULE_NAME, MODULE_TYPES, nativeRollbackConfigured, sameDeployment, sleep, VERIFY_ATTEMPTS, VERIFY_DELAY_MS,
   type DeploymentVersions, type DriftProbeBinding, type ExtraModule, type ModuleType, type NativeRollbackEnv, type RegistryRollbackBinding, type VersionMetadata, type VersionRecord,
 } from "./native-rollback.ts";
 import {
   assetsConfigFromToml, configRefusal, parseToml, planConfigChange, uploadBindings, verifyPlannedBindings, verifyVersionSettings,
   type AssetsConfig, type ConfigPlan, type PlanStep,
 } from "./config-diff.ts";
+import {
+  deployVarsConsistent, keptDeployVars, plainTextBindings, verifyDeployVars, withDeployVarText, withPlannedDeployVars, type DeployVarReference,
+} from "./deploy-vars.ts";
+import type { SmokeHooks } from "./native-smoke.ts";
+import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
+import { ORCHESTRATOR_UNIT, executorFirstVerdict } from "../../control-plane-shared/src/executor-first.ts";
+import { RESTORE_POINT_EVENT, restoreCommand } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { consoleDistFileKey, indexHtmlRefusal, readConsoleDistList, readConsoleDistWithList, sameConsoleDist, type AssetFileMap, type DistReader } from "./assets-upload.ts";
+import {
+  BINDING_DRIFT_DETECTED_EVENT, BINDING_DRIFT_REPAIRED_EVENT, declaredServiceBindingsFromToml, nonServiceBindingSet, restoredStep, serviceBindingDrift,
+  serviceDriftRefusal, unverifiableStep, verifyServiceBindings, type BindingDrift, type ServiceBinding,
+} from "../../control-plane-shared/src/service-bindings.ts";
+import {
+  applyTopologyStep, deployWithDoMigration, DO_IRREVERSIBLE, planTopology, restoreTopologyStep, topologyDiff, topologyStepLabel, type TopologyPlan, type TopologyStep,
+} from "./topology.ts";
 
 export const NATIVE_DEPLOY_EXECUTOR = "native:deploy";
 /** The one unit whose deploy applies D1 migrations (SSOT: "Migrations are applied only by the Control Plane deploy"). */
@@ -183,7 +240,13 @@ export async function manifestForTag(bucket: BundleReader, tag: string): Promise
  * G2c-2: a Worker whose version is uploaded from a configuration plan, not the code-only way. The executor reads
  * both configs again and plans again against the deployment it captures, right before the upload.
  */
-export interface PlannedConfig { running_commit: string; running: BundleWorker; changes: ConfigPlan["changes"]; steps: PlanStep["kind"][] }
+export interface PlannedConfig {
+  running_commit: string; running: BundleWorker; changes: ConfigPlan["changes"]; steps: PlanStep["kind"][];
+  /** Gate 4 part B: the topology changes planned (topology.ts `TopologyPlan.changes`); planned again before the upload. */
+  topology?: string[];
+  /** Gate 4 part B: the destructive topology items this Worker's diff contains (only ever ones a break-glass plan names). */
+  destructive?: string[];
+}
 /**
  * G2c-2 step 6: a Worker with static assets. `keep` when the running commit's stored build equals the target's
  * (`running_dist: "same"`); the executor still uploads when the active version is not the script's latest upload.
@@ -197,9 +260,16 @@ export interface PlannedAssets {
   binding: string | null;
   config: AssetsConfig;
 }
-export interface PlannedService { service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig; assets?: PlannedAssets }
+export interface PlannedService {
+  service: string; worker: BundleWorker; running_tag: string; config?: PlannedConfig; assets?: PlannedAssets;
+  /**
+   * Owner 2026-11-16 (identity redeploy): the identity variables whose expected text (from the owner-saved identity
+   * table) differs from the active version's, read at eligibility; names only. The executor reads them again.
+   */
+  deploy_vars_changed?: string[];
+}
 /** A migration the deploy applies before its Workers, in this order. */
-export interface PlannedMigration { file: string; sha256: string }
+export interface PlannedMigration { file: string; sha256: string; destructive?: boolean }
 export type Eligibility =
   | { eligible: true; commit: string; services: PlannedService[]; migrations: PlannedMigration[] }
   | { eligible: false; reason: string; service?: string; file?: string };
@@ -275,21 +345,24 @@ const needsConfigPlan = (target: BundleWorker, running: BundleWorker) => target.
  *   - `placement_unverified`: either config has [placement]. It would be sent in the metadata, but nothing reads
  *     it back from the uploaded version (no platform Worker has one today).
  */
-export function workerConfigRefusal(runningToml: string, targetToml: string): string | null {
-  const refused = configRefusal(runningToml, targetToml);
+export function workerConfigRefusal(runningToml: string, targetToml: string, allowed: readonly string[] = []): string | null {
+  // Gate 4 part B: routes, Durable Object migrations and Workflows are topology.ts's; what the configs alone refuse there
+  // (a removal, a destructive migration) is refused here, before any Cloudflare call.
+  const refused = configRefusal(runningToml, targetToml, { topology: true });
   if (refused) return refused;
   const run = parseToml(runningToml)!;
   const tgt = parseToml(targetToml)!;
   if (run.limits !== undefined && tgt.limits === undefined) return "limits_removed";
   if (run.placement !== undefined || tgt.placement !== undefined) return "placement_unverified";
-  return null;
+  const topo = topologyDiff(runningToml, targetToml, String(tgt.name ?? ""), allowed);
+  return "reason" in topo ? topo.reason : null;
 }
 
 /** G2c-2: the configuration plan for one Worker against the active version's full binding records. */
-export function planWorkerConfig(runningToml: string, targetToml: string, activeBindings: unknown): { plan: ConfigPlan } | { reason: string } {
-  const refused = workerConfigRefusal(runningToml, targetToml);
+export function planWorkerConfig(runningToml: string, targetToml: string, activeBindings: unknown, allowed: readonly string[] = []): { plan: ConfigPlan } | { reason: string } {
+  const refused = workerConfigRefusal(runningToml, targetToml, allowed);
   if (refused) return { reason: refused };
-  const plan = planConfigChange(runningToml, targetToml, activeBindings);
+  const plan = planConfigChange(runningToml, targetToml, activeBindings, { topology: true });
   return plan.eligible ? { plan } : { reason: plan.reason };
 }
 
@@ -297,7 +370,7 @@ export function planWorkerConfig(runningToml: string, targetToml: string, active
  * The read-only Cloudflare calls eligibility makes: the active deployment, one version's full record and (G2c-2
  * step 6) the routes the account's script list reports for a Worker.
  */
-export type VersionReader = Pick<CloudflareWorkers, "active" | "version"> & Partial<Pick<CloudflareWorkers, "scriptRoutes">>;
+export type VersionReader = Pick<CloudflareWorkers, "active" | "version"> & Partial<Pick<CloudflareWorkers, "scriptRoutes" | "topology" | "migrationTag">>;
 
 /**
  * G2c-2 step 6: zone routes a Worker with static assets needs that its wrangler.toml does not manage. deploy-console.yml attaches
@@ -382,8 +455,12 @@ async function readMainModule(bucket: BundleReader, commit: string, worker: Bund
   return text;
 }
 
-/** One stored migration, read and checked as the deploy will apply it: its statements, or the reason it cannot be. */
-export async function readMigration(bucket: BundleReader, commit: string, m: PlannedMigration): Promise<{ statements: string[] } | { reason: string }> {
+/**
+ * One stored migration, read and checked as the deploy will apply it: its statements, or the reason it cannot be.
+ * A destructive migration is refused unless `allowDestructive` (only the break-glass deploy, for a file its
+ * owner-approved plan names: recovery-deploy.ts).
+ */
+export async function readMigration(bucket: BundleReader, commit: string, m: PlannedMigration, allowDestructive = false): Promise<{ statements: string[]; destructive: boolean } | { reason: string }> {
   if (!MIGRATION_FILE.test(m.file)) return { reason: "migration_missing" };
   const obj = await bucket.get(`${BUNDLE_PREFIX}${commit}/migrations/${m.file}`);
   if (!obj) return { reason: "migration_missing" };
@@ -392,9 +469,10 @@ export async function readMigration(bucket: BundleReader, commit: string, m: Pla
   let statements: string[];
   try { statements = splitSqlStatements(sql); } catch { return { reason: "migration_unreadable" }; }
   if (statements.length === 0) return { reason: "migration_unreadable" };
-  if (destructiveMigration(sql)) return { reason: "destructive_migration" };
+  const destructive = destructiveMigration(sql);
+  if (destructive && !allowDestructive) return { reason: "destructive_migration" };
   if (unsupportedStatement(statements)) return { reason: "migration_unsupported_statement" };
-  return { statements };
+  return { statements, destructive };
 }
 
 /**
@@ -405,7 +483,7 @@ export async function readMigration(bucket: BundleReader, commit: string, m: Pla
  * manifest's files (or already the target's: nothing to apply). Manifests without migration_files (G2b and
  * older) keep the G2b answer, new_migration.
  */
-async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, target: Manifest, running: Manifest, service: string):
+async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, target: Manifest, running: Manifest, service: string, named: readonly string[] = []):
   Promise<{ migrations: PlannedMigration[] } | { reason: string; service?: string; file?: string }> {
   const targetList = target.migrations!;
   const runningList = running.migrations!;
@@ -413,7 +491,15 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
   if (unit.unit !== MIGRATING_UNIT) {
     if (!changed) return { migrations: [] };
     const ledger = await appliedMigrations(env.DB);
-    return ledger && sameList(ledger, targetList) ? { migrations: [] } : { reason: "new_migration", service };
+    if (ledger && sameList(ledger, targetList)) return { migrations: [] };
+    // Cut-over gate 2026-11-15 (executor first): the orchestrator may deploy before migrations the Control Plane has
+    // not applied yet when none of them names anything its bundled code at the target reads (executor-first.ts),
+    // the same evidence the Forge's planner used to put it first. It applies none of them.
+    if (unit.unit === ORCHESTRATOR_UNIT && ledger && ledger.every((f) => targetList.includes(f))) {
+      const verdict = await executorFirstVerdict(env.BUNDLES!, target.commit, targetList.filter((f) => !ledger.includes(f)));
+      if (verdict.state === "independent") return { migrations: [] };
+    }
+    return { reason: "new_migration", service };
   }
   if (!target.migration_files || !running.migration_files) return changed ? { reason: "new_migration", service } : { migrations: [] };
   const targetHash = new Map(target.migration_files.map((f) => [f.file, f.sha256]));
@@ -430,11 +516,18 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
   if (!ledger) return { reason: "d1_migrations_unreadable", service };
   if (sameList(ledger, targetList)) return { migrations: [] };
   if (!sameList(ledger, runningList)) return { reason: "d1_migrations_mismatch", service };
+  const out: PlannedMigration[] = [];
   for (const f of fresh) {
-    const r = await readMigration(env.BUNDLES!, target.commit, f);
+    // Gate 2026-11-15: only a file the owner-approved deploy_destructive_migration names may be destructive; any other
+    // destructive file keeps the routine refusal (destructive_migration). Routine deploys name none.
+    const r = await readMigration(env.BUNDLES!, target.commit, f, named.includes(f.file));
     if ("reason" in r) return { reason: r.reason, service, file: f.file };
+    out.push(r.destructive ? { file: f.file, sha256: f.sha256, destructive: true } : { file: f.file, sha256: f.sha256 });
   }
-  return { migrations: fresh.map((f) => ({ file: f.file, sha256: f.sha256 })) };
+  // A named file that is not one of these pending destructive migrations: the approval no longer matches main and D1.
+  const stale = named.find((n) => !out.some((m) => m.file === n && m.destructive));
+  if (stale) return { reason: "named_migration_not_pending_destructive", service, file: stale };
+  return { migrations: out };
 }
 
 /**
@@ -455,7 +548,9 @@ async function migrationPlan(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit:
  * stored and matches (`readAssetsPlan`), and, last, its zone routes are reported for the script (`zoneRouteRefusal`).
  * Without a reader that can list the routes, it keeps the G2b answer, `assets`.
  */
-export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader): Promise<Eligibility> {
+export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BUNDLES">, unit: DeployUnit, targetSha: string, cf?: VersionReader,
+  opts: { migrations?: "plan" | "skip"; destructive?: readonly string[]; destructiveTopology?: readonly string[]; deployVars?: DeployVarReference } = {}): Promise<Eligibility> {
+  const allowed = opts.destructiveTopology ?? [];
   if (!env.BUNDLES) return { eligible: false, reason: "not_configured" };
   if (!HEX40.test(targetSha)) return { eligible: false, reason: "invalid_commit_sha" };
   try {
@@ -487,15 +582,18 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       const now = running.get(tag);
       const was = now?.workers.find((w) => w.name === service);
       if (!now || !was) return { eligible: false, reason: "running_bundle_missing", service };
-      if (!now.migrations) return { eligible: false, reason: "migrations_unknown", service };
-      if (migrationsFrom === null) {
-        const plan = await migrationPlan(env, unit, target, now, service);
-        if ("reason" in plan) return { eligible: false, ...plan };
-        migrations = plan.migrations;
-        migrationsFrom = now.migrations;
-      } else if (!sameList(now.migrations, migrationsFrom)) {
-        // The Workers of the unit run versions with different migration lists: one plan cannot fit them all.
-        return { eligible: false, reason: "new_migration", service };
+      // The break-glass deploy (recovery-deploy.ts) plans its migrations from D1's applied state instead (skip).
+      if (opts.migrations !== "skip") {
+        if (!now.migrations) return { eligible: false, reason: "migrations_unknown", service };
+        if (migrationsFrom === null) {
+          const plan = await migrationPlan(env, unit, target, now, service, opts.destructive ?? []);
+          if ("reason" in plan) return { eligible: false, ...plan };
+          migrations = plan.migrations;
+          migrationsFrom = now.migrations;
+        } else if (!sameList(now.migrations, migrationsFrom)) {
+          // The Workers of the unit run versions with different migration lists: one plan cannot fit them all.
+          return { eligible: false, reason: "new_migration", service };
+        }
       }
       if (!worker.single_module) {
         const text = await readMainModule(env.BUNDLES, targetSha, worker);
@@ -508,7 +606,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
         if ("reason" in run) return { eligible: false, reason: run.reason, service, file: run.file };
         const tgt = await readConfig(env.BUNDLES, targetSha, worker);
         if ("reason" in tgt) return { eligible: false, reason: tgt.reason, service, file: tgt.file };
-        const refused = workerConfigRefusal(run.toml, tgt.toml);
+        const refused = workerConfigRefusal(run.toml, tgt.toml, allowed);
         if (refused) return { eligible: false, reason: refused, service };
         toPlan.push({ index: planned.length, service, runningCommit: now.commit, was, runningToml: run.toml, targetToml: tgt.toml });
       }
@@ -523,6 +621,7 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       planned.push({ service, worker, running_tag: tag.slice(0, 12), ...(assets ? { assets } : {}) });
     }
     // Pass 2 (G2c-2): only now Cloudflare is read, for the Workers that need a plan.
+    const records = new Map<string, VersionRecord>();
     for (const p of toPlan) {
       const { service } = p;
       if (!cf) return { eligible: false, reason: p.was.config_sha256 === planned[p.index].worker.config_sha256 ? "limits" : "config_changed", service };
@@ -531,9 +630,38 @@ export async function nativeDeployEligible(env: Pick<NativeDeployEnv, "DB" | "BU
       if (active.length !== 1 || active[0].percentage !== 100) return { eligible: false, reason: "active_deployment_split", service };
       let record: VersionRecord;
       try { record = await cf.version(service, active[0].version_id); } catch { return { eligible: false, reason: "active_bindings_unreadable", service }; }
-      const r = planWorkerConfig(p.runningToml, p.targetToml, record.resources?.bindings);
+      records.set(service, record);
+      const r = planWorkerConfig(p.runningToml, p.targetToml, record.resources?.bindings, allowed);
       if ("reason" in r) return { eligible: false, reason: r.reason, service };
-      planned[p.index] = { ...planned[p.index], config: { running_commit: p.runningCommit, running: p.was, changes: r.plan.changes, steps: r.plan.steps.map((s) => s.kind) } };
+      // Gate 4 part B: routes, Durable Object migrations and Workflows against the live state (no read when unchanged).
+      const t = await planTopology(cf, service, p.runningToml, p.targetToml, { assets: planned[p.index].worker.assets, allowed });
+      if ("reason" in t) return { eligible: false, reason: t.reason, service };
+      planned[p.index] = { ...planned[p.index], config: {
+        running_commit: p.runningCommit, running: p.was, changes: r.plan.changes, steps: r.plan.steps.map((s) => s.kind),
+        ...(t.plan.changes.length ? { topology: t.plan.changes } : {}),
+        ...(t.plan.destructive.length ? { destructive: t.plan.destructive } : {}),
+      } };
+    }
+    // Gate 4: the deploy-time --var values each Worker's new version must carry, kept from its active version (read
+    // only). A value no platform source holds keeps the unit on its workflow (deploy-vars.ts).
+    if (opts.deployVars) {
+      if (!cf) return { eligible: false, reason: "deploy_vars_unreadable" };
+      const kept: Record<string, string>[] = [];
+      for (const [i, p] of planned.entries()) {
+        let record = records.get(p.service);
+        if (!record) {
+          let active: DeploymentVersions;
+          try { active = await cf.active(p.service); } catch { return { eligible: false, reason: "active_deployment_unreadable", service: p.service }; }
+          if (active.length !== 1 || active[0].percentage !== 100) return { eligible: false, reason: "active_deployment_split", service: p.service };
+          try { record = await cf.version(p.service, active[0].version_id); } catch { return { eligible: false, reason: "active_bindings_unreadable", service: p.service }; }
+        }
+        const k = keptDeployVars(unit.unit, p.service, record.resources?.bindings, opts.deployVars);
+        if ("reason" in k) return { eligible: false, reason: k.reason, service: p.service };
+        kept.push(k.vars);
+        if (k.changed?.length) planned[i] = { ...p, deploy_vars_changed: [...k.changed] };
+      }
+      const inconsistent = deployVarsConsistent(kept);
+      if (inconsistent) return { eligible: false, reason: inconsistent };
     }
     // G2c-2 step 6: the zone routes the workflow attaches with its zone token, verified read only.
     for (const p of planned) {
@@ -554,6 +682,8 @@ export interface DeployRun {
   service?: string;
   /** Every captured deployment that was changed is active again (true when nothing was changed). */
   restored?: boolean;
+  /** 2026-11-16: the changed Workers whose captured deployment could not be made active again (each has a restore_failed step). */
+  not_restored?: string[];
   /** Whether production was changed (a deployment, a deploy call, or a D1 migration) before the failure. */
   production_changed?: boolean;
   /** service -> uploaded version id. */
@@ -566,6 +696,11 @@ export interface DeployRun {
   migration_failed?: string;
   /** G2c-1: when migrating started, for a D1 Time Travel restore by the owner. */
   restore_point_at?: string;
+  /**
+   * Gate 2026-11-15: the D1 Time Travel bookmark read and recorded before the first destructive migration (only when
+   * the deploy applies one). The owner restores to it; the executor never does.
+   */
+  restore_point?: RestorePoint;
   /** G2c-2: the script settings applied after a live check, `<service>:<kind>`, in order (restored on failure). */
   settings_applied?: string[];
   /**
@@ -574,6 +709,32 @@ export interface DeployRun {
    * why a planned keep became an upload.
    */
   assets?: Record<string, { mode: "keep" | "upload"; uploaded?: number; buckets?: number; keep_refused?: string }>;
+  /** Gate 4 part B: the custom domains and Workflows applied after a live check, `<service>:<kind>:<name>` (undone on failure). */
+  topology_applied?: string[];
+  /**
+   * Gate 4 part B: the Durable Object migrations deployed, `<service>:<new_tag>`. Forward-only: Cloudflare refuses a
+   * rollback across them, so a restore after one ends `restored: false` and the new version stays live.
+   */
+  do_migrations?: string[];
+  /** Gate 4 part B: the break-glass plan's destructive topology items applied (each audited before it was applied). */
+  destructive_topology_applied?: string[];
+  /** Gate 4 part B: what this run did that no restore can give back (a Durable Object class change, a deleted Workflow). */
+  irreversible?: string[];
+  /** Gate 4: per Worker, the deploy-time `--var` names kept from the active version and verified (never the values). */
+  deploy_vars?: Record<string, string[]>;
+  /** Owner 2026-11-16: per Worker, the names whose value the identity table changed (written and verified; never the values). */
+  deploy_vars_changed?: Record<string, string[]>;
+  /**
+   * Gate 4: the workflows' smoke tests through Access. `skipped` (with the reason) while the Orchestrator holds no
+   * service token; `failed` names the probe; a failure restores like a failed live check.
+   */
+  smoke?: { status: "passed" | "failed" | "skipped"; reason?: string; probe?: string; probes: number };
+  /**
+   * 2026-11-16: per Worker whose active version did not bind its declared service bindings, the bindings resent
+   * (`restored`, names and what differed), the undeclared ones that refused the deploy, and whether the Worker was
+   * verified live with the declared values (`repaired`). Names only.
+   */
+  binding_drift?: Record<string, { restored: BindingDrift[]; undeclared: string[]; repaired: boolean; refused?: string }>;
 }
 
 /** Every key of `want` is in `got` with an equal value (objects compared recursively, arrays exactly). */
@@ -607,12 +768,15 @@ async function applyScriptSetting(cf: CloudflareWorkers, service: string, step: 
  * statements and the `d1_migrations` row in one D1 batch, which D1 runs as one transaction. The ledger row goes
  * first, so a file that is already recorded (UNIQUE name) fails the batch before any of its statements run.
  */
-export async function applyMigration(db: D1Database, bucket: BundleReader, commit: string, m: PlannedMigration): Promise<number> {
-  const r = await readMigration(bucket, commit, m);
+export async function applyMigration(db: D1Database, bucket: BundleReader, commit: string, m: PlannedMigration, allowDestructive = false): Promise<number> {
+  const r = await readMigration(bucket, commit, m, allowDestructive);
   if ("reason" in r) throw new Error(r.reason);
   await db.batch([db.prepare(D1_MIGRATION_INSERT).bind(m.file), ...r.statements.map((s) => db.prepare(s))]);
   return r.statements.length;
 }
+
+/** Gate 2026-11-15: a D1 Time Travel bookmark of the control-plane database, read through the Cloudflare API. */
+export interface RestorePoint { bookmark: string; database_id: string; read_at: string }
 
 async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof appendAuditEvent>[1]): Promise<boolean> {
   if (!db) return false;
@@ -628,10 +792,55 @@ async function auditQuietly(db: D1Database | undefined, event: Parameters<typeof
  * applied script settings are restored first (newest first), then every changed service to its captured
  * deployment, newest change first; applied migrations stay (forward-only).
  */
+
+/**
+ * Reading a version just uploaded can answer 404 for a moment (2026-11-15, control-plane at d300ee1: the upload of
+ * cryptophys-platform-registry succeeded, the read of that version answered cloudflare_api_404_100146, and the
+ * deploy restored the two services already moved). Only a 404 is read again, at most UPLOADED_READ_ATTEMPTS times;
+ * every other answer, and a 404 that persists, fails the deploy as before. Nothing is deployed before this read.
+ * 2026-11-16 (6f3b831, cryptophys-ai-kernel): four reads 2 s apart were not enough, so the reads back off
+ * (UPLOADED_READ_DELAYS_MS, 63 s at most for one read). A run shares UPLOADED_READ_BUDGET_MS of these waits across
+ * all its reads, so a deploy of six Workers stays well inside the 15-minute wall time of its cron invocation.
+ */
+export const UPLOADED_READ_DELAYS_MS = [2_000, 3_000, 5_000, 8_000, 10_000, 15_000, 20_000] as const;
+export const UPLOADED_READ_ATTEMPTS = UPLOADED_READ_DELAYS_MS.length + 1;
+export const UPLOADED_READ_BUDGET_MS = 126_000;
+export async function readUploaded<T>(read: () => Promise<T>, delayMs?: number, budget: { waitedMs: number } = { waitedMs: 0 }): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await read();
+    } catch (err) {
+      if (i >= UPLOADED_READ_ATTEMPTS || !/^cloudflare_api_404(_|$)/.test(String((err as Error)?.message ?? err))) throw err;
+      const wait = UPLOADED_READ_DELAYS_MS[i - 1];
+      if (budget.waitedMs + wait > UPLOADED_READ_BUDGET_MS) throw err;
+      budget.waitedMs += wait;
+      await sleep(delayMs ?? wait);
+    }
+  }
+}
+
+/**
+ * Gate 2026-11-15: store the bookmark before any migration runs. Both writes must succeed (not best effort): the
+ * request's details (`restore_point`, while it runs) and the audit event deployment.restore_point_recorded.
+ */
+async function recordRestorePoint(db: D1Database, requestId: string, commit: string, rp: RestorePoint, files: string[]): Promise<void> {
+  const r = await db.prepare("UPDATE deployment_requests SET details_json = json_set(details_json, '$.restore_point', json(?)), updated_at = ? WHERE request_id = ? AND status = 'running'")
+    .bind(JSON.stringify(rp), new Date().toISOString(), requestId).run();
+  if ((r.meta?.changes ?? 0) !== 1) throw new Error("restore_point_unrecorded: request not running");
+  await appendAuditEvent(db, {
+    event_type: RESTORE_POINT_EVENT, actor: "agent:deployment-orchestrator", subject: "cryptophys-control-plane", outcome: "recorded",
+    payload: { request_id: requestId, commit_sha: commit, bookmark: rp.bookmark, database_id: rp.database_id, read_at: rp.read_at, destructive_migrations: files, restore: restoreCommand(rp.bookmark) },
+  });
+}
+
 export async function executeNativeDeploy(
   cf: CloudflareWorkers,
   env: { DRIFT: DriftProbeBinding; REGISTRY: RegistryRollbackBinding; BUNDLES: BundleReader; DB?: D1Database },
-  requestId: string, commit: string, plan: PlannedService[], opts: { delayMs?: number; migrations?: PlannedMigration[] } = {},
+  requestId: string, commit: string, plan: PlannedService[],
+  opts: {
+    delayMs?: number; migrations?: PlannedMigration[]; destructive?: readonly string[]; destructiveTopology?: readonly string[];
+    deployVars?: DeployVarReference; smoke?: SmokeHooks; restorePoint?: () => Promise<RestorePoint>;
+  } = {},
 ): Promise<DeployRun> {
   const tag = commit.slice(0, 12);
   const steps: string[] = [];
@@ -640,21 +849,107 @@ export async function executeNativeDeploy(
   // G2c-2: script settings, recorded before each call so an ambiguous failure is restored as well.
   const settings: { service: string; step: PlanStep }[] = [];
   const assetsRun: NonNullable<DeployRun["assets"]> = {};
+  // Gate 4 part B: topology steps, recorded (restore: true) right before their first write.
+  const topoApplied: { service: string; step: TopologyStep; restore: boolean }[] = [];
+  const doMigrations: string[] = [];
+  // 2026-11-16: the waits of every read-after-upload of this run together (readUploaded).
+  const readBudget = { waitedMs: 0 };
+  const destructiveApplied: string[] = [];
+  const irreversible: string[] = [];
+  /** Gate 4 part B: a destructive item is audited before it is applied; without the audit it is not applied. */
+  const auditDestructive = async (service: string, item: string, step: string, note?: string) => {
+    const ok = await auditQuietly(env.DB, {
+      event_type: note ? "deployment.destructive_topology_irreversible" : "deployment.destructive_topology_applying",
+      actor: "agent:deployment-orchestrator", subject: service, outcome: "applying",
+      payload: { request_id: requestId, commit_sha: commit, service, item, step, ...(note ? { irreversible: note, restore_possible: false } : { restore_possible: true }) },
+    });
+    if (!ok) throw new Error(`destructive_audit_unavailable: ${item}`);
+  };
   const applied: string[] = [];
   const migrations = opts.migrations ?? [];
   let migrating: string | null = null;
   let restorePoint: string | undefined;
+  let bookmark: RestorePoint | undefined;
   let current = "";
+  // Gate 4: the kept deploy-time values per Worker, and the smoke tests' record.
+  const keptVars: Record<string, Record<string, string>> = {};
+  // 2026-11-16: the service-binding drift found per Worker (names only).
+  const bindingDrift: NonNullable<DeployRun["binding_drift"]> = {};
+  /** The declared service bindings each Worker's new version must bind, from the target commit's stored config. */
+  const declaredFor = new Map<string, ServiceBinding[]>();
+  /** Per Worker, the declared bindings whose active record had no `props` key (props unknown). */
+  const unknownProps = new Map<string, string[]>();
+  const markUnverifiable = (service: string, names: readonly string[]) => {
+    for (const n of names) { const st = unverifiableStep(service, n); if (!steps.includes(st)) steps.push(st); }
+  };
+  /** After the upload check: still unknown is named once; shown on the new version means the active had lost them. */
+  const propsAfterUpload = (service: string, stillUnknown: readonly string[]) => {
+    markUnverifiable(service, stillUnknown);
+    const proven = (unknownProps.get(service) ?? []).filter((n) => !stillUnknown.includes(n) && !bindingDrift[service]?.restored.some((d) => d.name === n));
+    if (!proven.length) return;
+    const entry = bindingDrift[service] ??= { restored: [], undeclared: [], repaired: false };
+    for (const n of proven) entry.restored.push({ name: n, kinds: ["props"], retarget: false });
+  };
+  /** A drift's targets must be Workers of the account; the list is read once, only when a binding is retargeted. */
+  let scriptIds: string[] | null = null;
+  const checkDrift = async (service: string, restore: BindingDrift[], undeclared: string[], conflicts: string[] = []) => {
+    if (!restore.length && !undeclared.length && !conflicts.length) return;
+    let refused = serviceDriftRefusal({ undeclared, conflicts });
+    if (!refused) {
+      for (const d of restore.filter((x) => x.retarget)) {
+        const target = String((declaredFor.get(service) ?? []).find((b) => b.name === d.name)?.service ?? "");
+        try { scriptIds ??= await cf.scriptIds(); } catch { refused = `service_binding_target_unverifiable:${d.name}`; break; }
+        if (!scriptIds.includes(target)) { refused = `service_binding_target_missing:${d.name}`; break; }
+      }
+    }
+    bindingDrift[service] = { restored: restore, undeclared, repaired: false, ...(refused ? { refused } : {}) };
+    await auditQuietly(env.DB, {
+      event_type: BINDING_DRIFT_DETECTED_EVENT, actor: "agent:deployment-orchestrator", subject: service, outcome: refused ? "refused" : "repairing",
+      payload: { request_id: requestId, commit_sha: commit, service, restore: restore.map((d) => ({ name: d.name, kinds: d.kinds })), undeclared, conflicts, ...(refused ? { reason: refused } : {}) },
+    });
+    if (refused) throw new Error(refused);
+  };
+  const changedVars: Record<string, string[]> = {};
+  const unitName = plan.length ? unitForService(plan[0].service)?.unit ?? "" : "";
+  let smoke: DeployRun["smoke"] = opts.smoke?.skipped ? { status: "skipped", reason: opts.smoke.skipped, probes: 0 } : undefined;
+  const smokeRan: string[] = [];
+  const runSmoke = async (r: Awaited<ReturnType<SmokeHooks["afterUnit"]>>) => {
+    smokeRan.push(...r.probes);
+    if (!r.ok) {
+      smoke = { status: "failed", reason: r.reason, probe: r.probe, probes: smokeRan.length };
+      throw new Error(`smoke_failed: ${r.probe}: ${r.reason}`);
+    }
+    smoke = { status: "passed", probes: smokeRan.length };
+  };
+  const gate4 = () => ({
+    ...(Object.keys(keptVars).length ? { deploy_vars: Object.fromEntries(Object.entries(keptVars).map(([k, v]) => [k, Object.keys(v)])) } : {}),
+    ...(Object.keys(changedVars).length ? { deploy_vars_changed: changedVars } : {}),
+    ...(smoke ? { smoke } : {}),
+    ...(Object.keys(bindingDrift).length ? { binding_drift: bindingDrift } : {}),
+  });
   try {
     if (!HEX40.test(commit) || !plan.length) throw new Error("invalid_plan");
+    if ((opts.deployVars || opts.smoke) && !unitName) throw new Error("invalid_plan");
     if (migrations.length) {
       if (!env.DB) throw new Error("migration_db_unavailable");
+      // Gate 2026-11-15: before a destructive migration (only one the owner's approval names), D1's Time Travel
+      // bookmark is read and recorded, in the request's details and in the audit chain. Without it nothing changes.
+      if (migrations.some((m) => opts.destructive?.includes(m.file))) {
+        if (!opts.restorePoint) throw new Error("restore_point_unavailable: no bookmark reader");
+        try {
+          bookmark = await opts.restorePoint();
+        } catch (err) {
+          throw new Error(`restore_point_unavailable: ${String((err as Error)?.message ?? err).slice(0, 160)}`);
+        }
+        await recordRestorePoint(env.DB, requestId, commit, bookmark, migrations.filter((m) => opts.destructive!.includes(m.file)).map((m) => m.file));
+        steps.push("d1:restore_point_recorded");
+      }
       restorePoint = new Date().toISOString();
       for (const m of migrations) {
         migrating = m.file;
         let statements: number;
         try {
-          statements = await applyMigration(env.DB, env.BUNDLES, commit, m);
+          statements = await applyMigration(env.DB, env.BUNDLES, commit, m, opts.destructive?.includes(m.file) ?? false);
         } catch (err) {
           const message = String((err as Error)?.message ?? err).slice(0, 160);
           await auditQuietly(env.DB, {
@@ -680,19 +975,79 @@ export async function executeNativeDeploy(
       // G2c-2: the plan again, right before the upload, against the deployment just captured (its bindings may
       // have changed since the request was queued). Code only (G2b): the active binding set, for the digest check.
       let configPlan: ConfigPlan | null = null;
-      let active: { names: string[]; digest: string } | null = null;
+      let topo: TopologyPlan | null = null;
+      let active: { names: string[]; digest: string; restore: boolean; rest: { names: string[]; digest: string } | null } | null = null;
+      let capturedRecord: VersionRecord | null = null;
       if (config) {
         const run = await readConfig(env.BUNDLES, config.running_commit, config.running);
         if ("reason" in run) throw new Error(run.reason);
         const tgt = await readConfig(env.BUNDLES, commit, worker);
         if ("reason" in tgt) throw new Error(tgt.reason);
         const record = await cf.version(service, captured[0].version_id);
-        const r = planWorkerConfig(run.toml, tgt.toml, record.resources?.bindings);
+        capturedRecord = record;
+        const r = planWorkerConfig(run.toml, tgt.toml, record.resources?.bindings, opts.destructiveTopology ?? []);
         if ("reason" in r) throw new Error(`config_plan_refused: ${r.reason}`);
         configPlan = r.plan;
         steps.push(`${service}:planned`);
+        // 2026-11-16: the plan's service bindings are the target config's; any it had to restore, or would drop, is checked here.
+        const declared = declaredServiceBindingsFromToml(tgt.toml);
+        if ("reason" in declared) throw new Error(`service_bindings_unreadable: ${declared.reason}`);
+        declaredFor.set(service, declared.bindings);
+        await checkDrift(service, configPlan.service_bindings.restored, configPlan.service_bindings.undeclared);
+        unknownProps.set(service, configPlan.service_bindings.unverifiable);
+        markUnverifiable(service, configPlan.service_bindings.unverifiable);
+        // Gate 4 part B: the topology again, against what Cloudflare reports now.
+        const t = await planTopology(cf, service, run.toml, tgt.toml, { assets: worker.assets, allowed: opts.destructiveTopology ?? [] });
+        if ("reason" in t) throw new Error(`topology_refused: ${t.reason}`);
+        topo = t.plan;
+        if (t.plan.changes.length) steps.push(`${service}:topology_planned`);
       } else {
-        active = await cf.versionBindingSet(service, captured[0].version_id);
+        const set = await cf.versionBindingSet(service, captured[0].version_id);
+        // 2026-11-16: the declared service bindings of the target commit's stored config (code only: the running
+        // commit's config is the same text). Without it the result cannot be verified: fail closed.
+        const tgt = await readConfig(env.BUNDLES, commit, worker);
+        if ("reason" in tgt) throw new Error(`service_bindings_unverifiable: ${tgt.reason}`);
+        const declared = declaredServiceBindingsFromToml(tgt.toml);
+        if ("reason" in declared) throw new Error(`service_bindings_unreadable: ${declared.reason}`);
+        declaredFor.set(service, declared.bindings);
+        const drift = serviceBindingDrift(declared.bindings, set.records);
+        if (!drift) throw new Error("version_bindings_unreadable");
+        await checkDrift(service, drift.restore, drift.undeclared, drift.conflicts);
+        unknownProps.set(service, drift.unverifiable);
+        markUnverifiable(service, drift.unverifiable);
+        // Sent as declared on a drift, and also when props are unknown (harmless; it repairs a loss the API may not show).
+        const send = drift.restore.length > 0 || drift.unverifiable.length > 0;
+        active = { names: set.names, digest: set.digest, restore: send, rest: send ? await nonServiceBindingSet(set.records) : null };
+      }
+      // Gate 4: the deploy-time --var values, from the version just captured, before anything is uploaded.
+      // Owner 2026-11-16: the identity lists from the identity table once an owner saved it; a changed one is written.
+      let plainText: VersionMetadata["plain_text"];
+      if (opts.deployVars) {
+        const record = capturedRecord ?? await cf.version(service, captured[0].version_id);
+        const k = keptDeployVars(unitName, service, record.resources?.bindings, opts.deployVars);
+        if ("reason" in k) throw new Error(`deploy_vars_refused: ${k.reason}`);
+        const inconsistent = deployVarsConsistent([...Object.values(keptVars), k.vars]);
+        if (inconsistent) throw new Error(`deploy_vars_refused: ${inconsistent}`);
+        keptVars[service] = k.vars;
+        steps.push(`${service}:vars_kept`);
+        if (k.identities === "identity_table") steps.push(`${service}:vars_from_identity_table`);
+        if (k.identities === "identity_source_invalid") steps.push(`${service}:identity_source_invalid`);
+        if (k.changed?.length) {
+          if (configPlan) {
+            configPlan = withPlannedDeployVars(configPlan, k.vars, k.changed);
+          } else {
+            // Code only: the new version must bind exactly the active set with the changed text, nothing else.
+            // 2026-11-16: with the declared service bindings also sent, the rest (every other binding, the plain-text
+            // values with their new text) must equal this set, and the service bindings are verified as declared.
+            const replaced = withDeployVarText(record.resources?.bindings, k.vars, k.changed);
+            plainText = plainTextBindings(replaced);
+            const set = await bindingSetOf(replaced);
+            const restore = active?.restore ?? false;
+            active = { names: set.names, digest: set.digest, restore, rest: restore ? await nonServiceBindingSet(set.records) : null };
+          }
+          changedVars[service] = [...k.changed];
+          for (const name of k.changed) steps.push(`${service}:vars_changed:${name}`);
+        }
       }
       // G2c-2 step 6: a Worker with static assets. The route again (read only), the stored build again (hashes,
       // index.html), then the assets, before the version that uses them.
@@ -726,7 +1081,7 @@ export async function executeNativeDeploy(
         if ("reason" in mods) throw new Error(mods.reason);
         extra = mods.modules;
       }
-      const versionId = await cf.uploadVersion(service, worker.module, text, configPlan
+      const metadata: VersionMetadata = configPlan
         ? {
           main_module: worker.main_module, compatibility_date: configPlan.metadata.compatibility_date, compatibility_flags: configPlan.metadata.compatibility_flags,
           tag, message: `native deploy commit ${commit}`,
@@ -737,29 +1092,87 @@ export async function executeNativeDeploy(
           main_module: worker.main_module, compatibility_date: worker.compatibility_date!, compatibility_flags: worker.compatibility_flags,
           tag, message: `native deploy commit ${commit}`,
           ...(assetsPart ? { assets: assetsPart } : {}),
-        }, extra);
+          // 2026-11-16: the active version does not bind the declared service bindings: send them as declared.
+          ...(active?.restore ? { services: declaredFor.get(service)! } : {}),
+          // Owner 2026-11-16: a changed deploy-time value: every plain-text binding sent (with the services when both).
+          ...(plainText ? { plain_text: plainText } : {}),
+        };
+      let versionId: string;
+      if (topo?.migration) {
+        // Gate 4 part B: a Durable Object migration deploys with the upload (Script Upload API). Recorded as changed
+        // before the call; the checks below run after traffic moved, and a restore across it is refused by Cloudflare.
+        // A break-glass plan's deleted, renamed or transferred class: recorded first that no rollback can cross it.
+        for (const item of topo.migrationItems) await auditDestructive(service, item, `do_migration:${topo.migration.new_tag}`, DO_IRREVERSIBLE);
+        changed.push({ service, captured });
+        const m = topo;
+        versionId = await deployWithDoMigration(cf, service, { module: worker.module, text, metadata, extra }, m, captured, {
+          delayMs: opts.delayMs,
+          // Cloudflare accepted the upload: the migration is applied, whatever the checks below find.
+          onUploaded: () => {
+            doMigrations.push(`${service}:${m.migration!.new_tag}`);
+            for (const item of m.migrationItems) { destructiveApplied.push(item); irreversible.push(`${item}: ${DO_IRREVERSIBLE}`); }
+          },
+        });
+        steps.push(`${service}:do_migration_deployed`);
+      } else {
+        versionId = await cf.uploadVersion(service, worker.module, text, metadata, extra);
+        steps.push(`${service}:uploaded`);
+      }
       versions[service] = versionId;
-      steps.push(`${service}:uploaded`);
       if (configPlan) {
         // G2c-2: the new version must bind exactly the plan and run with its settings, or traffic never moves.
-        const uploaded = await cf.version(service, versionId);
+        const uploaded = await readUploaded(() => cf.version(service, versionId), opts.delayMs, readBudget);
         const b = verifyPlannedBindings(configPlan, uploaded.resources?.bindings);
         if (!b.ok) throw new Error(`planned_bindings_differ: ${b.reason}${b.binding ? ` (${b.binding})` : ""}`);
+        const sb = verifyServiceBindings(declaredFor.get(service) ?? [], uploaded.resources?.bindings);
+        if (!sb.ok) throw new Error(`service_bindings_differ: ${sb.reason}${sb.binding ? ` (${sb.binding})` : ""}`);
         steps.push(`${service}:bindings_match`);
+        propsAfterUpload(service, sb.unverifiable);
+        for (const d of bindingDrift[service]?.restored ?? []) steps.push(restoredStep(service, d.name));
         const v = verifyVersionSettings(configPlan.metadata, uploaded);
         if (!v.ok) throw new Error(`version_settings_differ: ${v.reason}`);
         steps.push(`${service}:settings_match`);
+        if (keptVars[service]) {
+          const d = verifyDeployVars(keptVars[service], uploaded.resources?.bindings);
+          if (!d.ok) throw new Error(`deploy_vars_differ: ${d.reason}`);
+          steps.push(`${service}:vars_verified`);
+        }
       } else {
         // keep_bindings copies from the script's latest version, which need not be the active one. The guard is
         // this comparison: the new version must bind exactly what production binds now, or traffic never moves.
-        const uploaded = await cf.versionBindingSet(service, versionId);
-        if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
+        const uploaded = await readUploaded(() => cf.versionBindingSet(service, versionId), opts.delayMs, readBudget);
+        if (active!.rest) {
+          // 2026-11-16: the declared service bindings were sent. Every other binding must be what production binds now,
+          // and the service bindings exactly the declared ones, props included.
+          const rest = await nonServiceBindingSet(uploaded.records ?? []);
+          if (!sameList(rest.names, active!.rest.names) || rest.digest !== active!.rest.digest) throw new Error("bindings_differ");
+        } else if (!sameList(uploaded.names, active!.names) || uploaded.digest !== active!.digest) throw new Error("bindings_differ");
+        const sb = verifyServiceBindings(declaredFor.get(service)!, uploaded.records);
+        if (!sb.ok) throw new Error(`service_bindings_differ: ${sb.reason}${sb.binding ? ` (${sb.binding})` : ""}`);
         steps.push(`${service}:bindings_match`);
+        propsAfterUpload(service, sb.unverifiable);
+        for (const d of bindingDrift[service]?.restored ?? []) steps.push(restoredStep(service, d.name));
+        if (keptVars[service]) {
+          const record = await readUploaded(() => cf.version(service, versionId), opts.delayMs, readBudget);
+          const d = verifyDeployVars(keptVars[service], record.resources?.bindings);
+          if (!d.ok) throw new Error(`deploy_vars_differ: ${d.reason}`);
+          steps.push(`${service}:vars_verified`);
+        }
       }
-      // Recorded before the POST: an ambiguous failure of the deploy call is restored as well.
-      changed.push({ service, captured });
-      await cf.deploy(service, [{ version_id: versionId, percentage: 100 }], `deploy ${tag}, ${requestId}`);
-      steps.push(`${service}:deployed`);
+      if (!topo?.migration) {
+        // Recorded before the POST: an ambiguous failure of the deploy call is restored as well.
+        changed.push({ service, captured });
+        await cf.deploy(service, [{ version_id: versionId, percentage: 100 }], `deploy ${tag}, ${requestId}`);
+        steps.push(`${service}:deployed`);
+      }
+      // Owner 2026-11-16: a value written from the identity table is audited by name (never the value) once it is live.
+      if (changedVars[service]) {
+        const src = opts.deployVars?.IDENTITIES;
+        await auditQuietly(env.DB, {
+          event_type: "deployment.identity_vars_written", actor: "agent:deployment-orchestrator", subject: service, outcome: "deployed",
+          payload: { request_id: requestId, commit_sha: commit, service, version_id: versionId, names: changedVars[service], identity_revision: src && "revision" in src ? src.revision : null },
+        });
+      }
       let live = false;
       for (let i = 0; i < VERIFY_ATTEMPTS && !live; i++) {
         if (i > 0) await sleep(opts.delayMs ?? VERIFY_DELAY_MS);
@@ -768,46 +1181,101 @@ export async function executeNativeDeploy(
       }
       if (!live) throw new Error("not_live_at_tag");
       steps.push(`${service}:verified`);
+      if (bindingDrift[service]?.restored.length) {
+        bindingDrift[service].repaired = true;
+        await auditQuietly(env.DB, {
+          event_type: BINDING_DRIFT_REPAIRED_EVENT, actor: "agent:deployment-orchestrator", subject: service, outcome: "repaired",
+          payload: { request_id: requestId, commit_sha: commit, service, version_id: versionId, bindings: bindingDrift[service].restored.map((d) => d.name), restored: bindingDrift[service].restored.map((d) => ({ name: d.name, kinds: d.kinds })) },
+        });
+      }
+      // Gate 4: the workflow's checks of this Worker through Access (verify-worker-live.sh --require-access), before
+      // new schedules reach it. A failure restores like a failed live check.
+      if (opts.smoke && !opts.smoke.skipped) {
+        await runSmoke(await opts.smoke.afterService(unitName, service, tag));
+        steps.push(`${service}:smoke_passed`);
+      }
       // G2c-2: crons fire against the active deployment, so new schedules reach only verified new code.
       for (const step of configPlan?.steps ?? []) {
         settings.push({ service, step });
         await applyScriptSetting(cf, service, step, step.body);
         steps.push(`${service}:${step.kind}_applied`);
       }
+      // Gate 4 part B: custom domains and Workflows reach only verified new code, after its script settings.
+      for (const step of topo?.steps ?? []) {
+        if (step.item) await auditDestructive(service, step.item, topologyStepLabel(step), step.irreversible);
+        const entry = { service, step, restore: false };
+        topoApplied.push(entry);
+        await applyTopologyStep(cf.topology(), service, step, () => { entry.restore = true; if (step.irreversible) irreversible.push(`${step.item}: ${step.irreversible}`); }, { delayMs: opts.delayMs });
+        steps.push(`${service}:${topologyStepLabel(step)}_applied`);
+        if (step.item) {
+          destructiveApplied.push(step.item);
+          await auditQuietly(env.DB, {
+            event_type: "deployment.destructive_topology_applied", actor: "agent:deployment-orchestrator", subject: service, outcome: "applied",
+            payload: { request_id: requestId, commit_sha: commit, service, item: step.item, step: topologyStepLabel(step) },
+          });
+        }
+      }
     }
     current = "";
+    // Gate 4: the unit's own smoke step from its workflow, after every Worker is live, before the desired version.
+    if (opts.smoke && !opts.smoke.skipped) {
+      await runSmoke(await opts.smoke.afterUnit(unitName, tag));
+      steps.push("unit:smoke_passed");
+    }
     if (!env.REGISTRY.recordNativeDeploy) throw new Error("registry_native_deploy_unavailable");
     await env.REGISTRY.recordNativeDeploy(requestId);
     steps.push("desired_recorded");
     return {
       ok: true, versions, steps, ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
+      ...(bookmark ? { restore_point: bookmark } : {}),
       ...(settings.length ? { settings_applied: settings.map((x) => `${x.service}:${x.step.kind}`) } : {}),
       ...(Object.keys(assetsRun).length ? { assets: assetsRun } : {}),
+      ...(topoApplied.length ? { topology_applied: topoApplied.map((x) => `${x.service}:${topologyStepLabel(x.step)}`) } : {}),
+      ...(doMigrations.length ? { do_migrations: doMigrations } : {}),
+      ...(destructiveApplied.length ? { destructive_topology_applied: [...new Set(destructiveApplied)] } : {}),
+      ...(irreversible.length ? { irreversible } : {}),
+      ...gate4(),
     };
   } catch (err) {
     const reason = String((err as Error)?.message ?? err).slice(0, 200);
+    const why = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 100);
     let restored = true;
+    // Gate 4 part B: the topology steps first (newest first), only those that wrote something.
+    for (const { service, step, restore } of [...topoApplied].reverse()) {
+      if (!restore) continue;
+      try { steps.push(`${service}:${await restoreTopologyStep(cf.topology(), service, step, { delayMs: opts.delayMs })}`); } catch (e) { restored = false; steps.push(`${service}:${topologyStepLabel(step)}_restore_failed:${why(e)}`); }
+    }
     // G2c-2: the script settings first, newest first (each one's restore body is the running config's value),
     // then the deployments, so the old code never runs under the new schedules.
     for (const { service, step } of [...settings].reverse()) {
       try {
         await applyScriptSetting(cf, service, step, step.restore);
         steps.push(`${service}:${step.kind}_restored`);
-      } catch { restored = false; }
+      } catch (e) { restored = false; steps.push(`${service}:${step.kind}_restore_failed:${why(e)}`); }
     }
+    // 2026-11-16: every changed Worker is tried, newest change first; each failure is a step with its reason and the
+    // Worker is named in `not_restored` (it may still run the new version), so the report says what production runs.
+    const notRestored: string[] = [];
     for (const { service, captured } of [...changed].reverse()) {
       try {
         const now = await cf.active(service);
         if (!sameDeployment(now, captured)) await cf.deploy(service, captured, `deploy ${requestId} failed; restoring`);
-        if (!sameDeployment(await cf.active(service), captured)) restored = false;
-        else steps.push(`${service}:restored`);
-      } catch { restored = false; }
+        if (!sameDeployment(await cf.active(service), captured)) throw new Error("active_not_captured");
+        steps.push(`${service}:restored`);
+      } catch (e) { restored = false; notRestored.push(service); steps.push(`${service}:restore_failed:${why(e)}`); }
     }
     return {
-      ok: false, reason, ...(current ? { service: current } : {}), restored, production_changed: changed.length > 0 || applied.length > 0 || settings.length > 0, versions, steps,
+      ok: false, reason, ...(current ? { service: current } : {}), restored, ...(notRestored.length ? { not_restored: notRestored } : {}),
+      production_changed: changed.length > 0 || applied.length > 0 || settings.length > 0 || topoApplied.some((x) => x.restore), versions, steps,
       ...(migrations.length ? { migrations_applied: applied, restore_point_at: restorePoint } : {}),
+      ...(bookmark ? { restore_point: bookmark } : {}),
       ...(settings.length ? { settings_applied: settings.map((x) => `${x.service}:${x.step.kind}`) } : {}),
       ...(Object.keys(assetsRun).length ? { assets: assetsRun } : {}),
+      ...(topoApplied.length ? { topology_applied: topoApplied.map((x) => `${x.service}:${topologyStepLabel(x.step)}`) } : {}),
+      ...(doMigrations.length ? { do_migrations: doMigrations } : {}),
+      ...(destructiveApplied.length ? { destructive_topology_applied: [...new Set(destructiveApplied)] } : {}),
+      ...(irreversible.length ? { irreversible } : {}),
+      ...gate4(),
       ...(migrating ? { migration_failed: migrating } : {}),
     };
   }

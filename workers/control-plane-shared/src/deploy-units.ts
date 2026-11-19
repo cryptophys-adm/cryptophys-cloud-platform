@@ -11,13 +11,20 @@ import type { D1Database } from "./types.ts";
 
 export const SHARED_SRC = "workers/control-plane-shared/src/";
 export const MIGRATIONS_DIR = "workers/control-plane-migrations/";
+/** ADR-0016 T0: the AI Kernel bundles the organism's vision and serves it (GET /v1/vision), so a change to it redeploys the kernel. */
+export const VISION_FILE = "organism/vision.json";
+/**
+ * ADR Steward step 3 (docs/design/ADR-STEWARD.md §2.1, §11): the AI Kernel bundles the ADR progress manifests
+ * (ai-kernel/src/adr-observe.ts), so a change to one redeploys the kernel and its next tick recomputes every ADR.
+ */
+export const ADR_PROGRESS_DIR = "architecture/adr/progress/";
 export const DEPLOY_UNITS = [
   // Deploy the orchestrator first: the following Control Plane deployment binds the kernel to DeployRpc.
   { unit: "deployment-orchestrator", workflow: "deploy-deployment-orchestrator.yml", services: ["cryptophys-deployment-orchestrator"], paths: ["workers/deployment-orchestrator/", SHARED_SRC] },
   {
     unit: "control-plane", workflow: "deploy-control-plane.yml",
     services: ["cryptophys-policy-engine", "cryptophys-audit-ledger", "cryptophys-platform-registry", "cryptophys-recovery-manager", "cryptophys-drift-detector", "cryptophys-ai-kernel"],
-    paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", MIGRATIONS_DIR, SHARED_SRC],
+    paths: ["workers/policy-engine/", "workers/audit-ledger/", "workers/platform-registry/", "workers/recovery-manager/", "workers/drift-detector/", "workers/ai-kernel/", MIGRATIONS_DIR, SHARED_SRC, VISION_FILE, ADR_PROGRESS_DIR],
   },
   // Directory prefixes include manifests, lockfiles, bundler config and static assets, not just source files.
   { unit: "console", workflow: "deploy-console.yml", services: ["cryptophys-console"], paths: ["workers/console/", SHARED_SRC] },
@@ -37,6 +44,9 @@ export function unitChanged(unit: DeployUnit, files: string[]): boolean {
 
 export const isMigration = (f: string) => f.startsWith(MIGRATIONS_DIR) && f.endsWith(".sql");
 
+/** Appended to the orchestrator's reason when it is planned before a pending migration (executor first). */
+export const EXECUTOR_FIRST_NOTE = "executor first: the pending migrations name nothing the orchestrator reads";
+
 export interface PlannedUnit { unit: string; workflow: string; target: string; reason: string }
 export interface Skip { unit: string; reason: string }
 
@@ -54,32 +64,43 @@ export async function unitRegistryState(db: D1Database, unit: DeployUnit, tag: s
 
 /**
  * The ordering rules over the pending units:
- * - a new D1 migration is applied only by the Control Plane deploy, and every Worker's readiness
- *   requires the newest migration: deploy the Control Plane first, alone (2026-11-07, migration 0026);
+ * - executor first (cut-over gate of 2026-11-15): the Deployment Orchestrator executes every native deploy, so a
+ *   change to it goes before any other unit; a fix to the executor must never wait behind a deploy that the
+ *   unfixed executor runs. Without a pending migration this always held. With one, it holds only when the
+ *   planner proved from main's bundles that the pending migrations name nothing the orchestrator's code at main
+ *   reads (`executorFirst`, control-plane-shared/src/executor-first.ts). The orchestrator applies no migration
+ *   and its readiness needs none of them (readiness.ts REQUIRED_MIGRATIONS ends at 0029);
+ * - otherwise a new D1 migration is applied only by the Control Plane deploy: deploy the Control Plane first,
+ *   alone (2026-11-07, migration 0026, when every Worker's readiness required the newest migration);
  * - DeployRpc must exist before the AI Kernel is redeployed with its new service binding: never
  *   propose the Control Plane (or another unit) in the same cycle as the orchestrator.
  */
-export function orderPending(pending: PlannedUnit[], newMigration: boolean, skippedIn: Skip[]): { units: PlannedUnit[]; skipped: Skip[] } {
+export function orderPending(pending: PlannedUnit[], newMigration: boolean, skippedIn: Skip[], executorFirst = false): { units: PlannedUnit[]; skipped: Skip[] } {
   const skipped = [...skippedIn];
+  const orchestrator = pending.find((u) => u.unit === "deployment-orchestrator");
+  const orchestratorAlone = (beforeMigration: boolean) => {
+    for (const u of pending) if (u.unit !== "deployment-orchestrator") skipped.push({ unit: u.unit, reason: "deployment_orchestrator_must_complete_first" });
+    const reason = beforeMigration ? `${orchestrator!.reason}; ${EXECUTOR_FIRST_NOTE}`.slice(0, 200) : orchestrator!.reason;
+    return { units: [{ ...orchestrator!, reason }], skipped };
+  };
+  if (orchestrator && newMigration && executorFirst) return orchestratorAlone(true);
   const controlPlane = pending.find((u) => u.unit === "control-plane");
   if (newMigration) {
     if (controlPlane) {
       for (const u of pending) if (u.unit !== "control-plane") skipped.push({ unit: u.unit, reason: "control_plane_migration_first" });
       return { units: [controlPlane], skipped };
     }
-    // Never deploy another unit if the migration-bearing Control Plane cannot be verified.
+    // Never deploy another unit if the migration-bearing Control Plane cannot be deployed.
     // It may already be current (no skip recorded); otherwise fail closed on disabled,
-    // unregistered, unknown-version or compare-failed Control Plane state.
+    // unregistered or unknown-version Control Plane state. Since 2026-11-14 the Forge plans a
+    // Control Plane whose version it cannot resolve in main's history as a full redeploy
+    // (full_redeploy_unresolved_base), so an unresolved base no longer lands here.
     if (skipped.some((s) => s.unit === "control-plane")) {
       skipped.push({ unit: "*", reason: "new_migration_control_plane_unavailable" });
       return { units: [], skipped };
     }
   }
-  const orchestrator = pending.find((u) => u.unit === "deployment-orchestrator");
-  if (orchestrator) {
-    for (const u of pending) if (u.unit !== "deployment-orchestrator") skipped.push({ unit: u.unit, reason: "deployment_orchestrator_must_complete_first" });
-    return { units: [orchestrator], skipped };
-  }
+  if (orchestrator) return orchestratorAlone(false);
   return { units: [...pending], skipped };
 }
 

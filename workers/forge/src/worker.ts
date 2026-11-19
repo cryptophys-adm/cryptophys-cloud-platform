@@ -12,11 +12,13 @@ import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
 import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
+import { proposeEvolution, readCode, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
+import { readDocs } from "./docs-index.ts";
 import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
 interface RunnerCtx {
-  exports?: { ForgeBundler?: (opts: { props: { commit: string } }) => unknown };
+  exports?: { ForgeBundler?: (opts: { props: { commit?: string } }) => unknown };
   props?: { commit?: string };
 }
 
@@ -25,7 +27,9 @@ export default {
   async scheduled(_controller: unknown, env: RunnerEnv, ctx: RunnerCtx): Promise<void> {
     const loader = env.LOADER;
     const bundler = ctx.exports?.ForgeBundler;
-    const deps = loader && bundler ? async (commit: string) => ({ ...(await suiteDeps(loader, bundler({ props: { commit } }))), typecheck: (c: string) => typecheckStep(env.DB, c) }) : null;
+    // The bundler carries no commit: a test Worker is reused across commits (runner/core.ts), so the commit
+    // comes with each request and the test Worker passes it back with each bundleWorker call.
+    const deps = loader && bundler ? async () => ({ ...(await suiteDeps(loader, bundler({ props: {} }))), typecheck: (c: string) => typecheckStep(env.DB, c) }) : null;
     console.log(JSON.stringify({ event: "forge.tick", ...(await forgeTick(env, REPO, deps)) }));
   },
 };
@@ -62,11 +66,41 @@ export class MergeRpc extends WorkerEntrypoint<Env> {
   }
 }
 
-/** Worker bundling for test Workers (TP-025): they have no esbuild, so they call back here. */
+/**
+ * ADR-0014 §11, docs/design/EVOLVER.md §6 (step V4): the evolver's one write path, bound only to the AI Kernel. It writes
+ * one commit to evo/<evolution_id> of platform-work after every check of evolution.ts; it never writes another ref.
+ */
+export class EvolutionRpc extends WorkerEntrypoint<Env> {
+  async propose(agentId: string, decisionId: string, input: EvolutionInput): Promise<EvolutionResult> {
+    return proposeEvolution(this.env as never, String(agentId), decisionId, input && typeof input === "object" ? input : {});
+  }
+  /** code.read (tier 0): canonical main's evolvable paths, or up to 12 files' text. Read only. */
+  async read(input: { paths?: unknown; prefix?: unknown }): Promise<Record<string, unknown>> {
+    return readCode(this.env as never, input && typeof input === "object" ? input : {});
+  }
+}
+
+/**
+ * HAIC H1a (docs/design/HAIC-H0-H1.md §3.2, `docs_index`): canonical main's documents (architecture/adr and docs, *.md),
+ * split by heading, for the read-only "Ask the organism" chat. Read only: the index, one document's sections, or a
+ * word search; each section with its `ev:platform/doc/...` ref. No write and no ref but main.
+ */
+export class DocsRpc extends WorkerEntrypoint<Env> {
+  async read(input: { path?: unknown; section?: unknown; query?: unknown; limit?: unknown }): Promise<Record<string, unknown>> {
+    return readDocs(this.env as never, input && typeof input === "object" ? input : {});
+  }
+}
+
+/**
+ * Worker bundling for test Workers (TP-025): they have no esbuild, so they call back here. The commit is the one
+ * of the run the test Worker is serving (its request body), or the binding's props for an older caller. Only a
+ * commit of platform or platform-work is read, and only bundle metadata (size, errors, externals) goes back.
+ */
 export class ForgeBundler extends WorkerEntrypoint<RunnerEnv> {
-  async bundleWorker(dir: string): Promise<WorkerBundle> {
+  async bundleWorker(dir: string, requested?: unknown): Promise<WorkerBundle> {
     if (typeof dir !== "string" || !/^[A-Za-z0-9_./-]{1,200}$/.test(dir) || dir.split("/").includes("..")) throw new Error("invalid_dir");
-    const commit = (this.ctx as RunnerCtx).props?.commit ?? "";
+    const commit = (this.ctx as RunnerCtx).props?.commit ?? (typeof requested === "string" ? requested : "");
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("invalid_commit");
     let snapshot = cachedSnapshot(commit);
     if (!snapshot) {
       if (!this.env.ARTIFACTS) throw new Error("artifacts_not_configured");

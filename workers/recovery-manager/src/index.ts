@@ -9,9 +9,11 @@ import { boundedString, boundedStringArray, engineFor, type AiTask } from "../..
 import { readinessResponse } from "../../control-plane-shared/src/readiness.ts";
 import { accessGate, listConfigured, requireApprover, requireApproverOrServiceOperator, requireOperator } from "../../control-plane-shared/src/access.ts";
 import { RECOVERY_STEP_ACTIONS } from "../../control-plane-shared/src/capabilities.ts";
+import { BREAK_GLASS_STEP, breakGlassPlanProblem, namedDestructive, namedTopology, type PlanStep } from "../../control-plane-shared/src/break-glass.ts";
 import { EVENTS, deadline, notify, terminate, windowClosed, windows, type LifecycleEnv } from "./lifecycle.ts";
 import type { RecoveryDeployBinding } from "./autonomous.ts";
 import { backupIfStale, type R2BucketLike } from "./backup.ts";
+import { archiveRetiredTables, type ArchiveBucket } from "./archive.ts";
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
@@ -31,7 +33,7 @@ export interface Env extends BaseEnv, LifecycleEnv {
   /** Deployment Orchestrator DeployRpc: redeploy steps of approved plans (autonomous recovery). */
   DEPLOY?: RecoveryDeployBinding;
   /** Private R2 bucket for the Cloudflare-native D1 backup fallback (backup.ts). */
-  BACKUPS?: R2BucketLike;
+  BACKUPS?: R2BucketLike & ArchiveBucket;
 }
 
 const SERVICE = "cryptophys-recovery-manager";
@@ -87,9 +89,9 @@ function present(row: PlanRow): JsonObject {
 
 const getPlan = (env: Env, id: string) => env.DB.prepare("SELECT * FROM recovery_plans WHERE plan_id = ?").bind(id).first<PlanRow>();
 
-function validateSteps(value: unknown): { action: string; description: string }[] | Error {
+function validateSteps(value: unknown): PlanStep[] | Error {
   if (!Array.isArray(value) || value.length < 1 || value.length > 20) return new Error("steps must contain 1-20 entries");
-  const steps: { action: string; description: string }[] = [];
+  const steps: PlanStep[] = [];
   for (const raw of value) {
     const s = raw as JsonObject;
     if (!s || typeof s !== "object") return new Error("each step must be an object");
@@ -97,9 +99,35 @@ function validateSteps(value: unknown): { action: string; description: string }[
     if (typeof s.description !== "string" || !s.description.trim() || s.description.length > 500) {
       return new Error("step.description must be 1-500 characters");
     }
+    if (s.action === BREAK_GLASS_STEP) {
+      // The break-glass deploy may name destructive migrations it is allowed to apply (break-glass.ts).
+      const named = namedDestructive(s.destructive_migrations);
+      if (named instanceof Error) return named;
+      // Gate 4 part B: and the destructive topology changes (custom domain removal, DO class deletion, Workflow removal...).
+      const topology = namedTopology(s.destructive_topology);
+      if (topology instanceof Error) return topology;
+      steps.push({ action: s.action, description: s.description.trim(), ...(named.length ? { destructive_migrations: named } : {}), ...(topology.length ? { destructive_topology: topology } : {}) });
+      continue;
+    }
+    if (s.destructive_migrations !== undefined) return new Error("only a force_redeploy_unit step may name destructive_migrations");
+    if (s.destructive_topology !== undefined) return new Error("only a force_redeploy_unit step may name destructive_topology");
     steps.push({ action: s.action as string, description: s.description.trim() });
   }
   return steps;
+}
+
+/** Plan-level rules of the break-glass step (break-glass.ts): its shape, a full commit and a person as author. */
+const BREAK_GLASS_MESSAGES: Record<string, string> = {
+  break_glass_one_step: "a plan has at most one force_redeploy_unit step",
+  break_glass_only_manual_beside: "a force_redeploy_unit plan may contain only manual notes besides it",
+  break_glass_full_commit: "a force_redeploy_unit plan names the full 40-hex commit of main as plan_version",
+  break_glass_person_author: "force_redeploy_unit is owner-run: only a person (an approver) may write it, never an agent or a service token",
+  break_glass_named_migrations_invalid: "destructive_migrations is invalid",
+  break_glass_named_topology_invalid: "destructive_topology is invalid",
+};
+function breakGlassRefusal(input: { plan_version: string; steps: PlanStep[] }, createdBy: string): Error | null {
+  const problem = breakGlassPlanProblem({ plan_version: input.plan_version, created_by: createdBy, steps: input.steps });
+  return problem ? new Error(BREAK_GLASS_MESSAGES[problem] ?? problem) : null;
 }
 
 async function createPlan(request: Request, env: Env, url: URL, createdBy: string): Promise<Response> {
@@ -114,6 +142,8 @@ async function createPlan(request: Request, env: Env, url: URL, createdBy: strin
   if (!SERVICE_ID.test(serviceId as string)) return errorResponse(400, "invalid_request", "service_id is invalid");
   const steps = validateSteps(b.steps);
   if (steps instanceof Error) return errorResponse(400, "invalid_request", steps.message);
+  const refused = breakGlassRefusal({ plan_version: planVersion as string, steps }, createdBy);
+  if (refused) return errorResponse(403, "break_glass_refused", refused.message);
   const saved = await insertPlan(env, { service_id: serviceId as string, plan_version: planVersion as string, title: title as string, rationale: rationale as string, steps }, createdBy);
   if (saved instanceof Error) return errorResponse(404, saved.message);
   const response: JsonObject = { plan: present(saved) };
@@ -123,7 +153,7 @@ async function createPlan(request: Request, env: Env, url: URL, createdBy: strin
   return json(response, 201);
 }
 
-export interface PlanInput { service_id: string; plan_version: string; title: string; rationale: string; steps: { action: string; description: string }[] }
+export interface PlanInput { service_id: string; plan_version: string; title: string; rationale: string; steps: PlanStep[] }
 
 /**
  * Validates an agent's proposal (RecoveryRpc.propose, ADR-0007 tier 1). The author is
@@ -140,6 +170,9 @@ export async function proposeFromAgent(env: Env, agentId: string, input: Record<
   if (!SERVICE_ID.test(serviceId as string)) throw new Error("invalid_request: service_id is invalid");
   const steps = validateSteps(b.steps);
   if (steps instanceof Error) throw new Error(`invalid_request: ${steps.message}`);
+  // An agent never writes a break-glass deploy (owner-run, like restore_d1_bookmark).
+  const refused = breakGlassRefusal({ plan_version: planVersion as string, steps }, `agent:${agentId}`);
+  if (refused) throw new Error(`break_glass_refused: ${refused.message}`);
   const saved = await insertPlan(env, { service_id: serviceId as string, plan_version: planVersion as string, title: title as string, rationale: rationale as string, steps }, `agent:${agentId}`);
   if (saved instanceof Error) throw saved;
   return present(saved);
@@ -171,7 +204,11 @@ async function insertPlan(env: Env, input: PlanInput, createdBy: string): Promis
   }
   await appendAuditEvent(env.DB, {
     event_type: "recovery.plan_created", actor: createdBy, subject: planId, outcome: "draft",
-    payload: { service_id: serviceId, plan_version: planVersion, step_actions: steps.map((s) => s.action), approve_by: approveBy, workflow_instance_id: instanceId },
+    payload: { service_id: serviceId, plan_version: planVersion, step_actions: steps.map((s) => s.action), approve_by: approveBy, workflow_instance_id: instanceId,
+      ...(steps.some((s) => s.action === BREAK_GLASS_STEP) ? {
+        break_glass: true, destructive_migrations: steps.find((s) => s.action === BREAK_GLASS_STEP)!.destructive_migrations ?? [],
+        destructive_topology: steps.find((s) => s.action === BREAK_GLASS_STEP)!.destructive_topology ?? [],
+      } : {}) },
   });
   return (await getPlan(env, planId))!;
 }
@@ -263,6 +300,16 @@ export default {
           .catch(() => undefined);
         // Preserve the failure after recording it so the scheduled invocation remains visibly failed.
         throw e;
+      },
+    ));
+    // Owner 2026-11-14: archive the retired signal tables to R2 and verify them, before the migration that drops them.
+    ctx.waitUntil(archiveRetiredTables(env).then(
+      (r) => { if (r.status === "done" && r.tables.some((t) => t.state !== "dropped")) console.log(JSON.stringify({ event: "retired_tables_archive", ...r })); },
+      async (e: unknown) => {
+        const message = String((e as Error)?.message ?? e).slice(0, 300);
+        console.error(JSON.stringify({ event: "retired_tables_archive", status: "failed", message }));
+        await appendAuditEvent(env.DB, { event_type: "backup.archive_failed", actor: "cryptophys-recovery-manager", subject: "archive/retired-signal-tables/", outcome: "failed", payload: { message } })
+          .catch(() => undefined);
       },
     ));
     // Retire draft redeploy plans that a later deploy made unnecessary (superseded.ts).

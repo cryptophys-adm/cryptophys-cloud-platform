@@ -1,13 +1,15 @@
 // The Forge cron tick (ADR-0012 phases 3-4). Three independent steps, each isolated so one failing
 // never stops the others, and each failure is audited (forge.tick_failed) instead of only logged:
 //   1. the deploy plan for main's head (cheap; shadow comparison with the Orchestrator);
-//   2. the check of the oldest unchecked open change request head;
-//   3. the check of the oldest unchecked commit of main (skipped when step 2 used most of the tick);
+//   2. the check of an unchecked open change request head: in platform-work the one waiting longest, in platform (the
+//      GitHub pull request mirrors) the newest (changes.ts nextChangeHead);
+//   3. the check of main's head: a new head, or its daily run (skipped when step 2 used most of the tick);
 //   and, with CF_BUILDS_API_TOKEN, the change-request type-checks from their secret-free builds (cr-builds.ts)
 //   and, once an hour, the account's measured Workers Builds minutes (build-usage.ts, owner 2026-11-12);
 //   and, once a day per head of main, the npm dependency audit (dependency-audit.ts, ADR-0012 G5).
 //   and the branches pushed to the work repository platform-work, as change requests (work-repo.ts, G4);
 //   and, once per UTC day per head of main, a git bundle of platform to R2 (git-backup.ts, ADR-0012 gate 8);
+//   and, once per UTC day, `git bundle verify` in code of the newest stored bundle (bundle-verify.ts, gate 8);
 //   and the type-check source of forge-sourced change requests: their head copied to cr/<cr_id> of platform
 //   (transfer.ts, gate 6); and the G3a merge spike on the scratch repository until it has succeeded once (gate 5).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
@@ -15,6 +17,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
 import { planTick } from "./deploy-plan.ts";
+import type { BundleTextReader } from "../../control-plane-shared/src/executor-first.ts";
 import { censusTick, type ExternalDnaReader } from "./census.ts";
 import { EXTERNAL_ORIGINS } from "../../control-plane-shared/src/organism.ts";
 import { crBuildsTick } from "./cr-builds.ts";
@@ -22,6 +25,7 @@ import { buildUsageTick } from "./build-usage.ts";
 import { dependencyAuditTick } from "./dependency-audit.ts";
 import { WORK_REPO, workBranchesTick } from "./work-repo.ts";
 import { gitBackupTick, type GitBackupBucket } from "./git-backup.ts";
+import { gitBackupVerifyTick, type VerifyBucket } from "./bundle-verify.ts";
 import { crSourcesTick } from "./transfer.ts";
 import { mergeSpikeUntilProven } from "./merge.ts";
 
@@ -32,6 +36,10 @@ export interface TickEnv {
   BUNDLES?: import("./bundles.ts").BundleBucket;
   /** Owner 2026-11-12: the XAUUSD organs' DNA (xauusd-ai-trading-assistant OrganismDna, dna() only). */
   EXT_ORGANISM_XAUUSD?: { dna(): Promise<unknown> };
+  /** Owner 2026-11-14: Aether's DNA (cryptophys-aether OrganismDna, dna() only), held to Aether's ceiling. */
+  EXT_ORGANISM_AETHER?: { dna(): Promise<unknown> };
+  /** Owner 2026-11-15/16: cryptophys-cta's DNA (OrganismDna, dna() only), held to the general external ceiling. */
+  EXT_ORGANISM_CTA?: { dna(): Promise<unknown> };
 }
 
 /**
@@ -70,12 +78,13 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
       await appendAuditEvent(env.DB, { event_type: "forge.tick_failed", actor: "system:forge-checks", subject: name, outcome: "failed", payload: { error } }).catch(() => undefined);
     }
   };
-  if (env.ARTIFACTS) {
-    await step("deploy_plan", async () => {
-      const repo = await env.ARTIFACTS!.get(repoName);
-      try { return await planTick(env.DB, repo, nowMs()); } finally { repo[Symbol.dispose]?.(); }
-    });
-  }
+  // Gate 2026-11-15 (executor first): the planner reads main's bundles, which only the R2 binding's get reads.
+  const bundleReader = typeof (env.BUNDLES as { get?: unknown } | undefined)?.get === "function" ? env.BUNDLES as unknown as BundleTextReader : undefined;
+  const deployPlan = async () => {
+    const repo = await env.ARTIFACTS!.get(repoName);
+    try { return await planTick(env.DB, repo, nowMs(), bundleReader); } finally { repo[Symbol.dispose]?.(); }
+  };
+  if (env.ARTIFACTS) await step("deploy_plan", deployPlan);
   if (env.ARTIFACTS) {
     // ADR-0013 phase 2: the organism census of main's head (cheap: a few tree and blob reads), with the
     // external organs' DNA read over RPC (owner 2026-11-12).
@@ -110,7 +119,20 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
       try { return await gitBackupTick({ DB: env.DB, BUNDLES: env.BUNDLES as unknown as GitBackupBucket }, repo as never, nowMs()); } finally { repo[Symbol.dispose]?.(); }
     });
   }
+  if (env.BUNDLES) {
+    // Gate 8 (owner 2026-11-15): once per UTC day, after the backup, the newest stored bundle read back from R2 and
+    // verified in code (header, pack checksum, every object, refs and connectivity, SHA-256 against its row).
+    await step("git_backup_verify", () => gitBackupVerifyTick({ DB: env.DB, BUNDLES: env.BUNDLES as unknown as VerifyBucket }, nowMs()));
+  }
+  // Main's head first (2026-11-14): every deploy waits for the main check of the head it deploys
+  // (forge-gate forge_main_check_pending), so a steady stream of change requests must not starve it. Change
+  // requests are checked after it in the same tick, unless the main check used the tick's budget; then next tick.
   const started = nowMs();
+  await step("main_checks", () => checksTick(env, repoName, deps, nowMs));
+  // A plan that waited for main's bundles (executor first) is planned again as soon as the main check stored them.
+  if (env.ARTIFACTS && (steps.deploy_plan as { waiting?: boolean } | undefined)?.waiting) await step("deploy_plan_after_checks", deployPlan);
+  const main = steps.main_checks as { outcome?: string } | undefined;
+  if (main?.outcome === "checked" && nowMs() - started > CHECK_BUDGET_MS) { steps.change_checks = { outcome: "deferred" }; return steps; }
   await step("change_checks", async () => {
     // GitHub-sourced heads are read from platform (cr/<n>); only when none waits, a forge-sourced head from
     // platform-work (G4). Its type-check has no source yet: recorded as not_configured (ADR-0012 §5j).
@@ -121,8 +143,5 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     const work = await tickWith(env, WORK_REPO, workDeps(deps), nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs(), WORK_REPO), "change");
     return work.outcome === "up_to_date" ? github : { ...work, repo: WORK_REPO };
   });
-  const change = steps.change_checks as { outcome?: string } | undefined;
-  if (change?.outcome === "checked" && nowMs() - started > CHECK_BUDGET_MS) steps.main_checks = { outcome: "deferred" };
-  else await step("main_checks", () => checksTick(env, repoName, deps, nowMs));
   return steps;
 }

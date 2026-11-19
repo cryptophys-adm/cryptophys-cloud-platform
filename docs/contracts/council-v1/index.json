@@ -1,0 +1,130 @@
+{
+  "schema": "council-v1.fixtures",
+  "contract": "docs/design/HAIC-H0-H1.md §4.6",
+  "note": "Both sides validate these: every valid file passes; every invalid file fails with at least the expected error.",
+  "files": [
+    {
+      "file": "valid/session.json",
+      "kind": "session",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/message-position.json",
+      "kind": "message",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/message-rebuttal.json",
+      "kind": "message",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/message-synthesis.json",
+      "kind": "message",
+      "expect_errors": []
+    },
+    {
+      "file": "valid/decision.json",
+      "kind": "decision",
+      "expect_errors": []
+    },
+    {
+      "file": "invalid/message-ref-with-price.json",
+      "kind": "message",
+      "expect_errors": [
+        "claim.ref_price"
+      ]
+    },
+    {
+      "file": "invalid/message-claim-without-ref.json",
+      "kind": "message",
+      "expect_errors": [
+        "claim.refs"
+      ]
+    },
+    {
+      "file": "invalid/message-too-long.json",
+      "kind": "message",
+      "expect_errors": [
+        "text"
+      ]
+    },
+    {
+      "file": "invalid/rebuttal-names-no-position.json",
+      "kind": "message",
+      "expect_errors": [
+        "rebuttal_names_no_position"
+      ]
+    },
+    {
+      "file": "invalid/rebuttal-three-targets.json",
+      "kind": "message",
+      "expect_errors": [
+        "reply_to"
+      ]
+    },
+    {
+      "file": "invalid/synthesis-without-no-change.json",
+      "kind": "message",
+      "expect_errors": [
+        "option.no_change_missing"
+      ]
+    },
+    {
+      "file": "invalid/synthesis-widens-autonomy.json",
+      "kind": "message",
+      "expect_errors": [
+        "option.widens_autonomy:autonomy_or_capability"
+      ]
+    },
+    {
+      "file": "invalid/synthesis-trading-change.json",
+      "kind": "message",
+      "expect_errors": [
+        "option.widens_autonomy:trading_capability"
+      ]
+    },
+    {
+      "file": "invalid/synthesis-by-participant.json",
+      "kind": "message",
+      "expect_errors": [
+        "synthesis_role"
+      ]
+    },
+    {
+      "file": "invalid/session-over-budget.json",
+      "kind": "session",
+      "expect_errors": [
+        "budget.max_usd"
+      ]
+    },
+    {
+      "file": "invalid/session-unknown-state.json",
+      "kind": "session",
+      "expect_errors": [
+        "state"
+      ]
+    },
+    {
+      "file": "invalid/decision-not-by-owner.json",
+      "kind": "decision",
+      "expect_errors": [
+        "chosen_by"
+      ]
+    },
+    {
+      "file": "invalid/decision-shadow-without-window.json",
+      "kind": "decision",
+      "expect_errors": [
+        "draft.shadow_window"
+      ]
+    },
+    {
+      "file": "invalid/decision-without-promote-click.json",
+      "kind": "decision",
+      "expect_errors": [
+        "draft.requires"
+      ]
+    }
+  ]
+}

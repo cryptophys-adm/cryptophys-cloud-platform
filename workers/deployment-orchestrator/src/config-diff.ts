@@ -11,243 +11,23 @@
 //      toml diff applied. A binding the diff does not name (a deploy-time `--var`, a secret, one the
 //      dashboard added) is kept exactly as the API returned it. Deploy-time placeholders resolve from the
 //      active binding of the same type and name. Secrets are never in the plan: they stay via keep_bindings.
+//      Service bindings (2026-11-16) are the exception to "kept verbatim": the target config's value is the plan
+//      whenever the active record differs from it (see `service_bindings`, control-plane-shared/src/service-bindings.ts).
 //      Settings that are not bindings go to the version metadata or to separate plan steps; the ones a
 //      version upload cannot apply make the Worker ineligible (it stays on its GitHub workflow).
 //   4. `verifyPlannedBindings`: after the upload and before any traffic moves, the new version must bind
 //      exactly the plan (the same principle as the G2b binding check). An uploaded version that is never
 //      deployed is harmless.
 // Pure functions only: no I/O, no Cloudflare call. Wiring into native-deploy.ts is a later step (§5l).
+import { parseToml, type TomlTable, type TomlValue } from "../../control-plane-shared/src/toml.ts";
+import { propsUnknown, serviceBindingDiff, type BindingDrift, type ServiceBinding } from "../../control-plane-shared/src/service-bindings.ts";
 
 // ---------------------------------------------------------------------------------------------------------
-// 1. TOML subset
+// 1. TOML subset (control-plane-shared/src/toml.ts since 2026-11-16; re-exported for this module's callers)
 // ---------------------------------------------------------------------------------------------------------
 
-export type TomlValue = string | number | boolean | TomlValue[] | TomlTable;
-export interface TomlTable { [key: string]: TomlValue }
-
-class TomlError extends Error {}
-const fail = (why: string): never => { throw new TomlError(why); };
-
-/**
- * Parse the TOML subset this repository uses: comments, `[a.b]` tables, `[[a.b]]` arrays of tables, bare or
- * basic-quoted keys, basic and literal one-line strings, integers and simple decimals, booleans, inline arrays
- * (multi-line, trailing comma, comments) and one-line inline tables. Dotted keys, multi-line strings, dates,
- * duplicate keys and redefined tables are refused. Returns null for anything outside the subset.
- */
-export function parseToml(text: string): TomlTable | null {
-  if (typeof text !== "string" || text.length > 256 * 1024) return null;
-  try { return new TomlParser(text).parse(); } catch (e) { if (e instanceof TomlError) return null; throw e; }
-}
-
-const BARE_KEY = /[A-Za-z0-9_-]/;
-
-class TomlParser {
-  private i = 0;
-  private readonly root: TomlTable = {};
-  private current: TomlTable = this.root;
-  private readonly defined = new WeakSet<TomlTable>();
-  private readonly inline = new WeakSet<object>();
-  private readonly arraysOfTables = new WeakSet<TomlValue[]>();
-  private readonly s: string;
-  constructor(s: string) { this.s = s.replace(/\r\n/g, "\n"); }
-
-  parse(): TomlTable {
-    this.defined.add(this.root);
-    for (;;) {
-      this.skipBlank();
-      if (this.i >= this.s.length) return this.root;
-      const c = this.s[this.i];
-      if (c === "[") this.header();
-      else this.keyValue(this.current);
-      this.endOfLine();
-    }
-  }
-
-  private peek(n = 0) { return this.s[this.i + n]; }
-  private skipSpaces() { while (this.peek() === " " || this.peek() === "\t") this.i++; }
-  private skipComment() { if (this.peek() === "#") { while (this.i < this.s.length && this.peek() !== "\n") this.i++; } }
-  /** Spaces, tabs, newlines and comments. */
-  private skipBlank() {
-    for (;;) {
-      this.skipSpaces();
-      if (this.peek() === "#") { this.skipComment(); continue; }
-      if (this.peek() === "\n") { this.i++; continue; }
-      return;
-    }
-  }
-  private endOfLine() {
-    this.skipSpaces();
-    this.skipComment();
-    if (this.i < this.s.length && this.peek() !== "\n") fail("trailing_content");
-  }
-
-  private key(): string {
-    this.skipSpaces();
-    if (this.peek() === "\"") return this.basicString();
-    if (this.peek() === "'") return this.literalString();
-    const start = this.i;
-    while (this.i < this.s.length && BARE_KEY.test(this.peek())) this.i++;
-    if (this.i === start) fail("key_expected");
-    return this.s.slice(start, this.i);
-  }
-
-  private headerPath(): string[] {
-    const path = [this.key()];
-    for (;;) {
-      this.skipSpaces();
-      if (this.peek() !== ".") return path;
-      this.i++;
-      path.push(this.key());
-    }
-  }
-
-  /** Walk to the parent table of a header path: implicit tables are created; an array of tables means its last element. */
-  private walk(path: string[]): TomlTable {
-    let t = this.root;
-    for (const k of path) {
-      const v = t[k];
-      if (v === undefined) { const n: TomlTable = {}; t[k] = n; t = n; continue; }
-      if (Array.isArray(v)) {
-        if (!this.arraysOfTables.has(v)) fail("not_a_table");
-        t = v[v.length - 1] as TomlTable;
-        continue;
-      }
-      if (typeof v !== "object" || this.inline.has(v)) fail("not_a_table");
-      t = v as TomlTable;
-    }
-    return t;
-  }
-
-  private header() {
-    const double = this.peek(1) === "[";
-    this.i += double ? 2 : 1;
-    const path = this.headerPath();
-    this.skipSpaces();
-    if (this.peek() !== "]" || (double && this.peek(1) !== "]")) fail("header_unclosed");
-    this.i += double ? 2 : 1;
-    const parent = this.walk(path.slice(0, -1));
-    const last = path[path.length - 1];
-    const existing = parent[last];
-    if (double) {
-      let arr: TomlValue[];
-      if (existing === undefined) { arr = []; parent[last] = arr; this.arraysOfTables.add(arr); }
-      else if (Array.isArray(existing) && this.arraysOfTables.has(existing)) arr = existing;
-      else return fail("redefined");
-      const t: TomlTable = {};
-      arr.push(t);
-      this.defined.add(t);
-      this.current = t;
-      return;
-    }
-    if (existing === undefined) { const t: TomlTable = {}; parent[last] = t; this.defined.add(t); this.current = t; return; }
-    if (typeof existing !== "object" || Array.isArray(existing) || this.inline.has(existing) || this.defined.has(existing)) fail("redefined");
-    this.defined.add(existing as TomlTable);
-    this.current = existing as TomlTable;
-  }
-
-  private keyValue(into: TomlTable) {
-    const k = this.key();
-    this.skipSpaces();
-    if (this.peek() === ".") fail("dotted_key");
-    if (this.peek() !== "=") fail("equals_expected");
-    this.i++;
-    this.skipSpaces();
-    if (Object.prototype.hasOwnProperty.call(into, k)) fail("duplicate_key");
-    into[k] = this.value();
-  }
-
-  private value(): TomlValue {
-    const c = this.peek();
-    if (c === "\"") { if (this.s.startsWith("\"\"\"", this.i)) fail("multiline_string"); return this.basicString(); }
-    if (c === "'") { if (this.s.startsWith("'''", this.i)) fail("multiline_string"); return this.literalString(); }
-    if (c === "[") return this.array();
-    if (c === "{") return this.inlineTable();
-    if (this.s.startsWith("true", this.i) && this.terminates(4)) { this.i += 4; return true; }
-    if (this.s.startsWith("false", this.i) && this.terminates(5)) { this.i += 5; return false; }
-    const m = /^[+-]?(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d+)?/.exec(this.s.slice(this.i, this.i + 64));
-    if (m && this.terminates(m[0].length)) {
-      this.i += m[0].length;
-      const n = Number(m[0].replace(/_/g, ""));
-      if (!Number.isFinite(n)) fail("number");
-      return n;
-    }
-    return fail("value_expected");
-  }
-
-  /** A scalar ends at whitespace, a separator, a comment or the end. A date such as 2026-11-01 does not. */
-  private terminates(len: number): boolean {
-    const n = this.s[this.i + len];
-    return n === undefined || n === " " || n === "\t" || n === "\n" || n === "," || n === "]" || n === "}" || n === "#";
-  }
-
-  private basicString(): string {
-    this.i++;
-    let out = "";
-    for (;;) {
-      const c = this.s[this.i++];
-      if (c === undefined || c === "\n") return fail("string_unclosed");
-      if (c === "\"") return out;
-      if (c === "\\") {
-        const e = this.s[this.i++];
-        const simple: Record<string, string> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "\"": "\"", "\\": "\\" };
-        if (e in simple) { out += simple[e]; continue; }
-        if (e === "u" || e === "U") {
-          const len = e === "u" ? 4 : 8;
-          const hex = this.s.slice(this.i, this.i + len);
-          if (!new RegExp(`^[0-9A-Fa-f]{${len}}$`).test(hex)) fail("escape");
-          const cp = parseInt(hex, 16);
-          if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) fail("escape");
-          out += String.fromCodePoint(cp);
-          this.i += len;
-          continue;
-        }
-        return fail("escape");
-      }
-      if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(c)) fail("control_char");
-      out += c;
-    }
-  }
-
-  private literalString(): string {
-    this.i++;
-    const end = this.s.indexOf("'", this.i);
-    const nl = this.s.indexOf("\n", this.i);
-    if (end < 0 || (nl >= 0 && nl < end)) fail("string_unclosed");
-    const out = this.s.slice(this.i, end);
-    if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(out)) fail("control_char");
-    this.i = end + 1;
-    return out;
-  }
-
-  private array(): TomlValue[] {
-    this.i++;
-    const out: TomlValue[] = [];
-    for (;;) {
-      this.skipBlank();
-      if (this.peek() === "]") { this.i++; return out; }
-      out.push(this.value());
-      this.skipBlank();
-      if (this.peek() === ",") { this.i++; continue; }
-      if (this.peek() === "]") { this.i++; return out; }
-      return fail("array_separator");
-    }
-  }
-
-  private inlineTable(): TomlTable {
-    this.i++;
-    const t: TomlTable = {};
-    this.inline.add(t);
-    this.skipSpaces();
-    if (this.peek() === "}") { this.i++; return t; }
-    for (;;) {
-      this.keyValue(t);
-      this.skipSpaces();
-      if (this.peek() === ",") { this.i++; this.skipSpaces(); continue; }
-      if (this.peek() === "}") { this.i++; return t; }
-      return fail("inline_table_separator");
-    }
-  }
-}
+export type { TomlTable, TomlValue } from "../../control-plane-shared/src/toml.ts";
+export { parseToml } from "../../control-plane-shared/src/toml.ts";
 
 // ---------------------------------------------------------------------------------------------------------
 // 2. Bindings in the Workers API metadata shape
@@ -281,7 +61,7 @@ const ARRAY_KINDS: Record<string, KindSpec> = {
   r2_buckets: { type: "r2_bucket", nameField: "binding", fields: { bucket_name: "bucket_name", jurisdiction: "jurisdiction" }, required: ["bucket_name"], ignored: ["preview_bucket_name"] },
   kv_namespaces: { type: "kv_namespace", nameField: "binding", fields: { id: "namespace_id" }, required: ["id"], ignored: ["preview_id"] },
   vectorize: { type: "vectorize", nameField: "binding", fields: { index_name: "index_name" }, required: ["index_name"], ignored: [] },
-  // A workflow's registration (default_retention, limits) is not a binding; any workflow change is ineligible anyway.
+  // A workflow's registration (default_retention, limits) is not a binding: topology.ts registers it (gate 4 part B).
   workflows: { type: "workflow", nameField: "binding", fields: { name: "workflow_name", class_name: "class_name", script_name: "script_name" }, required: ["name", "class_name"], ignored: ["default_retention", "limits"] },
   artifacts: { type: "artifacts", nameField: "binding", fields: { namespace: "namespace" }, required: ["namespace"], ignored: [] },
   worker_loaders: { type: "worker_loader", nameField: "binding", fields: {}, required: [], ignored: [] },
@@ -495,6 +275,15 @@ export interface ConfigPlan {
   /** Script-level changes a version upload cannot carry, applied after the new version is verified live. */
   steps: PlanStep[];
   changes: { added: string[]; removed: string[]; changed: string[]; settings: string[] };
+  /**
+   * 2026-11-16 (binding props lost out of band): the service bindings the active version does not bind as the target
+   * config declares, for a reason the toml diff does not explain. `restored` are planned from the config (sent as
+   * declared, `<worker>:service_bindings_restored:<NAME>`); `undeclared` are active service bindings neither config
+   * declares: they are NOT in `bindings`, and the executor refuses the plan (`serviceDriftRefusal`) rather than drop them.
+   * `unverifiable` are declared bindings with props whose active record has no `props` key (service-bindings.ts
+   * `propsUnknown`): planned from the config (the props are sent), not reported as drift by themselves.
+   */
+  service_bindings: { restored: BindingDrift[]; undeclared: string[]; unverifiable: string[] };
 }
 export interface Ineligible { eligible: false; reason: string }
 export type ConfigPlanResult = ConfigPlan | Ineligible;
@@ -535,21 +324,35 @@ interface ConfigReading {
   settings: string[];
 }
 
+/**
+ * Gate 4 part B (topology.ts, owner 2026-11-15): with `topology`, the routes (`routes`, `route`), the Durable Object
+ * `[[migrations]]` and the `[[workflows]]` registrations are not refused here; topology.ts plans them (and refuses
+ * what it cannot apply natively). The Workflow bindings stay in the binding plan either way. Without it (the
+ * default), every one of them is refused as before. `workers_dev` and `preview_urls` go to topology.ts only when both
+ * configs set them as booleans; otherwise they stay `routing_changed`.
+ */
+export interface ConfigReadOptions { topology?: boolean }
+
 /** Everything the two configs alone decide: the settings and steps, the declared bindings, or the refusal. */
-function readConfigs(runningToml: string, targetToml: string): ConfigReading | Ineligible {
+function readConfigs(runningToml: string, targetToml: string, opts: ConfigReadOptions = {}): ConfigReading | Ineligible {
   const run = parseToml(runningToml);
   const tgt = parseToml(targetToml);
   if (!run || !tgt) return no("config_unparsed");
 
   for (const k of IDENTITY_KEYS) if (!same(run[k], tgt[k])) return no("identity_changed");
-  for (const k of ROUTING_KEYS) if (!same(run[k], tgt[k])) return no("routing_changed");
+  for (const k of ROUTING_KEYS) {
+    if (opts.topology && (k === "routes" || k === "route")) continue;
+    // topology.ts applies workers_dev / preview_urls when both configs set them explicitly (wrangler's default otherwise depends on the routes).
+    if (opts.topology && typeof run[k] === "boolean" && typeof tgt[k] === "boolean") continue;
+    if (!same(run[k], tgt[k])) return no("routing_changed");
+  }
   // Durable Object migrations are applied only by a script upload that deploys; a version upload cannot.
-  if (!same(run.migrations, tgt.migrations)) return no("do_migration");
+  if (!opts.topology && !same(run.migrations, tgt.migrations)) return no("do_migration");
   if (!same(run.assets, tgt.assets)) return no("assets_config_changed");
   if (!same(run.rules, tgt.rules)) return no("build_rules_changed");
   if (!same(run.previews, tgt.previews)) return no("previews_changed");
   // wrangler registers a workflow (PUT /workflows/{name}) on deploy; a binding alone does not.
-  if (!same(run.workflows, tgt.workflows)) return no("workflow_changed");
+  if (!opts.topology && !same(run.workflows, tgt.workflows)) return no("workflow_changed");
   const consumers = (c: TomlTable) => (isTable(c.queues) ? c.queues.consumers : undefined);
   if (!same(consumers(run), consumers(tgt))) return no("queue_consumer_changed");
   // Not available on version uploads (Cloudflare: multipart upload metadata).
@@ -595,8 +398,8 @@ function readConfigs(runningToml: string, targetToml: string): ConfigReading | I
  * the active version's bindings can decide. No Cloudflare call is needed for this; `planConfigChange` makes the
  * same checks first.
  */
-export function configRefusal(runningToml: string, targetToml: string): string | null {
-  const r = readConfigs(runningToml, targetToml);
+export function configRefusal(runningToml: string, targetToml: string, opts: ConfigReadOptions = {}): string | null {
+  const r = readConfigs(runningToml, targetToml, opts);
   return "eligible" in r ? r.reason : null;
 }
 
@@ -605,8 +408,8 @@ export function configRefusal(runningToml: string, targetToml: string): string |
  * binding records the API returns for the active version. Ineligible (the Worker stays on its GitHub workflow)
  * with an explicit reason whenever a version upload cannot reproduce what `wrangler deploy` would do.
  */
-export function planConfigChange(runningToml: string, targetToml: string, activeBindings: unknown): ConfigPlanResult {
-  const read = readConfigs(runningToml, targetToml);
+export function planConfigChange(runningToml: string, targetToml: string, activeBindings: unknown, opts: ConfigReadOptions = {}): ConfigPlanResult {
+  const read = readConfigs(runningToml, targetToml, opts);
   if ("eligible" in read) return read;
   const { runB, tgtB, metadata, steps, settings } = read;
   const active = readActive(activeBindings);
@@ -633,6 +436,7 @@ export function planConfigChange(runningToml: string, targetToml: string, active
 
   for (const a of active) {
     const k = keyOf(a);
+    if (a.type === "service") continue; // planned below, from the config
     if (isSecret(a.type)) {
       if (tgtMap.has(k) || runMap.has(k)) return no(`binding_name_conflict:${a.name}`);
       continue;
@@ -648,8 +452,9 @@ export function planConfigChange(runningToml: string, targetToml: string, active
     planned.set(k, a);
     sources[k] = "active";
   }
-  for (const k of runMap.keys()) if (!activeMap.has(k)) return no(`active_binding_missing:${k}`);
+  for (const k of runMap.keys()) if (!activeMap.has(k) && !k.startsWith("service:")) return no(`active_binding_missing:${k}`);
   for (const [k, t] of tgtMap) {
+    if (t.type === "service") continue; // planned below, from the config
     const r = runMap.get(k);
     if (r && same(r, t)) continue; // unchanged: kept from the active version above
     if (r) {
@@ -663,6 +468,51 @@ export function planConfigChange(runningToml: string, targetToml: string, active
     (r ? changes.changed : changes.added).push(k);
   }
 
+  // 2026-11-16: service bindings carry no secret, so the target config's value is always the plan. An active record
+  // equal to it is kept verbatim (as before); one that is missing or differs (a version made out of band, e.g. by a
+  // dashboard secret edit, that dropped `props`) is planned from the config and reported as restored, unless the toml
+  // diff alone explains the difference (an added binding, or a changed one whose active record is the running value).
+  // An active service binding neither config declares is reported as undeclared and left out of the plan; the
+  // executor refuses such a plan. A service binding the diff removes is removed, whatever the active record holds.
+  const restored: BindingDrift[] = [];
+  const unverifiable: string[] = [];
+  const undeclared: string[] = [];
+  for (const [k, t] of tgtMap) {
+    if (t.type !== "service") continue;
+    const r = runMap.get(k);
+    const a = activeMap.get(k);
+    const resolved = resolve(t, r, a);
+    if ("unresolved" in resolved) return no(`unresolved_placeholder:${resolved.unresolved}`);
+    const declared = resolved.record;
+    // The same comparison as every other path (service-bindings.ts): the API's `environment` and an empty `props` are no difference.
+    const matches = (want: BindingRecord, got: BindingRecord | undefined) => serviceBindingDiff(want as unknown as ServiceBinding, got).length === 0;
+    // Props unknown (no `props` key on the active record): never kept verbatim, so the declared props are sent.
+    const unknown = propsUnknown(declared as unknown as ServiceBinding, a);
+    if (unknown) unverifiable.push(t.name);
+    const keep = a !== undefined && matches(declared, a) && !unknown;
+    planned.set(k, keep ? a! : declared);
+    sources[k] = keep ? "active" : "config";
+    if (r && !same(r, t)) changes.changed.push(k);
+    else if (!r) changes.added.push(k);
+    if (keep) continue;
+    // Only the props are unknown: resent, but not drift by itself.
+    if (unknown && matches(declared, a)) continue;
+    let explained = !r && !a;
+    if (r && !same(r, t) && a) {
+      const was = resolve(r, r, a);
+      explained = !("unresolved" in was) && matches(was.record, a);
+    }
+    if (!explained) {
+      const kinds = serviceBindingDiff(declared as unknown as ServiceBinding, a);
+      restored.push({ name: t.name, kinds: kinds.length ? kinds : ["fields"], retarget: kinds.includes("missing") || kinds.includes("service") });
+    }
+  }
+  for (const a of active) {
+    if (a.type !== "service" || tgtMap.has(keyOf(a))) continue;
+    if (runMap.has(keyOf(a))) changes.removed.push(keyOf(a));
+    else undeclared.push(a.name);
+  }
+
   const names = new Set<string>(secrets.map((s) => s.slice(s.indexOf(":") + 1)));
   for (const b of planned.values()) {
     if (names.has(b.name)) return no(`binding_name_conflict:${b.name}`);
@@ -670,7 +520,10 @@ export function planConfigChange(runningToml: string, targetToml: string, active
   }
   const bindings = [...planned.values()].sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
   for (const list of [changes.added, changes.removed, changes.changed]) list.sort();
-  return { eligible: true, bindings, sources, secrets, keep_bindings: [...SECRET_TYPES], metadata, steps, changes };
+  return {
+    eligible: true, bindings, sources, secrets, keep_bindings: [...SECRET_TYPES], metadata, steps, changes,
+    service_bindings: { restored: restored.sort((a, b) => a.name.localeCompare(b.name)), undeclared: undeclared.sort(), unverifiable: unverifiable.sort() },
+  };
 }
 
 /**
@@ -708,7 +561,11 @@ export function verifyPlannedBindings(plan: Pick<ConfigPlan, "bindings" | "sourc
   for (const [k, p] of want) {
     const got = plain.find((b) => keyOf(b) === k);
     if (!got) return { ok: false, reason: "missing_binding", binding: k };
-    const ok = plan.sources[k] === "active" ? same(p, got) : recordMatches(p, got);
+    // A service binding built from config: the shared comparison (a record without a `props` key is accepted as props
+    // unknown; the executor names it, service-bindings.ts verifyServiceBindings).
+    const ok = plan.sources[k] === "active" ? same(p, got)
+      : p.type === "service" ? serviceBindingDiff(p as unknown as ServiceBinding, got).length === 0
+      : recordMatches(p, got);
     if (!ok) return { ok: false, reason: "binding_differs", binding: k };
   }
   return { ok: true };

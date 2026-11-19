@@ -66,16 +66,22 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   // This database has no drift observation at all, so every registered service reads as not observed (condition 2 of
   // production_unhandled); the conditions themselves are tested one by one in production-unhandled.test.ts.
   assert.ok(b.production_problems.length > 0 && b.production_problems.every((p: any) => p.code === "observations_stale"));
-  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length });
+  // HAIC H1.5c: councils waiting for the owner's pick are counted additively (none here; council-h15c covers them).
+  // HAIC H1.5d: councils agents proposed are counted additively too (none here; council-h15d covers them).
+  // HAIC H2: typed proposal drafts are counted additively too (none here; typed-proposals-h2a covers them).
+  assert.deepEqual(b.counts, { approvals: 4, critical_reports: 1, production_problems: b.production_problems.length, councils: 0, council_proposals: 0, typed_proposals: 0, autonomy: 0 });
+  assert.deepEqual([b.councils, b.council_proposals, b.typed_proposals, b.autonomy], [[], [], [], []]);
   assert.equal(events(), before, "reading the inbox writes nothing");
   assert.deepEqual((db.raw.prepare("SELECT DISTINCT status FROM knowledge_proposals").all() as { status: string }[]).map((r) => r.status), ["pending"]);
 
   // The notices list the same items, and both owner-channel notices link to the Owner page.
   const notices = await collectNotices(db as never);
   const attention = notices.find((n) => n.topic === "owner_attention")!;
-  assert.deepEqual([attention.active, attention.lines.length, attention.channel, attention.link], [true, b.counts.approvals, "owner", OWNER_PANEL_URL]);
+  // HAIC H0d: the notice is about every item (count) and lists the top 5 by score, plus one line for the rest.
+  const listed = (n: number) => Math.min(5, n) + (n > 5 ? 1 : 0);
+  assert.deepEqual([attention.active, attention.count, attention.lines.length, attention.channel, attention.link], [true, b.counts.approvals, listed(b.counts.approvals), "owner", OWNER_PANEL_URL]);
   const critical = notices.find((n) => n.topic === "critical_reports")!;
-  assert.deepEqual([critical.active, critical.lines.length, critical.channel, critical.link], [true, b.counts.critical_reports, "owner", OWNER_PANEL_URL]);
+  assert.deepEqual([critical.active, critical.count, critical.lines.length, critical.channel, critical.link], [true, b.counts.critical_reports, listed(b.counts.critical_reports), "owner", OWNER_PANEL_URL]);
 
   // GET /v1/notices names each notice's channel.
   const n = await call(kernel, env, req("GET", "/v1/notices", undefined, OPERATOR_JWT));
@@ -83,7 +89,7 @@ test("I1. GET /v1/owner/inbox: operators read the approvals and the open critica
   assert.deepEqual(n.body.owner_channel_topics, ["owner_attention", "critical_reports", "production_unhandled"]);
   assert.deepEqual(n.body.notices.map((x: any) => [x.topic, x.channel]), [["owner_attention", "owner"], ["drift", "console"], ["critical_reports", "owner"], ["organism", "console"], ["build_minutes", "console"], ["dependencies", "console"], ["production_unhandled", "owner"]]);
   const problems = notices.find((x) => x.topic === "production_unhandled")!;
-  assert.deepEqual([problems.active, problems.lines.length, problems.link], [true, Math.min(20, b.counts.production_problems), OWNER_PANEL_URL], "the notice lists the inbox's problems");
+  assert.deepEqual([problems.active, problems.count, problems.lines.length, problems.link], [true, b.counts.production_problems, listed(b.counts.production_problems), OWNER_PANEL_URL], "the notice lists the inbox's problems, the top 5 by score");
 
   // Access still decides who reads it.
   assert.equal((await call(kernel, env, req("GET", "/v1/owner/inbox", undefined, OUTSIDER_JWT))).status, 403);
@@ -96,7 +102,7 @@ test("I2. the Console: #/owner is the first nav item, reads only the inbox, reus
   assert.deepEqual(UI_ROUTES.find((r) => r.id === "kernel.owner_inbox"), { id: "kernel.owner_inbox", service: "kernel", method: "GET", path: "/v1/owner/inbox", approverOnly: false, confirm: null });
   assert.deepEqual(CONSOLE_ALLOW_LIST.filter((a) => a.path.startsWith("/v1/owner")), [{ service: "kernel", method: "GET", path: "/v1/owner/inbox" }]);
   const app = read("workers/console/ui/src/App.tsx");
-  assert.match(app, /case "owner": page = <Owner \/>; break;/);
+  assert.match(app, /case "owner": page = <Owner item=\{id\} \/>; break;/, "HAIC H0c: #/owner/<item_id> opens one ranked item");
   const shell = read("workers/console/ui/src/components/AppShell.tsx");
   assert.match(shell, /export const NAV = \[\n(?:\s*\/\/[^\n]*\n)*\s*\{ label: "Owner", href: "#\/owner", key: "owner", icon: Inbox \},\n\s*\{ label: "Command"/, "Owner is the first nav item");
   const page = read("workers/console/ui/src/pages/Owner.tsx");

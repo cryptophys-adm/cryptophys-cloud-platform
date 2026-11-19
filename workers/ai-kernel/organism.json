@@ -12,6 +12,16 @@
   },
   "agents": [
     {
+      "id": "adr-steward",
+      "display_name": "ADR Steward",
+      "capabilities": [
+        "adr.observe",
+        "reports.publish"
+      ],
+      "tier_max": 1,
+      "voter": false
+    },
+    {
       "id": "auditor",
       "display_name": "Platform Auditor",
       "capabilities": [
@@ -22,6 +32,16 @@
       ],
       "tier_max": 1,
       "voter": true
+    },
+    {
+      "id": "evolver",
+      "display_name": "Evolver",
+      "capabilities": [
+        "code.read",
+        "code.propose"
+      ],
+      "tier_max": 2,
+      "voter": false
     },
     {
       "id": "signal-analyst",
@@ -51,10 +71,37 @@
   ],
   "engines": [
     {
+      "task": "chat_answer"
+    },
+    {
+      "task": "chat_plan"
+    },
+    {
+      "task": "council_position"
+    },
+    {
+      "task": "council_rebuttal"
+    },
+    {
+      "task": "council_synthesis"
+    },
+    {
+      "task": "directive_draft"
+    },
+    {
+      "task": "draft_adr_explanation"
+    },
+    {
       "task": "draft_audit_digest"
     },
     {
       "task": "draft_recovery_proposal"
+    },
+    {
+      "task": "evolve_plan"
+    },
+    {
+      "task": "evolve_write"
     }
   ]
 }

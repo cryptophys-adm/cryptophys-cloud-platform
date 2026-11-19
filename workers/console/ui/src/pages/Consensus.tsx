@@ -5,7 +5,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
 import { ago, listOf } from "../lib/format";
-import { describeAction, explainReason } from "../lib/plain";
+import { describeProposal, explainReason } from "../lib/plain";
 import { ownerClickMode } from "../lib/consensus";
 
 /** Proposal outcomes in the validated segment order (good, info, warning, owner, serious, critical, neutral). */
@@ -44,7 +44,7 @@ function Votes({ p }: { p: any }) {
   const votes = listOf(data, "votes");
   return (
     <div className="space-y-2 py-1">
-      <div className="text-[12px] text-slate-200">Proposal: {describeAction(p.action, p.target)}.</div>
+      <div className="text-[12px] text-slate-200">Proposal: {describeProposal(p.action, p.target, p.params)}.</div>
       <div className="text-[11px] text-slate-500">proposed by <span className="mono">{p.proposer_agent_id}</span>{p.evidence?.policy_reason ? <> · {explainReason(p.evidence.policy_reason)}</> : null}</div>
       {loading && !data ? <Skeleton rows={3} /> : <DataTable rows={votes} columns={VOTE_COLS} rowKey={(v) => v.voter_agent_id} maxHeight={260} dense empty="No votes recorded." />}
     </div>
@@ -63,7 +63,7 @@ const PROPOSAL_COLS: Column<any>[] = [
 ];
 
 /** ADR-0009 phase 4: the actions the platform can execute after an owner click (the kernel's PHASE4_EXECUTABLE). Others are done by runbook. */
-const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", "register_privileged_agent", "admit_voter"]);
+const OWNER_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", "deploy_destructive_migration", "register_privileged_agent", "admit_voter"]);
 
 function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload: () => void }) {
   const { who, act } = useSession();
@@ -83,11 +83,11 @@ function OwnerQueue({ rows, mode, reload }: { rows: any[]; mode: string; reload:
                 {who.approver ? (
                   <div className="flex flex-wrap gap-2">
                     {runnable && ownerClickMode(mode) && (
-                      <button type="button" className="btn btn-approve !py-1" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
+                      <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.consensus_approve", params: p.proposal_id, body: {}, title: `Approve ${p.action} → ${p.target}`,
                         lines: ["Your click is recorded under your Access identity and is final.", "The Policy Engine re-checks, then the platform executes it immediately.", p.action === "retire_worker" ? "Retiring deletes the Worker from Cloudflare. D1 data is not touched." : p.action === "admit_voter" ? "The agent gets a council seat and votes on every later proposal." : p.action === "register_privileged_agent" ? "The agent is registered with the privileged capabilities its DNA declares." : "The principal can act as this agent until revoked."],
                         done: "Approved and executed.", after: reload })}><Check className="h-3.5 w-3.5" />Approve…</button>
                     )}
-                    <button type="button" className="btn btn-danger !py-1" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
+                    <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.consensus_reject", params: p.proposal_id, body: {}, title: `Reject ${p.action} → ${p.target}`,
                       lines: ["The proposal is closed as rejected; nothing executes."], done: "Rejected.", after: reload })}><X className="h-3.5 w-3.5" />Reject…</button>
                   </div>
                 ) : <span className="text-[11px] text-slate-500">Only an approver can decide.</span>}

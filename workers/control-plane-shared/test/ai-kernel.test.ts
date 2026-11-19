@@ -162,7 +162,8 @@ test("migration 0010 seeds the supervisor at tier 1, the kill switch on, and the
   assert.ok(db.raw.prepare("SELECT 1 FROM service_registry WHERE service_id = 'cryptophys-ai-kernel'").get());
   assert.ok(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_syscall_consumptions'").get());
   assert.throws(() => db.raw.prepare("UPDATE agents SET tier_max = 3 WHERE agent_id = 'supervisor'").run(), /CHECK/, "no agent can ever hold tier 3");
-  db.raw.prepare("INSERT INTO signal_ingest_runs (run_id, trigger, started_at, finished_at, series_total, series_failed, results_json) VALUES ('r', 'agent', 't', 't', 0, 0, '[]')").run();
+  // The retired Signal Engine's tables (signal_ingest_runs among them) are gone since 0062 (archived to R2 first).
+  assert.equal(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'signal_ingest_runs'").get(), undefined);
 });
 
 test("syscall checks: tiers, grants, prohibitions, suspension, kill switch and rate limit", async () => {
@@ -320,7 +321,9 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   drift(db, "cryptophys-policy-engine", false, 20);
   drift(db, "cryptophys-policy-engine", true, 5); // transient: not persistent
   const report = await runCycle(env as never, mem, "scheduled");
-  const kinds = report.findings.map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
+  // The metabolism finding depends on the wall clock (survival while the XAUUSD market is closed, Friday 22:00 to
+  // Sunday 22:00 UTC: computeMarketStatus), not on drift; it is not this test's subject.
+  const kinds = report.findings.filter((f) => f.kind !== "metabolism").map((f) => `${f.kind}:${f.service_id ?? ""}:${f.action}:${f.outcome ?? ""}`);
   assert.deepEqual(kinds, ["drift:cryptophys-platform-api:recovery.propose:succeeded", "drift:cryptophys-platform-api:consensus.propose:succeeded"]);
   const plan = db.raw.prepare("SELECT plan_id, status, created_by, steps_json FROM recovery_plans").get() as any;
   assert.deepEqual([JSON.parse(plan.steps_json).title, plan.status, plan.created_by], ["Redeploy Platform API", "draft", "agent:supervisor"]);
@@ -330,8 +333,11 @@ test("supervisor: persistent drift -> AI-drafted tier 1 proposal a human can app
   const approved = await call(recovery, recoveryEnv, req("POST", `/v1/plans/${plan.plan_id}/approve`, {}, APPROVER_JWT));
   assert.equal(approved.body.plan.status, "approved");
   const trail = db.raw.prepare("SELECT event_type, actor FROM audit_events WHERE event_type = 'agent.action' ORDER BY rowid").all().map((r: any) => r.actor);
-  // recovery.propose, then the same remediation proposed to the shadow consensus (ADR-0009).
-  assert.deepEqual(trail, [SUB, SUB]);
+  // recovery.propose, then the same remediation proposed to the shadow consensus (ADR-0009), then the memory of the
+  // proposal: since the learning mandate (owner 2026-11-14) a failed recall no longer skips the remember.
+  assert.deepEqual(trail, [SUB, SUB, SUB]);
+  const caps = db.raw.prepare("SELECT capability FROM agent_actions ORDER BY rowid").all().map((r: any) => r.capability);
+  assert.deepEqual(caps.slice(-3), ["recovery.propose", "consensus.propose", "memory.remember"]);
   assert.equal((await verifyAuditChain(db)).valid, true);
 });
 

@@ -1,5 +1,6 @@
 import type { AiBinding, D1Database } from "./types.ts";
 import { redact } from "./http.ts";
+import { GROWTH_AI_BUDGET_RATIO, SURVIVAL_AI_BUDGET, isLearningAiPurpose, type AiPurpose } from "./power-mode.ts";
 
 /**
  * Per-Worker AI Engine (architecture/AI-ENGINE-REQUIREMENT.md).
@@ -11,10 +12,14 @@ import { redact } from "./http.ts";
  *
  * Budget: a per-service daily request cap plus a coordinated account-wide cap,
  * both enforced in D1 (`ai_usage`) before inference. No paid or external fallback.
+ * Learning is exempt (owner 2026-11-14, the learning mandate, power-mode.ts): a call with
+ * `{ purpose: "learning" }` is recorded in `ai_usage` like any other but never refused by
+ * either cap, in any power mode (survival's quarter included).
  */
 
 /**
- * Gemma 4 26B A4B (owner 2026-11-07: stay in the free Workers AI allocation; reports in English).
+ * Gemma 4 26B A4B (owner 2026-11-07: stay in the free Workers AI allocation; reports in English, every task: the ADR
+ * panel's Indonesian exception of 2026-11-16 was reversed by the owner on 2026-11-17, "all in english please").
  * The most capable model that runs without extra charges and has no planned deprecation:
  * ~9.1k neurons per M input and ~27.3k per M output tokens, so the platform's ~65 requests a day
  * cost ~1.5k of the free 10k daily neurons. Thinking mode is off (shorter, cheaper, clean JSON).
@@ -24,17 +29,23 @@ export const DEFAULT_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 export const PREVIOUS_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 export const ALLOWED_TEXT_MODELS: readonly string[] = [DEFAULT_MODEL, PREVIOUS_MODEL];
 
-/** Applies to every AI task: operators read these texts (owner 2026-11-07: "operator kebingungan"). */
+/**
+ * Applies to every AI task, without exception: operators read these texts (owner 2026-11-07: "operator kebingungan";
+ * 2026-11-17: "all in english please", which removed the per-task Indonesian style of the ADR panel's explanation).
+ */
 export const PLAIN_ENGLISH_STYLE =
   "Write every text field in plain English for a human operator who is not an engineer: short sentences that say what happened, " +
   "why it matters and what, if anything, a person should do. Do not use internal identifiers, snake_case codes, JSON key names, " +
   "hash values or abbreviations; describe them in words (for example \"the Policy Engine refused it because the same service was " +
   "changed less than an hour ago\", not \"failed: target_rate_limit\"). Keep names of services and products as they are.";
 export const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-small-en-v1.5";
+
 export const EMBEDDING_DIMENSIONS = 384;
 
+/** Token counts a model reports (OpenAI-style `usage`), when it reports them. */
+export interface AiUsage { input: number; cached: number; output: number }
 export type AiOutcome<T> =
-  | { status: "ok"; data: T; model: string; correlation_id: string }
+  | { status: "ok"; data: T; model: string; correlation_id: string; usage?: AiUsage }
   | { status: "unavailable"; reason: string; correlation_id: string }
   | { status: "invalid_output"; reason: string; correlation_id: string };
 
@@ -48,6 +59,11 @@ export interface AiTask<T> {
   diagnose?(output: unknown): string;
 }
 
+/** Per-call options. `purpose: "learning"` only at a learning call site (power-mode.ts LEARNING_AI_PURPOSE). */
+export interface AiCallOptions {
+  purpose?: AiPurpose;
+}
+
 export interface AiEngineOptions {
   service: string;
   ai: AiBinding | undefined;
@@ -58,6 +74,23 @@ export interface AiEngineOptions {
   dailyLimit?: number;
   accountDailyLimit?: number;
   timeoutMs?: number;
+  /**
+   * HAIC H1 (docs/design/HAIC-H0-H1.md §3.6, owner Q2 2026-11-16): a budget of the caller's own instead of ai_usage. The
+   * chat reserves its calls against its daily turn budget (conversation.ts): it neither counts toward nor is refused by
+   * the platform's per-service and account-wide caps, so it cannot starve the agents and they cannot starve it.
+   */
+  ownBudget?: (day: string) => Promise<boolean>;
+}
+
+/** The token counts of a completion (OpenAI-style `usage`), or null when the model reported none. */
+export function usageOf(completion: unknown): AiUsage | null {
+  const u = (completion as { usage?: Record<string, unknown> } | null)?.usage;
+  if (!u || typeof u !== "object") return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : 0);
+  const details = u.prompt_tokens_details as { cached_tokens?: unknown } | undefined;
+  const input = n(u.prompt_tokens ?? u.input_tokens), output = n(u.completion_tokens ?? u.output_tokens);
+  if (!input && !output) return null;
+  return { input, cached: n(details?.cached_tokens), output };
 }
 
 export function utcDay(date = new Date()): string {
@@ -149,6 +182,7 @@ export class AiEngine {
   private readonly dailyLimit: number;
   private readonly accountDailyLimit: number;
   private readonly timeoutMs: number;
+  private readonly ownBudget?: (day: string) => Promise<boolean>;
 
   constructor(options: AiEngineOptions) {
     this.service = options.service;
@@ -160,14 +194,36 @@ export class AiEngine {
     this.dailyLimit = options.dailyLimit && options.dailyLimit > 0 ? options.dailyLimit : 200;
     this.accountDailyLimit = options.accountDailyLimit && options.accountDailyLimit > 0 ? options.accountDailyLimit : 1000;
     this.timeoutMs = options.timeoutMs ?? 8000;
+    this.ownBudget = options.ownBudget;
   }
 
   configured(): boolean {
     return Boolean(this.ai) && this.allowedModels.includes(this.model);
   }
 
-  /** Reserve one request from the per-service and account-wide daily budgets. */
-  private async reserve(day: string): Promise<boolean> {
+  /**
+   * Reserve one request from the per-service and account-wide daily budgets. A learning call is metered (the same
+   * ai_usage row counts it) but never refused: the learning mandate (power-mode.ts).
+   */
+  private async reserve(day: string, purpose?: AiPurpose): Promise<boolean> {
+    if (this.ownBudget) return this.ownBudget(day);
+    if (isLearningAiPurpose(purpose)) {
+      // Also counted in learning_requests (migration 0070), so the Console can show learning's own AI use.
+      try {
+        await this.db.prepare(
+          `INSERT INTO ai_usage (service_id, day, requests, failures, learning_requests) VALUES (?, ?, 1, 0, 1)
+           ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1, learning_requests = learning_requests + 1`,
+        ).bind(this.service, day).run();
+      } catch (err) {
+        if (!/learning_requests/i.test(String((err as Error)?.message ?? err))) throw err;
+        // Before migration 0070: metered in requests only.
+        await this.db.prepare(
+          `INSERT INTO ai_usage (service_id, day, requests, failures) VALUES (?, ?, 1, 0)
+           ON CONFLICT(service_id, day) DO UPDATE SET requests = requests + 1`,
+        ).bind(this.service, day).run();
+      }
+      return true;
+    }
     let mode = "homeostasis";
     try {
       const overrideRow = await this.db.prepare(
@@ -187,16 +243,17 @@ export class AiEngine {
       // Graceful fallback if table does not exist in early migration tests
     }
 
+    // Survival throttles AI-heavy work here, for every model call but learning's (power-mode.ts).
     const effectiveDailyLimit = mode === "survival"
-      ? Math.min(20, Math.floor(this.dailyLimit * 0.25))
+      ? Math.min(SURVIVAL_AI_BUDGET.max_per_service, Math.floor(this.dailyLimit * SURVIVAL_AI_BUDGET.ratio))
       : mode === "growth"
-        ? Math.floor(this.dailyLimit * 2.0)
+        ? Math.floor(this.dailyLimit * GROWTH_AI_BUDGET_RATIO)
         : this.dailyLimit;
 
     const effectiveAccountLimit = mode === "survival"
-      ? Math.min(50, Math.floor(this.accountDailyLimit * 0.25))
+      ? Math.min(SURVIVAL_AI_BUDGET.max_account, Math.floor(this.accountDailyLimit * SURVIVAL_AI_BUDGET.ratio))
       : mode === "growth"
-        ? Math.floor(this.accountDailyLimit * 2.0)
+        ? Math.floor(this.accountDailyLimit * GROWTH_AI_BUDGET_RATIO)
         : this.accountDailyLimit;
 
     // One conditional UPSERT is required: a separate SUM then INSERT lets concurrent Workers
@@ -231,7 +288,7 @@ export class AiEngine {
     }
   }
 
-  async run<T>(task: AiTask<T>, input: unknown, correlationId: string): Promise<AiOutcome<T>> {
+  async run<T>(task: AiTask<T>, input: unknown, correlationId: string, options: AiCallOptions = {}): Promise<AiOutcome<T>> {
     const unavailable = (reason: string): AiOutcome<T> => ({ status: "unavailable", reason, correlation_id: correlationId });
     if (!this.allowedTasks.includes(task.name)) return unavailable("task_not_allowed");
     if (!this.ai) return unavailable("ai_binding_missing");
@@ -243,7 +300,7 @@ export class AiEngine {
     const day = utcDay();
     let reserved: boolean;
     try {
-      reserved = await this.reserve(day);
+      reserved = await this.reserve(day, options.purpose);
     } catch {
       return unavailable("budget_store_unavailable");
     }
@@ -267,6 +324,8 @@ export class AiEngine {
           temperature: 0.1,
           // Gemma 4: no thinking tokens (cost, latency, and a clean JSON answer). Other models ignore it.
           ...(this.model.includes("gemma-4") ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+          // DeepSeek V4.x reasons at "high" by default; the chat's JSON tasks need little of it (cost, latency).
+          ...(this.model.includes("deepseek-v4") ? { reasoning_effort: "low" } : {}),
         }),
         timeout,
       ]);
@@ -314,7 +373,8 @@ export class AiEngine {
             await this.recordFailureCategory(day, task.name, "schema:advisory_language");
             return { status: "invalid_output", reason: "schema:advisory_language", correlation_id: correlationId };
           }
-          return { status: "ok", data, model: this.model, correlation_id: correlationId };
+          const usage = usageOf(completion);
+          return { status: "ok", data, model: this.model, correlation_id: correlationId, ...(usage ? { usage } : {}) };
         }
         if (task.diagnose) {
           const raw = String(task.diagnose(parsed)).toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 48);
@@ -340,9 +400,10 @@ export class AiEngine {
 
   /**
    * Compute a 384-dimension embedding vector using `@cf/baai/bge-small-en-v1.5` (TP-008).
-   * Uses the same per-service and account-wide daily budget accounting as `run()` under task `embed`.
+   * Uses the same per-service and account-wide daily budget accounting as `run()` under task `embed`;
+   * `{ purpose: "learning" }` (the memory.remember embedding) is metered but never refused by a budget.
    */
-  async embed(text: string, correlationId = "embed"): Promise<AiOutcome<number[]>> {
+  async embed(text: string, correlationId = "embed", options: AiCallOptions = {}): Promise<AiOutcome<number[]>> {
     const unavailable = (reason: string): AiOutcome<number[]> => ({ status: "unavailable", reason, correlation_id: correlationId });
     if (!this.allowedTasks.includes("embed")) return unavailable("task_not_allowed");
     if (!this.ai) return unavailable("ai_binding_missing");
@@ -353,7 +414,7 @@ export class AiEngine {
     const day = utcDay();
     let reserved: boolean;
     try {
-      reserved = await this.reserve(day);
+      reserved = await this.reserve(day, options.purpose);
     } catch {
       return unavailable("budget_store_unavailable");
     }

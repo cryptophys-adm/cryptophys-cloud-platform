@@ -74,11 +74,10 @@ export const normalizePhrase = (s: string): string => String(s ?? "").trim().rep
 const shortId = (id: string): string => id.slice(0, 13).replace(/[-_.:]+$/, "");
 
 /** The typed confirmation phrase of a route, from its UI_ROUTES template. */
-export function phraseFor(routeId: string, params?: string | string[], body?: Json): string | null {
+export function phraseFor(routeId: string, params?: string | string[]): string | null {
   const route = ROUTES[routeId];
   if (!route?.confirm) return null;
   const first = Array.isArray(params) ? params[0] : params;
   const id = first === undefined ? "" : String(first);
-  const sha = typeof body?.commit_sha === "string" ? body.commit_sha : "";
-  return route.confirm.split("{id13}").join(shortId(id)).split("{id}").join(id).split("{sha12}").join(sha.slice(0, 12));
+  return route.confirm.split("{id13}").join(shortId(id)).split("{id}").join(id);
 }

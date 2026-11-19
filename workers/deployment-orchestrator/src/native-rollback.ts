@@ -15,6 +15,7 @@
 // only at minutes outside the drift and kernel cron windows (wait-cron-window.sh SAFE).
 
 import { AssetsUploader, assetsMetadata, type AssetsConfig } from "./assets-upload.ts";
+import { CloudflareTopology, type DoMigrationUpload } from "./topology.ts";
 
 export const NATIVE_EXECUTOR = "native:rollback";
 /** Must stay a subset of SAFE in .github/scripts/wait-cron-window.sh. */
@@ -47,7 +48,10 @@ const UUID = /^[0-9a-f-]{36}$/;
 
 /**
  * Every binding type the platform's Workers use (wrangler.toml and the deploy workflows' --var). A version
- * uploaded by the Orchestrator keeps all of them from the script's previous version: it never sends a binding.
+ * uploaded by the Orchestrator keeps all of them from the script's previous version: it never sends a binding,
+ * except (2026-11-16) the declared service bindings when the active version does not bind them as declared
+ * (`VersionMetadata.services`; then `service` is not kept) and the plain-text values when a deploy-time value
+ * changes (`VersionMetadata.plain_text`, owner 2026-11-16; then `plain_text` is not kept). Both can be sent at once.
  */
 export const KEEP_BINDINGS = [
   "plain_text", "secret_text", "secret_key", "d1", "service", "durable_object_namespace", "r2_bucket", "kv_namespace", "ai",
@@ -87,6 +91,21 @@ export interface VersionMetadata {
    * configuration already carries it in `config.bindings`.
    */
   assets?: { keep: true; binding: string | null } | { keep?: false; jwt: string; config: AssetsConfig; binding: string | null };
+  /**
+   * 2026-11-16 (binding props lost out of band): a code-only upload whose active version does not bind the service
+   * bindings its wrangler.toml declares. These are sent as declared and `service` is no longer a kept type, so the
+   * new version binds exactly the declared service bindings; every other type is kept as before. Only without
+   * `config` (a planned configuration already carries its service bindings).
+   */
+  services?: Array<{ type: "service"; name: string; service: string; entrypoint?: string; environment?: string; props?: Record<string, unknown> }>;
+  /**
+   * Owner 2026-11-16 (deploy-vars.ts, the identity table): a code-only upload that changes a deploy-time value. Every
+   * `plain_text` binding of the active version is sent explicitly, the changed ones with their new text, and
+   * `plain_text` is dropped from `keep_bindings`, so the new version's plain-text values do not depend on how Cloudflare
+   * merges a kept binding with a sent one of the same name. Not used with `config` (a plan sends every binding). May
+   * come with `services`: then both types are sent and neither is kept.
+   */
+  plain_text?: Array<{ type: "plain_text"; name: string; text: string }>;
 }
 
 /** ADR-0012 G2c-2: a version as `GET …/scripts/{name}/versions/{id}` returns it (the API's `result`). */
@@ -101,6 +120,22 @@ function canonicalJson(value: unknown): string {
     return input;
   };
   return JSON.stringify(normalize(value));
+}
+
+/**
+ * The binding set of a list of binding records (versionBindingSet's answer): sorted `type:name` strings and a digest of
+ * every record. Owner 2026-11-16: the native deploy also computes it for the active records with a changed deploy-time
+ * value's text replaced, the set the new version must then have. Unreadable or empty fails closed.
+ */
+export async function bindingSetOf(list: unknown[] | null): Promise<{ names: string[]; digest: string; records: Array<{ type: string; name: string; [field: string]: unknown }> }> {
+  if (!list) throw new Error("version_bindings_unreadable");
+  const records = list.map((b) => b as { type?: unknown; name?: unknown });
+  if (!records.length || !records.every((b) => typeof b?.type === "string" && typeof b?.name === "string")) throw new Error("version_bindings_unreadable");
+  const names = records.map((b) => `${b.type}:${b.name}`).sort();
+  const canonical = records.map((b) => canonicalJson(b)).sort().join("\n");
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  // 2026-11-16: the records themselves, so the service bindings can be compared with the declared ones.
+  return { names, digest: [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join(""), records: records as Array<{ type: string; name: string }> };
 }
 
 export class CloudflareWorkers {
@@ -153,6 +188,52 @@ export class CloudflareWorkers {
    * Returns the new version id.
    */
   async uploadVersion(script: string, moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[] = []): Promise<string> {
+    const form = this.uploadForm(moduleName, moduleText, metadata, extra, {});
+    const r = await this.call<{ id?: string }>(`${script}/versions`, { method: "POST", body: form });
+    if (typeof r?.id !== "string" || !UUID.test(r.id)) throw new Error("version_upload_unreadable");
+    return r.id;
+  }
+
+  /**
+   * Gate 4 part B (topology.ts): a Durable Object migration. Cloudflare applies `migrations` only on the Script Upload
+   * API (`PUT /accounts/{a}/workers/scripts/{name}`), which uploads AND deploys the new version at once; a version upload
+   * with a pending migration is refused (Cloudflare docs, "Deployment management: Durable Object migrations"). Only a
+   * planned configuration may be sent this way (its bindings, the secrets kept), never static assets. The caller reads
+   * the new active deployment and the script's migration tag afterwards; nothing is returned from here.
+   */
+  async deployScript(script: string, moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[], migrations: DoMigrationUpload,
+    settings: Record<string, unknown> = {}): Promise<void> {
+    if (!metadata.config || metadata.assets) throw new Error("invalid_script_upload");
+    if (!migrations || !/^[A-Za-z0-9._-]{1,64}$/.test(migrations.new_tag) || !Array.isArray(migrations.steps) || !migrations.steps.length) throw new Error("invalid_script_upload");
+    // A script upload also sets script-level settings; the target config's own values are sent so none is reset.
+    const scriptSettings = Object.fromEntries(Object.entries(settings).filter(([k]) => k === "observability" || k === "logpush" || k === "tail_consumers"));
+    const form = this.uploadForm(moduleName, moduleText, metadata, extra, { migrations, ...scriptSettings });
+    await this.call<unknown>(script, { method: "PUT", body: form });
+  }
+
+  /**
+   * Gate 4 part B: the tag of the Durable Object migration last applied to the script (`migration_tag` in the account's
+   * script list; null when the script reports none). Throws when the list cannot be read or does not hold the script once.
+   */
+  async migrationTag(script: string): Promise<string | null> {
+    if (!/^[a-z0-9-]{1,63}$/.test(script)) throw new Error("invalid_script_name");
+    const r = await this.call<unknown>("");
+    if (!Array.isArray(r)) throw new Error("script_list_unreadable");
+    const items = r.filter((x) => (x as { id?: unknown })?.id === script) as Array<{ migration_tag?: unknown }>;
+    if (items.length !== 1) throw new Error("script_not_listed");
+    const tag = items[0].migration_tag;
+    if (tag === undefined || tag === null || tag === "") return null;
+    if (typeof tag !== "string") throw new Error("migration_tag_unreadable");
+    return tag;
+  }
+
+  /** Gate 4 part B: the Workers Custom Domains and Workflows client, with the same token, account and fetcher. */
+  topology(): CloudflareTopology {
+    return new CloudflareTopology(this.token, this.account, this.fetcher);
+  }
+
+  /** The multipart body of a version or script upload (the metadata part, the main module and each extra module). */
+  private uploadForm(moduleName: string, moduleText: string, metadata: VersionMetadata, extra: ExtraModule[], scriptFields: Record<string, unknown>): FormData {
     if (!/^[a-z0-9-]{1,63}\.mjs$/.test(moduleName) || metadata.main_module !== moduleName) throw new Error("invalid_module_name");
     if (!/^[0-9a-f]{12}$/.test(metadata.tag)) throw new Error("invalid_version_tag");
     const names = new Set<string>([moduleName]);
@@ -162,7 +243,12 @@ export class CloudflareWorkers {
       names.add(m.name);
     }
     const config = metadata.config;
+    const plain = metadata.plain_text;
+    if (plain && (config || !plain.every((b) => b?.type === "plain_text" && typeof b.name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(b.name) && typeof b.text === "string")
+      || new Set(plain.map((b) => b.name)).size !== plain.length)) throw new Error("invalid_plain_text_upload");
     if (config && (!Array.isArray(config.bindings) || !config.keep_bindings.every((t) => t === "secret_text" || t === "secret_key"))) throw new Error("invalid_config_upload");
+    const services = metadata.services;
+    if (services && (config || !Array.isArray(services) || !services.every((b) => b?.type === "service" && typeof b.name === "string" && typeof b.service === "string"))) throw new Error("invalid_services_upload");
     // G2c-2 step 6: exactly one of keep_assets and a completion token, never both, never an empty token.
     const assets = metadata.assets;
     let assetsFields: Record<string, unknown> = {};
@@ -187,16 +273,21 @@ export class CloudflareWorkers {
       // (and, for a Worker with static assets, sends its assets binding, which is not a kept type).
       ...(config
         ? { bindings: config.bindings, keep_bindings: [...config.keep_bindings], ...(config.limits ? { limits: config.limits } : {}), ...(config.placement ? { placement: config.placement } : {}) }
-        : { ...(assetsBinding.length ? { bindings: assetsBinding } : {}), keep_bindings: [...KEEP_BINDINGS] }),
+        : services || plain
+          // 2026-11-16: the declared service bindings and/or every plain-text value sent, every other platform type kept.
+          ? {
+            bindings: [...assetsBinding, ...(services ?? []), ...(plain ?? []).map((b) => ({ type: "plain_text", name: b.name, text: b.text }))],
+            keep_bindings: KEEP_BINDINGS.filter((t) => !(services && t === "service") && !(plain && t === "plain_text")),
+          }
+          : { ...(assetsBinding.length ? { bindings: assetsBinding } : {}), keep_bindings: [...KEEP_BINDINGS] }),
       ...assetsFields,
+      ...scriptFields,
       annotations: { "workers/tag": metadata.tag, "workers/message": metadata.message.slice(0, 100) },
     })], { type: "application/json" }));
     form.append(moduleName, new Blob([moduleText], { type: "application/javascript+module" }), moduleName);
     // G2c-1: each extra module is its own part, named as the main module imports it ("./<name>" from the root).
     for (const m of extra) form.append(m.name, new Blob([m.data as BlobPart], { type: m.type }), m.name);
-    const r = await this.call<{ id?: string }>(`${script}/versions`, { method: "POST", body: form });
-    if (typeof r?.id !== "string" || !UUID.test(r.id)) throw new Error("version_upload_unreadable");
-    return r.id;
+    return form;
   }
 
   /**
@@ -204,16 +295,23 @@ export class CloudflareWorkers {
    * API returns it (secret values are never returned, so for a secret this covers its type and name). Two
    * versions bind the same resources only when both are equal. Unreadable or empty fails closed.
    */
-  async versionBindingSet(script: string, versionId: string): Promise<{ names: string[]; digest: string }> {
+  async versionBindingSet(script: string, versionId: string): Promise<{ names: string[]; digest: string; records: Array<{ type: string; name: string; [field: string]: unknown }> }> {
     const r = await this.version(script, versionId) as VersionRecord & { bindings?: unknown };
     const list = Array.isArray(r?.resources?.bindings) ? r.resources!.bindings as unknown[] : Array.isArray(r?.bindings) ? r.bindings as unknown[] : null;
-    if (!list) throw new Error("version_bindings_unreadable");
-    const records = list.map((b) => b as { type?: unknown; name?: unknown });
-    if (!records.length || !records.every((b) => typeof b?.type === "string" && typeof b?.name === "string")) throw new Error("version_bindings_unreadable");
-    const names = records.map((b) => `${b.type}:${b.name}`).sort();
-    const canonical = records.map((b) => canonicalJson(b)).sort().join("\n");
-    const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
-    return { names, digest: [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("") };
+    return bindingSetOf(list);
+  }
+
+  /**
+   * 2026-11-16: the names of every script of the account (`GET /accounts/{a}/workers/scripts`, the list scriptRoutes
+   * reads), to check that a service binding about to be restored points at a Worker that exists. Throws when the list
+   * cannot be read.
+   */
+  async scriptIds(): Promise<string[]> {
+    const r = await this.call<unknown>("");
+    if (!Array.isArray(r)) throw new Error("script_list_unreadable");
+    const ids = r.map((x) => (x as { id?: unknown })?.id);
+    if (!ids.every((id): id is string => typeof id === "string")) throw new Error("script_list_unreadable");
+    return ids;
   }
 
   /**

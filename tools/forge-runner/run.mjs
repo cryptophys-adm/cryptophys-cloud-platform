@@ -4,8 +4,10 @@
 // stand-in is the Artifacts repo, which this script builds from the working tree (tracked and
 // untracked, not ignored files).
 //
-//   node tools/forge-runner/run.mjs [file.test.ts]   (from the repository root, after npm ci in
-//                                                     workers/control-plane-shared)
+//   node tools/forge-runner/run.mjs [--runs=2] [file.test.ts]   (from the repository root, after npm ci
+//                                                                in workers/control-plane-shared)
+// --runs=2 checks the same commit a second time in the same workerd: every test runs again, and `cold`
+// shows how many test Workers the Worker Loader had to build per run (0 in the second: same ids, same code).
 // Prints one JSON summary line, then one FAIL line per failure. Exit code 0 only if every test passes.
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
@@ -21,7 +23,9 @@ const req = createRequire(join(SHARED, "package.json"));
 const esbuild = req("esbuild");
 const WORKERD = join(SHARED, "node_modules/workerd/bin/workerd");
 const TMP = mkdtempSync(join(tmpdir(), "forge-runner-"));
-const only = process.argv[2];
+const args = process.argv.slice(2);
+const runs = Number(args.find((a) => a.startsWith("--runs="))?.slice("--runs=".length) ?? 1);
+const only = args.find((a) => !a.startsWith("--"));
 
 // 1. A stand-in Artifacts repo: git-style trees over the working tree, hashed by content.
 const sha1 = (data) => createHash("sha1").update(data).digest("hex");
@@ -99,7 +103,8 @@ try {
     await new Promise((r) => setTimeout(r, 200));
     if (proc.exitCode !== null) break;
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/` + (only ? "?only=" + encodeURIComponent(only) : ""), { signal: AbortSignal.timeout(15 * 60_000) });
+      const query = new URLSearchParams({ runs: String(runs), ...(only ? { only } : {}) });
+      const res = await fetch(`http://127.0.0.1:${port}/?` + query, { signal: AbortSignal.timeout(15 * 60_000) });
       run = res.ok ? await res.json() : { error: `HTTP ${res.status}: ${(await res.text()).slice(0, 400)}` };
     } catch (e) { if (!String(e?.cause?.code ?? e).includes("ECONNREFUSED")) run = { error: String(e).slice(0, 400) }; }
   }
@@ -115,7 +120,7 @@ console.log(JSON.stringify({
   runtime: "workerd", runner: "forge", status: run.status, guard_status: run.guard_status,
   files: run.files, pass: run.pass, fail: run.fail, skip: run.skip, unexpected: run.fail,
   bundles: `${bundles.workers - bundles.failed.length}/${bundles.workers}`, secret_findings: secrets.findings.length,
-  duration_ms: run.duration_ms, snapshot_files: run.snapshot_files,
+  duration_ms: run.duration_ms, snapshot_files: run.snapshot_files, isolated: run.steps.tests.isolated ?? 0, workers: run.steps.workers, cold: run.cold,
 }));
 for (const x of run.failures) console.log("FAIL", String(x).replace(/\n/g, " ⏎ ").slice(0, 600));
 process.exit(run.status === "passed" && run.guard_status === "clean" ? 0 : 1);

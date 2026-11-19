@@ -13,14 +13,24 @@
  * Progress is written to last_execution_json.pipeline after every stage, for the Console.
  *
  * Steps that need credentials no Worker holds (restoring D1, rotating secrets) stop the pipeline
- * as "blocked"; the owner carries them out by runbook. A rollback returns the Worker to the
+ * as "blocked"; the owner carries them out by runbook. The break-glass step force_redeploy_unit (hardening (d),
+ * control-plane-shared/src/break-glass.ts) deploys the plan's unit at main's head natively, with no drift
+ * precondition and without the deploy planner; the Orchestrator re-checks the plan and follows the native deploy's
+ * lock, live verification and restore (deployment-orchestrator/src/recovery-deploy.ts). A rollback returns the Worker to the
  * version the registry recorded before the current one (Wave B, Rollback Worker workflow).
+ *
+ * Cut-over gate 2026-11-15 (owner, "1 setuju"): a force_redeploy_unit plan for the Deployment Orchestrator's own Worker is
+ * never sent to the Orchestrator. This Worker runs it itself, through the rescue executor
+ * (control-plane-shared/src/executor-rescue.ts), so a bug in the Orchestrator's deploy code cannot block its own fix.
  */
 import type { WorkflowStepLike } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { publishAgentReport } from "../../control-plane-shared/src/agents.ts";
 import { nowIso } from "../../control-plane-shared/src/http.ts";
 import { deadline, windows, type LifecycleEnv } from "./lifecycle.ts";
+import { unitForService } from "../../control-plane-shared/src/deploy-units.ts";
+import { ORCHESTRATOR_UNIT } from "../../control-plane-shared/src/executor-first.ts";
+import { msToRescueMinute, rescueForRecovery, rescueMissing, type RescueEnv } from "../../control-plane-shared/src/executor-rescue.ts";
 
 export const AI_EXECUTOR = "ai:recovery-manager";
 
@@ -28,6 +38,8 @@ export const AI_EXECUTOR = "ai:recovery-manager";
 export interface RecoveryDeployBinding {
   deployForRecovery(planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>>;
   rollbackForRecovery?(planId: string, decisionId: string, serviceId: string): Promise<Record<string, unknown>>;
+  /** Hardening (d): the break-glass deploy of the plan's unit at main's head (native only). */
+  forceDeployForRecovery?(planId: string, decisionId: string, serviceId: string, version: string): Promise<Record<string, unknown>>;
   runStatus(workflow: string, commitSha: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; run_id?: number; url?: string }>;
   /** ADR-0012 G2c-1: a request the Orchestrator runs itself (native deploy or rollback), by request id. */
   requestStatus?(requestId: string): Promise<{ found: boolean; status?: string; conclusion?: string | null; reason?: string | null }>;
@@ -46,6 +58,16 @@ export interface PolicyEvaluator {
 export interface AutonomousEnv extends LifecycleEnv {
   POLICY?: PolicyEvaluator;
   DEPLOY?: RecoveryDeployBinding;
+  /** Gate 2026-11-15, the rescue executor of the Orchestrator's Worker: the Forge's bundles (R2, read only). */
+  BUNDLES?: RescueEnv["BUNDLES"];
+  /** Its live check (cryptophys-drift-detector DriftRpc.probeService). */
+  DRIFT?: RescueEnv["DRIFT"];
+  /** Its record of the deployed commit (cryptophys-platform-registry RegistryRpc.recordNativeDeploy). */
+  REGISTRY?: RescueEnv["REGISTRY"];
+  /** Owner-set secret: a Cloudflare API token with Account > Workers Scripts > Edit, used only for the Orchestrator's Worker. */
+  CF_ORCHESTRATOR_DEPLOY_TOKEN?: string;
+  /** Owner-set secret: the 32-hex Cloudflare account id. */
+  CF_ACCOUNT_ID?: string;
   /** Poll interval and limits; overridable for tests. */
   RECOVERY_DEPLOY_POLL_SECONDS?: string;
 }
@@ -61,6 +83,7 @@ const DEPLOY_POLLS = 40; // x 30 s = 20 min, longer than any deploy workflow
 const NATIVE_POLLS = 120;
 const VERIFY_POLLS = 6; // x 5 min = 30 min, two drift cron cycles
 const HEX = /^[0-9a-f]{7,40}$/;
+const COMMIT = /^[0-9a-f]{40}$/;
 
 async function readPlan(env: AutonomousEnv, planId: string): Promise<Plan | null> {
   return env.DB.prepare("SELECT plan_id, service_id, plan_version, status, approved_by, steps_json, last_execution_json FROM recovery_plans WHERE plan_id = ?")
@@ -82,10 +105,17 @@ const setStage = (env: AutonomousEnv, planId: string, id: string, patch: Partial
     if (st) Object.assign(st, patch);
   });
 
-async function latestObservation(env: AutonomousEnv, serviceId: string): Promise<{ drifted: number; observed_at: string; evidence: Record<string, any> } | null> {
-  const row = await env.DB.prepare("SELECT drifted, observed_at, evidence_json FROM drift_observations WHERE service_id = ? ORDER BY observed_at DESC LIMIT 1")
-    .bind(serviceId).first<{ drifted: number; observed_at: string; evidence_json: string }>();
-  return row ? { drifted: row.drifted, observed_at: row.observed_at, evidence: JSON.parse(row.evidence_json || "{}") } : null;
+/**
+ * The service's newest drift observation. Rows are recorded on change (0061): observed_at is when that state was first
+ * seen, and last_seen_at (service_registry.updated_at, which every Drift Detector run sets) when it was last observed.
+ */
+async function latestObservation(env: AutonomousEnv, serviceId: string): Promise<{ drifted: number; observed_at: string; last_seen_at: string | null; evidence: Record<string, any> } | null> {
+  const row = await env.DB.prepare(
+    `SELECT o.drifted, o.observed_at, o.evidence_json, r.updated_at AS last_seen_at FROM drift_observations o
+     LEFT JOIN service_registry r ON r.service_id = o.service_id
+     WHERE o.service_id = ? ORDER BY o.observed_at DESC, o.rowid DESC LIMIT 1`,
+  ).bind(serviceId).first<{ drifted: number; observed_at: string; evidence_json: string; last_seen_at: string | null }>();
+  return row ? { drifted: row.drifted, observed_at: row.observed_at, last_seen_at: row.last_seen_at ?? null, evidence: JSON.parse(row.evidence_json || "{}") } : null;
 }
 
 const sleep = async (step: WorkflowStepLike, name: string, d: string) => { if (step.sleep) await step.sleep(name, d); };
@@ -138,6 +168,26 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       }
       return { status: "failed", detail: `${workflow} did not finish within ${DEPLOY_POLLS * 30 / 60} minutes` };
     }
+    case "force_redeploy_unit": {
+      // Break-glass: no drift re-check (the service may well be "in sync" while the platform cannot deploy).
+      if (!COMMIT.test(plan.plan_version)) return { status: "failed", detail: `plan_version ${plan.plan_version} is not a full commit` };
+      // Gate 2026-11-15: the Orchestrator's own Worker is deployed here, never by the Orchestrator.
+      if (unitForService(plan.service_id)?.unit === ORCHESTRATOR_UNIT) return rescueStep(env, plan, decisionId, id, step);
+      if (!env.DEPLOY?.forceDeployForRecovery) return { status: "blocked", detail: "the Deployment Orchestrator binding has no break-glass deploy" };
+      const queued = await step.do(`${id} queue break-glass deploy`, { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } }, async () => {
+        try {
+          const r = await env.DEPLOY!.forceDeployForRecovery!(plan.plan_id, decisionId, plan.service_id, plan.plan_version);
+          return { ok: true as const, workflow: "", commit_sha: String(r.commit_sha ?? ""), executor: String(r.executor ?? ""), request_id: String(r.request_id ?? ""), unit: String(r.unit ?? ""), error: "" };
+        } catch (err) {
+          return { ok: false as const, workflow: "", commit_sha: "", executor: "", request_id: "", unit: "", error: String((err as Error)?.message ?? err).slice(0, 300) };
+        }
+      });
+      if (!queued.ok) return { status: "failed", detail: `break-glass deploy not queued: ${queued.error}` };
+      if (!isNative(queued as Followed)) return { status: "failed", detail: "the Orchestrator returned no native request to follow" };
+      return followNative(env, step, `${id} break-glass`, queued as Followed, (ok, reason) => ok
+        ? `break-glass deploy of ${queued.unit} at ${queued.commit_sha.slice(0, 12)} succeeded (request ${queued.request_id})`
+        : `break-glass deploy of ${queued.unit} at ${queued.commit_sha.slice(0, 12)} failed: ${reason ?? "unknown"} (request ${queued.request_id}; changed Workers were restored)`);
+    }
     case "rollback_worker_version": {
       const pre = await step.do(`${id} re-check drift`, async () => {
         const obs = await latestObservation(env, plan.service_id);
@@ -175,6 +225,31 @@ async function runStep(env: AutonomousEnv, plan: Plan, decisionId: string, index
       // restore_d1_bookmark, rotate_secret
       return { status: "blocked", detail: `${action} needs a credential no Worker holds; the owner carries it out by runbook` };
   }
+}
+
+/** Waits for a deploy minute at most this many times before the rescue step gives up. */
+const RESCUE_MINUTE_TRIES = 4;
+
+/**
+ * Gate 2026-11-15: the break-glass deploy of the Orchestrator's own Worker by the rescue executor, in this Workflow.
+ * It waits (durably) for a minute outside the drift and kernel cron windows, then runs once: the step has no retries,
+ * and the request row it claims makes a replay a no-op (executor-rescue.ts).
+ */
+async function rescueStep(env: AutonomousEnv, plan: Plan, decisionId: string, id: string, step: WorkflowStepLike): Promise<{ status: StageStatus; detail: string }> {
+  const missing = rescueMissing(env as unknown as RescueEnv);
+  if (missing.length) return { status: "blocked", detail: `the rescue deploy of the Orchestrator needs, on cryptophys-recovery-manager: ${missing.join(", ")} (OPERATIONS, rescue deploy)` };
+  for (let i = 1; i <= RESCUE_MINUTE_TRIES; i++) {
+    const wait = await step.do(`${id} rescue minute ${i}`, async () => msToRescueMinute(Date.now()));
+    if (wait > 0) await sleep(step, `${id} rescue wait ${i}`, `${Math.ceil(wait / 1000)} seconds`);
+    const r = await step.do(`${id} rescue deploy ${i}`, { retries: { limit: 0, delay: "10 seconds" }, timeout: "20 minutes" }, async () => {
+      try { return await rescueForRecovery(env as unknown as RescueEnv, plan.plan_id, decisionId); } catch (err) {
+        return { status: "failed" as const, detail: `rescue deploy failed to run: ${String((err as Error)?.message ?? err).slice(0, 200)}` };
+      }
+    });
+    if (r.status === "not_now") continue;
+    return { status: r.status === "succeeded" ? "succeeded" : "failed", detail: r.detail };
+  }
+  return { status: "failed", detail: "the rescue deploy found no deploy minute; nothing in production changed" };
 }
 
 /** Poll one of the Orchestrator's native requests until it finishes. */
@@ -246,9 +321,12 @@ export async function executeAutonomously(env: AutonomousEnv, planId: string, in
     let detail = "no fresh drift observation within 30 minutes";
     for (let i = 1; i <= VERIFY_POLLS; i++) {
       const obs = await step.do(`verify poll ${i}`, () => latestObservation(env, start.service_id));
-      // The deploy workflows observe drift themselves when they finish, so a fresh row is usually there already.
-      const fresh = obs && (Date.parse(obs.observed_at) >= Date.parse(since) - 15 * 60_000);
-      if (fresh && obs!.drifted === 0) { verified = true; detail = `in sync and healthy (observed ${obs!.observed_at})`; break; }
+      // The deploy workflows observe drift themselves when they finish, so a fresh observation is usually there
+      // already. Fresh is the heartbeat (last_seen_at): an unchanged state adds no row (0061), so the newest row's
+      // observed_at can be older than any recent run that confirmed it.
+      const seen = obs ? obs.last_seen_at ?? obs.observed_at : null;
+      const fresh = obs && seen !== null && (Date.parse(seen) >= Date.parse(since) - 15 * 60_000);
+      if (fresh && obs!.drifted === 0) { verified = true; detail = `in sync and healthy (observed ${seen}, in sync since ${obs!.observed_at})`; break; }
       if (fresh && obs!.drifted === 1 && i === VERIFY_POLLS) { detail = `still drifted: ${JSON.stringify(obs!.evidence?.reasons ?? [])}`; break; }
       await sleep(step, `verify wait ${i}`, "5 minutes");
     }

@@ -19,11 +19,24 @@ function fakeRepo(dump: Dump): ArtifactsReader {
 }
 
 export default {
-  async fetch(request: Request, env: { LOADER: WorkerLoader }, ctx: { exports: { ForgeBundler(o: { props: { commit: string } }): unknown } }): Promise<Response> {
+  async fetch(request: Request, env: { LOADER: WorkerLoader }, ctx: { exports: { ForgeBundler(o: { props: Record<string, never> }): unknown } }): Promise<Response> {
     const dump = JSON.parse(dumpText as string) as Dump;
-    const only = new URL(request.url).searchParams.get("only");
-    const run = await checkCommit(fakeRepo(dump), dump.head, (commit) => suiteDeps(env.LOADER, ctx.exports.ForgeBundler({ props: { commit } })), Date.now,
-      only ? ["workers/control-plane-shared/test/" + only] : undefined);
-    return Response.json(run);
+    const url = new URL(request.url);
+    const only = url.searchParams.get("only");
+    // The real Worker Loader, counting how often it had to build a Worker (no warm one with that id).
+    const cold: number[] = [];
+    let built = 0;
+    const loader: WorkerLoader = { get: (id, getCode) => env.LOADER.get(id, async () => { built++; return getCode(); }) };
+    // ?runs=2 runs the same commit again: every test runs again, on the Workers the first run left warm.
+    const runs = Math.min(Math.max(Number(url.searchParams.get("runs") ?? 1) || 1, 1), 3);
+    let run;
+    for (let i = 0; i < runs; i++) {
+      const before = built;
+      run = await checkCommit(fakeRepo(dump), dump.head, () => suiteDeps(loader, ctx.exports.ForgeBundler({ props: {} })), Date.now,
+        only ? ["workers/control-plane-shared/test/" + only] : undefined);
+      cold.push(built - before);
+      if (run.status !== "passed") break;
+    }
+    return Response.json({ ...run, cold });
   },
 };

@@ -16,10 +16,18 @@
 // repository its head is read from (`repo`, migration 0052): 'platform' for gh-<number>, 'platform-work'
 // for fg-<slug>. A forge-sourced head that does not contain canonical main has blocked_reason
 // not_based_on_main and is not checked until the contributor updates the branch.
+//
+// The linear-history guard (incident 2026-11-14, migration 0071): a merge fast-forwards main to the head, so main's
+// current head must be on the head's first-parent chain (merge.ts mainPosition, at most FIRST_PARENT_WALK = 500
+// commits). A head that contains main only through a second parent (main merged INTO the branch as the second
+// parent) has history_blocked_reason main_not_first_parent: it is blocked and not checked, because merging it would
+// take main's previous heads (the deployed versions) off main's first-parent history. Rebase, or merge with main as
+// the first parent.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { CRITICAL_PATHS } from "../../control-plane-shared/src/guard-paths.ts";
 import { checkOf, isReady, STALE_RUN_MS, type ArtifactsReader, type ArtifactsTreeEntry, type CheckSummary } from "./checks.ts";
+import { FIRST_PARENT_WALK, mainPosition } from "./merge.ts";
 
 const HEX40 = /^[0-9a-f]{40}$/;
 export const MERGE_PARITY_TARGET = 10;
@@ -122,7 +130,12 @@ export async function criticalReasons(repo: ArtifactsReader, changes: Change[], 
 // Verdict
 
 export const TYPECHECK_NOT_CONFIGURED = "no type-check source for this head: change requests pushed to platform-work have none yet (ADR-0012 §5j)";
-export const NOT_BASED_ON_MAIN = "not_based_on_main: the head does not contain canonical main; merge or rebase main into the branch and push again";
+export const NOT_BASED_ON_MAIN = "not_based_on_main: the head does not contain canonical main; rebase the branch onto main (or merge with main as the first parent) and push again";
+export const MAIN_NOT_FIRST_PARENT = `main_not_first_parent: canonical main's head is not on this head's first-parent chain (within ${FIRST_PARENT_WALK} commits); `
+  + "main was merged in as the second parent, so merging it would take main's own history off main's first-parent line. "
+  + "Rebase the branch onto main, or merge with main as the first parent (git checkout -B <branch> origin/main && git merge <old head>), and push again";
+/** Migration 0071: the reasons a head that contains main is still refused (forge_change_requests.history_blocked_reason). */
+export type HistoryBlockedReason = "main_not_first_parent";
 
 export function verdictOf(check: CheckSummary | null, critical: string[] | null, nowMs = Date.now()): { verdict: Verdict; reasons: string[] } {
   if (!check || (check.status === "running" && Date.parse(check.started_at) > nowMs - STALE_RUN_MS)) return { verdict: "pending", reasons: ["checks have not finished"] };
@@ -144,9 +157,15 @@ export function verdictOf(check: CheckSummary | null, critical: string[] | null,
   return critical.length ? { verdict: "needs_owner", reasons: critical } : { verdict: "would_merge", reasons: [] };
 }
 
-/** The verdict of a change request: a head the Forge refused to check (G4) is blocked; otherwise verdictOf. */
-export function changeVerdict(row: { blocked_reason?: string | null }, check: CheckSummary | null, critical: string[] | null, nowMs = Date.now()): { verdict: Verdict; reasons: string[] } {
+/** The reason the Forge refused a head, if any: not_based_on_main (G4), else main_not_first_parent (migration 0071). */
+export function refusedReason(row: { blocked_reason?: string | null; history_blocked_reason?: string | null }): string | null {
+  return row.blocked_reason || row.history_blocked_reason || null;
+}
+
+/** The verdict of a change request: a head the Forge refused to check (G4, the linear-history guard) is blocked; otherwise verdictOf. */
+export function changeVerdict(row: { blocked_reason?: string | null; history_blocked_reason?: string | null }, check: CheckSummary | null, critical: string[] | null, nowMs = Date.now()): { verdict: Verdict; reasons: string[] } {
   if (row.blocked_reason) return { verdict: "blocked", reasons: [row.blocked_reason === "not_based_on_main" ? NOT_BASED_ON_MAIN : row.blocked_reason] };
+  if (row.history_blocked_reason) return { verdict: "blocked", reasons: [row.history_blocked_reason === "main_not_first_parent" ? MAIN_NOT_FIRST_PARENT : row.history_blocked_reason] };
   return verdictOf(check, critical, nowMs);
 }
 
@@ -160,6 +179,8 @@ export interface ChangeRow {
   created_at: string; updated_at: string; outcome_at: string | null;
   /** Migration 0052 (G4): the Artifacts repository the head is read from, and why the Forge will not check it. */
   repo: ChangeRepo; blocked_reason: "not_based_on_main" | null;
+  /** Migration 0071 (the linear-history guard): set when the head contains main only through a second parent. */
+  history_blocked_reason: HistoryBlockedReason | null;
 }
 export interface ChangeInput { number?: unknown; source_branch?: unknown; title?: unknown; author?: unknown; head_sha?: unknown; base_sha?: unknown; github_ci?: unknown }
 
@@ -187,7 +208,9 @@ function parseInput(input: ChangeInput) {
 /**
  * Register or update gh-<number> (forge-change-request.yml, after GitHub CI of the pull request).
  * The head must already be in the Artifacts repository (pushed to cr/<number>). Changed paths and
- * the owner-only reasons are computed from the trees whenever the head or base changes.
+ * the owner-only reasons are computed from the trees whenever the head or base changes, and so is the
+ * linear-history guard: a head that reaches its base only through a second parent is main_not_first_parent.
+ * (A head that does not contain its base at all is left as before: GitHub, not the Forge, merged these.)
  */
 export async function registerChange(db: D1Database, repo: ArtifactsReader, input: ChangeInput, actor: string, nowMs = Date.now()): Promise<ChangeRow> {
   const p = parseInput(input);
@@ -198,21 +221,23 @@ export async function registerChange(db: D1Database, repo: ArtifactsReader, inpu
   const moved = !existing || existing.head_sha !== p.head || existing.base_sha !== p.base;
   let paths = existing?.changed_paths ?? null;
   let critical = existing?.critical ?? null;
+  let history: HistoryBlockedReason | null = existing?.history_blocked_reason ?? null;
   if (moved) {
     const { changes, truncated } = await changedPaths(repo, p.base, p.head);
     paths = JSON.stringify(changes.slice(0, MAX_PATHS_STORED).map((c) => `${c.change[0].toUpperCase()} ${c.path}`));
     critical = JSON.stringify(await criticalReasons(repo, changes, truncated));
+    history = (await mainPosition(repo, p.base, p.head)) === "merged_in" ? "main_not_first_parent" : null;
   }
   await db.prepare(
-    `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, changed_paths, critical, created_at, updated_at)
-     VALUES (?, 'github', ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+    `INSERT INTO forge_change_requests (cr_id, source, number, branch, source_branch, title, author, head_sha, base_sha, github_ci, status, changed_paths, critical, created_at, updated_at, history_blocked_reason)
+     VALUES (?, 'github', ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
      ON CONFLICT(cr_id) DO UPDATE SET source_branch = excluded.source_branch, title = excluded.title, author = excluded.author, head_sha = excluded.head_sha,
        base_sha = excluded.base_sha, github_ci = excluded.github_ci, status = 'open', changed_paths = excluded.changed_paths, critical = excluded.critical,
-       verdict_at_outcome = NULL, merge_sha = NULL, agrees = NULL, outcome_at = NULL, updated_at = excluded.updated_at`,
-  ).bind(id, p.number, crBranch(p.number), p.sourceBranch, p.title, p.author, p.head, p.base, p.ci, paths, critical, existing?.created_at ?? now, now).run();
+       history_blocked_reason = excluded.history_blocked_reason, verdict_at_outcome = NULL, merge_sha = NULL, agrees = NULL, outcome_at = NULL, updated_at = excluded.updated_at`,
+  ).bind(id, p.number, crBranch(p.number), p.sourceBranch, p.title, p.author, p.head, p.base, p.ci, paths, critical, existing?.created_at ?? now, now, history).run();
   await appendAuditEvent(db, {
     event_type: "forge.change_registered", actor, subject: id, outcome: moved ? "head_changed" : "updated",
-    payload: { head_sha: p.head, base_sha: p.base, github_ci: p.ci, critical: JSON.parse(critical ?? "[]").length },
+    payload: { head_sha: p.head, base_sha: p.base, github_ci: p.ci, critical: JSON.parse(critical ?? "[]").length, history_blocked_reason: history },
   });
   return (await db.prepare("SELECT * FROM forge_change_requests WHERE cr_id = ?").bind(id).first<ChangeRow>())!;
 }
@@ -276,7 +301,7 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
     const check = await checkOf(db, r.head_sha);
     const live = changeVerdict(r, check, critical, nowMs);
     changes.push({
-      cr_id: r.cr_id, source: r.source, repo: r.repo, blocked_reason: r.blocked_reason, number: r.number, branch: r.branch, source_branch: r.source_branch, title: r.title, author: r.author,
+      cr_id: r.cr_id, source: r.source, repo: r.repo, blocked_reason: refusedReason(r), number: r.number, branch: r.branch, source_branch: r.source_branch, title: r.title, author: r.author,
       head_sha: r.head_sha, base_sha: r.base_sha, github_ci: r.github_ci, status: r.status,
       changed_paths: parseList(r.changed_paths) ?? [], critical: critical ?? [],
       check: check ? { status: check.status, pass: check.pass, fail: check.fail, guard_status: check.guard_status, typecheck: check.typecheck, ready: check.ready } : null,
@@ -297,13 +322,27 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
  */
 export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number, repoName: ChangeRepo = "platform"): Promise<string | null> {
   // G4: only the requests whose head lives in `repo` (gh-<n> in platform, fg-<slug> in platform-work), and
-  // never a head the Forge refused (not based on main).
+  // never a head the Forge refused (not based on main, or main not on its first-parent chain).
+  // Which request goes first depends on the repository:
+  //   - platform (gh-<n>, mirrors of GitHub pull requests): the newest first (owner 2026-11-11: pull requests often
+  //     merged minutes after they opened, so an old unchecked one rarely mattered);
+  //   - platform-work (fg-<slug>, the merge path since the cut-over): the one that has waited longest first (2026-11-18:
+  //     nothing there merges before its checks, and newest first let every new push jump the queue: three base
+  //     requests updated at 10:20 waited behind five later stacked pushes, and the owner's clicks came about 1.5 h late).
+  // Only heads still to check are read (no run yet, or a running or error run that may be stale), so 20 checked
+  // requests can no longer hide an unchecked one behind the LIMIT.
+  const order = repoName === "platform-work" ? "c.updated_at ASC, c.rowid ASC" : "c.updated_at DESC, c.rowid DESC";
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
-     WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 20`,
+     WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL
+       AND (r.status IS NULL OR r.status IN ('running', 'error'))
+     ORDER BY ${order} LIMIT 20`,
   ).bind(repoName).all<{ head_sha: string; status: string | null; started_at: string | null }>()).results ?? [];
   for (const r of rows) {
-    if (r.status && !(r.status === "running" && Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS)) continue;
+    // A run that ended in error (the runner failed, not the tests: 2026-11-17, 9a09010 "An internal error occurred.")
+    // is retried once it is STALE_RUN_MS old, like a lost run; otherwise the request could never be checked again.
+    const stale = Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS;
+    if (r.status && !((r.status === "running" || r.status === "error") && stale)) continue;
     if (await repo.readCommit(r.head_sha)) return r.head_sha;
   }
   return null;

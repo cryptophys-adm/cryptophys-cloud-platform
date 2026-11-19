@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, CONSENSUS_REGISTERED, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { verifySyscallDecision } from "../src/capabilities.ts";
 import { VOTERS, castVote, councilSeats, forbiddenCapabilities, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
@@ -55,7 +55,7 @@ function grownDna(capabilities = ["platform.observe", "reports.publish"]) {
   return files;
 }
 
-function kernelEnv(db: Db = migratedDb()) {
+function kernelEnv(db: Db = registeredDb()) {
   const canonical = { head: MAIN as string | null };
   const policyEnv = baseEnv("cryptophys-policy-engine", db);
   const mem = new Map<string, unknown>();
@@ -80,15 +80,24 @@ test("R1. migration 0041 seeds the founding council and the engines the DNA decl
   const db = migratedDb();
   const seats = (db.raw.prepare("SELECT agent_id FROM agents WHERE voter = 1 ORDER BY agent_id").all() as any[]).map((r) => r.agent_id);
   assert.deepEqual(seats, [...VOTERS].sort());
+  // What main declared after 0041 is registered by consensus, never seeded: the census finds exactly that, nothing more.
   const r = await censusTick(db as never, repoWith(realDna()), Date.parse("2026-11-09T12:00:00Z"));
-  assert.equal(r.status, "consistent", JSON.stringify(db.raw.prepare("SELECT findings FROM forge_organism_census").get()));
+  const findings = JSON.parse((db.raw.prepare("SELECT findings FROM forge_organism_census").get() as any).findings).map((f: any) => `${f.kind}:${f.subject}`);
+  assert.deepEqual(findings, [
+    ...CONSENSUS_REGISTERED.agents.map((a) => `unregistered_agent:${a.agent_id}`),
+    ...CONSENSUS_REGISTERED.engines.map((e) => `unregistered_engine:${e.service}:${e.task}`),
+  ].sort());
+  assert.equal(r.status, CONSENSUS_REGISTERED.agents.length + CONSENSUS_REGISTERED.engines.length ? "changes" : "consistent");
   const engines = db.raw.prepare("SELECT COUNT(*) AS n FROM engines WHERE status = 'enabled'").get() as any;
   const declared = DIRS.reduce((n, d) => n + JSON.parse(read(`workers/${d}/organism.json`)).engines.length, 0);
-  assert.equal(engines.n, declared);
+  assert.equal(engines.n, declared - CONSENSUS_REGISTERED.engines.length);
+  // Once consensus has registered them, the census of the same DNA is consistent.
+  const after = registeredDb();
+  assert.equal((await censusTick(after as never, repoWith(realDna()), Date.parse("2026-11-09T12:00:00Z"))).status, "consistent");
 });
 
 test("R2. the census reports new engines and seats asked for or no longer asked for", async () => {
-  const db = migratedDb();
+  const db = registeredDb();
   db.raw.prepare("DELETE FROM engines WHERE task = 'suggest_tags'").run();
   db.raw.prepare("UPDATE agents SET voter = 0 WHERE agent_id = 'policy-engine'").run();
   db.raw.prepare("UPDATE agents SET voter = 1 WHERE agent_id = 'signal-analyst'").run();
@@ -496,4 +505,62 @@ test("R18. registration fails closed when canonical main cannot be read (no bind
     assert.match(last(db).outcome_json, /canonical_main_unavailable/, variant);
     assert.equal(agentRow(db, "forge-steward"), undefined, variant);
   }
+});
+
+test("R19. the brake: nothing is proposed while a critical report is open, and a registration rejected only by the brake is proposed again once it is off (2026-11-13)", async () => {
+  const { env, db, memory } = kernelEnv();
+  setMode(db, "deploy");
+  const t0 = Date.now();
+  await censusTick(db as never, repoWith(grownDna()), t0);
+  const proposals = () => (db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action LIKE 'register%'").get() as any).n;
+
+  // An open critical report: the Supervisor proposes nothing (every voter would reject it) and says why.
+  db.raw.prepare("INSERT INTO agent_reports (report_id, agent_id, kind, severity, subject, body_json, ai_status, decision_id, created_at) VALUES ('rep_brake', 'deployment-orchestrator', 'platform_digest', 'critical', 'Deploy failed', '{}', 'not_used', NULL, ?)")
+    .run(new Date(t0 - 60_000).toISOString());
+  const held = await runCycle(env as never, memory, "scheduled", t0);
+  assert.equal(proposals(), 0);
+  assert.ok(held.findings.some((f: any) => f.kind === "organism" && /2 registration\(s\) wait: a critical report is open/.test(String(f.why))), JSON.stringify(held.findings));
+
+  // The state production was in: a proposal the council rejected while the brake held (its evidence says so).
+  db.raw.prepare(
+    `INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, status, outcome_json, created_at, decided_at)
+     VALUES ('cns_00000000-0000-4000-8000-00000000b4a1', 'supervisor', 'register_agent', 'forge-steward', 'routine', '{}', '{"critical_reports_24h":1}', 'deploy', 8, 0, 8, 0, 'rejected', '{}', ?, ?)`,
+  ).run(new Date(t0 - 3_600_000).toISOString(), new Date(t0 - 3_600_000).toISOString());
+
+  // The owner acknowledges the report: the brake is off, and the registration is proposed again within the day.
+  db.raw.prepare("DELETE FROM agent_reports WHERE report_id = 'rep_brake'").run();
+  await runCycle(env as never, memory, "scheduled", t0);
+  const p = last(db);
+  assert.deepEqual([p.action, p.target, p.status], ["register_agent", "forge-steward", "executed"], p.outcome_json);
+
+  // A rejection for another reason (no open critical report in its evidence) still holds its 24 h.
+  const { env: env2, db: db2, memory: mem2 } = kernelEnv();
+  setMode(db2, "deploy");
+  await censusTick(db2 as never, repoWith(grownDna()), t0);
+  db2.raw.prepare(
+    `INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, status, outcome_json, created_at, decided_at)
+     VALUES ('cns_00000000-0000-4000-8000-00000000b4a2', 'supervisor', 'register_agent', 'forge-steward', 'routine', '{}', '{"critical_reports_24h":0}', 'deploy', 8, 0, 8, 0, 'rejected', '{}', ?, ?)`,
+  ).run(new Date(t0 - 3_600_000).toISOString(), new Date(t0 - 3_600_000).toISOString());
+  await runCycle(env2 as never, mem2, "scheduled", t0);
+  assert.equal((db2.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE action = 'register_agent'").get() as any).n, 1, "not proposed again");
+});
+
+test("R20. a registration naming a capability the running kernel does not know waits as a finding, then registers once the kernel knows it (2026-11-17, cns_211153f4)", async () => {
+  const { env, db, memory } = kernelEnv();
+  setMode(db, "deploy");
+  const t0 = Date.now();
+  await censusTick(db as never, repoWith(grownDna(["platform.observe", "future.observe"])), t0);
+  const report = await runCycle(env as never, memory, "scheduled", t0) as any;
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM consensus_proposals WHERE target = 'forge-steward'").get() as any).n, 0, "not proposed while unknown");
+  assert.ok(JSON.stringify(report).includes("future.observe is unknown to the running kernel"), "the wait is reported");
+  assert.equal(agentRow(db, "forge-steward"), undefined);
+  // The engine of the same change is not held behind it.
+  assert.ok(db.raw.prepare("SELECT 1 FROM consensus_proposals WHERE action = 'register_engine' AND target = 'cryptophys-forge'").get());
+
+  // The kernel that knows the capability runs (simulated: the gene now names only known capabilities).
+  await censusTick(db as never, repoWith(grownDna()), t0 + CENSUS_REFRESH_MS + 1);
+  await runCycle(env as never, memory, "scheduled", t0 + CENSUS_REFRESH_MS + 2);
+  const p = db.raw.prepare("SELECT * FROM consensus_proposals WHERE target = 'forge-steward'").get() as any;
+  assert.equal(p.action, "register_agent", "routine, not privileged");
+  assert.equal(p.status, "executed", p.outcome_json);
 });

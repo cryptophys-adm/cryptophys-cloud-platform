@@ -190,6 +190,55 @@ test("CR5. outcome: GitHub's merge is frozen next to the Forge verdict; parity c
     { target: 10, consecutive: 2, compared: 3, late: 0, disagreements: ["d"] });
 });
 
+test("CR6b. a change request head whose run ended in error is checked again once the run is 30 minutes old (2026-11-17, 9a09010)", async () => {
+  const db = migratedDb();
+  const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "workers/control-plane-shared/test/a.test.ts": "x" } });
+  await registerChange(db as never, repo, REG, CI_CLIENT_ID);
+  const t0 = Date.now();
+  const deps = async (): Promise<CheckDeps> => { throw new Error("An internal error occurred."); };
+  const env = { DB: db as never, ARTIFACTS: { get: async () => repo } };
+  const out = await tickWith(env, "platform", deps, () => t0, (r) => nextChangeHead(db as never, r, t0), "change");
+  assert.deepEqual([out.outcome, (out as { status: string }).status], ["checked", "error"]);
+  assert.equal(await nextChangeHead(db as never, repo, t0 + 60_000), null, "not retried at once");
+  const later = t0 + 30 * 60_000 + 60_000;
+  assert.equal(await nextChangeHead(db as never, repo, later), HEAD, "retried once stale");
+  const okDeps = async (): Promise<CheckDeps> => ({
+    esbuild: { async build() { return { outputFiles: [{ text: "x", contents: new Uint8Array() }], errors: [], warnings: [] }; } },
+    shims: {} as never, sqlJs: "", sqlWasm: null,
+    async runWorker(code) { return { files: (code.modules["files.json"] as { json: string[] }).json.map((file) => ({ file, results: [{ name: "t", status: "pass" }] })) }; },
+  });
+  const again = await tickWith(env, "platform", okDeps, () => later, (r) => nextChangeHead(db as never, r, later), "change");
+  assert.deepEqual([again.outcome, (again as { status: string }).status], ["checked", "passed"], "the stale error row is claimed and replaced");
+  assert.equal(await nextChangeHead(db as never, repo, later + 31 * 60_000), null, "a passed run is never retried");
+});
+
+test("CR6c. in platform-work the request that has waited longest is checked first; checked requests never hide an unchecked one (2026-11-18)", async () => {
+  const db = migratedDb();
+  const HEAD3 = "d".repeat(40);
+  const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "workers/a.ts": "1" }, [HEAD2]: { ...BASE_FILES, "workers/a.ts": "2" }, [HEAD3]: { ...BASE_FILES, "workers/a.ts": "3" } });
+  const t0 = Date.parse("2026-11-18T10:20:00Z");
+  const work = (sha: string) => db.raw.prepare("UPDATE forge_change_requests SET repo = 'platform-work', source = 'forge', github_ci = NULL WHERE head_sha = ?").run(sha);
+  await registerChange(db as never, repo, { ...REG, number: 1, head_sha: HEAD }, CI_CLIENT_ID, t0);
+  await registerChange(db as never, repo, { ...REG, number: 2, head_sha: HEAD2 }, CI_CLIENT_ID, t0 + 3_600_000);
+  assert.equal(await nextChangeHead(db as never, repo, t0 + 2 * 3_600_000, "platform"), HEAD2, "GitHub mirrors keep newest first (owner 2026-11-11, CR10)");
+  work(HEAD); work(HEAD2);
+  assert.equal(await nextChangeHead(db as never, repo, t0 + 2 * 3_600_000, "platform-work"), HEAD, "platform-work: the older request first, not the newest push");
+  // 25 checked platform-work requests, all older than the unchecked ones: the LIMIT reads only heads still to check.
+  const row = db.raw.prepare("SELECT * FROM forge_change_requests WHERE head_sha = ?").get(HEAD) as Record<string, unknown>;
+  const cols = Object.keys(row);
+  for (let i = 0; i < 25; i++) {
+    const sha = i.toString(16).padStart(2, "0") + "e".repeat(38);
+    db.raw.prepare(`INSERT INTO forge_change_requests (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)
+      .run(...cols.map((c) => c === "cr_id" ? `gh-${100 + i}` : c === "number" ? 100 + i : c === "head_sha" ? sha : c === "updated_at" ? new Date(t0 - 3_600_000 + i).toISOString() : (row[c] as never)));
+    db.raw.prepare("INSERT INTO forge_check_runs (commit_sha, status, runner, started_at, finished_at, source) VALUES (?, 'passed', 'forge-runner/1', ?, ?, 'change')").run(sha, new Date(t0).toISOString(), new Date(t0).toISOString());
+  }
+  db.raw.prepare("INSERT INTO forge_check_runs (commit_sha, status, runner, started_at, finished_at, source) VALUES (?, 'passed', 'forge-runner/1', ?, ?, 'change')").run(HEAD, new Date(t0).toISOString(), new Date(t0).toISOString());
+  await registerChange(db as never, repo, { ...REG, number: 3, head_sha: HEAD3 }, CI_CLIENT_ID, t0 + 2 * 3_600_000);
+  work(HEAD3);
+  assert.equal(await nextChangeHead(db as never, repo, t0 + 3 * 3_600_000, "platform-work"), HEAD2, "the oldest unchecked request, past 26 checked ones");
+  assert.match(read("workers/forge/src/changes.ts"), /repoName === "platform-work" \? "c\.updated_at ASC, c\.rowid ASC" : "c\.updated_at DESC, c\.rowid DESC"/);
+});
+
 test("CR6. the tick checks open change request heads first; their runs stay out of main's checks list and parity", async () => {
   const db = migratedDb();
   const repo = repoOf({ [BASE]: BASE_FILES, [HEAD]: { ...BASE_FILES, "workers/control-plane-shared/test/a.test.ts": "x" } });

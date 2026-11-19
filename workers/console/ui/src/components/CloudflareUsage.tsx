@@ -23,11 +23,11 @@ function MetricRow({ m }: { m: any }) {
         <span className="font-semibold text-slate-200">{m.label}</span>
         <span className="mono text-slate-300">{pct === null ? "—" : `${pct}%`}</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-[4px] bg-white/[0.05]" role="progressbar" aria-label={m.label} aria-valuenow={m.today ?? undefined} aria-valuemin={0} aria-valuemax={m.limit}>
+      <div className="h-2 w-full overflow-hidden rounded-[4px] bg-white/5" role="progressbar" aria-label={m.label} aria-valuenow={m.today ?? undefined} aria-valuemin={0} aria-valuemax={m.limit}>
         {pct !== null && <div className="h-full rounded-r-[4px]" style={{ width: `${Math.min(100, Math.max(pct, m.today > 0 ? 1 : 0))}%`, background: tone(pct) }} />}
       </div>
       {m.error ? (
-        <div className="break-words text-[10px] text-amber-300">not readable: {m.error}</div>
+        <div className="wrap-break-word text-[10px] text-amber-300">not readable: {m.error}</div>
       ) : (
         <div className="mono text-[10px] text-slate-500">{fmt(m.today)} / {fmt(m.limit)} {m.unit} per {m.limit ? "day" : ""}</div>
       )}
@@ -174,7 +174,7 @@ export default function CloudflareUsage() {
               </Badge>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              The Supervisor records the cycle's billable cost as a daily burn (cycle-to-date cost ÷ days observed). Above $0.20 a day it enters survival mode, which pauses non-essential AI spending (memory and knowledge proposals); consensus is never blocked. The intents below are advisories: nothing else is changed automatically.
+              The Supervisor records the cycle's billable cost as a daily burn (cycle-to-date cost ÷ days observed) and projects the month as that burn × the days of the UTC month. When the projection exceeds the monthly infrastructure budget (policy parameter infra-budget-usd-month), it enters survival mode, which throttles AI-heavy work only (AI request budgets at a quarter); learning (memory and knowledge proposals) and consensus are never blocked. The budget, the projection and what the mode blocks are on the Power mode panel above. The intents below are advisories: nothing else is changed automatically.
             </p>
             {intents.length > 0 && (
               <div className="space-y-1.5 pt-1">

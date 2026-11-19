@@ -1,0 +1,70 @@
+{
+  "schema": "council.message.v1",
+  "session_id": "cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01",
+  "seq": 12,
+  "at": "2026-11-18T10:02:11Z",
+  "phase": "synthesis",
+  "role": "moderator",
+  "author": "agent:auditor",
+  "reply_to": [],
+  "stance": null,
+  "claims": [],
+  "text": "Two options, ranked. The owner's constraint (no live change) is kept: option 1 runs only in shadow.",
+  "options": [
+    {
+      "option_id": "opt-1",
+      "rank": 1,
+      "title": "Shadow a later entry confirmation",
+      "hypothesis": "Waiting for a closed candle beyond the level lowers the stop share.",
+      "change": {
+        "type": "repository_task",
+        "target": "place broker order on breakout",
+        "params": {}
+      },
+      "expected_effect": {
+        "metric": "sl_share_30d",
+        "from": 0.41,
+        "to": 0.3,
+        "window": "30d"
+      },
+      "risk": {
+        "level": "low",
+        "reversible": true,
+        "notes": "shadow only"
+      },
+      "confidence": 0.6,
+      "evidence_refs": [
+        "ev:xauusd/signal_ledger.summary/key_level@2026-11-18T10:00Z#sl_share"
+      ],
+      "dissent": [
+        "agent:auditor"
+      ]
+    },
+    {
+      "option_id": "opt-2",
+      "rank": 2,
+      "title": "No change",
+      "hypothesis": "The stop share is within noise for this sample.",
+      "change": {
+        "type": "no_change",
+        "target": null,
+        "params": {}
+      },
+      "expected_effect": null,
+      "risk": {
+        "level": "low",
+        "reversible": true
+      },
+      "confidence": 0.3,
+      "evidence_refs": [],
+      "dissent": []
+    }
+  ],
+  "model": "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+  "tokens": {
+    "in": 3000,
+    "cached": 6000,
+    "out": 600
+  },
+  "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

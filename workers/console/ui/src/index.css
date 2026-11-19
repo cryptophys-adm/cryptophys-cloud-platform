@@ -1,8 +1,95 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind 4 since 2026-11-17 (owner: "Ganti vite ke esbuild"; npm advisory GHSA-fc5q-39xc-vjpf in picomatch, which vite and
+   Tailwind 3 depend on). The palette and motion of the former tailwind.config.js are the @theme below; v3's defaults that v4
+   changed are kept in @layer base, and the components stay in @layer components, so the pages look as before. */
+@import 'tailwindcss';
 
-/* Core palette from the original Nexus globals.css (GitHub Dark x Grafana on obsidian). */
+@theme {
+  --color-obsidian: #05070c;
+  --color-obsidian-deep: #080b11;
+  --color-obsidian-panel: #0b0f18;
+  --color-obsidian-bar: #0f1522;
+  --color-obsidian-foot: #081019;
+
+  --color-tv-bg: #0b0e14;
+  --color-tv-panel: #131722;
+  --color-tv-surface: #1a1f2e;
+  --color-tv-border: #2a2e39;
+  --color-tv-border-hi: #3d4257;
+  --color-tv-text: #d1d4dc;
+  --color-tv-muted: #787b86;
+  --color-tv-dim: #4c505c;
+  --color-tv-green: #26a69a;
+  --color-tv-red: #ef5350;
+  --color-tv-amber: #f59e0b;
+  --color-tv-blue: #5b9cf6;
+  --color-tv-purple: #9b6dff;
+  --color-tv-cyan: #00bcd4;
+
+  --font-mono: JetBrains Mono, ui-monospace, SF Mono, Fira Code, monospace;
+
+  --animate-pulse-dot: pulse-dot 2.2s ease-in-out infinite;
+  --animate-slide-up: slide-up 0.28s ease-out forwards;
+  --animate-ping-slow: ping-slow 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 0.9;
+    }
+    50% {
+      transform: scale(2.2);
+      opacity: 0;
+    }
+  }
+  @keyframes slide-up {
+    0% {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes ping-slow {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.6);
+      opacity: 0;
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+  /* v3 showed a pointer on buttons; v4's preflight does not. */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* Core palette from the original Nexus globals.css (GitHub Dark x Grafana on obsidian). Unlayered, as in v3 where these
+   rules came after the utilities. */
 :root {
   --bg: #05070c; --bg-elevated: #0d1117; --surface: #161b22; --surface-hi: #21262d;
   --border: #30363d; --border-hi: #484f58;
@@ -24,20 +111,20 @@ body {
 :focus-visible { outline: 2px solid rgba(34, 211, 238, 0.7); outline-offset: 2px; border-radius: 6px; }
 
 @layer components {
-  .glass { @apply rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm; }
+  .glass { @apply rounded-2xl border border-white/10 bg-white/3 backdrop-blur-xs; }
   .glass-inner { @apply rounded-xl border border-white/5 bg-black/20; }
   .eyebrow { @apply text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500; }
   .chip { @apply inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em]; }
-  .btn { @apply inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-[12px] font-semibold text-slate-200 transition hover:border-cyan-400/40 hover:bg-cyan-400/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40; }
+  .btn { @apply inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/4 px-3 py-2 text-[12px] font-semibold text-slate-200 transition hover:border-cyan-400/40 hover:bg-cyan-400/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40; }
   .btn-danger { @apply border-rose-400/30 bg-rose-400/10 text-rose-200 hover:border-rose-400/60 hover:bg-rose-400/20; }
   .btn-approve { @apply border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:border-emerald-400/60 hover:bg-emerald-400/20; }
-  .field { @apply w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-[13px] text-slate-100 placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none; }
+  .field { @apply w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-[13px] text-slate-100 placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-hidden; }
   .label { @apply mb-1 block text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500; }
   .table-wrap { @apply overflow-x-auto; }
   .tbl { @apply w-full text-left text-[12px]; }
   .tbl th { @apply border-b border-white/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500; }
   .tbl td { @apply border-b border-white/5 px-3 py-2 text-slate-300; }
-  .tbl tr:hover td { @apply bg-white/[0.02]; }
+  .tbl tr:hover td { @apply bg-white/2; }
   /* Visual hardening 2026-11-09: tables scroll inside their panel, header stays visible. */
   .table-scroll { @apply max-w-full overflow-auto rounded-xl border border-white/5 bg-black/20; overscroll-behavior: contain; }
   .table-scroll .tbl { min-width: 100%; width: max-content; }
@@ -45,6 +132,8 @@ body {
   .table-scroll .tbl td { white-space: nowrap; vertical-align: top; }
   .table-scroll .tbl td.wrap { white-space: normal; min-width: 220px; max-width: 520px; overflow-wrap: anywhere; }
   .tbl-dense td { @apply py-1.5; }
-  .tbl tr.is-open td { @apply bg-white/[0.03]; }
+  .tbl tr.is-open td { @apply bg-white/3; }
   .tbl tr.is-detail td { @apply bg-black/30; white-space: normal; }
+  /* ADR Steward step 5: the asserted share of an ADR's progress bar is hatched, the proven share solid (ADR-STEWARD.md §6.4). */
+  .adr-hatch { background-image: repeating-linear-gradient(135deg, rgba(251, 191, 36, 0.7) 0 2px, rgba(251, 191, 36, 0.12) 2px 5px); }
 }

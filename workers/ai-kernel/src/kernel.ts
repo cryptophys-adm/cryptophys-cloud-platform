@@ -10,14 +10,47 @@ import { CAPABILITIES, agentsEnabled, getAgent, type AgentPrincipalRow, type Age
 import { AGENT_ID, type CycleReport, type KernelEnv } from "./supervisor.ts";
 import { SIGNAL_ANALYST_ID } from "./signal-analyst.ts";
 import { AUDITOR_ID } from "./auditor.ts";
+import { ADR_STEWARD_ID } from "./adr-steward.ts";
+import { EVOLVER_ID } from "./evolver.ts";
 
 export interface SupervisorStub { cycle(trigger: "scheduled" | "operator"): Promise<CycleReport>; status(): Promise<CycleReport | null> }
 export interface SupervisorNamespace { idFromName(name: string): unknown; get(id: unknown): SupervisorStub }
 
+export interface ConversationStub {
+  turn(actor: string, conversationId: string, question: unknown): Promise<unknown>;
+  read(actor: string, conversationId: string): Promise<unknown>;
+  rate(actor: string, conversationId: string, turn: unknown, rating: unknown): Promise<unknown>;
+}
+export interface CouncilStub {
+  start(actor: string, sessionId: string, topic: unknown, question: unknown): Promise<unknown>;
+  read(): Promise<unknown>;
+  message(actor: string, text: unknown): Promise<unknown>;
+  pick(actor: string, optionId: unknown, note: unknown): Promise<unknown>;
+  dismiss(actor: string): Promise<unknown>;
+  /** H1.5d (Q9): an agent's proposal, and the owner beginning it. */
+  propose(input: unknown): Promise<unknown>;
+  begin(actor: string): Promise<unknown>;
+  /** H1.5e: store a closed council's transcript in R2 if it is not there yet. */
+  storeTranscript(): Promise<unknown>;
+}
 export interface KernelHttpEnv extends KernelEnv {
   SUPERVISOR: SupervisorNamespace;
   SIGNAL_ANALYST?: SupervisorNamespace;
   AUDITOR?: SupervisorNamespace;
+  /** ADR Steward (docs/design/ADR-STEWARD.md §4.1): the AdrStewardAgent Durable Object. */
+  ADR_STEWARD?: SupervisorNamespace;
+  /** The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): the EvolverAgent Durable Object. */
+  EVOLVER?: SupervisorNamespace;
+  /** HAIC H1b: the ConversationAgent Durable Object (the chat) and the Forge's read-only documents. */
+  CONVERSATION?: { idFromName(name: string): unknown; get(id: unknown): ConversationStub };
+  FORGE_DOCS?: { read(input: Record<string, unknown>): Promise<Record<string, unknown>> };
+  /** HAIC H1.5b: the CouncilAgent Durable Object (Call for Councils), one per session id. */
+  COUNCIL?: { idFromName(name: string): unknown; get(id: unknown): CouncilStub };
+  /** HAIC push hub (§4.5): the ConsoleHub Durable Object, one instance named "console". */
+  HUB?: { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response>; publish(events: { channel: string; kind: string; data: Record<string, unknown> }[]): Promise<unknown> } };
+  /** HAIC H1.5e: the R2 bucket cryptophys-council-transcripts; each closed council's transcript is one object in it. */
+  TRANSCRIPTS?: { put(key: string, value: string, options?: unknown): Promise<unknown> };
+  CHAT_DAILY_TURN_LIMIT?: string;
   APPROVER_IDENTITIES?: string;
   /** ADR-0012 phase 2: optional send_email binding and sender for owner notices. */
   OWNER_EMAIL?: SendEmailBinding;
@@ -166,11 +199,22 @@ const auditor = (env: KernelHttpEnv) => {
   if (!env.AUDITOR) throw new Error("auditor_binding_missing");
   return env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID));
 };
+const adrSteward = (env: KernelHttpEnv) => {
+  if (!env.ADR_STEWARD) throw new Error("adr_steward_binding_missing");
+  return env.ADR_STEWARD.get(env.ADR_STEWARD.idFromName(ADR_STEWARD_ID));
+};
+
+const evolver = (env: KernelHttpEnv) => {
+  if (!env.EVOLVER) throw new Error("evolver_binding_missing");
+  return env.EVOLVER.get(env.EVOLVER.idFromName(EVOLVER_ID));
+};
 
 export async function wakeAgent(env: KernelHttpEnv, agentId: string): Promise<CycleReport | JsonObject> {
   if (agentId === AGENT_ID) return supervisor(env).cycle("operator");
   if (agentId === SIGNAL_ANALYST_ID) return signalAnalyst(env).cycle("operator");
   if (agentId === AUDITOR_ID) return auditor(env).cycle("operator");
+  if (agentId === ADR_STEWARD_ID) return adrSteward(env).cycle("operator");
+  if (agentId === EVOLVER_ID) return evolver(env).cycle("operator") as unknown as JsonObject;
   throw new Error("unknown runnable agent");
 }
 
@@ -183,7 +227,11 @@ export async function agentStatus(env: KernelHttpEnv, agentId: string): Promise<
       ? await signalAnalyst(env).status()
       : agentId === AUDITOR_ID && env.AUDITOR
         ? await auditor(env).status()
-        : null;
+        : agentId === ADR_STEWARD_ID && env.ADR_STEWARD
+          ? await adrSteward(env).status()
+          : agentId === EVOLVER_ID && env.EVOLVER
+          ? await evolver(env).status() as unknown as CycleReport
+          : null;
   const principals = await listAgentPrincipals(env, agentId);
   return {
     agent: present(agent),

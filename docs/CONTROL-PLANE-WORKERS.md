@@ -5,8 +5,8 @@ The active separately deployed TypeScript Workers implement the logical control 
 | Worker | Capability | Status | Endpoints (all `/v1` need an Access identity in `OPERATOR_IDENTITIES`) |
 |---|---|---|---|
 | `cryptophys-platform-api` | AI Worker OS gateway with its own AI engine | Operational | `GET /health`, `/ready`, `/`, `GET /v1/overview[?advisory=true]` |
-| `cryptophys-deployment-orchestrator` | Authenticated, CI-gated deployment dispatch, ledgered in `deployment_requests` and audited | Operational | `POST /v1/deployments` (Access identity on `DEPLOY_ALLOWED_IDENTITIES`; `?advisory=true` adds an AI risk summary) |
-| `cryptophys-platform-registry` | Desired inventory and ownership | Operational | `GET /v1/services`, `GET/PUT /v1/services/{id}`, `PUT /v1/services/{id}/desired-version` |
+| `cryptophys-deployment-orchestrator` | Consensus and recovery deploys (native, or the unit's workflow as fallback) and native rollback, ledgered in `deployment_requests` and audited | Operational | `GET /v1/deployments` (read only; the manual `POST` was removed 2026-11-14 by the owner) |
+| `cryptophys-platform-registry` | Desired inventory and ownership | Operational | `GET /v1/services`, `GET /v1/services/{id}`, `PUT /v1/services/{id}/desired-version` (deploy workflows; `PUT /v1/services/{id}` removed 2026-11-15) |
 | `cryptophys-policy-engine` | Deterministic policy decisions | Operational | `POST /v1/evaluate`, `GET /v1/decisions[/{id}]` |
 | `cryptophys-drift-detector` | Desired-vs-observed version and health | Operational, cron every 15 min | `POST /v1/observe`, `GET /v1/drift[/{service_id}]` |
 | `cryptophys-audit-ledger` | Append-only hash-chained audit log | Operational | `POST /v1/events`, `GET /v1/events[/{id}]`, `GET /v1/verify` |
@@ -28,7 +28,7 @@ Every Worker sits behind Cloudflare Access and also verifies the Access JWT itse
 
 ## AI engines
 
-Each of the six control-plane Workers runs its own engine (`env.AI`, own task allow-list and output validators) per [AI-ENGINE-REQUIREMENT.md](../architecture/AI-ENGINE-REQUIREMENT.md). AI is opt-in per request with `?advisory=true`, returns `ok | unavailable | invalid_output`, is budgeted in D1, and never changes a decision or stored fact. The Orchestrator's engine runs only after its deterministic gate has dispatched; a red check blocks before any inference.
+Each of the six control-plane Workers runs its own engine (`env.AI`, own task allow-list and output validators) per [AI-ENGINE-REQUIREMENT.md](../architecture/AI-ENGINE-REQUIREMENT.md). AI is opt-in per request with `?advisory=true`, returns `ok | unavailable | invalid_output`, is budgeted in D1, and never changes a decision or stored fact. The Orchestrator's engine (`summarize_deployment_risk`) ran only after its deterministic gate had dispatched a manual request; since that request was removed (owner 2026-11-14) it has no caller, and it stays declared until the owner rewires or retires it.
 
 ## Tests
 

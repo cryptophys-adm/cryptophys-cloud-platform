@@ -3,6 +3,9 @@
  * yet live is proposed by the Supervisor to consensus; when a proposal passes, these executors write
  * the row. Owner decisions 2026-11-09:
  *   - register_agent / register_engine: routine, consensus only;
+ *   - retire_engine (owner 2026-11-15, "Aksi retire_engine"): the mirror of register_engine, routine, for an
+ *     enabled engine its organ's DNA no longer declares (census finding undeclared_engine); status 'retired',
+ *     nothing deleted (ai_usage keeps its history); a DNA that declares the task again re-registers it;
  *   - register_privileged_agent (a capability above tier 1, or consensus.propose): critical, owner click;
  *   - admit_voter (a council seat, one per Worker): critical, owner click.
  *
@@ -22,7 +25,7 @@ import type { SyscallEnv } from "./syscall.ts";
 export interface CensusOrgan {
   service: string;
   kind: string;
-  agents: Array<{ id: string; display_name?: string; capabilities?: string[]; tier_max?: number; voter: boolean; vote_binding?: string }>;
+  agents: Array<{ id: string; display_name?: string; capabilities?: string[]; tier_max?: number; voter: boolean; vote_binding?: string; schedule?: { cron: string } }>;
   engines: string[];
   /** Set for an external organ (EXTERNAL_ORIGINS): its DNA came over RPC, held to the external ceiling. */
   origin?: string;
@@ -30,14 +33,26 @@ export interface CensusOrgan {
 export interface CensusRow { main_sha: string; status: "consistent" | "changes" | "invalid"; findings: Array<{ kind: string; subject: string; detail: string }>; genome: CensusOrgan[] }
 
 export async function latestCensusRow(env: Pick<SyscallEnv, "DB">): Promise<CensusRow | null> {
-  let row: { main_sha: string; status: CensusRow["status"]; findings: string; genome: string | null } | null;
+  return (await latestCensusRows(env, 1))[0] ?? null;
+}
+
+/**
+ * The latest census rows, newest first (one per main head; a head's row is retaken in place). A row that does not
+ * parse ends the list there, so a consecutive pair is never formed across an unreadable row.
+ */
+export async function latestCensusRows(env: Pick<SyscallEnv, "DB">, limit: number): Promise<CensusRow[]> {
+  let rows: Array<{ main_sha: string; status: CensusRow["status"]; findings: string; genome: string | null }>;
   try {
-    row = await env.DB.prepare("SELECT main_sha, status, findings, genome FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first();
-  } catch { return null; }
-  if (!row) return null;
-  try {
-    return { main_sha: row.main_sha, status: row.status, findings: JSON.parse(row.findings) ?? [], genome: JSON.parse(row.genome ?? "[]") ?? [] };
-  } catch { return null; }
+    rows = (await env.DB.prepare("SELECT main_sha, status, findings, genome FROM forge_organism_census ORDER BY taken_at DESC LIMIT ?")
+      .bind(Math.max(1, Math.min(limit, 5))).all<{ main_sha: string; status: CensusRow["status"]; findings: string; genome: string | null }>()).results ?? [];
+  } catch { return []; }
+  const out: CensusRow[] = [];
+  for (const row of rows) {
+    try {
+      out.push({ main_sha: row.main_sha, status: row.status, findings: JSON.parse(row.findings) ?? [], genome: JSON.parse(row.genome ?? "[]") ?? [] });
+    } catch { break; }
+  }
+  return out;
 }
 
 /** The gene the DNA declares for an agent, with its host, from the latest census. */
@@ -98,7 +113,7 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
   if (declared.origin !== undefined) {
     const origin = EXTERNAL_ORIGINS.find((o) => o.origin === declared.origin);
     if (!origin || !origin.services.includes(service)) throw new Error("external_origin_unknown");
-    if (externalCeilingViolations(gene).length) throw new Error("external_ceiling");
+    if (externalCeilingViolations(gene, origin).length) throw new Error("external_ceiling");
   }
   const privileged = privilegedCapabilities(caps).length > 0;
   if (privileged !== (p.action === "register_privileged_agent")) throw new Error(privileged ? "privileged_needs_owner" : "not_privileged");
@@ -123,6 +138,49 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
     throw err;
   }
   return { agent_id: p.target, host_worker: service, capabilities: caps, tier_max: gene.tier_max, privileged, seat: gene.voter ? "asks for a seat: admit_voter follows" : "none" };
+}
+
+/**
+ * ADR-0014 §11 (docs/design/EVOLVER.md §8, 2026-11-17): set a registered agent's capabilities to what its DNA now
+ * declares (census finding agent_capabilities_changed). The gene comes from the latest census, as for a registration;
+ * the host must be unchanged, no capability may be privileged (that needs a registration the owner clicks), and an
+ * external organ's gene is held to its origin's ceiling again here. Status, seat and tier are not touched.
+ */
+async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
+  const census = await currentCensus(env, p.params.main_sha);
+  requireCensusFinding(census, "agent_capabilities_changed", p.target);
+  const declared = findAgentGene(census, p.target);
+  if (!declared || !declared.gene.capabilities || declared.gene.tier_max === undefined) throw new Error("agent_not_in_dna");
+  const { service, gene } = declared;
+  const caps = gene.capabilities!;
+  if (String(p.params.service ?? "") !== service) throw new Error("host_differs_from_dna");
+  if (!Array.isArray(p.params.capabilities) || !sameSet(p.params.capabilities.map(String), caps)) throw new Error("capabilities_differ_from_dna");
+  if (caps.length === 0 || forbiddenCapabilities(caps).length) throw new Error("forbidden_capability");
+  if (privilegedCapabilities(caps).length) throw new Error("privileged_needs_owner");
+  if (declared.origin !== undefined) {
+    const origin = EXTERNAL_ORIGINS.find((o) => o.origin === declared.origin);
+    if (!origin || !origin.services.includes(service)) throw new Error("external_origin_unknown");
+    if (externalCeilingViolations(gene, origin).length) throw new Error("external_ceiling");
+  }
+  const row = await env.DB.prepare("SELECT host_worker, capabilities_json FROM agents WHERE agent_id = ?").bind(p.target).first<{ host_worker: string; capabilities_json: string }>();
+  if (!row) throw new Error("agent_not_registered");
+  if (row.host_worker !== service) throw new Error("host_differs_from_dna");
+  let previous: string[] = [];
+  try { const v = JSON.parse(row.capabilities_json); if (Array.isArray(v)) previous = v.map(String); } catch { previous = []; }
+  if (sameSet(previous, caps)) throw new Error("capabilities_unchanged");
+  await requireActiveHost(env, service);
+  try {
+    await appendAuditEventWithMutation(env.DB, {
+      event_type: "agent.capabilities_updated", actor, subject: `agent:${p.target}`, outcome: "updated",
+      payload: { proposal_id: proposalId, host_worker: service, previous, capabilities: caps, main_sha: census.main_sha },
+    }, () => env.DB.prepare(
+      "UPDATE agents SET capabilities_json = ?, updated_by = ?, updated_at = ? WHERE agent_id = ? AND host_worker = ? AND capabilities_json = ?",
+    ).bind(JSON.stringify(caps), actor, nowIso(), p.target, service, row.capabilities_json));
+  } catch (err) {
+    if (err instanceof AuditMutationConflictError) throw new Error("agent_changed_concurrently");
+    throw err;
+  }
+  return { agent_id: p.target, host_worker: service, previous, capabilities: caps };
 }
 
 async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
@@ -150,6 +208,98 @@ async function registerEngine(env: SyscallEnv, proposalId: string, p: { target: 
     throw err;
   }
   return { service_id: p.target, task, status: "enabled" };
+}
+
+/** "service:task" of an engine finding, split at the last colon, or null. */
+export function engineSubject(subject: string): { service: string; task: string } | null {
+  const i = subject.lastIndexOf(":");
+  if (i <= 0 || i === subject.length - 1) return null;
+  return { service: subject.slice(0, i), task: subject.slice(i + 1) };
+}
+
+/**
+ * Whether the census read this organ's DNA. An external organ whose origin did not answer (external_dna_unavailable,
+ * the Observer's unknown_origins) is left out of the genome, and its absence proves nothing: no engine of it is
+ * retired. A main organ is read when it is in the genome; an external one also needs its origin named on it.
+ */
+export function organDnaRead(census: CensusRow, service: string): CensusOrgan | null {
+  const origin = EXTERNAL_ORIGINS.find((o) => o.services.includes(service));
+  if (origin && census.findings.some((f) => f.kind === "external_dna_unavailable" && f.subject === origin.origin)) return null;
+  const organ = census.genome.find((o) => o.service === service);
+  if (!organ) return null;
+  if (origin ? organ.origin !== origin.origin : organ.origin !== undefined) return null;
+  return organ;
+}
+
+/**
+ * An undeclared_engine finding the latest census proves: an enabled engine whose organ's DNA was read and does not
+ * declare the task. Shared by the Supervisor (proposal) and the executor (re-check at execution time).
+ */
+export function undeclaredEngineProven(census: CensusRow, subject: string): { service: string; task: string } | null {
+  if (census.status !== "changes" || !census.findings.some((f) => f.kind === "undeclared_engine" && f.subject === subject)) return null;
+  const e = engineSubject(subject);
+  if (!e) return null;
+  const organ = organDnaRead(census, e.service);
+  if (!organ || organ.engines.includes(e.task)) return null;
+  return e;
+}
+
+/** Owner 2026-11-15: an undeclared engine is retired only once the finding has persisted this long, or over 2 census rows. */
+export const RETIRE_ENGINE_PERSIST_MS = 3_600_000;
+export const RETIRE_ENGINE_PERSIST_ROWS = 2;
+
+/**
+ * Whether an undeclared_engine finding persisted (owner 2026-11-15), so a DNA change still in flight (a task renamed
+ * in one commit and deployed in the next, an external origin's DNA between two writes) never retires an engine:
+ *  - it is proven in each of the RETIRE_ENGINE_PERSIST_ROWS latest census rows (consecutive heads), or
+ *  - the Supervisor has seen it proven, without a gap, for RETIRE_ENGINE_PERSIST_MS (firstSeenMs, its memory: a head's
+ *    census row is retaken in place, so one row cannot show how long a finding stood).
+ */
+export function undeclaredEnginePersistent(rows: CensusRow[], subject: string, firstSeenMs: number | undefined, nowMs: number): boolean {
+  if (!rows[0] || !undeclaredEngineProven(rows[0], subject)) return false;
+  if (rows.length >= RETIRE_ENGINE_PERSIST_ROWS && rows.slice(0, RETIRE_ENGINE_PERSIST_ROWS).every((r) => undeclaredEngineProven(r, subject))) return true;
+  return firstSeenMs !== undefined && nowMs - firstSeenMs >= RETIRE_ENGINE_PERSIST_MS;
+}
+
+/**
+ * The mirror of registerEngine (owner 2026-11-15). The latest census, current with canonical main, must prove the
+ * engine undeclared: its organ's DNA was read (never an organ of an origin whose DNA did not answer) and does not
+ * declare the task. Only an enabled row changes; nothing is deleted, so ai_usage keeps its history. A second run
+ * changes nothing. register_engine re-enables the row if a DNA declares the task again.
+ */
+async function retireEngine(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
+  const census = await currentCensus(env, p.params.main_sha);
+  const task = String(p.params.task ?? "");
+  requireCensusFinding(census, "undeclared_engine", `${p.target}:${task}`);
+  const organ = organDnaRead(census, p.target);
+  if (!organ) throw new Error("organ_dna_unread");
+  if (organ.engines.includes(task)) throw new Error("engine_still_declared");
+  // An external organ is held to its origin as at registration: only a service its origin may declare.
+  if (organ.origin !== undefined) {
+    const origin = EXTERNAL_ORIGINS.find((o) => o.origin === organ.origin);
+    if (!origin || !origin.services.includes(p.target)) throw new Error("external_origin_unknown");
+  }
+  await requireActiveHost(env, p.target);
+  const at = nowIso();
+  try {
+    await appendAuditEventWithMutation(env.DB, {
+      event_type: "engine.retired", actor, subject: `${p.target}:${task}`, outcome: "retired",
+      payload: { proposal_id: proposalId, main_sha: census.main_sha, ...(organ.origin ? { origin: organ.origin } : {}) },
+    }, () => env.DB.prepare(
+      `UPDATE engines SET status = 'retired', registered_by = ?, updated_at = ?
+       WHERE service_id = ? AND task = ? AND status = 'enabled'
+         AND EXISTS (SELECT 1 FROM service_registry WHERE service_id = engines.service_id AND status IN ('registered', 'healthy', 'degraded'))`,
+    ).bind(actor, at, p.target, task));
+  } catch (err) {
+    if (err instanceof AuditMutationConflictError) {
+      await requireActiveHost(env, p.target);
+      const row = await env.DB.prepare("SELECT status FROM engines WHERE service_id = ? AND task = ?").bind(p.target, task).first<{ status: string }>();
+      if (row?.status === "retired") return { service_id: p.target, task, status: "retired", changed: false };
+      throw new Error("engine_not_registered");
+    }
+    throw err;
+  }
+  return { service_id: p.target, task, status: "retired", changed: true };
 }
 
 /**
@@ -199,6 +349,10 @@ export async function executeRegistration(
       return registerAgent(env, proposalId, p, actor);
     case "register_engine":
       return registerEngine(env, proposalId, p, actor);
+    case "update_agent_capabilities":
+      return updateAgentCapabilities(env, proposalId, p, actor);
+    case "retire_engine":
+      return retireEngine(env, proposalId, p, actor);
     case "admit_voter":
       return admitVoter(env, proposalId, p, actor, canVote);
     default:
@@ -206,18 +360,35 @@ export async function executeRegistration(
   }
 }
 
-/** The proposal (action, target, params) that turns one census finding into a registration, or null. */
-export function proposalFor(census: CensusRow, finding: { kind: string; subject: string }): { action: string; target: string; params: JsonObject } | null {
+/**
+ * The proposal (action, target, params) that turns one census finding into a registration, or null. An
+ * undeclared_engine becomes retire_engine only when `persistent` says it persisted (undeclaredEnginePersistent);
+ * without it, as for every other kind the census only reports, the answer is null.
+ */
+export function proposalFor(
+  census: CensusRow, finding: { kind: string; subject: string }, persistent?: (subject: string) => boolean,
+): { action: string; target: string; params: JsonObject } | null {
   if (finding.kind === "unregistered_agent") {
     const d = findAgentGene(census, finding.subject);
     if (!d?.gene.capabilities) return null;
     const action = privilegedCapabilities(d.gene.capabilities).length ? "register_privileged_agent" : "register_agent";
     return { action, target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
   }
+  // A capability change that stays routine (no privileged capability); a privileged one waits for the owner as a finding.
+  if (finding.kind === "agent_capabilities_changed") {
+    const d = findAgentGene(census, finding.subject);
+    if (!d?.gene.capabilities || privilegedCapabilities(d.gene.capabilities).length) return null;
+    return { action: "update_agent_capabilities", target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
+  }
   if (finding.kind === "unregistered_engine") {
     const i = finding.subject.lastIndexOf(":");
     if (i <= 0) return null;
     return { action: "register_engine", target: finding.subject.slice(0, i), params: { task: finding.subject.slice(i + 1), main_sha: census.main_sha } };
+  }
+  if (finding.kind === "undeclared_engine") {
+    const e = undeclaredEngineProven(census, finding.subject);
+    if (!e || !persistent?.(finding.subject)) return null;
+    return { action: "retire_engine", target: e.service, params: { task: e.task, main_sha: census.main_sha } };
   }
   if (finding.kind === "voter_seat_requested") return { action: "admit_voter", target: finding.subject, params: { main_sha: census.main_sha } };
   return null;

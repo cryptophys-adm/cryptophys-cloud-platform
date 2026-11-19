@@ -30,7 +30,7 @@ function AcknowledgeForm({ report, reload }: { report: any; reload: () => void }
         <textarea className="field min-h-[56px]" maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)}
           placeholder="What was done about it, and why it no longer needs to block the agents" />
       </label>
-      <button type="button" className="btn btn-approve !py-1" disabled={!ok} onClick={() => act({
+      <button type="button" className="btn btn-approve py-1!" disabled={!ok} onClick={() => act({
         route: "kernel.report_acknowledge", params: report.report_id,
         body: { confirm: phraseFor("kernel.report_acknowledge", report.report_id), reason: trimmed },
         title: `Acknowledge critical report ${report.report_id.slice(0, 12)}`,
@@ -57,10 +57,10 @@ export function CriticalReportList({ rows, reload, empty }: { rows: any[]; reloa
       {rows.map((r: any) => (
         <div key={r.report_id} className="glass-inner px-3 py-2 text-[12px]">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="min-w-0 break-words text-slate-200">{r.subject}</span>
+            <span className="min-w-0 wrap-break-word text-slate-200">{r.subject}</span>
             <span className="text-[11px] text-slate-500" title={r.created_at}>{ago(r.created_at)}</span>
           </div>
-          <div className="mt-0.5 break-words text-[11px] text-slate-500"><span className="mono text-cyan-300">{r.agent_id}</span> · {r.kind} · <span className="mono">{r.report_id}</span></div>
+          <div className="mt-0.5 wrap-break-word text-[11px] text-slate-500"><span className="mono text-cyan-300">{r.agent_id}</span> · {r.kind} · <span className="mono">{r.report_id}</span></div>
           {r.acknowledgement ? (
             <div className="mt-1.5 text-[11px] text-emerald-300">
               Acknowledged by <span className="mono">{r.acknowledgement.acknowledged_by}</span> at <span title={r.acknowledgement.acknowledged_at}>{r.acknowledgement.acknowledged_at}</span>

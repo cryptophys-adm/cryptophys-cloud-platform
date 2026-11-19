@@ -116,7 +116,9 @@ test("3. allow-list: every row forwards to the right binding; everything else is
   for (const rule of CONSOLE_ALLOW_LIST) {
     const { env, recorders, total } = consoleEnv();
     const path = concrete(rule.path);
-    const res = await run(env, creq(rule.method, `/api/${rule.service}${path}`, rule.method === "GET" ? {} : { body: "{}", type: "application/json" }));
+    // HAIC push hub: GET /v1/hub is forwarded only as a same-origin WebSocket upgrade (push-hub.test.ts P6 covers the refusals).
+    const hub = rule.service === "kernel" && rule.path === "/v1/hub" ? { headers: { upgrade: "websocket", origin: ORIGIN } } : {};
+    const res = await run(env, creq(rule.method, `/api/${rule.service}${path}`, rule.method === "GET" ? hub : { body: "{}", type: "application/json" }));
     assert.equal(res.status, 200, `${rule.method} ${rule.service}${rule.path}`);
     assert.equal(total(), 1);
     const [forwarded] = recorders[rule.service].calls;
@@ -259,25 +261,41 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   // + the Owner page's read-only inbox (owner 2026-11-13: one panel for approvals and open critical reports).
   // + the Forge's git bundle backups in R2 (ADR-0012 gate 8).
   // + the Alerts page (owner 2026-11-13): the list, add, change, test, delete.
-  assert.equal(keys.length, 67);
+  // + the Vision page's read-only vision (ADR-0016 T0).
+  // + the account-wide Observer's read-only view (owner 2026-11-14).
+  // - the manual deploy, orchestrator POST /v1/deployments (owner 2026-11-14: "hapus aja, karena roadmap berikutnya kita
+  //   kembangkan Human Ai Interaction & Collaboration").
+  // - the registry's PUT /v1/services/{id} and PUT /v1/services/{id}/desired-version (owner 2026-11-15, "tombol Edit
+  //   tidak berfungsi": the Infrastructure page is read only).
+  // + the registry's GET and POST /v1/identities (owner 2026-11-16: the deploy-time identity lists on the Users page).
+  // + the kernel's read-only GET /v1/adr and GET /v1/adr/{id} (ADR Steward step 4: the Vision page's ADR panel).
+  // - the policy's POST /v1/evaluate (HAIC H0a, ADR-0017 Decision 5: the Policy page only reads).
+  // + the kernel's GET /v1/conversations, GET /v1/conversations/{id}, POST .../turns and POST .../turns/{id}/rating
+  //   (HAIC H1c: "Ask the organism", owners only).
+  // + the kernel's GET /v1/councils, GET /v1/councils/{id}, POST /v1/councils, POST .../messages, .../pick and .../dismiss
+  //   (HAIC H1.5c: Call for Councils; the kernel checks the owner on every POST).
+  // + the kernel's POST /v1/councils/{id}/start (HAIC H1.5d: the owner begins a council an agent proposed).
+  // + the kernel's GET /v1/hub (HAIC push hub: a WebSocket of change signals, same-origin only).
+  // + the kernel's GET /v1/proposals, GET /v1/proposals/{id}, POST .../confirm and .../reject (HAIC H2, typed proposals).
+  // + the kernel's POST /v1/proposals (HAIC H2b: a chat directive into a draft, the owner).
+  // + the kernel's GET /v1/autonomy and POST /v1/autonomy/{id} (HAIC H4, the autonomy dial; the owner sets).
+  assert.equal(keys.length, 88);
   const expected = [
-    ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts"].map((p) => `kernel GET ${p}`),
-    ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test"].map((p) => `kernel POST ${p}`),
+    ...["/v1/kernel", "/v1/status", "/v1/notices", "/v1/owner/inbox", "/v1/reports", "/v1/agents", "/v1/agents/{id}", "/v1/agents/{id}/actions", "/v1/consensus", "/v1/consensus/report", "/v1/consensus/{id}", "/v1/knowledge", "/v1/metabolism", "/v1/mesh", "/v1/alerts", "/v1/vision", "/v1/adr", "/v1/adr/{id}", "/v1/conversations", "/v1/conversations/{id}", "/v1/councils", "/v1/councils/{id}", "/v1/hub", "/v1/proposals", "/v1/proposals/{id}", "/v1/autonomy"].map((p) => `kernel GET ${p}`),
+    ...["/v1/kernel/agents-enabled", "/v1/agents/{id}/wake", "/v1/agents/{id}/suspend", "/v1/agents/{id}/resume", "/v1/agents/{id}/principals", "/v1/consensus/{id}/approve", "/v1/consensus/{id}/reject", "/v1/consensus/mode", "/v1/knowledge/{id}/approve", "/v1/knowledge/{id}/reject", "/v1/reports/{id}/acknowledge", "/v1/alerts", "/v1/alerts/{id}", "/v1/alerts/{id}/test", "/v1/conversations/{id}/turns", "/v1/conversations/{id}/turns/{id}/rating", "/v1/councils", "/v1/councils/{id}/messages", "/v1/councils/{id}/pick", "/v1/councils/{id}/dismiss", "/v1/councils/{id}/start", "/v1/proposals/{id}/confirm", "/v1/proposals/{id}/reject", "/v1/autonomy/{id}", "/v1/proposals"].map((p) => `kernel POST ${p}`),
     "kernel DELETE /v1/agents/{id}/principals/{id}", "kernel DELETE /v1/alerts/{id}",
     ...["/v1/plans", "/v1/plans/{id}"].map((p) => `recovery GET ${p}`),
     ...["/v1/plans", "/v1/plans/{id}/approve", "/v1/plans/{id}/disable"].map((p) => `recovery POST ${p}`),
-    ...["/v1/services", "/v1/services/{id}", "/v1/accounts"].map((p) => `registry GET ${p}`),
-    ...["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable"].map((p) => `registry POST ${p}`),
-    ...["/v1/services/{id}", "/v1/services/{id}/desired-version"].map((p) => `registry PUT ${p}`),
+    ...["/v1/services", "/v1/services/{id}", "/v1/accounts", "/v1/identities"].map((p) => `registry GET ${p}`),
+    ...["/v1/accounts", "/v1/accounts/sync-login", "/v1/accounts/{id}/disable", "/v1/identities"].map((p) => `registry POST ${p}`),
     ...["/v1/decisions", "/v1/decisions/{id}"].map((p) => `policy GET ${p}`),
-    "policy POST /v1/evaluate",
     ...["/v1/drift", "/v1/drift/{id}"].map((p) => `drift GET ${p}`),
     "drift POST /v1/observe",
     ...["/v1/events", "/v1/events/{id}", "/v1/verify"].map((p) => `audit GET ${p}`),
     "orchestrator GET /v1/deployments",
-    "orchestrator POST /v1/deployments",
     "platform GET /v1/overview",
     "platform GET /v1/usage",
+    "platform GET /v1/observer",
     "forge GET /v1/forge/status",
     "forge GET /v1/forge/commits",
     "forge GET /v1/forge/checks",
@@ -291,5 +309,10 @@ test("10. no regressions: the allow-list holds exactly the specified rows (typec
   ];
   assert.deepEqual([...keys].sort(), [...expected].sort());
   assert.ok(!keys.some((k) => k.includes("mcp")));
+  assert.ok(!keys.includes("policy POST /v1/evaluate"), "the Console no longer forwards a manual policy evaluation (HAIC H0a)");
   assert.ok(!keys.includes("audit POST /v1/events"));
+  assert.ok(!keys.includes("orchestrator POST /v1/deployments"), "the manual deploy is not forwarded (owner 2026-11-14)");
+  assert.ok(!keys.includes("registry PUT /v1/services/{id}"), "a service record is not written through the Console (owner 2026-11-15)");
+  assert.ok(!keys.includes("registry PUT /v1/services/{id}/desired-version"), "nor a desired version");
+  assert.deepEqual(keys.filter((k) => k.startsWith("orchestrator ")), ["orchestrator GET /v1/deployments"], "the Orchestrator is read only from the Console");
 });

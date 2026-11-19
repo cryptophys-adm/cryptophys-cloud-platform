@@ -101,7 +101,7 @@ test("B4. a line whose commit is not the head is never recorded (an older or for
 
 test("B5. a change to the type-check harness is the owner's (its build runs that very code)", async () => {
   const repo = { readBlob: async () => null } as never;
-  for (const path of ["workers/forge-typecheck/typecheck-and-report.mjs", "workers/forge-typecheck-cr/typecheck-and-report.mjs", "workers/control-plane-tsconfig.json", "workers/forge/src/cr-builds.ts", "workers/control-plane-shared/package-lock.json", "workers/console/ui/vite.config.ts", "workers/console/ui/tsconfig.json"]) {
+  for (const path of ["workers/forge-typecheck/typecheck-and-report.mjs", "workers/forge-typecheck-cr/typecheck-and-report.mjs", "workers/control-plane-tsconfig.json", "workers/forge/src/cr-builds.ts", "workers/control-plane-shared/package-lock.json", "workers/console/ui/vite.config.ts", "workers/console/ui/build.mjs", "workers/console/ui/tsconfig.json"]) {
     const reasons = await criticalReasons(repo, [{ path, change: "modified", base: "x", head: "y" } as never], false);
     assert.ok(reasons.some((r) => r.startsWith("typecheck_harness:")), path);
   }

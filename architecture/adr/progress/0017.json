@@ -1,0 +1,69 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0017",
+  "title": "Human–AI collaboration: the owner works with the organism directly",
+  "adr_file": "architecture/adr/0017-human-ai-collaboration.md",
+  "lifecycle": "accepted",
+  "phases": [
+    {
+      "id": "H0",
+      "title": "\"Needs you\" inbox and Telegram digest with deep links",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built: GET /v1/owner/inbox does not exist yet"
+      },
+      "note": "designed; the owner answered Q1–Q11 on 2026-11-16; design in docs/design/HAIC-H0-H1.md",
+      "doc_claim": {
+        "state": "not_built",
+        "ref": "docs/design/HAIC-H0-H1.md",
+        "quote": "design only; nothing here is built"
+      }
+    },
+    {
+      "id": "H1",
+      "title": "\"Ask the organism\" chat: read-only, English, metric-first, cited",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built: no chat route or tool set exists"
+      },
+      "note": "designed; the owner answered Q1–Q11 on 2026-11-16; design in docs/design/HAIC-H0-H1.md",
+      "doc_claim": {
+        "state": "not_built",
+        "ref": "docs/design/HAIC-H0-H1.md",
+        "quote": "design only; nothing here is built"
+      }
+    },
+    {
+      "id": "H2",
+      "title": "Directives as structured proposals, with the owner's confirmation",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    },
+    {
+      "id": "H3",
+      "title": "Corrections and ratings in Nexus become knowledge",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    },
+    {
+      "id": "H4",
+      "title": "Autonomy dial per action class",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    },
+    {
+      "id": "H5",
+      "title": "Collaborators and roles",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not started"
+      }
+    }
+  ]
+}

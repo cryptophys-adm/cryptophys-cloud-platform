@@ -1,0 +1,30 @@
+{
+  "schema": "council.decision.v1",
+  "session_id": "cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01",
+  "option_id": "opt-1",
+  "chosen_by": "owner:owner@example.com",
+  "chosen_at": "2026-11-18T12:00:00Z",
+  "owner_note": "Shadow first, 14 days.",
+  "proposal_draft": {
+    "schema": "typed_proposal.v1",
+    "kind": "shadow_arm",
+    "origin": {
+      "council": "cs_8f14e45f-ceea-467a-9575-5b8a3c1f0a01",
+      "option": "opt-1"
+    },
+    "target": "key_level",
+    "params": {
+      "entry_confirmation": "close_beyond_level"
+    },
+    "measurement": {
+      "metric": "sl_share_30d",
+      "baseline": 0.41,
+      "window": "30d",
+      "success_threshold": 0.32
+    },
+    "requires": [
+      "owner_confirm",
+      "shadow_window"
+    ]
+  }
+}
