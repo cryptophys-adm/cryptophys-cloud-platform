@@ -71,3 +71,14 @@
 2. **Create a separate runtime sync token** in Cloudflare, scoped to account `cryptophys`, with only **Access: Organizations, Identity Providers, and Groups → Edit**. Store it as the Worker secret `ACCESS_GROUPS_TOKEN` on `cryptophys-platform-registry`. The Registry uses it to maintain group membership; keep this token separate from the broader provisioning token.
 3. **Provision Access runs once** from `main` with the exact confirmation `PROVISION`. The workflow also uses the existing production secrets/variable for the account, service-token credentials, operator email allow-list, and private Worker bootstrap/edge verification.
 4. After the Access group and policy are verified and the Console Users page is deployed, select **Users → Sync sign-in** once.
+
+## Amendment 2026-11-19: HAIC H5, the reviewer role and narrowed approver accounts (owner)
+
+The owner accepted every recommended default of `docs/design/HAIC-H5.md` on 2026-11-19 ("Setuju semua rekomendasi") and asked for the approver fix at once ("Perbaiki sekarang").
+
+- **A ladder of roles:** `user` < viewer < **reviewer** (new) < operator < approver account < owner. Each role has every right of the role below it. Operators and approver accounts also comment and teach.
+- **The reviewer** reads everything and may write only comments, corrections (the HAIC H3 ledger, `reviewer_correction`) and their own chat. It is stored as an additive flag on a viewer account (the next free migration after 0084), shown as privilege `reviewer` in the API; code from before H5 reads such an account as a plain viewer, so it can only under-grant. A service token is never a reviewer.
+- **Approver accounts are narrowed (built as H5b).** The critical decisions are the owner's alone (the people in `APPROVER_IDENTITIES`): a critical consensus approve or reject, raising the consensus mode, turning agents back on, agent principals, the owner's alert channels and the Forge one-time actions. Approver accounts keep recovery plans (never their own), knowledge reviews, critical-report acknowledgements and resuming one agent. The table row above for `admin` · approver now reads: operator rights, plus recovery plans, knowledge reviews, critical-report acknowledgements and resuming an agent. The Policy Engine will also require that the approver of a critical action is an owner (H5c, a guard path).
+- **Grants stay owner-only** with `GRANT`, now with an optional expiry the owner sets per grant (no default; shown 7 days before it lapses). Nobody changes their own access. Configured identities stay out of the table.
+- **The role-to-surface table** lives in one guarded module (`control-plane-shared/src/collaborators.ts`, listed in `guard-paths.ts`), with one change to `access.ts` (`requireReviewer`, `requireOwner`); both are guard paths and wait for the owner's click (H5e).
+

@@ -126,3 +126,23 @@ The levels mean:
 With no level set, every group is at its ceiling: the ADR-0009 class decides, as before H4. Directives stay always confirmed by the owner (decision 2); they are not part of the dial for now.
 
 Implementation: `control-plane-shared/src/autonomy-dial.ts` (a guard path), migration 0083 (`autonomy_dial`, `consensus_proposals.autonomy_level`), `ai-kernel/src/autonomy.ts`, the kernel's `GET /v1/autonomy` and `POST /v1/autonomy/{group}` (the owner, phrase `SET <GROUP> <LEVEL>`), and the Console's Autonomy page.
+
+## Amendment 2026-11-19: H3 and H5 (the owner's answers)
+
+The owner accepted every recommended default of `docs/design/HAIC-H3.md` and `docs/design/HAIC-H5.md` on 2026-11-19 ("Setuju semua rekomendasi"), and asked for the owner-only fix of critical approvals at once ("Perbaiki sekarang").
+
+**H3, corrections become knowledge.**
+- One ledger in the platform's D1 (`corrections`, contract `correction.v1`): the owner's ratings and corrections on chat turns, council messages, claims and options, and the owner's reject reasons. Nexus sends in; Aether pulls. Telegram is not a correction channel.
+- Never refused for its content: secrets redacted, price-like numbers masked as `[level]`, text truncated to 500 characters. A correction carries no parameter and changes no trading parameter, weight, proposal or gate.
+- Weight 3 for the owner's ratings and corrections, 1 for the owner's reject reasons, 1 for any actor who is not the owner; it orders and feeds the teaching record and never skips a gate. A correction-derived note goes first in Aether's shadow queue and goes live only on the statistical verdict; the xauusd crowd weight changes only through a shadow replay and an owner PR. Only explicit reject reasons count among implicit signals; a changed rating is a new row that supersedes the old one; the existing chat ratings are backfilled once; no semantic recall (Vectorize) in H3.
+
+**H5, collaborators and roles** (ADR-0011 amendment of the same day).
+- The ladder viewer < reviewer < operator < approver account < owner; only the owner approves critical actions (the decision above, now enforced).
+- Collaborators chat from their own pool (operators and approver accounts 10 turns a day each, reviewers 5, 20 a day in all) behind their own switch; the owner's 40 turns stay reserved; viewers do not chat; conversations are private to their author.
+- Operators may propose a council (trigger kind `collaborator`), which waits until the owner begins it; collaborators never post owner messages, begin, pick or dismiss.
+- Comments are for people only and never enter a model prompt; the owner may hide one, never delete it.
+- Collaborators teach through the H3 ledger as `reviewer_correction`, on the contract's integer scale: weight 2 against the owner's 3 (the design's "collaborator 0.5 of the owner" expressed on that scale), deduplicated by content hash, never rate-limited; the owner may endorse or dispute.
+- Directives (`POST /v1/proposals`) stay the owner's in H5.
+
+Order and status: H3a (contract) and H3b (ledger) built, then H3c–H3d; H3e needs the owner's click. H5b (owner-only critical routes) built; H5c and H5e need the owner's click.
+
