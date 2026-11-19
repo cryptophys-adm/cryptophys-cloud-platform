@@ -64,6 +64,8 @@ const SCRIPT = /^[a-z0-9-]{1,63}$/;
 /** Reads of a custom domain after it was attached or detached. */
 export const TOPOLOGY_VERIFY_ATTEMPTS = 4;
 export const TOPOLOGY_VERIFY_DELAY_MS = 2_000;
+/** How many times the migration tag is read after a Durable Object migration deploy (about 14 s at the default delay). */
+export const MIGRATION_TAG_ATTEMPTS = 8;
 
 const isTable = (v: unknown): v is TomlTable => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 function canonical(value: unknown): string {
@@ -681,7 +683,14 @@ export async function deployWithDoMigration(cf: Pick<CloudflareWorkers, "deployS
     if (now.length === 1 && now[0].percentage === 100 && !captured.some((c) => c.version_id === now[0].version_id)) versionId = now[0].version_id;
   }
   if (!versionId) throw new Error("do_migration_deployment_unreadable");
-  const tag = await cf.migrationTag(service);
-  if (tag !== plan.migration.new_tag) throw new Error(`do_migration_tag_not_applied: ${String(tag).slice(0, 64)}`);
-  return versionId;
+  // The script's migration tag can lag the new deployment (2026-11-18, dep_01b18773: the kernel's v8→v9 upload went
+  // live, the tag read right after still said v8, and the run failed with a restore Cloudflare refuses across a
+  // Durable Object migration). Read it again a few times before calling the migration not applied.
+  let tag: string | null = null;
+  for (let i = 0; i < MIGRATION_TAG_ATTEMPTS; i++) {
+    if (i > 0) await sleep(opts.delayMs ?? TOPOLOGY_VERIFY_DELAY_MS);
+    tag = await cf.migrationTag(service);
+    if (tag === plan.migration.new_tag) return versionId;
+  }
+  throw new Error(`do_migration_tag_not_applied: ${String(tag).slice(0, 64)}`);
 }
