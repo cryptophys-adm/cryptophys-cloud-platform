@@ -186,7 +186,7 @@ test("AC5. over AgentRpc, the Knowledge Council proposes only doctrine actions",
   assert.equal(count(), 0, "refused before any vote");
   const ok = await rpcSyscall(env as never, { host_worker: HOST }, "knowledge-council", "consensus.propose", {
     action: "amend_doctrine", target: "engine-thresholds",
-    params: { rule: "engine_thresholds", values: { "decision.quorum_min": 0.55 }, previous: { "decision.quorum_min": 0.5 }, canon: "0123456789ab", session: "kc_20261114-0352", seats: { nexus: "agree", aether: "agree" } },
+    params: { rule: "engine_thresholds", values: { "decision.quorum_min_intraday": 0.55 }, previous: { "decision.quorum_min_intraday": 0.5 }, canon: "0123456789ab", session: "kc_20261114-0352", seats: { nexus: "agree", aether: "agree" } },
   }) as any;
   assert.equal(ok.outcome, "succeeded", JSON.stringify(ok));
   assert.equal(count(), 1, "the doctrine action reaches consensus as before");

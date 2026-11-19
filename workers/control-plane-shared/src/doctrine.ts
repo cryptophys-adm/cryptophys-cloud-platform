@@ -34,10 +34,23 @@ const WITNESSES = ["D1", "H4", "H1", "M15", "NEWS", "MACRO", "STRATEGY", "KEY_LE
 
 /** The operational facts the council may amend by consensus alone, with their hard bounds. */
 export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.freeze({
-  "decision.trading_mode": { kind: "text", in: ["scalp", "intraday", "swing"] },
-  "decision.quorum_min": { kind: "number", min: 0.45, max: 0.7 },
-  "decision.lean": { kind: "number", min: 0.05, max: 0.3 },
-  "decision.min_rrr": { kind: "number", min: 1, max: 3 },
+  // decision.trading_mode is no longer bounded (owner 2026-11-19, as Aether #36 unanchored it): the mode in force is
+  // information only, so an amendment of it is amend_constitution.
+  // The Decision Engine's thresholds, one fact per trading mode (owner 2026-11-19, the same per-mode split as the room
+  // guardrail below), each with the bound the single fact had; a mode switch moves no anchor. The single facts (the
+  // values in force) are information only on the xauusd side. Scalp has no reward minimum (owner 2026-11-12), so
+  // decision.min_rrr_scalp, 0, is information only and has no bound. Mirrors Aether's src/doctrine.mjs.
+  "decision.quorum_min_scalp": { kind: "number", min: 0.45, max: 0.7 },
+  "decision.quorum_min_intraday": { kind: "number", min: 0.45, max: 0.7 },
+  "decision.quorum_min_swing": { kind: "number", min: 0.45, max: 0.7 },
+  "decision.quorum_min_range": { kind: "number", min: 0.45, max: 0.7 },
+  "decision.lean_scalp": { kind: "number", min: 0.05, max: 0.3 },
+  "decision.lean_intraday": { kind: "number", min: 0.05, max: 0.3 },
+  "decision.lean_swing": { kind: "number", min: 0.05, max: 0.3 },
+  "decision.lean_range": { kind: "number", min: 0.05, max: 0.3 },
+  "decision.min_rrr_intraday": { kind: "number", min: 1, max: 3 },
+  "decision.min_rrr_swing": { kind: "number", min: 1, max: 3 },
+  "decision.min_rrr_range": { kind: "number", min: 1, max: 3 },
   "decision.min_confidence": { kind: "number", min: 0.3, max: 0.7 },
   // The room guardrail in 1H average ranges, one fact per trading mode (xauusd src/room-tuning.mjs; owner 2026-11-19:
   // "guardrail room biarkan protocol learning dan knowledge yang melakukan adjustment secara dinamis", bounds 0.5 to 1.5).
