@@ -83,6 +83,17 @@ function heartbeat(db: Db, serviceId: string, at = new Date().toISOString()) {
   db.raw.prepare("UPDATE service_registry SET updated_at = ? WHERE service_id = ?").run(at, serviceId);
 }
 
+/**
+ * Finding D (owner 2026-11-19): approval retires a redeploy plan whose version is not main's head (not_main). A plan
+ * approved while its version was main's head can still meet a newer main at execution: the Forge plans the plan's
+ * version (a newer forge_at), the plan is approved, and the row is removed, so main's head is MAIN again.
+ */
+async function approvedBeforeMainMoved(env: Record<string, unknown>, db: Db, steps: { action: string; description: string }[], version: string): Promise<string> {
+  const sha = version.padEnd(40, "0");
+  db.raw.prepare("INSERT INTO forge_deploy_plans (main_sha, fingerprint, forge_units, forge_at) VALUES (?, 'then', '[]', '2999-01-01T00:00:00.000Z')").run(sha);
+  try { return await approvedPlan(env, steps, version); } finally { db.raw.prepare("DELETE FROM forge_deploy_plans WHERE main_sha = ?").run(sha); }
+}
+
 async function approvedPlan(env: Record<string, unknown>, steps: { action: string; description: string }[], version = MAIN.slice(0, 12), serviceId = "cryptophys-console") {
   // The deploy workflow's service token (an operator) may author; a person needs the approver role (hardening 2026-11-08).
   const created = await call(recovery, env, req("POST", "/v1/plans", { service_id: serviceId, plan_version: version, title: "Recover", rationale: "test", steps }));
@@ -128,7 +139,7 @@ test("2. a stale plan never deploys an old commit: an in-sync service is skipped
   try {
     const dispatched = await github(db);
     observe(db, "cryptophys-console", false);
-    const id = await approvedPlan(env, [{ action: "redeploy_commit", description: "Redeploy 59db4cf" }], "59db4cf695fa");
+    const id = await approvedBeforeMainMoved(env, db, [{ action: "redeploy_commit", description: "Redeploy 59db4cf" }], "59db4cf695fa");
     await run(env, wf, id);
     assert.deepEqual(stages(db, id), ["approval:succeeded", "policy:succeeded", "step-1:skipped", "verify:succeeded"]);
     assert.match(planRow(db, id).exec.pipeline[2].detail, /Already in sync/);
@@ -142,7 +153,7 @@ test("3. a drifted service whose plan names an old commit fails safely; later st
   try {
     const dispatched = await github(db);
     observe(db, "cryptophys-console", true);
-    const id = await approvedPlan(env, [
+    const id = await approvedBeforeMainMoved(env, db, [
       { action: "redeploy_commit", description: "Redeploy 59db4cf" },
       { action: "manual", description: "Confirm" },
     ], "59db4cf695fa");

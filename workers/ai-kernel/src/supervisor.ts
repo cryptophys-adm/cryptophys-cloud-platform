@@ -25,6 +25,8 @@ import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { DEPLOY_UNITS } from "../../control-plane-shared/src/deploy-units.ts";
 import { DESTRUCTIVE_DEPLOY_ACTION, DESTRUCTIVE_DEPLOY_UNIT, destructiveChanges } from "../../control-plane-shared/src/destructive-deploy.ts";
 import { observerCycle } from "./observer-watch.ts";
+import { forgeMainHead } from "../../control-plane-shared/src/forge-gate.ts";
+import { notMain } from "../../control-plane-shared/src/recovery-resolution.ts";
 import { proposeIdentityRedeploys } from "./identity-redeploy.ts";
 import { nextPolicyHandoff, recordPolicyHandoff } from "./proposals.ts";
 
@@ -314,6 +316,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   // Drift -> tier 1 proposal.
   const proposals = (await memory.get<Record<string, number>>("proposals")) ?? {};
   const open = new Set(obs.open_agent_plans.map((p) => p.service_id));
+  let mainHead: string | null | undefined;
   for (const s of obs.services) {
     const managed = !(s.reasons.length === 1 && s.reasons[0] === "desired_version_unset");
     if (!s.drifted || !s.persistent || !managed || s.service_id === SERVICE) continue;
@@ -329,6 +332,20 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     const aiInput = recalled && recalled.length > 0 ? { ...s, context: recalled } : s;
     const ai = await engineFor(env, SERVICE, [draftTask.name]).run(draftTask, aiInput, `${AGENT_ID}:${s.service_id}:${now}`);
     const draft = ai.status === "ok" ? ai.data : templateProposal(s);
+    // Orchestrator finding D (owner 2026-11-19): the Orchestrator redeploys only main's head (version_not_current_main),
+    // so a redeploy_commit of a desired version that is no longer main is dropped at the draft; a plan left with nothing
+    // but manual steps is not proposed (the deploy of main, or the owner's drift_unhandled item, takes it from here).
+    if (draft.steps.some((st) => st.action === "redeploy_commit")) {
+      mainHead ??= (await forgeMainHead(env.DB)).sha;
+      if (notMain(String(s.desired_version ?? ""), mainHead)) {
+        draft.steps = draft.steps.filter((st) => st.action !== "redeploy_commit");
+        if (!draft.steps.some((st) => st.action !== "manual")) {
+          proposals[s.service_id] = now;
+          report.findings.push({ kind: "drift", service_id: s.service_id, action: "none", why: `desired version ${s.desired_version} is not main's head ${mainHead!.slice(0, 7)}: a redeploy would be refused (version_not_current_main); no plan proposed` });
+          continue;
+        }
+      }
+    }
     const result = await syscall(env, AGENT_ID, "recovery.propose", {
       service_id: s.service_id, plan_version: (s.desired_version ?? "unknown").slice(0, 40),
       title: draft.title, rationale: `${draft.rationale}\n\n(Drafted by agent:${AGENT_ID}; AI ${ai.status}.)`.slice(0, 2000), steps: draft.steps,

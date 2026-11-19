@@ -1,4 +1,5 @@
 import { planSuperseded, retirePlan, retireSupersededDrafts } from "./superseded.ts";
+import { failedPlanResolution } from "../../control-plane-shared/src/recovery-resolution.ts";
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import {
   SERVICE_ID, errorResponse, healthResponse, json, limitParam, newId, nowIso, readJsonObject,
@@ -85,6 +86,14 @@ export function isSyntheticPlan(row: { created_by: string | null }): boolean {
 function present(row: PlanRow): JsonObject {
   const { steps_json, last_execution_json, ...rest } = row;
   return { ...rest, synthetic: isSyntheticPlan(row), plan: JSON.parse(steps_json), last_execution: last_execution_json ? JSON.parse(last_execution_json) : null };
+}
+
+/** A failed or expired plan that a later deploy or a healthy, in-sync Worker made unnecessary (recovery-resolution.ts). */
+async function resolutionOf(env: Env, plan: PlanRow): Promise<JsonObject | null> {
+  const ended = plan.status === "failed" || (plan.status === "disabled" && (plan.disabled_reason === "approval_expired" || plan.disabled_reason === "approval_lapsed"));
+  if (!ended) return null;
+  const r = await failedPlanResolution(env.DB, { service_id: plan.service_id, updated_at: plan.updated_at });
+  return r ? { ...r } : null;
 }
 
 const getPlan = (env: Env, id: string) => env.DB.prepare("SELECT * FROM recovery_plans WHERE plan_id = ?").bind(id).first<PlanRow>();
@@ -223,7 +232,9 @@ async function approvePlan(env: Env, plan: PlanRow, approver: string): Promise<R
     await retirePlan(env.DB, plan, stale, approver);
     return errorResponse(409, "plan_superseded", stale === "superseded"
       ? `${plan.service_id} no longer wants version ${plan.plan_version}; the plan was disabled`
-      : `${plan.service_id} already runs version ${plan.plan_version}; the plan was disabled`);
+      : stale === "not_main"
+        ? `version ${plan.plan_version} is no longer main's head, so the Orchestrator would refuse the redeploy; the plan was disabled`
+        : `${plan.service_id} already runs version ${plan.plan_version}; the plan was disabled`);
   }
   const executeBy = deadline(Date.now(), windows(env).execution);
   const result = await env.DB.prepare(
@@ -374,7 +385,7 @@ export default {
       if (!match) return errorResponse(404, "not_found");
       const plan = await getPlan(env, match[1]);
       if (!plan) return errorResponse(404, "not_found");
-      if (!match[2]) return request.method === "GET" ? json({ plan: present(plan) }) : errorResponse(405, "method_not_allowed");
+      if (!match[2]) return request.method === "GET" ? json({ plan: { ...present(plan), resolution: await resolutionOf(env, plan) } }) : errorResponse(405, "method_not_allowed");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       if (match[2] === "executions") return await recordExecution(request, env, plan, operator.actor);
       // disable

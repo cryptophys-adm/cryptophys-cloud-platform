@@ -26,6 +26,7 @@ import { buildUsage } from "../../control-plane-shared/src/build-usage.ts";
 import { dependencyAudit } from "../../control-plane-shared/src/dependency-audit.ts";
 import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
+import { failedPlanResolution } from "../../control-plane-shared/src/recovery-resolution.ts";
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
 import { resolvedLaterSql } from "./syscall.ts";
 import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
@@ -260,7 +261,8 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     or no recovery plan for it is draft, approved or executing and no deploy, redeploy or rollback proposal for it
  *     is executing or executed within DEPLOY_HANDLING_WINDOW_MS. A draft plan is not a problem: it is an approval.
  *  4. recovery_failed: a recovery plan failed, or its approval window expired or lapsed, in the last 24 hours
- *     (deploy-verification plans authored by a service token are not recovery).
+ *     (deploy-verification plans authored by a service token are not recovery), unless it is resolved since
+ *     (recovery-resolution.ts: a later deploy of its unit succeeded, or its Worker is healthy and in sync again).
  *  5. critical_advisory: an npm advisory of severity critical in a runtime lockfile (high stays console-only).
  *  6. build_minutes_exhausted: the month's measured Workers Builds minutes are at or over the budget (80% stays
  *     console-only).
@@ -350,12 +352,17 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     drift.push({ code: "drift_unhandled", subject: s.service_id, detail: `${name} is drifted or unhealthy (${why}) and no recovery plan or deploy is under way`, since, link: "#/infrastructure" });
   }
 
-  const recovery: ProductionProblem[] = (await db.prepare(
+  // Orchestrator finding A (owner 2026-11-19): a failed plan whose Worker is healthy and in sync again, or whose unit a
+  // later deploy fixed, needs no one; it is dropped instead of lingering for the whole 24 hours.
+  const failedPlans = (await db.prepare(
     `SELECT plan_id, service_id, status, disabled_reason, updated_at FROM recovery_plans
      WHERE (status = 'failed' OR (status = 'disabled' AND disabled_reason IN ('approval_expired', 'approval_lapsed')))
        AND updated_at >= ? AND (created_by IS NULL OR created_by NOT LIKE '%.access')
      ORDER BY updated_at DESC LIMIT ?`,
-  ).bind(iso(now - RECOVERY_FAILURE_WINDOW_MS), INBOX_LIMIT).all<{ plan_id: string; service_id: string; status: string; disabled_reason: string | null; updated_at: string }>()).results
+  ).bind(iso(now - RECOVERY_FAILURE_WINDOW_MS), INBOX_LIMIT).all<{ plan_id: string; service_id: string; status: string; disabled_reason: string | null; updated_at: string }>()).results;
+  const unresolved: typeof failedPlans = [];
+  for (const p of failedPlans) if (!(await failedPlanResolution(db, p))) unresolved.push(p);
+  const recovery: ProductionProblem[] = unresolved
     .map((p) => ({
       code: "recovery_failed" as const, subject: p.plan_id,
       detail: `Recovery plan for ${serviceName(p.service_id)} ${p.status === "failed" ? "failed" : p.disabled_reason === "approval_lapsed" ? "was approved but never started (lapsed)" : "expired without an approval"} at ${p.updated_at}`,
