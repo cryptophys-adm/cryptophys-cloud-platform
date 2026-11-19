@@ -28,7 +28,7 @@ export const TOOLS: Tool[] = [
   { name: "wake_agent", description: "Run one agent cycle now (supervisor, signal-analyst, auditor, or adr-steward) and return its report.", inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
   { name: "suspend_agent", description: "Suspend an agent (any operator).", inputSchema: { type: "object", properties: { agent_id: str("agent id"), reason: str("why") }, required: ["agent_id", "reason"] } },
   { name: "resume_agent", description: "Resume a suspended agent (approver only).", approverOnly: true, inputSchema: { type: "object", properties: { agent_id: str("agent id") }, required: ["agent_id"] } },
-  { name: "set_agents_enabled", description: "Global kill switch: false stops every agent (any operator); true needs an approver.",
+  { name: "set_agents_enabled", description: "Global kill switch: false stops every agent (any operator); true needs the owner (HAIC H5b).",
     inputSchema: { type: "object", properties: { enabled: { type: "boolean" } }, required: ["enabled"] } },
 ];
 
@@ -79,6 +79,8 @@ export async function handleMcp(
   actor: string,
   isApprover: boolean,
   agentSession?: AgentSession,
+  /** HAIC H5b: turning agents back on is the owner's; an approver account may still resume one agent. */
+  isOwner = false,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
   let msg: JsonObject;
@@ -104,7 +106,7 @@ export async function handleMcp(
         if (agentSession) {
           return rpc(id, await callAgentTool(env, tool, args, agentSession));
         }
-        return rpc(id, await callTool(env, tool, args, actor, isApprover));
+        return rpc(id, await callTool(env, tool, args, actor, isApprover, isOwner));
       } catch (err) {
         return rpc(id, text({ error: String((err as Error)?.message ?? err) }, true));
       }
@@ -148,7 +150,7 @@ async function callAgentTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, s
   return text({ error: "unknown tool" }, true);
 }
 
-async function callTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, actor: string, isApprover: boolean) {
+async function callTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, actor: string, isApprover: boolean, isOwner: boolean) {
   if (tool.approverOnly && !isApprover) return text({ error: "approver_required" }, true);
   const agentId = String(args.agent_id ?? "");
   switch (tool.name) {
@@ -166,7 +168,7 @@ async function callTool(env: KernelHttpEnv, tool: Tool, args: JsonObject, actor:
     case "suspend_agent": return text(await setAgentStatus(env, agentId, "suspended", actor, String(args.reason ?? "")));
     case "resume_agent": return text(await setAgentStatus(env, agentId, "enabled", actor, "resumed"));
     case "set_agents_enabled": {
-      if (args.enabled === true && !isApprover) return text({ error: "approver_required" }, true);
+      if (args.enabled === true && !isOwner) return text({ error: "owner_required" }, true);
       if (typeof args.enabled !== "boolean") return text({ error: "enabled must be a boolean" }, true);
       return text(await setAgentsEnabled(env, args.enabled, actor));
     }
