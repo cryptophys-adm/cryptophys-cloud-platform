@@ -330,18 +330,24 @@ test("H3b-9. the Q8 backfill: earlier conversation.rated events become owner_rat
   assert.match(index, /if \(minute === 7\) \{\n\s*ctx\.waitUntil\(backfillChatRatingsOnce\(env\.DB\)/);
 });
 
-test("H3b-9b. the backfill finds a repeat in audit order, so ratings written in the same millisecond backfill the same, twice", async (t) => {
+test("H3b-9b. the backfill finds a repeat in audit order, so ratings written in the same millisecond backfill the same, twice", async () => {
   const s = setup();
   const audit = (outcome: string) =>
     appendAuditEvent(s.db, { event_type: "conversation.rated", actor: OWNER, subject: `conversation:${CNV}`, outcome, payload: { conversation_id: CNV, turn: 1 } });
   // Up at :00; up and down in the same millisecond at :01; up at :02. By time alone, the second up's newest row at or
   // before its time is the down written in the same millisecond, so a second run recorded it again.
-  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-01T10:00:00.000Z") });
-  for (const [r, at] of [["up", "10:00:00"], ["up", "10:00:01"], ["down", "10:00:01"], ["up", "10:00:02"]]) {
-    t.mock.timers.setTime(Date.parse(`2026-11-01T${at}.000Z`));
-    await audit(r);
-  }
-  t.mock.timers.reset();
+  // The clock is frozen by hand (the Forge's node:test shim has no mock.timers): Date.now() and new Date() read it.
+  const RealDate = Date;
+  try {
+    for (const [r, at] of [["up", "10:00:00"], ["up", "10:00:01"], ["down", "10:00:01"], ["up", "10:00:02"]]) {
+      const ms = RealDate.parse(`2026-11-01T${at}.000Z`);
+      globalThis.Date = class extends RealDate {
+        constructor(...a: unknown[]) { if (a.length === 0) super(ms); else super(...(a as [string])); }
+        static override now(): number { return ms; }
+      } as DateConstructor;
+      await audit(r);
+    }
+  } finally { globalThis.Date = RealDate; }
   assert.deepEqual((s.db.raw.prepare("SELECT substr(created_at, 12, 8) AS t FROM audit_events WHERE event_type = 'conversation.rated' ORDER BY rowid").all() as any[]).map((r) => r.t), ["10:00:00", "10:00:01", "10:00:01", "10:00:02"]);
   for (let i = 0; i < 3; i += 1) {
     assert.deepEqual(await backfillChatRatings(s.db), i === 0
