@@ -10,12 +10,13 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { migrationSqlOf, migrationsOf, storeBundles, pruneBundles, type BuiltModule, type BundleBucket } from "./bundles.ts";
 import { lockfileSource } from "./externals.ts";
-import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, scanSecrets, snapshotPathAllowed, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult, type WorkerStats } from "./runner/core.ts";
-import { isReady } from "../../control-plane-shared/src/forge-gate.ts";
+import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, runnerFingerprint, scanSecrets, snapshotPathAllowed, testFiles, type BundleStep, type SecretFinding, type Snapshot, type SuiteDeps, type SuiteResult, type WorkerStats } from "./runner/core.ts";
+import { coverageAccepted, coverageOfSteps, isReady, treeOfSteps, type Coverage } from "../../control-plane-shared/src/forge-gate.ts";
+import { TEST_DEPS_PREFIX, TEST_DEPS_SCHEMA, affectedTests, planChange, sameCommitTests, type ChangePlan, type DepsReader, type PriorRow } from "./check-plan.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
 
 /** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
-export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckLookup }
+export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckLookup; /** The runner fingerprint; computed from the toolchain when absent. */ fingerprint?: string }
 
 const HEX40 = /^[0-9a-f]{40}$/;
 export const RUNNER_ID = "forge-runner/1";
@@ -105,20 +106,68 @@ export interface CheckSteps {
    * addresses) and Worker Loader `get` calls, isolated reruns included. Informational; never part of the verdict.
    */
   workers?: WorkerStats;
+  /**
+   * Forge check CPU (2026-11-19). What the tests covered (forge-gate.ts Coverage; absent before: full), the commit's git
+   * tree, the runner fingerprint, the change request the run was for, the summed wall time of the run's test Worker
+   * requests (the Worker Loader exposes no CPU time), and, when a run of main took its test results from the same
+   * commit's full change request run under the same fingerprint, where they came from.
+   */
+  coverage?: Coverage;
+  tree?: string;
+  fingerprint?: string;
+  cr_id?: string;
+  worker_wall_ms?: number;
+  tests_reused?: { from: "change"; commit: string; finished_at: string | null };
 }
 export interface CheckRun extends SuiteResult {
   commit: string; status: "passed" | "failed"; guard_status: "clean" | "findings"; steps: CheckSteps;
   duration_ms: number; snapshot_files: number; snapshot_bytes: number;
 }
 
+/**
+ * How a check limits its tests (2026-11-19): `partial` runs only the head's test files a change can affect, given the
+ * base's dependency record; `reuseTests` takes the test results of the same commit's full change run (a run of main).
+ */
+export interface CheckOptions {
+  partial?: { base: string; changed: string[]; deps: Record<string, string[]> };
+  reuseTests?: PriorRow;
+  tree?: string; fingerprint?: string; crId?: string;
+}
+
+const NOT_TEST_FAILURE = /^(bundle |secret |typecheck |console-build )/;
+
 /** Snapshot, bundle and run one commit. Test failures are a result; only infrastructure errors throw. */
-export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<CheckDeps>, now = () => Date.now(), only?: string[], built?: BuiltModule[]): Promise<CheckRun> {
+export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<CheckDeps>, now = () => Date.now(), only?: string[], built?: BuiltModule[], opts: CheckOptions = {}): Promise<CheckRun> {
   const started = now();
   const snap = await snapshotFromArtifacts(repo, commit);
   lastSnapshot = { commit, snapshot: snap.snapshot };
   const suite = await deps(commit);
-  const { workers, ...result } = await runSuite(suite, snap.snapshot, only, commit);
-  if (result.files === 0) throw new Error("no_test_files");
+  const fingerprint = opts.fingerprint ?? suite.fingerprint ?? await runnerFingerprint(suite);
+  let coverage: Coverage = { mode: "full" };
+  let selected = only;
+  if (!selected && opts.partial) {
+    const all = testFiles(snap.snapshot);
+    const affected = affectedTests(all, opts.partial.deps, opts.partial.changed);
+    if (affected.length < all.length) {
+      selected = affected;
+      coverage = { mode: "partial", base: opts.partial.base, files: affected.length, of: all.length, changed: opts.partial.changed };
+    }
+  }
+  let suiteResult: SuiteResult;
+  const reused = opts.reuseTests;
+  if (reused) {
+    // The same commit, the same runner: its full change run's test results (coordinator 2026-11-19, item 5).
+    let tests: CheckSteps["tests"] | undefined;
+    let priorFailures: string[] = [];
+    try { tests = (JSON.parse(reused.steps ?? "null") as { tests?: CheckSteps["tests"] } | null)?.tests; } catch { tests = undefined; }
+    try { const f = JSON.parse(reused.failures ?? "[]"); if (Array.isArray(f)) priorFailures = f.map(String).filter((x) => !NOT_TEST_FAILURE.test(x)); } catch { priorFailures = []; }
+    if (!tests || !Number.isInteger(tests.files) || tests.files <= 0) throw new Error("reused_tests_unreadable");
+    suiteResult = { files: tests.files, pass: tests.pass, fail: tests.fail, skip: tests.skip, failures: priorFailures, ...(tests.isolated ? { isolated: tests.isolated } : {}) };
+  } else {
+    suiteResult = await runSuite(suite, snap.snapshot, selected, commit);
+  }
+  const { workers, worker_wall_ms: wallMs, ...result } = suiteResult;
+  if (result.files === 0 && coverage.mode !== "partial") throw new Error("no_test_files");
   const bundles = await bundleAllWorkers(suite.esbuild, snap.snapshot, built ? (dir, m) => { built.push({ dir, ...m }); } : undefined);
   const secrets = scanSecrets(snap.snapshot);
   // A type error fails the check, as it fails GitHub CI. A report that has not arrived yet leaves the
@@ -139,8 +188,52 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
       secrets,
       typecheck,
       ...(workers ? { workers } : {}),
+      coverage, ...(opts.tree ? { tree: opts.tree } : {}), fingerprint, ...(opts.crId ? { cr_id: opts.crId } : {}),
+      ...(wallMs !== undefined ? { worker_wall_ms: wallMs } : {}),
+      ...(reused ? { tests_reused: { from: "change" as const, commit: reused.commit_sha, finished_at: reused.finished_at } } : {}),
     },
     duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes,
+  };
+}
+
+/**
+ * A change request head whose tree passed a full run of the same runner (`reused`), or whose change is documentation
+ * only (`docs_only`): no snapshot, no test, no Worker bundle. The type-check is the commit's own report.
+ */
+async function checkWithoutTests(repo: ArtifactsReader, commit: string, suite: CheckDeps, plan: Extract<ChangePlan, { kind: "reused" | "docs_only" }>, opts: { tree: string; fingerprint: string; crId?: string }, now: () => number): Promise<CheckRun> {
+  const started = now();
+  const typecheck: TypecheckStep = suite.typecheck ? await suite.typecheck(commit) : { status: "not_configured" };
+  const source = plan.kind === "reused" ? plan.from : plan.baseRun;
+  const prior = JSON.parse(source.steps ?? "null") as Partial<CheckSteps> | null;
+  const bundles = prior?.bundles;
+  if (!bundles || !Array.isArray(bundles.failed) || !Array.isArray(bundles.bundles)) throw new Error("prior_bundles_unreadable");
+  let tests: CheckSteps["tests"] = { files: 0, pass: 0, fail: 0, skip: 0 };
+  let secrets: CheckSteps["secrets"];
+  let coverage: Coverage;
+  if (plan.kind === "reused") {
+    if (!prior?.tests || !prior.secrets) throw new Error("prior_steps_unreadable");
+    tests = prior.tests;
+    secrets = prior.secrets;
+    coverage = { mode: "reused", from: plan.from.commit_sha, tree: plan.tree };
+  } else {
+    // Only the changed documents are new; the base's run scanned the rest clean.
+    const texts: Snapshot = {};
+    for (const c of plan.changes) {
+      if (c.change === "deleted" || !c.head || !snapshotPathAllowed(c.path)) continue;
+      const blob = await repo.readBlob(c.head);
+      if (!blob) throw new Error("blob_not_found");
+      if (blob.size < MAX_FILE_BYTES) texts[c.path] = await blob.text();
+    }
+    secrets = scanSecrets(texts);
+    coverage = { mode: "docs_only", base: plan.base, paths: [...new Set(plan.changes.map((c) => c.path))].sort() };
+  }
+  const failures = [...stepFailures(typecheck), ...secrets.findings.map((f) => `secret ${f.rule} at ${f.path}:${f.line}`)];
+  return {
+    files: tests.files, pass: tests.pass, fail: tests.fail, skip: tests.skip, failures, commit,
+    status: tests.fail === 0 && bundles.failed.length === 0 && typecheck.status !== "failed" ? "passed" : "failed",
+    guard_status: secrets.findings.length === 0 ? "clean" : "findings",
+    steps: { tests, bundles, secrets, typecheck, coverage, tree: opts.tree, fingerprint: opts.fingerprint, ...(opts.crId ? { cr_id: opts.crId } : {}) },
+    duration_ms: now() - started, snapshot_files: 0, snapshot_bytes: 0,
   };
 }
 
@@ -230,8 +323,8 @@ export async function record(db: D1Database, run: CheckRun | { commit: string; s
   await applyStoredTypecheckReport(db, run.commit);
 }
 
-export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; BUNDLES?: BundleBucket }
-export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number };
+export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; BUNDLES?: BundleBucket & DepsReader }
+export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number; coverage?: string };
 
 /** One cron tick: check main's head, when nextCommit says it is due. */
 export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
@@ -245,14 +338,41 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
   try {
     const commit = await pick(repo);
     if (!commit) return { outcome: "up_to_date" };
+    // A run of main may take its test results from the same commit's finished change run (2026-11-19, item 5): read it
+    // before the claim replaces the row.
+    const prior = source === "main"
+      ? await env.DB.prepare("SELECT commit_sha, status, guard_status, files, pass, fail, skip, failures, steps, source, finished_at FROM forge_check_runs WHERE commit_sha = ?").bind(commit).first<PriorRow>()
+      : null;
     if (!(await claim(env.DB, commit, nowMs(), source))) return { outcome: "busy" };
     const started = nowMs();
     let status: string;
-    let counts: { pass?: number; fail?: number } = {};
+    let counts: { pass?: number; fail?: number; coverage?: string } = {};
     try {
       // ADR-0012 G2a: a commit of main keeps the Worker modules its check bundled, for the deploy.
       const built: BuiltModule[] | undefined = source === "main" && env.BUNDLES ? [] : undefined;
-      const run = await checkCommit(repo, commit, deps, nowMs, undefined, built);
+      const suite = await deps(commit);
+      const fingerprint = suite.fingerprint ?? await runnerFingerprint(suite);
+      const meta = await repo.readCommit(commit);
+      const tree = meta && HEX40.test(meta.treeHash) ? meta.treeHash : undefined;
+      const cr = source === "change"
+        ? await env.DB.prepare("SELECT cr_id FROM forge_change_requests WHERE head_sha = ? AND status = 'open' ORDER BY updated_at DESC, rowid DESC LIMIT 1").bind(commit).first<{ cr_id: string }>()
+        : null;
+      const base = { tree, fingerprint, crId: cr?.cr_id };
+      // A change request head: reused, docs-only, partial or full (check-plan.ts). A run of main is always full.
+      const plan: ChangePlan = source === "change" && tree ? await planChange(env.DB, repo, env.BUNDLES, commit, tree, fingerprint) : { kind: "full", why: "main" };
+      // A run of main taking over the same commit's change run reuses its full test results; the daily run (prior is a
+      // run of main) and a lost or failed run (not finished) run the suite (check-plan.ts sameCommitTests).
+      const reuseTests = source === "main" ? sameCommitTests(prior, commit, fingerprint) ?? undefined : undefined;
+      const run = plan.kind === "reused" || plan.kind === "docs_only"
+        ? await checkWithoutTests(repo, commit, suite, plan, { tree: tree!, fingerprint, crId: cr?.cr_id }, nowMs)
+        : await checkCommit(repo, commit, async () => suite, nowMs, undefined, built, { ...base, partial: plan.kind === "partial" ? plan : undefined, reuseTests });
+      // The full run's per-file dependencies, for the partial runs of change requests based on this commit.
+      // Only a passed, clean run is ever a base (check-plan.ts), so a failed one stores nothing.
+      if (env.BUNDLES && run.deps && run.status === "passed" && run.guard_status === "clean" && run.steps.coverage?.mode === "full" && !run.steps.tests_reused && tree) {
+        try {
+          await env.BUNDLES.put(`${TEST_DEPS_PREFIX}${commit}.json`, JSON.stringify({ schema: TEST_DEPS_SCHEMA, commit, tree, fingerprint, deps: run.deps }), { httpMetadata: { contentType: "application/json" } });
+        } catch { /* only an optimisation: a missing record runs the next change request in full */ }
+      }
       status = run.status;
       counts = { pass: run.pass, fail: run.fail };
       // The run is recorded after its bundles are stored (2026-11-16): a passed row of main is the deploy gate
@@ -273,6 +393,7 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
         }
       }
       await record(env.DB, run, nowMs());
+      if (run.steps.coverage && run.steps.coverage.mode !== "full") counts = { ...counts, coverage: run.steps.coverage.mode };
     } catch (e) {
       status = "error";
       await record(env.DB, { commit, status: "error", error: String((e as Error)?.message ?? e).slice(0, 300), duration_ms: nowMs() - started }, nowMs());
@@ -301,6 +422,13 @@ export interface CheckSummary {
   ready: boolean;
   /** The GitHub CI conclusion for the same commit, and whether the two agree (null while either is missing). */
   github: "success" | "failure" | null; agrees: boolean | null;
+  /**
+   * 2026-11-19: what the tests covered (full for runs before markers), whether the gate accepts that coverage for a
+   * merge (`ready` already requires it), the run's source and git tree, and its Dynamic Workers: groups, distinct
+   * Worker ids, Worker Loader requests and their summed wall time (CPU time is not exposed by the loader).
+   */
+  coverage?: Coverage; coverage_accepted?: boolean; source?: string | null; tree?: string | null;
+  workers?: { groups: number; ids: number; loads: number; wall_ms: number | null } | null;
 }
 
 /** ADR-0012 §5c: the Forge checks must agree with GitHub CI on this many consecutive commits. */
@@ -331,7 +459,15 @@ export function parity(rows: Array<{ commit: string; agrees: boolean | null }>):
   return { target: PARITY_TARGET, consecutive, compared, disagreements: disagreements.slice(0, 20) };
 }
 
-type JoinedRow = CheckRow & { github: "success" | "failure" | null };
+type JoinedRow = CheckRow & { github: "success" | "failure" | null; source?: string | null };
+
+function stepsWorkers(steps: string | null): CheckSummary["workers"] {
+  try {
+    const p = JSON.parse(steps ?? "null") as { workers?: WorkerStats; worker_wall_ms?: unknown } | null;
+    if (!p?.workers) return null;
+    return { groups: Number(p.workers.groups ?? 0), ids: Number(p.workers.bundles ?? 0), loads: Number(p.workers.loads ?? 0), wall_ms: typeof p.worker_wall_ms === "number" ? p.worker_wall_ms : null };
+  } catch { return null; }
+}
 
 function stepsBundles(steps: string | null): { workers: number; failed: number } | null {
   try {
@@ -360,12 +496,16 @@ function summary(r: JoinedRow): CheckSummary {
     return prefix ? `${prefix}${safeDiagnostics([failure.slice(prefix.length)])[0]}` : failure;
   });
   const typecheck = stepsTypecheck(r.steps);
+  const coverage = coverageOfSteps(r.steps);
+  const tree = treeOfSteps(r.steps);
+  const covered = coverageAccepted(coverage, { commit: r.commit_sha, source: r.source ?? "main", tree }, "merge");
   return {
     commit: r.commit_sha, status: r.status, runner: r.runner, files: r.files, pass: r.pass, fail: r.fail, skip: r.skip, failures,
     started_at: r.started_at, finished_at: r.finished_at, duration_ms: r.duration_ms,
     bundles: stepsBundles(r.steps), guard_status: r.guard_status ?? null, typecheck,
-    ready: isReady(r.status, r.guard_status ?? null, typecheck),
+    ready: isReady(r.status, r.guard_status ?? null, typecheck, covered),
     github: r.github ?? null, agrees: agreement(r.status, r.github ?? null),
+    coverage, coverage_accepted: covered, source: r.source ?? "main", tree, workers: stepsWorkers(r.steps),
   };
 }
 
