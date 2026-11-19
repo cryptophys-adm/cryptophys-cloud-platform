@@ -39,6 +39,10 @@ export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.f
   "decision.lean": { kind: "number", min: 0.05, max: 0.3 },
   "decision.min_rrr": { kind: "number", min: 1, max: 3 },
   "decision.min_confidence": { kind: "number", min: 0.3, max: 0.7 },
+  // The room guardrail in 1H average ranges, the trading mode's value in force (xauusd src/room-tuning.mjs; owner 2026-11-19:
+  // "guardrail room biarkan protocol learning dan knowledge yang melakukan adjustment secara dinamis", bounds 0.5 to 1.5).
+  // Mirrors Aether's src/doctrine.mjs (cryptophys-aether #35).
+  "decision.room_min_atr": { kind: "number", min: 0.5, max: 1.5 },
   "decision.witness_weights": { kind: "weights", keys: WITNESSES, max_each: 0.3 },
   "rooms.quorum_share_default": { kind: "number", min: 0.5, max: 0.6 },
   "room.m15_unverified_confidence_cap": { kind: "number", min: 0.3, max: 0.5 },
