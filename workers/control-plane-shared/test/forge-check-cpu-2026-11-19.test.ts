@@ -12,6 +12,8 @@ import { checkOf, tickWith, type ArtifactsReader, type ArtifactsTreeEntry, type 
 import { affectedTests, depHit, readTestDeps, TEST_DEPS_PREFIX } from "../../forge/src/check-plan.ts";
 import { runnerFingerprint, runSuite, type EsbuildLike, type ShimSources } from "../../forge/src/runner/core.ts";
 import { coverageAccepted, coverageOfSteps, forgeReady, isDocsOnlyPath, isReady, needsFullSuite, type Coverage } from "../src/forge-gate.ts";
+// @ts-ignore: a plain .js module without types (the runner's node:fs shim)
+import * as nodeFsShim from "../../forge/src/runner/shims/node-fs.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -384,7 +386,8 @@ test("CPU9. the runner records what each file reads: resolved imports (every can
   assert.deepEqual(r.deps![T + "b.test.ts"], ["*", T + "b.test.ts"].sort(), "a Worker that reported no reads may depend on anything");
   assert.equal(typeof r.worker_wall_ms, "number");
   // The node:fs shim records reads, listings and existence checks of the snapshot.
-  const shim = await import("data:text/javascript," + encodeURIComponent(read("workers/forge/src/runner/shims/node-fs.js")));
+  // A plain relative import: the Forge's test Workers cannot import a data: URL (2026-11-19, run of c0f1643).
+  const shim = nodeFsShim;
   const g = globalThis as Record<string, unknown>;
   g.__VFS = { "docs/a.md": "a", "workers/x/y.ts": "y" };
   g.__FS_READS = new Set<string>();
