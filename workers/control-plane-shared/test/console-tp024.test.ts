@@ -107,6 +107,8 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
   // HAIC H3c: the owner corrects a council's message, claim or option, or a typed proposal; no phrase either.
   ["kernel.council_correct", "kernel", "POST", "/v1/councils/{id}/corrections", true, null],
   ["kernel.proposal_correct", "kernel", "POST", "/v1/proposals/{id}/corrections", true, null],
+  // HAIC H3d: the teaching record, read only, operator-readable.
+  ["kernel.reputation", "kernel", "GET", "/v1/reputation", false, null],
   ["kernel.reports", "kernel", "GET", "/v1/reports", false, null],
   ["kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"],
   // Owner 2026-11-13: the Alerts page (Telegram alert channels), approvers only.
@@ -168,7 +170,7 @@ const EXPECTED_TABLE: [string, string, string, string, boolean, string | null][]
 ];
 const EXPECTED_IDS = EXPECTED_TABLE.map((r) => r[0]);
 
-test("1. route table: exactly the 95 ids with those fields, matching allow-list rows", async () => {
+test("1. route table: exactly the 96 ids with those fields, matching allow-list rows", async () => {
   // + the Observer's read-only view (owner 2026-11-14).
   // - the manual deploy route orchestrator.deploy (owner 2026-11-14).
   // - registry.upsert and registry.desired_version, + drift.service (owner 2026-11-15).
@@ -185,7 +187,8 @@ test("1. route table: exactly the 95 ids with those fields, matching allow-list 
   // + kernel.incidents (owner 2026-11-19, the Owner page's Incidents panel).
   // + kernel.corrections, kernel.correction_create (HAIC H3b, the corrections ledger).
   // + kernel.council_correct, kernel.proposal_correct (HAIC H3c, council and proposal corrections).
-  assert.equal(UI_ROUTES.length, 95);
+  // + kernel.reputation (HAIC H3d, the teaching record).
+  assert.equal(UI_ROUTES.length, 96);
   assert.deepEqual(UI_ROUTES.map((r) => r.id).sort(), [...EXPECTED_IDS].sort());
   const allowKey = (s: string, m: string, p: string) => `${s} ${m} ${p}`;
   const allowSet = new Set(CONSOLE_ALLOW_LIST.map((r) => allowKey(r.service, r.method, r.path)));
@@ -194,7 +197,7 @@ test("1. route table: exactly the 95 ids with those fields, matching allow-list 
     const matched = CONSOLE_ALLOW_LIST.some((a) => a.service === r.service && a.method === r.method && a.path.split("/").length === r.path.split("/").length && a.path.split("/").every((seg, i) => seg === "{id}" || seg === r.path.split("/")[i]));
     assert.ok(matched, `no allow-list match for ${r.id}`);
   }
-  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 95);
+  assert.equal(new Set(UI_ROUTES.map((r) => r.id)).size, 96);
   assert.ok(!UI_ROUTES.some((r) => r.id === "policy.evaluate" || (r.service === "policy" && r.method !== "GET")), "no UI route writes to the Policy Engine (HAIC H0a)");
   assert.ok(!UI_ROUTES.some((r) => r.id === "orchestrator.deploy"), "the manual deploy route is gone");
   assert.ok(!UI_ROUTES.some((r) => r.id === "registry.upsert" || r.id === "registry.desired_version"), "the registry edit routes are gone (owner 2026-11-15)");
@@ -312,7 +315,8 @@ test("8. no regressions: the TP-023 server surface is unchanged (allow-list, CSP
   // + the kernel's GET /v1/incidents (owner 2026-11-19).
   // + the kernel's GET and POST /v1/corrections (HAIC H3b).
   // + the kernel's POST /v1/councils/{id}/corrections and /v1/proposals/{id}/corrections (HAIC H3c).
-  assert.equal(CONSOLE_ALLOW_LIST.length, 93);
+  // + the kernel's GET /v1/reputation (HAIC H3d).
+  assert.equal(CONSOLE_ALLOW_LIST.length, 94);
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "policy" && a.method !== "GET"), "the Policy Engine is read only from the Console (HAIC H0a)");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.service === "registry" && a.method === "PUT"), "no registry write of a service record or desired version is forwarded");
   assert.ok(!CONSOLE_ALLOW_LIST.some((a) => a.path === "/mcp" || (a.service === "audit" && a.method === "POST")));

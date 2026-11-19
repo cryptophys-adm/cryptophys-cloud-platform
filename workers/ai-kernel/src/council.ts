@@ -24,6 +24,7 @@ import {
 } from "../../control-plane-shared/src/council.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { runTool, type ToolEnv } from "./conversation-tools.ts";
+import { COUNCIL_CORRECTIONS_DAYS, correctionKeysOf } from "./corrections-read.ts";
 import { draftFromCouncil, newProposalId } from "../../control-plane-shared/src/typed-proposal.ts";
 import { insertDraft } from "./proposals.ts";
 
@@ -298,6 +299,18 @@ export async function stepCouncil(env: CouncilEnv, store: CouncilStore, now = Da
       const flags = r.ok ? injectionFlags(r.data) : [];
       if (flags.length) await audit(db, "evidence_flagged", "system:council", s.session_id, "flagged", { tool: r.name, flags });
     }
+    // HAIC H3d (docs/design/HAIC-H3.md §5.1): the "Owner corrections" section, the owner's corrections in the last 30 days
+    // on the council's subjects (its seats, the moderator, an agent that proposed it) and on the refs the pack read. Each
+    // correction carries its own ref (ev:platform/correction/<id>), which a seat may cite; the section lists no ref of its
+    // own, so resolverOf resolves none of them and a claim that cites only corrections stays unverified: corrections add
+    // no confidence on their own, and the claim check is unchanged.
+    const keys = correctionKeysOf(items.filter((i) => i.ok));
+    const subjects = [...PERSONAS.map((p) => `agent:${p.agent}`), `agent:${MODERATOR}`, ...(s.proposal?.proposed_by ? [s.proposal.proposed_by] : []), ...keys.subjects];
+    const corrections = await runTool(env, { name: "owner_corrections", args: {} }, now,
+      { subjects, refs: [...(s.proposal?.refs ?? []), ...keys.refs], since: iso(now - COUNCIL_CORRECTIONS_DAYS * 86_400_000) });
+    items.push({ tool: corrections.name, ok: corrections.ok, refs: [], data: corrections.data, ...(corrections.error ? { error: corrections.error } : {}) });
+    const correctionFlags = corrections.ok ? injectionFlags(corrections.data) : [];
+    if (correctionFlags.length) await audit(db, "evidence_flagged", "system:council", s.session_id, "flagged", { tool: corrections.name, flags: correctionFlags });
     await store.put("evidence", items);
     await post(store, s, { at: iso(now), phase: "system", role: "system", author: "system:convener", reply_to: [], stance: null, claims: [], options: null, model: null, tokens: { in: 0, cached: 0, out: 0 },
       text: `Convened ${PERSONAS.length} agents (personas voiced by the council). Evidence read: ${items.map((i) => `${i.tool}${i.ok ? "" : " (unavailable)"}`).join(", ")}.` });

@@ -17,6 +17,7 @@ import {
 } from "../../control-plane-shared/src/conversation.ts";
 import { runTool, type ToolEnv, type ToolResult } from "./conversation-tools.ts";
 import { modelSubject, recordCorrection, turnRef } from "./corrections.ts";
+import { correctionKeysOf } from "./corrections-read.ts";
 
 export interface ConversationEnv extends ToolEnv { AI?: AiBinding; CHAT_DAILY_TURN_LIMIT?: string }
 /** The Durable Object's storage, as much of it as a conversation uses. */
@@ -147,11 +148,13 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
 
   const plan = await engine.run(planTask, { question, history, tools: catalog }, `chat:${id}:${n}:plan`);
   if (plan.status === "ok") add(plan.usage);
-  const planned = plan.status === "ok" ? plan.data.tools : [];
+  // HAIC H3d: owner_corrections matches the subjects and refs of the turn's other tool results, so it runs after them.
+  const plannedAll = plan.status === "ok" ? plan.data.tools : [];
+  const planned = [...plannedAll.filter((c) => c.name !== "owner_corrections"), ...plannedAll.filter((c) => c.name === "owner_corrections")];
   const results: ToolResult[] = [];
   const injection = new Set<string>();
   for (const call of planned) {
-    const r = await runTool(env, call, now);
+    const r = await runTool(env, call, now, call.name === "owner_corrections" ? correctionKeysOf(results.filter((x) => x.ok && x.name !== "owner_corrections")) : {});
     results.push(r);
     await audit(db, r.ok ? "tool_called" : "tool_refused", actor, id, r.ok ? "ok" : "refused", { turn: n, tool: r.name, args: call.args, refs: r.refs.length, error: r.error ?? null });
     const flags = r.ok ? injectionFlags(r.data) : [];

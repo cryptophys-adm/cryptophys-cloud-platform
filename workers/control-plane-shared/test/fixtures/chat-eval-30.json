@@ -128,9 +128,10 @@
     },
     {
       "id": "q11",
-      "question": "Is the evolver registered, and what may it do?",
+      "question": "Is the evolver registered, what may it do, and have I corrected any of its outputs?",
       "expect_tools": [
-        "agents"
+        "agents",
+        "owner_corrections"
       ],
       "expect_ref_prefixes": [
         "ev:platform/agents@"

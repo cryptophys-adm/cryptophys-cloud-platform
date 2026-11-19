@@ -11,8 +11,14 @@ import { fileURLToPath } from "node:url";
 
 const WORKERS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (p: string) => readFileSync(join(WORKERS, p), "utf8");
-/** The corrections modules: the correction.v1 contract (H3a) and the kernel's ledger (H3b, H3c). Add any new one here. */
-const MODULES = ["control-plane-shared/src/correction.ts", "ai-kernel/src/corrections.ts"];
+/**
+ * The corrections modules: the correction.v1 contract (H3a), the kernel's ledger (H3b, H3c), and since H3d the pure
+ * teaching record and the kernel's reads of the ledger (GET /v1/reputation, the chat tool, the council's section). Add
+ * any new one here.
+ */
+const MODULES = ["control-plane-shared/src/correction.ts", "ai-kernel/src/corrections.ts", "control-plane-shared/src/teaching-record.ts", "ai-kernel/src/corrections-read.ts"];
+/** H3d's modules only read: they write no table at all, not even the corrections table or the audit chain. */
+const READ_ONLY = ["control-plane-shared/src/teaching-record.ts", "ai-kernel/src/corrections-read.ts"];
 /** Modules that propose, draft, decide, set or execute: a corrections module never reaches them. */
 const WRITERS = [
   "control-plane-shared/src/consensus-rules.ts", "control-plane-shared/src/consensus-exec.ts", "control-plane-shared/src/consensus-vote.ts",
@@ -43,10 +49,10 @@ function closure(file: string): Set<string> {
 }
 const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
-test("H3-B1. the corrections modules are the contract and the ledger; every writer this test names exists", () => {
+test("H3-B1. the corrections modules are the contract, the ledger, the teaching record and the ledger's reads; every writer this test names exists", () => {
   const found = [
-    ...readdirSync(join(WORKERS, "control-plane-shared/src")).filter((f) => /correction/i.test(f)).map((f) => `control-plane-shared/src/${f}`),
-    ...readdirSync(join(WORKERS, "ai-kernel/src")).filter((f) => /correction/i.test(f)).map((f) => `ai-kernel/src/${f}`),
+    ...readdirSync(join(WORKERS, "control-plane-shared/src")).filter((f) => /correction|teaching|reputation/i.test(f)).map((f) => `control-plane-shared/src/${f}`),
+    ...readdirSync(join(WORKERS, "ai-kernel/src")).filter((f) => /correction|teaching|reputation/i.test(f)).map((f) => `ai-kernel/src/${f}`),
   ].sort();
   assert.deepEqual(found, [...MODULES].sort(), "a new corrections module is listed in MODULES, so this test reads it");
   for (const w of WRITERS) assert.ok(existsSync(join(WORKERS, w)), `${w} exists (the list would otherwise check nothing)`);
@@ -70,6 +76,13 @@ test("H3-B2. no corrections module imports a consensus, typed-proposal, policy-p
   ]);
   // The contract is pure: the ev: ref grammar (the shared council contract, not the kernel's council) and the redaction rules.
   assert.deepEqual(importsOf("control-plane-shared/src/correction.ts").sort(), ["control-plane-shared/src/conversation.ts", "control-plane-shared/src/council.ts"]);
+  // H3d: the teaching record imports only the contract's types; the ledger's reads import the chat's redaction, the
+  // teaching record and the D1 types.
+  assert.deepEqual(importsOf("control-plane-shared/src/teaching-record.ts"), ["control-plane-shared/src/correction.ts"]);
+  assert.match(read("control-plane-shared/src/teaching-record.ts"), /^import type \{[^}]+\} from "\.\/correction\.ts";$/m, "types only");
+  assert.deepEqual(importsOf("ai-kernel/src/corrections-read.ts").sort(), [
+    "control-plane-shared/src/conversation.ts", "control-plane-shared/src/teaching-record.ts", "control-plane-shared/src/types.ts",
+  ]);
 });
 
 test("H3-B3. no corrections module calls a writer or writes anything but the corrections table", () => {
@@ -81,8 +94,24 @@ test("H3-B3. no corrections module calls a writer or writes anything but the cor
     assert.doesNotMatch(c, /\b(typed_proposals|knowledge_proposals|consensus_proposals|policy_parameters|autonomy_levels|agents|agent_memories|evolution_intents_v2)\b\s*(?:SET|\(|VALUES)/i, `${m}: no write to another table`);
   }
   assert.doesNotMatch(code(read("control-plane-shared/src/correction.ts")), /\.prepare\(|fetch\(/, "the contract stores nothing and calls nothing");
+  // H3d reads only: no INSERT at all, no audit event, and the teaching record touches no storage, network or clock.
+  for (const m of READ_ONLY) {
+    const c = code(read(m));
+    assert.doesNotMatch(c, /\bINSERT\b|appendAuditEvent|recordCorrection|\.run\(\)/i, `${m} writes nothing`);
+  }
+  assert.doesNotMatch(code(read("control-plane-shared/src/teaching-record.ts")), /\.prepare\(|fetch\(|Date\.now\(|new Date\(\)|Math\.random|crypto\./, "teachingRecord() is pure");
   // A record carries no parameter (§4.1): the contract's forbidden keys include params, values and change.
   assert.match(read("control-plane-shared/src/correction.ts"), /const FORBIDDEN_KEYS = new Set\(\["params", "parameters", "values", "value", "change", "changes"/);
+});
+
+test("H3-B5. the chat and the council reach the ledger only through its reads (H3d); the claim check is not one of them", () => {
+  const uses = (file: string) => [...read(file).matchAll(/^import \{([^}]+)\} from "\.\/corrections(-read)?\.ts";/gm)].flatMap((m) => m[1].split(",").map((s) => s.trim()).filter(Boolean)).sort();
+  assert.deepEqual(uses("ai-kernel/src/conversation-tools.ts"), ["ownerCorrections", "ownerCorrectionsSection", "type CorrectionKeys"]);
+  assert.deepEqual(uses("ai-kernel/src/council.ts"), ["COUNCIL_CORRECTIONS_DAYS", "correctionKeysOf"]);
+  assert.deepEqual(uses("ai-kernel/src/conversation.ts"), ["correctionKeysOf", "modelSubject", "recordCorrection", "turnRef"], "the chat writes only its rating (H3b) and reads the keys (H3d)");
+  assert.deepEqual(uses("ai-kernel/src/index.ts").filter((u) => !/^(CorrectionError|backfillChatRatingsOnce|correctionInputFromBody|listCorrections|recordCorrection|recordCouncilCorrection|recordProposalCorrection|type Recorded)$/.test(u)), ["reputationView"]);
+  // The shared claim check (council.v1) knows nothing of corrections.
+  assert.doesNotMatch(read("control-plane-shared/src/council.ts"), /correction/i);
 });
 
 test("H3-B4. the reject hooks reach the ledger only through recordRejectReason; the typed-proposal contract is untouched by H3c", () => {
