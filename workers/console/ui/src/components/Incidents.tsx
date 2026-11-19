@@ -7,7 +7,7 @@ import { ago } from "../lib/format";
 
 /**
  * Owner 2026-11-19: the Incidents panel. Each incident (a critical report, or a native deploy that failed without a
- * full restore) with its status derived by the kernel (open, mitigated once acknowledged, resolved once a later deploy
+ * full restore, or since 2026-11-19 a production problem no agent handled) with its status derived by the kernel (open, mitigated once acknowledged, resolved once a later deploy
  * of the unit succeeded and its Workers show no drift), one joined timeline, and the post-incident summary when one has
  * been written. Read only: GET /v1/incidents.
  */
@@ -66,7 +66,7 @@ export function IncidentsPanel() {
   return (
     <Panel title="Incidents" icon={<History className="h-3.5 w-3.5 text-cyan-300" />}
       right={<Badge tone={active ? "red" : "slate"}>{active ? `${active} active` : String(rows.length)}</Badge>}>
-      <p className="mb-2 text-[11px] text-slate-500">Critical reports and deploys that failed without a full restore, in the last {typeof data?.window_days === "number" ? data.window_days : 30} days. The status follows the records: mitigated once acknowledged, resolved once a later deploy succeeded and the Workers show no drift.</p>
+      <p className="mb-2 text-[11px] text-slate-500">Critical reports, deploys that failed without a full restore and production problems no agent handled, in the last {typeof data?.window_days === "number" ? data.window_days : 30} days. The status follows the records: mitigated once acknowledged, resolved once a later deploy succeeded and the Workers show no drift, or once the problem is no longer listed.</p>
       {loading && !data ? <Skeleton rows={2} /> : error && !data ? <Empty>{error}</Empty> : rows.length === 0 ? <Empty>No incident in this window.</Empty> : (
         <div className="space-y-2">{rows.map((i, n) => <Incident key={i.incident_id} i={i} initiallyOpen={n === 0 && i.status !== "resolved"} />)}</div>
       )}

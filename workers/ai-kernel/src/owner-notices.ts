@@ -71,7 +71,14 @@ export interface Notice {
   link: string;
   /** How many items the notice is about. For the owner topics `lines` lists only the top TOP_LINES of them (HAIC H0d). */
   count: number;
+  /**
+   * Owner 2026-11-19 (Incidents from production problems): production_unhandled names each problem, so the notice events
+   * keep a history of when each one appeared and went (ai-kernel/src/incidents.ts). At most NOTICE_ITEMS_MAX.
+   */
+  items?: NoticeItem[];
 }
+export interface NoticeItem { key: string; code: string; subject: string; detail: string; since: string | null }
+export const NOTICE_ITEMS_MAX = 20;
 
 /**
  * HAIC H0d (docs/design/HAIC-H0-H1.md §2.5): an owner notice lists its top items by the inbox's score, each with a deep
@@ -291,6 +298,9 @@ async function productionUnhandled(db: D1Database, now: number): Promise<Notice>
     fingerprint: await fp(problems.map((p) => `${p.code}:${p.subject}`)),
     title: n ? `A production problem no agent is handling: ${n} item(s)` : "Every production problem is handled by an agent or waits for your approval",
     lines: rankedLines(rankInbox({ ...EMPTY_RANK, production_problems: problems }, now), now), link: OWNER_PANEL_URL, count: n,
+    items: problems.slice(0, NOTICE_ITEMS_MAX).map((p) => ({
+      key: `${p.code}:${p.subject}`.slice(0, 200), code: String(p.code), subject: String(p.subject).slice(0, 160), detail: String(p.detail ?? "").slice(0, 300), since: p.since ?? null,
+    })),
   };
 }
 
@@ -440,7 +450,7 @@ export async function reconcileNotices(env: NoticeEnv, now = Date.now(), opts: {
     const { delivery, channels } = await deliver(env, change, n);
     await appendAuditEvent(env.DB, {
       event_type: `owner.notice_${change}`, actor: "agent:supervisor", subject: n.topic, outcome: change,
-      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.count, title: n.title, delivery, channels },
+      payload: { fingerprint: n.active ? n.fingerprint : "", count: n.count, title: n.title, delivery, channels, ...(n.items ? { items: n.active ? n.items : [] } : {}) },
     });
     out.push({ topic: n.topic, change, delivery });
   }

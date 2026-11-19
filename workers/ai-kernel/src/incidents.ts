@@ -10,6 +10,12 @@
 // restored, Durable Object migrations), the report, its acknowledgement, every deploy of the unit refused on every path
 // (audit deployment.no_path), recovery plans for the unit's Workers and how they ended, the first later deploy of the
 // unit that succeeded, and the drift of the unit's Workers since.
+//   - a production problem no agent is handling (owner 2026-11-19, "Incidents dari masalah produksi"): each item of the
+//     production_unhandled notice events (owner-notices.ts keeps `items` in their payload) is an episode from the event
+//     that first lists it to the event that no longer does. An episode about a Worker of an open (or not yet resolved)
+//     deploy incident joins that incident's timeline; any other one is its own incident (inc_p:<code>:<subject>@<opened>),
+//     open while listed, resolved once a later notice event no longer lists it. break_glass_deployed is a notice, not an
+//     incident: it only joins a deploy incident's timeline.
 // Status is derived, never typed:
 //   resolved   a later deploy of the unit succeeded and the latest drift observation of each Worker of the unit, taken
 //              after it, is clean (a report without a deploy: a later "Resolved: <subject>" report);
@@ -153,6 +159,48 @@ async function reportIncident(db: D1Database, id: string, report: ReportRow): Pr
   };
 }
 
+interface ProblemEpisode { key: string; code: string; subject: string; detail: string; opened_at: string; resolved_at: string | null }
+const NOTICE_EVENTS = "('owner.notice_opened', 'owner.notice_changed', 'owner.notice_closed')";
+/** Not incidents of their own: notices that only say something happened (a break-glass deploy succeeded). */
+const NOT_AN_INCIDENT: ReadonlySet<string> = new Set(["break_glass_deployed"]);
+
+/** Episodes of each production problem, from the production_unhandled notice events that carry `items`. */
+async function problemEpisodes(db: D1Database, since: string, now: number): Promise<ProblemEpisode[]> {
+  const events = await rows<{ created_at: string; payload_json: string | null }>(db,
+    `SELECT created_at, payload_json FROM audit_events WHERE event_type IN ${NOTICE_EVENTS} AND subject = 'production_unhandled' AND created_at >= ? AND created_at <= ?
+      ORDER BY created_at, rowid LIMIT 500`, since, iso(now));
+  const open = new Map<string, ProblemEpisode>();
+  const done: ProblemEpisode[] = [];
+  for (const e of events) {
+    const items = parse(e.payload_json).items;
+    if (!Array.isArray(items)) continue; // an event written before items were kept says nothing per problem
+    const present = new Set<string>();
+    for (const it of items) {
+      if (!it || typeof it.key !== "string" || typeof it.code !== "string") continue;
+      present.add(it.key);
+      const cur = open.get(it.key);
+      if (cur) { cur.detail = clip(it.detail, 300) || cur.detail; continue; }
+      const sinceAt = typeof it.since === "string" && it.since <= e.created_at && it.since >= since ? it.since : e.created_at;
+      open.set(it.key, { key: it.key, code: it.code.slice(0, 60), subject: clip(it.subject, 160), detail: clip(it.detail, 300), opened_at: sinceAt, resolved_at: null });
+    }
+    for (const [k, ep] of open) if (!present.has(k)) { ep.resolved_at = e.created_at; done.push(ep); open.delete(k); }
+  }
+  return [...done, ...open.values()];
+}
+
+function problemIncident(ep: ProblemEpisode): Incident {
+  const unit = ep.subject.startsWith("cryptophys-") ? unitForService(ep.subject) : null;
+  const timeline: IncidentEvent[] = [{ at: ep.opened_at, kind: "problem", text: `Production problem (${ep.code}): ${ep.detail}`.slice(0, 600) }];
+  if (ep.resolved_at) timeline.push({ at: ep.resolved_at, kind: "problem_cleared", text: `No longer listed as a production problem (${ep.code})` });
+  return {
+    incident_id: `inc_p:${ep.key}@${ep.opened_at}`.slice(0, 260), title: ep.detail || `${ep.code}: ${ep.subject}`,
+    status: ep.resolved_at ? "resolved" : "open",
+    status_reason: ep.resolved_at ? "no longer listed as a production problem" : "listed as a production problem no agent is handling",
+    opened_at: ep.opened_at, mitigated_at: null, resolved_at: ep.resolved_at, unit: unit?.unit ?? null,
+    services: unit ? [ep.subject] : [], commit: null, report_id: null, request_id: null, timeline, summary: null,
+  };
+}
+
 /** The incidents of the last INCIDENT_WINDOW_MS, newest first. */
 export async function listIncidents(db: D1Database, now = Date.now()): Promise<IncidentsView> {
   const since = iso(now - INCIDENT_WINDOW_MS);
@@ -176,6 +224,17 @@ export async function listIncidents(db: D1Database, now = Date.now()): Promise<I
     }
   }
   for (const f of failed) if (!covered.has(f.request_id)) incidents.push(await deployIncident(db, `inc_${f.request_id}`, f, null, now));
+  // Production problems: joined to the deploy incident of their Worker while it is unresolved, else their own incident.
+  for (const ep of await problemEpisodes(db, since, now)) {
+    const host = incidents.find((i) => i.request_id && i.services.includes(ep.subject) && ep.opened_at >= i.opened_at && (!i.resolved_at || ep.opened_at <= i.resolved_at));
+    if (host) {
+      host.timeline.push(...problemIncident(ep).timeline);
+      host.timeline.sort((a, b) => a.at.localeCompare(b.at));
+      host.timeline = host.timeline.slice(0, TIMELINE_LIMIT);
+    } else if (!NOT_AN_INCIDENT.has(ep.code)) {
+      incidents.push(problemIncident(ep));
+    }
+  }
   incidents.sort((a, b) => b.opened_at.localeCompare(a.opened_at));
   return { schema: "incidents.v1", observed_at: iso(now), window_days: INCIDENT_WINDOW_MS / 86_400_000, incidents: incidents.slice(0, INCIDENT_LIMIT) };
 }

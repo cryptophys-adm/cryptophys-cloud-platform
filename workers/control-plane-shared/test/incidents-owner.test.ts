@@ -8,6 +8,7 @@ import { CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, APPROVER_EMAIL, baseEnv, ca
 import { listIncidents, INCIDENT_WINDOW_MS } from "../../ai-kernel/src/incidents.ts";
 import { INCIDENT_SUMMARIES } from "../../ai-kernel/src/incident-summaries.ts";
 import { unitForService } from "../src/deploy-units.ts";
+import { readFileSync } from "node:fs";
 import kernel from "../../ai-kernel/src/index.ts";
 
 type Db = ReturnType<typeof migratedDb>;
@@ -117,4 +118,40 @@ test("IN4. GET /v1/incidents: operators read, other methods are refused", async 
   assert.equal(r.body.incidents[0].incident_id, `inc_${REPORT}`);
   assert.equal((await call(kernel, env as never, req("POST", "/v1/incidents", {}, OPERATOR_JWT))).status, 405);
   assert.equal((await call(kernel, env as never, req("GET", "/v1/incidents", undefined, null))).status, 403);
+});
+
+function notice(db: Db, type: string, items: object[] | undefined, created: string) {
+  audit(db, type, "production_unhandled", { fingerprint: "f", count: items?.length ?? 0, title: "t", delivery: "sent", channels: {}, ...(items ? { items } : {}) }, created);
+}
+const item = (code: string, subject: string, detail: string, since: string | null = null) => ({ key: `${code}:${subject}`, code, subject, detail, since });
+
+test("IN5. owner 2026-11-19: production problems are incidents from the notice history; one about a Worker of an unresolved deploy incident joins its timeline", async () => {
+  const db = migratedDb();
+  incidentOf2026_11_18(db);
+  // An event written before items were kept says nothing per problem.
+  notice(db, "owner.notice_opened", undefined, at("2026-11-18T22:10:00.000Z"));
+  notice(db, "owner.notice_changed", [
+    item("self_unhealthy", "cryptophys-ai-kernel", "AI Kernel is drifted or unhealthy (version_mismatch)", at("2026-11-18T22:05:00.000Z")),
+    item("git_backup_unverified", "run_1", "Git backup failed git bundle verify"),
+    item("break_glass_deployed", "break_glass:dep_x", "Break-glass deploy succeeded"),
+  ], at("2026-11-18T22:22:00.000Z"));
+  notice(db, "owner.notice_changed", [item("self_unhealthy", "cryptophys-ai-kernel", "AI Kernel is drifted or unhealthy (version_mismatch)")], at("2026-11-19T01:22:00.000Z"));
+  notice(db, "owner.notice_closed", [], at("2026-11-19T05:52:00.000Z"));
+  const view = await listIncidents(db as never, NOW);
+  const deploy = view.incidents.find((i) => i.incident_id === `inc_${REPORT}`)!;
+  assert.deepEqual(deploy.timeline.filter((e) => e.kind.startsWith("problem")).map((e) => [e.kind, e.at]),
+    [["problem", "2026-11-18T22:05:00.000Z"], ["problem_cleared", "2026-11-19T05:52:00.000Z"]], "the kernel's drift joins the deploy incident");
+  const own = view.incidents.filter((i) => i.incident_id.startsWith("inc_p:"));
+  assert.deepEqual(own.map((i) => [i.incident_id, i.status, i.opened_at, i.resolved_at]),
+    [["inc_p:git_backup_unverified:run_1@2026-11-18T22:22:00.000Z", "resolved", "2026-11-18T22:22:00.000Z", "2026-11-19T01:22:00.000Z"]], "break_glass_deployed is not an incident");
+  // A problem still listed is open.
+  notice(db, "owner.notice_opened", [item("deploys_stalled", "deploy_stall:none", "Deploys stalled", at("2026-11-19T06:00:00.000Z"))], at("2026-11-19T06:22:00.000Z"));
+  const again = (await listIncidents(db as never, NOW)).incidents.find((i) => i.incident_id.startsWith("inc_p:deploys_stalled"))!;
+  assert.deepEqual([again.status, again.opened_at, again.status_reason], ["open", "2026-11-19T06:00:00.000Z", "listed as a production problem no agent is handling"]);
+});
+
+test("IN6. the production_unhandled notice events keep each problem as an item (key, code, subject, detail, since)", () => {
+  const src = readFileSync(new URL("../../ai-kernel/src/owner-notices.ts", import.meta.url), "utf8");
+  assert.match(src, /items: n\.active \? n\.items : \[\]/);
+  assert.match(src, /key: `\$\{p\.code\}:\$\{p\.subject\}`/);
 });
