@@ -4,7 +4,7 @@
   "title": "The Self-Improvement Protocol: no AI approves what it proposed",
   "adr_file": "architecture/adr/0021-self-improvement-protocol.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Accepted 2026-11-20 (owner: \"3. All protocols live\"). The platform holds the validator gates as doctrine bounds; xauusd and Aether build the validator, the registry and the loop.",
+  "lifecycle_note": "Accepted 2026-11-20 (owner: \"3. All protocols live\"; tamper evidence \"4a semuanya\"). The platform holds the validator gates and the daily ledger anchors; xauusd and Aether build the validator, the registry and the loop.",
   "phases": [
     {
       "id": "D",
@@ -35,6 +35,15 @@
         "quote": "Sekarang breakglass urgent jadi langsung live"
       },
       "note": "a documented decision; the floor-drop and the retro-validation are built in xauusd"
+    },
+    {
+      "id": "T",
+      "title": "Daily ledger anchors in the locked R2 bucket, with OpenTimestamps proofs",
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "ledger.anchor_written"
+      },
+      "note": "recovery-manager/src/anchor.ts; bucket cryptophys-ledger-anchors, locked 3 years; proven by its first daily anchor"
     },
     {
       "id": "V",

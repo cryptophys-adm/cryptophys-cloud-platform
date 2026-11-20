@@ -15,6 +15,7 @@ import { EVENTS, deadline, notify, terminate, windowClosed, windows, type Lifecy
 import type { RecoveryDeployBinding } from "./autonomous.ts";
 import { backupIfStale, type R2BucketLike } from "./backup.ts";
 import { archiveRetiredTables, type ArchiveBucket } from "./archive.ts";
+import { anchorTick, type AnchorBucket } from "./anchor.ts";
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
@@ -35,6 +36,8 @@ export interface Env extends BaseEnv, LifecycleEnv {
   DEPLOY?: RecoveryDeployBinding;
   /** Private R2 bucket for the Cloudflare-native D1 backup fallback (backup.ts). */
   BACKUPS?: R2BucketLike & ArchiveBucket;
+  /** The locked R2 bucket cryptophys-ledger-anchors (anchor.ts): daily ledger heads, kept 3 years. */
+  ANCHORS?: AnchorBucket;
 }
 
 const SERVICE = "cryptophys-recovery-manager";
@@ -322,6 +325,11 @@ export default {
         await appendAuditEvent(env.DB, { event_type: "backup.archive_failed", actor: "cryptophys-recovery-manager", subject: "archive/retired-signal-tables/", outcome: "failed", payload: { message } })
           .catch(() => undefined);
       },
+    ));
+    // Owner 2026-11-20 ("4a semuanya", ADR-0021): the daily heads of the hash-chained ledgers, outside D1 (anchor.ts).
+    ctx.waitUntil(anchorTick(env).then(
+      (r) => { if (r.outcome !== "not_due") console.log(JSON.stringify({ event: "ledger_anchor", ...r })); },
+      (e: unknown) => console.error(JSON.stringify({ event: "ledger_anchor", status: "failed", message: String((e as Error)?.message ?? e).slice(0, 300) })),
     ));
     // Retire draft redeploy plans that a later deploy made unnecessary (superseded.ts).
     ctx.waitUntil(retireSupersededDrafts(env.DB).then(

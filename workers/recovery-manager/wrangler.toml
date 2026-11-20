@@ -70,6 +70,13 @@ entrypoint = "DeployRpc"
 binding = "BUNDLES"
 bucket_name = "cryptophys-forge-bundles"
 
+# Owner 2026-11-20 ("4a semuanya", ADR-0021 "Tamper evidence"): the daily heads of the hash-chained ledgers (the
+# platform's audit_events and xauusd's signal ledger) with their OpenTimestamps proofs (src/anchor.ts). The bucket's
+# lock rule keeps every object 3 years: nothing can delete or overwrite an anchor in that time.
+[[r2_buckets]]
+binding = "ANCHORS"
+bucket_name = "cryptophys-ledger-anchors"
+
 [[services]]
 binding = "DRIFT"
 service = "cryptophys-drift-detector"

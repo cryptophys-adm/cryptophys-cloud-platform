@@ -55,11 +55,25 @@ The rule is enforced in code, not only stated:
   - a retro-validation: once the validator exists, it judges the change like any candidate. A change that fails goes back to research, and its weights go to their floor.
 - **First use.** xauusd's Positioning & Liquidity analyst (2026-11-20). The owner's words, given in the xauusd session: "Sekarang breakglass urgent jadi langsung live". Aether moves its weights inside the hard bounds that the analyst's change sets in `DOCTRINE_BOUNDS`.
 
+## Tamper evidence (owner, 2026-11-20: "4a semuanya")
+
+- **The rule.** The registry entries and validator verdicts are written to a hash-chained log anchored outside D1, and a broken chain blocks auto-deploys until it is verified.
+- **xauusd's signal ledger** becomes an append-only, hash-chained `ledger_events` log, on the design of the platform's audit chain (`control-plane-shared/src/audit.ts`).
+- **The anchor bucket.** The R2 bucket `cryptophys-ledger-anchors` has a bucket lock rule: every object is kept 3 years (1095 days). In that time no object can be deleted or overwritten, by anyone, the owner included.
+- **The daily anchors.** Once per UTC day the Recovery Manager (`recovery-manager/src/anchor.ts`) writes two kinds of anchor:
+  - the head of the platform's own `audit_events` chain, after verifying the chain, at `platform/audit_events/<day>.json`. A chain that does not verify is still anchored, with `chain_valid: false`;
+  - the head of each xauusd ledger that xauusd publishes as a `ledger_anchor.v1` report (`reports.publish`, kind `xauusd_digest`; body `ledger`, `day`, `head_hash`, `events`), at `xauusd/<ledger>/<day>.json`.
+- **Write-only for xauusd.** xauusd gets no binding to the bucket. It can only publish a head, through a grant it already holds, so it can neither read nor delete an anchor, and its external ceiling is unchanged.
+- **OpenTimestamps.** Each anchor's SHA-256 is submitted to the public OpenTimestamps calendars (a and b), and each calendar's pending proof is stored next to the anchor as `<key>.<calendar>.ots`. `ots upgrade` later completes a proof against Bitcoin. An upgraded proof is written under a new key, because the lock refuses overwrites.
+- **Audit.** Every anchor is audited as `ledger.anchor_written`, with its key, SHA-256 and head. A failure is audited as `ledger.anchor_failed`.
+- **What a broken chain blocks.** On the platform, a broken audit chain already blocks every consensus action, auto-deploys included (the evidence `audit_valid`). In xauusd and Aether, a broken ledger blocks the loop's auto-deploys until it is verified.
+
 ## Costs
 
 - **CPU.** Backtests and walk-forward runs are scheduled off-peak, so they do not compete with live trading.
 - **Model tokens.** Research and candidate building only, under a daily cap. The validator spends none.
 - **D1.** Candidates, verdicts and reasons are archived in D1, bounded by retention like every other ledger.
+- **R2.** A few kilobytes of anchors and proofs a day, kept 3 years.
 
 ## Consequences
 
