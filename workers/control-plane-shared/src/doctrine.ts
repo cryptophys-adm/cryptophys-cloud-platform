@@ -72,6 +72,28 @@ export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.f
   "omega.max_positions": { kind: "integer", min: 1, max: 3 },
   "omega.max_daily_loss_pct": { kind: "number", min: 1, max: 5 },
   "omega.risk_pct": { kind: "number", min: 0.1, max: 2 },
+  // ADR-0020 Amendment 7 (owner 2026-11-20; xauusd RFC_OMEGA_LIMIT_ENTRY, #496/#497): Omega's resting limit entries,
+  // one fact per trading mode, learned inside these bounds. life: integer minutes from the EA's placed_ms to deletion;
+  // move_max_atr: total move toward price in ATR(14) of closed 15m bars; cancel_share_drop: absolute drop of the order
+  // side's share of the Decision Engine's weighted witness quorum since the placing decision; band: the limit's distance
+  // from the current ask/bid as a fraction of the placing plan's |entry - stop|. The names avoid the Policy Engine's
+  // prohibited words (K2). No single (mode-less) fact is bounded.
+  "omega.limit_life_min_scalp": { kind: "integer", min: 15, max: 60 },
+  "omega.limit_life_min_intraday": { kind: "integer", min: 30, max: 240 },
+  "omega.limit_life_min_swing": { kind: "integer", min: 60, max: 720 },
+  "omega.limit_life_min_range": { kind: "integer", min: 30, max: 240 },
+  "omega.limit_move_max_atr_scalp": { kind: "number", min: 0, max: 0.5 },
+  "omega.limit_move_max_atr_intraday": { kind: "number", min: 0, max: 0.5 },
+  "omega.limit_move_max_atr_swing": { kind: "number", min: 0, max: 0.5 },
+  "omega.limit_move_max_atr_range": { kind: "number", min: 0, max: 0.5 },
+  "omega.limit_cancel_share_drop_scalp": { kind: "number", min: 0.03, max: 0.1 },
+  "omega.limit_cancel_share_drop_intraday": { kind: "number", min: 0.03, max: 0.1 },
+  "omega.limit_cancel_share_drop_swing": { kind: "number", min: 0.03, max: 0.1 },
+  "omega.limit_cancel_share_drop_range": { kind: "number", min: 0.03, max: 0.1 },
+  "omega.limit_band_scalp": { kind: "number", min: 0.1, max: 0.6 },
+  "omega.limit_band_intraday": { kind: "number", min: 0.1, max: 0.6 },
+  "omega.limit_band_swing": { kind: "number", min: 0.1, max: 0.6 },
+  "omega.limit_band_range": { kind: "number", min: 0.1, max: 0.6 },
 });
 
 export const DOCTRINE_RULE = /^[a-z][a-z0-9_]{2,40}$/;

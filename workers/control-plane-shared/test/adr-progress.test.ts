@@ -315,7 +315,9 @@ test("AP10. the seed is honest: what the platform cannot see is open with a reas
   assert.deepEqual(p20("A4").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "but only while its stop loss already locks a profit" }, "A4: the TP ladder only once the stop locks a profit");
   assert.deepEqual(p20("A5").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "A council failure, an invalid verdict or a timeout means the downgrade applies." }, "A5: the soft-downgrade veto fails safe");
   assert.deepEqual(p20("A6").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "a broker that refuses the stop leaves both unchanged" }, "A6: TP2 before the TP1 lock only together with the stop at break-even");
-  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "A2", "A3", "A4", "A5", "A6", "N", "R"]);
+  assert.deepEqual(p20("A7").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "A resting entry counts as an open position for the cap of 3 armed strategies" }, "A7: resting limit entries count against the caps");
+  assert.deepEqual(p20("A8").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "Never beyond the position's original entry stop, so its money at risk stays at most the 1R sized at entry." }, "A8: a loosened stop never passes the original entry stop");
+  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "N", "R"]);
   assert.equal(criticalPathReason(`${PROGRESS}0020.json`), null, "0020.json is not a guard path");
   // ADR-0018: the registry migration 0074 is on main now, so X3 measures it.
   assert.ok(predicateLeaves(byId("0018").phases.find((ph) => ph.id === "X3")!.evidence).some((p) => p.kind === "migration_applied" && p.name === "0074_register_cta.sql"));

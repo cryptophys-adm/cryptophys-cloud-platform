@@ -135,6 +135,47 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **The constitution's line is unchanged.** This is a risk rule of the Position Manager under the existing standing arm, not a new trading authority.
 - **Order of events.** xauusd's change that implements it waits until this amendment is merged.
 
+## Amendment 7 (owner, 2026-11-20): resting limit entries, held by the council
+
+- **Origin.** The owner decided that Omega may enter by a resting limit order, held by the council, with every knob learned per mode inside doctrine bounds (xauusd RFC_OMEGA_LIMIT_ENTRY, xauusd #496 and #497, relayed by the orchestrator). The owner confirmed it directly to the platform session on 2026-11-20 ("setuju", then "keduanya" for both Amendments 7 and 8).
+- **What a resting entry is.** An entry of the arm that waits at a price instead of filling at once: the same strategy, plan, stop, take profit and size the Decision Engine approved for a market entry, placed as a limit order. It is an entry under this ADR, not a new authority.
+- **Where it rests.** The limit sits between the current price and the plan's entry side, no further from the current ask or bid than `omega.limit_band_<mode>` times the plan's |entry − stop| (at most 0.6). The stop and take profit are those of the plan, so the risk of a fill is the plan's risk, never more.
+- **How long.** It is deleted after `omega.limit_life_min_<mode>` minutes from placement (at most 60 Scalp, 240 Intraday, 720 Swing, 240 Range) if it has not filled.
+- **Moves.** While it rests it may be moved only toward the current price, by at most `omega.limit_move_max_atr_<mode>` times ATR(14) of closed 15m bars in total (at most 0.5), and always with its stop and take profit moved by the same amount, so the plan's distances and risk are unchanged. It is never moved away from the price and never widened.
+- **Cancels.** The council cancels it when the order side's share of the Decision Engine's weighted witness quorum falls by `omega.limit_cancel_share_drop_<mode>` (0.03 to 0.10) from the placing decision, and always on any of: a disarm or auto-disarm of the strategy, the trading kill switch, the daily loss limit, a Decision Engine veto, or a profile downgrade to Safe. A broker that refuses a cancel is retried; while it stands the strategy places nothing new.
+- **Market or limit, per signal (xauusd stage 3, owner 2026-11-20).** With xauusd's `entry_order` set to `council` by the owner (the default stays `market`), the entry council chooses per signal between a market entry, a resting limit or no entry, each with a measured reason; a silent council means a market entry, as before. A resting limit may be converted once per signal into a market entry: the limit is cancelled first (the market entry waits until the broker reports the order gone, and a fill in the meantime ends the conversion), and the market entry is a market entry like any other: it passes every gate a market entry passes, its stop is the market path's own (which, as for every market entry, may be wider than the plan's, for example the adaptive stop), and its volume is computed afresh from that stop, so the money at risk at the stop is never more than the plan's (`risk_pct` of equity, under the same caps). "Risk" in this amendment means that money at the stop, not the stop distance. No new kind of entry: both are entries this ADR already authorises.
+- **Counts.** A resting entry counts as an open position for the cap of 3 armed strategies and for Omega's `omega.max_positions`, so resting orders never add exposure beyond what market entries could.
+- **Learning.** The four knobs are doctrine facts per trading mode with the bounds above (`control-plane-shared/src/doctrine.ts`); the council and the learning protocol tune them inside the bounds, and an amendment of a bound is the owner's.
+- **Unchanged:**
+  - the Decision Engine veto and its limits, leverage and risk;
+  - the risk-only Position Manager once a position is open (Amendments 1, 4 and 6);
+  - auto-disarm, Omega's live arm and the cap of 3;
+  - funds are never moved;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** A resting entry is an entry under the existing standing arm.
+- **Order of events.** xauusd keeps `LIMIT_ENTRY_AVAILABLE` false until this amendment and the doctrine bounds are merged.
+
+## Amendment 8 (owner, 2026-11-20): a bounded loosening of an open position's stop, by the council
+
+- **Origin.** The owner approved that the Position Manager's council may move a take profit either way and may loosen a stop within strict bounds ("setuju", given in xauusd and relayed by the orchestrator). The owner confirmed it directly to the platform session on 2026-11-20 ("setuju", then "keduanya" for both Amendments 7 and 8), after being told that it narrows Amendment 1's "never widens a stop loss" and the "stop loss only tightens" of Amendments 4 and 6.
+- **For open positions only.** It narrows those rules for an open position as below. Resting entries (Amendment 7) are unchanged: never moved away from the price, never widened.
+- **Take profit.** The council may move a take profit outward or inward. A take profit moved further never comes in the same modification as a looser stop.
+- **How far a stop may loosen.**
+  - Never beyond the position's original entry stop, so its money at risk stays at most the 1R sized at entry.
+  - A stop that was tightened may move back toward the original stop, never past it, and only with a measured reason: an ATR expansion, a key level just outside the stop, or a scheduled high-impact release.
+  - A stop at break-even or better never moves back into loss.
+- **How often and by whom.** At most one loosening per position, by the council's consensus. Nothing loosens mechanically, and a silent council changes nothing.
+- **Accounting.** After a loosening the position counts as unprotected again, and its risk at the new stop counts in the daily loss budget. The loosening is refused if the budget would not hold.
+- **Learning.** The knobs (the ATR-expansion threshold, how far back toward the original stop) become doctrine facts per trading mode, with units and bounds proposed by xauusd, in `control-plane-shared/src/doctrine.ts`. An amendment of a bound is the owner's.
+- **Unchanged:**
+  - the Position Manager never opens, adds to, reverses or hedges a position;
+  - no stop is ever moved beyond the original entry stop;
+  - the Decision Engine veto, auto-disarm, Omega's live arm, the daily loss limit and the kill switch;
+  - funds are never moved;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** "Never widen trading autonomy without the owner": this widening is the owner's.
+- **Order of events.** xauusd ships it behind a switch that is off by default, and turns it on only after this amendment is merged.
+
 ## Guards
 
 - **Funds are never moved.** Arming authorises entries and closes only. No deposit, withdrawal, transfer or wallet action, at any tier, armed or not.
