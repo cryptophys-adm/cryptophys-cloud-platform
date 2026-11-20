@@ -34,10 +34,17 @@
 // with these limits: no `git fsck` of object contents (author lines, tree entry order, tag headers are not checked
 // beyond what 7 parses), no checkout, and objects no ref reaches are counted but allowed, as git allows them.
 //
-// Memory. Commits, trees and tags are held inflated (connectivity reads them), and a blob only while a delta still
-// needs it as a base. The run fails with `pack_too_large_to_verify` when the content held at once passes
-// MAX_VERIFY_INFLATED_BYTES, rather than exhausting the Worker's 128 MB with the bundle itself (at most 32 MiB of
-// pack) also in memory. The result records `inflated_bytes` and `peak_held_bytes`.
+// Memory (2026-11-20: holding every entry's content at once, then every commit and tree, grew with the repository and
+// failed the verify of 664c236 at 64 MiB). No content is held for long. The first pass inflates each entry (step 4),
+// names an object stored whole and drops the content; the index keeps only each object's type and its links (21 bytes
+// per link: the type the target must have and its 20-byte id), which connectivity walks. The second pass resolves the
+// deltas family by family (step 5): a content stays in a cache only while a delta still needs it as a base, at most
+// VERIFY_CACHE_BYTES (a quarter of the bound at most), and a base evicted is inflated again from the pack; a delta
+// chain is at most MAX_DELTA_DEPTH long. The run fails with `pack_too_large_to_verify` when the content held at once (the cache
+// plus the objects being worked on) or the links pass MAX_VERIFY_INFLATED_BYTES, so a single object larger than that
+// still fails, rather than exhausting the Worker's 128 MB with the bundle itself (at most 32 MiB of pack) also in
+// memory. The result records `inflated_bytes`, `reinflated_bytes` (the cost of not holding), `peak_held_bytes` and
+// `link_bytes`.
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { GIT_BACKUP_VERIFY_RETRY_MS, type GitBackupRef } from "../../control-plane-shared/src/git-backup.ts";
@@ -49,9 +56,12 @@ export const MAX_BUNDLE_HEADER_BYTES = 1024 * 1024;
 const ACTOR = "system:forge-git-backup";
 
 const fail = (reason: string): never => { throw new GitBackupError(reason); };
-const hex = (b: ArrayBuffer | Uint8Array) => Array.from(b instanceof Uint8Array ? b : new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join("");
+const HEX = Array.from({ length: 256 }, (_, x) => x.toString(16).padStart(2, "0"));
+/** `n` bytes of `b` from `at` in hex. */
+const hexAt = (b: Uint8Array, at: number, n: number) => { let s = ""; for (let i = at; i < at + n; i++) s += HEX[b[i]]; return s; };
+const hex = (b: ArrayBuffer | Uint8Array) => { const u = b instanceof Uint8Array ? b : new Uint8Array(b); return hexAt(u, 0, u.length); };
 const SHA = /^[0-9a-f]{40}$/;
-/** The fields read (header lines, tree, parent, object and type lines, tree modes) are ASCII; other bytes may decode as U+FFFD. */
+/** The fields read (header lines, tree, parent, object and type lines) are ASCII; other bytes may decode as U+FFFD. Tree modes are compared as bytes. */
 const ascii = new TextDecoder();
 const REF = /^(HEAD|refs\/[\x21-\x7e]+)$/;
 
@@ -98,10 +108,14 @@ class Inflater {
   bitcnt = 0;
   outPos = 0;
   pos: number;
-  readonly out: Uint8Array;
+  readonly out: Uint8Array<ArrayBuffer>;
+  /** Where the content starts in `out` (bytes before it are a prefix the caller fills, such as a git object header). */
+  readonly origin: number;
   private data: Uint8Array;
   private end: number;
-  constructor(data: Uint8Array, pos: number, end: number, size: number) { this.data = data; this.pos = pos; this.end = end; this.out = new Uint8Array(size); }
+  constructor(data: Uint8Array, pos: number, end: number, size: number, origin = 0) {
+    this.data = data; this.pos = pos; this.end = end; this.origin = origin; this.outPos = origin; this.out = new Uint8Array(origin + size);
+  }
 
   private bits(n: number): number {
     let val = this.bitbuf;
@@ -159,7 +173,7 @@ class Inflater {
         const dsym = this.decode(distcode);
         if (dsym >= 30) fail("inflate_bad_distance");
         const dist = DBASE[dsym] + this.bits(DEXT[dsym]);
-        if (dist > this.outPos) fail("inflate_distance_too_far");
+        if (dist > this.outPos - this.origin) fail("inflate_distance_too_far");
         if (this.outPos + len > out.length) fail("inflate_size_mismatch");
         for (let i = 0; i < len; i++, this.outPos++) out[this.outPos] = out[this.outPos - dist];
       }
@@ -219,17 +233,26 @@ export function adler32(d: Uint8Array): number {
  * the content and the offset just after the stream's Adler-32 (where a pack's next entry starts).
  */
 export function inflateZlib(data: Uint8Array, start: number, size: number, end = data.length): { data: Uint8Array; next: number } {
+  const z = inflateFramed(data, start, size, end, 0);
+  return { data: z.framed, next: z.next };
+}
+
+/**
+ * inflateZlib into a buffer with `prefix` free bytes before the content, so that a git object's id can be taken over
+ * `<type> <size>\0<content>` without a second copy of the content. `framed` is the whole buffer.
+ */
+function inflateFramed(data: Uint8Array, start: number, size: number, end: number, prefix: number): { framed: Uint8Array<ArrayBuffer>; next: number } {
   if (start + 2 > end) fail("inflate_truncated");
   const cmf = data[start], flg = data[start + 1];
   if ((cmf & 0x0f) !== 8 || cmf >> 4 > 7 || ((cmf << 8) | flg) % 31 !== 0 || flg & 0x20) fail("zlib_bad_header");
-  const inf = new Inflater(data, start + 2, end, size);
+  const inf = new Inflater(data, start + 2, end, size, prefix);
   inf.run();
-  if (inf.outPos !== size) fail("inflate_size_mismatch");
+  if (inf.outPos !== prefix + size) fail("inflate_size_mismatch");
   const p = inf.pos;
   if (p + 4 > end) fail("inflate_truncated");
   const want = ((data[p] << 24) | (data[p + 1] << 16) | (data[p + 2] << 8) | data[p + 3]) >>> 0;
-  if (adler32(inf.out) !== want) fail("zlib_adler32_mismatch");
-  return { data: inf.out, next: p + 4 };
+  if (adler32(prefix ? inf.out.subarray(prefix) : inf.out) !== want) fail("zlib_adler32_mismatch");
+  return { framed: inf.out, next: p + 4 };
 }
 
 // ---------------------------------------------------------------- the bundle header
@@ -290,16 +313,49 @@ export function parseBundleHeader(bytes: Uint8Array): BundleHeader {
 
 const TYPE_NAME = ["", "commit", "tree", "blob", "tag"] as const;
 const OFS_DELTA = 6, REF_DELTA = 7;
+/** The longest delta chain resolved: git's pack-objects clamps --depth to 4095 (its default is 50). */
+export const MAX_DELTA_DEPTH = 4095;
+/** The budget of the cache of resolved contents kept as delta bases; indexPack uses at most a quarter of its bound. */
+export const VERIFY_CACHE_BYTES = 16 * 1024 * 1024;
+/** One link of IndexedObject.links: the type the target must have (1 to 4), then the target's 20-byte id. */
+export const LINK_BYTES = 21;
+const NO_LINKS = new Uint8Array(0);
 
-interface Entry { offset: number; raw: number; kind: number; data: Uint8Array; base: number; baseId: string | null; id: string | null; uses: number }
+/** What the index keeps of an object once its content is dropped. */
+export interface IndexedObject {
+  /** 1 commit, 2 tree, 3 blob, 4 tag. */
+  readonly kind: number;
+  /** The objects it points to, LINK_BYTES each (none for a blob). */
+  readonly links: Uint8Array;
+  /** Why its content does not parse (a commit without a tree line, a bad tree mode); checkRefs fails with it when a ref reaches it. */
+  readonly malformed: string | null;
+}
+
+interface Entry extends IndexedObject {
+  offset: number; raw: number; size: number;
+  /** Its zlib stream, from `start` to `stop` in the pack: its content is inflated again from there when it is needed. */
+  start: number; stop: number;
+  /** A delta's base entry (an ofs-delta's from the first pass, a ref-delta's once resolved) and a ref-delta's base id. */
+  base: Entry | null; baseId: string | null;
+  /** 0 until resolved. */
+  kind: number; links: Uint8Array; malformed: string | null; id: string | null;
+  /** The length of its delta chain (0 for an object stored whole). */
+  depth: number;
+}
 export interface PackIndex {
   version: number; objects: number; sha1: string; deltas: number;
-  /** Every byte inflated or produced by a delta. */
+  /** Every entry inflated once and every delta's result produced once: the pack's content. */
   inflated_bytes: number;
-  /** The most content held at once (what MAX_VERIFY_INFLATED_BYTES bounds). */
+  /** Bytes inflated or produced again (every delta's payload, each delta family's base, any base evicted): the cost of holding little. */
+  reinflated_bytes: number;
+  /** The most content held at once: the cache of bases plus the objects being worked on (what MAX_VERIFY_INFLATED_BYTES bounds). */
   peak_held_bytes: number;
-  /** Object id to its type (1 commit, 2 tree, 3 blob, 4 tag) and content (empty for a blob once no delta needs it). */
-  byId: Map<string, { kind: number; data: Uint8Array }>;
+  /** The links kept for connectivity (LINK_BYTES each), also bounded by MAX_VERIFY_INFLATED_BYTES. */
+  link_bytes: number;
+  /** Object id to its type and links; no content. */
+  byId: Map<string, IndexedObject>;
+  /** An object's content, inflated again from the pack (its delta chain resolved again); null when it is not in the index. */
+  readObject(id: string): { kind: number; data: Uint8Array } | null;
 }
 
 /** The size varint of a delta header (little-endian base-128). */
@@ -317,10 +373,21 @@ function deltaVarint(d: Uint8Array, at: { p: number }): number {
 
 /** git's delta format: the source and target sizes, then copy (from the base) and insert instructions. */
 export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
+  return applyDeltaFramed(base, delta, 0);
+}
+
+/**
+ * applyDelta into a buffer that starts with the object header of `kind` (none for 0), so that the result's id is taken
+ * without a second copy of it; returns that whole buffer.
+ */
+function applyDeltaFramed(base: Uint8Array, delta: Uint8Array, kind: number): Uint8Array<ArrayBuffer> {
   const at = { p: 0 };
   if (deltaVarint(delta, at) !== base.length) fail("delta_base_size_mismatch");
   const size = deltaVarint(delta, at);
-  const out = new Uint8Array(size);
+  const head = kind ? objectHeader(kind, size) : NO_LINKS;
+  const framed = new Uint8Array(head.length + size);
+  framed.set(head, 0);
+  const out = head.length ? framed.subarray(head.length) : framed;
   let o = 0;
   while (at.p < delta.length) {
     const op = delta[at.p++];
@@ -342,37 +409,119 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
     }
   }
   if (o !== size) fail("delta_result_size_mismatch");
-  return out;
+  return framed;
 }
 
 const enc = new TextEncoder();
-async function objectId(kind: number, data: Uint8Array): Promise<string> {
-  const head = enc.encode(`${TYPE_NAME[kind]} ${data.length}\0`);
-  const buf = new Uint8Array(head.length + data.length);
-  buf.set(head, 0);
-  buf.set(data, head.length);
-  return hex(await crypto.subtle.digest("SHA-1", buf));
-}
+/** `<type> <size>\0`, what an object id is the SHA-1 of, before the content. */
+const objectHeader = (kind: number, size: number) => enc.encode(`${TYPE_NAME[kind]} ${size}\0`);
 
 /**
  * index-pack in code: the checksum (verifyPack), every entry's header and zlib stream, the entry count, no trailing
- * bytes, every delta resolved, every object's id. A blob's content is released once no delta still needs it as a
- * base (connectivity needs only commits, trees and tags), so the content held stays well below the pack inflated.
+ * bytes, every delta resolved, every object's id.
+ *
+ * Memory. The content held at once does not grow with the pack. The first pass walks the entries: each is inflated
+ * (which validates its stream and finds where the next starts), an object stored whole is named, and the content is
+ * dropped; the index keeps only each object's type and links (IndexedObject). The second resolves the deltas family by
+ * family, as index-pack does: an object stored whole is inflated again, then each delta on it (its payload inflated
+ * again, which is cheap: payloads are small), then theirs, depth first. A resolved content stays in the cache only
+ * while a delta still needs it as a base, and at most `cacheBytes` of them (least recently used out first); a base
+ * evicted is inflated again from the pack, up its delta chain.
  */
-export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX_VERIFY_INFLATED_BYTES): Promise<PackIndex> {
+export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX_VERIFY_INFLATED_BYTES, cacheBytes = Math.min(VERIFY_CACHE_BYTES, Math.floor(maxInflated / 4))): Promise<PackIndex> {
   const info = await verifyPack(pack);
   const end = pack.length - 20;
   const entries: Entry[] = [];
   const byOffset = new Map<number, Entry>();
-  /** Ref-deltas waiting for a base, by the base's id. */
-  const idUses = new Map<string, number>();
-  let pos = 12;
-  let inflated = 0, held = 0, peak = 0;
-  const hold = (n: number) => {
-    held += n;
-    if (held > peak) peak = held;
-    if (held > maxInflated) fail("pack_too_large_to_verify");
+  const byId = new Map<string, Entry>();
+  let inflated = 0, reinflated = 0, linkBytes = 0;
+  // The content held: `live` (being worked on) plus `cached`; `peak` is the most of the two at once.
+  let live = 0, cached = 0, peak = 0;
+  const cache = new Map<Entry, Uint8Array>();
+  const evictOne = (pin: Entry | null): boolean => {
+    for (const [k, v] of cache) {
+      if (k === pin) continue;
+      cache.delete(k);
+      cached -= v.length;
+      return true;
+    }
+    return false;
   };
+  /** `n` more bytes of content live; the cache gives way first (never `pin`, a base in use), then the bound fails the run. */
+  const hold = (n: number, pin: Entry | null = null) => {
+    live += n;
+    while (live + cached > maxInflated && evictOne(pin)) { /* evicted */ }
+    if (live + cached > maxInflated) fail("pack_too_large_to_verify");
+    if (live + cached > peak) peak = live + cached;
+  };
+  const drop = (n: number) => { live -= n; };
+  /** A live content moves to the cache; beyond the budget the least recently used leave, never the newest. */
+  const keep = (e: Entry, d: Uint8Array) => {
+    const was = cache.get(e);
+    if (was) { cache.delete(e); cached -= was.length; }
+    live -= d.length;
+    cache.set(e, d);
+    cached += d.length;
+    while (cached > cacheBytes && cache.size > 1) evictOne(e);
+  };
+  const inflateAgain = (e: Entry, pin: Entry | null) => {
+    hold(e.size, pin);
+    reinflated += e.size;
+    return inflateZlib(pack, e.start, e.size, e.stop).data;
+  };
+
+  /**
+   * A delta applied to its base's content, its payload inflated again and dropped; the result is live. With `framed`,
+   * the result follows its object header in the buffer returned.
+   */
+  const derive = (e: Entry, base: Entry, baseData: Uint8Array, framed: boolean): Uint8Array<ArrayBuffer> => {
+    const p = inflateAgain(e, base);
+    const at = { p: 0 };
+    // The result's size, read before it is allocated (applyDelta reports a header that does not match its base).
+    if (deltaVarint(p, at) === baseData.length) {
+      const size = deltaVarint(p, at);
+      if (size > maxInflated) fail("pack_too_large_to_verify");
+      hold(size, base);
+    }
+    const out = applyDeltaFramed(baseData, p, framed ? base.kind : 0);
+    drop(p.length);
+    return out;
+  };
+
+  /** A resolved entry's content: from the cache, else inflated again (a delta's after its base's, up the chain). */
+  const content = (e: Entry): Uint8Array => {
+    const chain: Entry[] = [];
+    let x = e;
+    let data = cache.get(x);
+    while (!data && x.base) { chain.push(x); x = x.base; data = cache.get(x); }
+    if (data) { cache.delete(x); cache.set(x, data); } else { data = inflateAgain(x, null); keep(x, data); }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const d = chain[i];
+      data = derive(d, x, data, false);
+      reinflated += data.length;
+      keep(d, data);
+      x = d;
+    }
+    return data;
+  };
+
+  /** The id, the SHA-1 of `framed` (`<type> <size>\0` then `data`), and the links. */
+  const name = async (e: Entry, kind: number, data: Uint8Array, framed: Uint8Array<ArrayBuffer>) => {
+    const id = hex(await crypto.subtle.digest("SHA-1", framed));
+    e.id = id;
+    e.kind = kind;
+    if (kind !== 3) {
+      const l = parseLinks(kind, data, id);
+      e.links = l.links;
+      e.malformed = l.malformed;
+      linkBytes += l.links.length;
+      if (linkBytes > maxInflated) fail("pack_too_large_to_verify");
+    }
+    byId.set(id, e);
+  };
+
+  // Step 4: every entry inflated (its stream validated, its end found) and dropped; an object stored whole is named.
+  let pos = 12;
   for (let i = 0; i < info.objects; i++) {
     if (pos >= end) fail(`pack_entries_missing:${info.objects - i}`);
     const offset = pos;
@@ -386,7 +535,7 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
       mult *= 128;
       if (mult > 2 ** 49) fail("pack_entry_bad_size");
     }
-    let base = -1, baseId: string | null = null;
+    let ofsBase: Entry | null = null, baseId: string | null = null;
     if (raw === OFS_DELTA) {
       if (pos >= end) fail("pack_entry_truncated");
       c = pack[pos++];
@@ -396,108 +545,157 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
         c = pack[pos++];
         ofs = (ofs + 1) * 128 + (c & 0x7f);
       }
-      base = offset - ofs;
-      const b = byOffset.get(base);
+      const b = byOffset.get(offset - ofs);
       if (ofs <= 0 || !b) fail("pack_bad_ofs_delta");
-      b!.uses++;
+      ofsBase = b!;
     } else if (raw === REF_DELTA) {
       if (pos + 20 > end) fail("pack_entry_truncated");
       baseId = hex(pack.subarray(pos, pos + 20));
       pos += 20;
-      idUses.set(baseId, (idUses.get(baseId) ?? 0) + 1);
     } else if (raw < 1 || raw > 4) {
       fail(`pack_bad_object_type_${raw}`);
     }
     if (size > maxInflated) fail("pack_too_large_to_verify");
-    const z = inflateZlib(pack, pos, size, end);
+    const head = raw <= 4 ? objectHeader(raw, size) : null;
+    hold(size);
+    const z = inflateFramed(pack, pos, size, end, head?.length ?? 0);
+    const e: Entry = { offset, raw, size, start: pos, stop: z.next, base: ofsBase, baseId, kind: 0, links: NO_LINKS, malformed: null, id: null, depth: 0 };
     pos = z.next;
     inflated += size;
-    hold(size);
-    const e: Entry = { offset, raw, kind: raw <= 4 ? raw : 0, data: z.data, base, baseId, id: null, uses: 0 };
     entries.push(e);
     byOffset.set(offset, e);
+    if (head) {
+      z.framed.set(head, 0);
+      await name(e, raw, z.framed.subarray(head.length), z.framed);
+    }
+    drop(size);
   }
   if (pos !== end) fail("pack_trailing_bytes");
 
-  const byId = new Map<string, Entry>();
-  const release = (e: Entry) => { if (e.kind === 3 && e.uses <= 0 && e.data.length) { held -= e.data.length; e.data = new Uint8Array(0); } };
-  const named = async (e: Entry) => {
-    e.id = await objectId(e.kind, e.data);
-    e.uses += idUses.get(e.id) ?? 0;
-    byId.set(e.id, e);
+  // Step 5: every delta, family by family: from an object stored whole down its delta descendants (an ofs-delta's base
+  // by offset, a ref-delta's by id once that id is known). A content stays cached only while a delta still needs it.
+  const kidsAt = new Map<Entry, Entry[]>();
+  const kidsOfId = new Map<string, Entry[]>();
+  const add = <K>(m: Map<K, Entry[]>, k: K, e: Entry) => { const l = m.get(k); if (l) l.push(e); else m.set(k, [e]); };
+  for (const e of entries) if (e.raw === OFS_DELTA) add(kidsAt, e.base!, e); else if (e.raw === REF_DELTA) add(kidsOfId, e.baseId!, e);
+  const hasKids = (e: Entry) => kidsAt.has(e) || kidsOfId.has(e.id!);
+  const takeKids = (b: Entry) => {
+    const kids = kidsAt.get(b) ?? [];
+    kidsAt.delete(b);
+    const byRef = kidsOfId.get(b.id!);
+    if (byRef) { kids.push(...byRef); kidsOfId.delete(b.id!); }
+    return kids;
   };
-  for (const e of entries) if (e.kind) await named(e);
-  // A blob no delta needs is released now; the others when their last delta has been applied.
-  for (const e of entries) if (e.kind) release(e);
-  let pending = entries.filter((e) => !e.kind);
-  const deltas = pending.length;
-  while (pending.length) {
-    const left: Entry[] = [];
-    for (const e of pending) {
-      const b = e.raw === OFS_DELTA ? byOffset.get(e.base) : byId.get(e.baseId!);
-      if (!b || !b.kind) { left.push(e); continue; }
-      const data = applyDelta(b.data, e.data);
-      inflated += data.length;
-      hold(data.length - e.data.length);
-      e.kind = b.kind;
-      e.data = data;
-      b.uses--;
+  const release = (e: Entry) => { const d = cache.get(e); if (d) { cache.delete(e); cached -= d.length; } };
+  for (const root of entries) {
+    if (root.raw > 4 || !hasKids(root)) continue;
+    const stack = [root];
+    while (stack.length) {
+      const b = stack.pop()!;
+      for (const k of takeKids(b)) {
+        k.base = b;
+        k.depth = b.depth + 1;
+        if (k.depth > MAX_DELTA_DEPTH) fail("pack_delta_chain_too_deep");
+        const framed = derive(k, b, content(b), true);
+        const out = framed.subarray(framed.indexOf(0) + 1); // after `<type> <size>\0`
+        inflated += out.length;
+        await name(k, b.kind, out, framed);
+        if (hasKids(k)) { keep(k, out); stack.push(k); } else drop(out.length);
+      }
       release(b);
-      await named(e);
-      release(e);
     }
-    if (left.length === pending.length) fail(left.some((e) => e.raw === REF_DELTA && !byId.has(e.baseId!)) ? "pack_thin_ref_delta_base_missing" : "pack_delta_unresolvable");
-    pending = left;
   }
-  return { version: info.version, objects: info.objects, sha1: info.sha1, deltas, inflated_bytes: inflated, peak_held_bytes: peak, byId };
+  const left = entries.filter((e) => !e.kind);
+  if (left.length) fail(left.some((e) => e.raw === REF_DELTA && !byId.has(e.baseId!)) ? "pack_thin_ref_delta_base_missing" : "pack_delta_unresolvable");
+  cache.clear();
+  cached = 0;
+  live = 0;
+  return {
+    version: info.version, objects: info.objects, sha1: info.sha1, deltas: entries.filter((e) => e.raw > 4).length,
+    inflated_bytes: inflated, reinflated_bytes: reinflated, peak_held_bytes: peak, link_bytes: linkBytes, byId,
+    readObject(id: string) {
+      const e = byId.get(id);
+      if (!e) return null;
+      try {
+        return { kind: e.kind, data: content(e) };
+      } finally {
+        cache.clear();
+        cached = 0;
+        live = 0;
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------- refs and connectivity
 
 const KIND: Record<string, number> = { commit: 1, tree: 2, blob: 3, tag: 4 };
+const MODES: ReadonlyArray<readonly [string, number]> = [["40000", 2], ["160000", 0], ["100644", 3], ["100755", 3], ["100664", 3], ["120000", 3]];
 
-/** The ids an object points to, with the type each must have. */
-function links(kind: number, data: Uint8Array, id: string): Array<[string, number]> {
-  const out: Array<[string, number]> = [];
+/** A tree entry's mode: 2 a subtree, 3 a blob or symlink, 0 a submodule (its commit lives in another repository), -1 unknown. */
+function modeKind(d: Uint8Array, p: number, sp: number): number {
+  for (const [m, k] of MODES) {
+    if (sp - p !== m.length) continue;
+    let i = 0;
+    while (i < m.length && d[p + i] === m.charCodeAt(i)) i++;
+    if (i === m.length) return k;
+  }
+  return -1;
+}
+
+/**
+ * The ids an object points to, with the type each must have, as LINK_BYTES per link; or why its content does not
+ * parse. Called once per commit, tree and tag, when its id is known; the content is dropped after.
+ */
+function parseLinks(kind: number, data: Uint8Array, id: string): { links: Uint8Array; malformed: string | null } {
   if (kind === 1 || kind === 4) {
     let end = data.length; // the header ends at the first blank line; the message follows
     for (let i = 0; i + 1 < data.length; i++) if (data[i] === 0x0a && data[i + 1] === 0x0a) { end = i; break; }
     const lines = ascii.decode(data.subarray(0, end)).split("\n");
+    const out: Array<[string, number]> = [];
     if (kind === 1) {
       const tree = /^tree ([0-9a-f]{40})$/.exec(lines[0] ?? "");
-      if (!tree) fail(`commit_malformed:${id}`);
-      out.push([tree![1], 2]);
+      if (!tree) return { links: NO_LINKS, malformed: `commit_malformed:${id}` };
+      out.push([tree[1], 2]);
       for (const l of lines.slice(1)) { const p = /^parent ([0-9a-f]{40})$/.exec(l); if (p) out.push([p[1], 1]); else break; }
     } else {
       const obj = /^object ([0-9a-f]{40})$/.exec(lines[0] ?? "");
       const type = /^type (commit|tree|blob|tag)$/.exec(lines[1] ?? "");
-      if (!obj || !type) fail(`tag_malformed:${id}`);
-      out.push([obj![1], KIND[type![1]]]);
+      if (!obj || !type) return { links: NO_LINKS, malformed: `tag_malformed:${id}` };
+      out.push([obj[1], KIND[type[1]]]);
     }
-    return out;
+    const links = new Uint8Array(out.length * LINK_BYTES);
+    out.forEach(([sha, k], n) => {
+      const at = n * LINK_BYTES;
+      links[at] = k;
+      for (let j = 0; j < 20; j++) links[at + 1 + j] = parseInt(sha.slice(2 * j, 2 * j + 2), 16);
+    });
+    return { links, malformed: null };
   }
-  if (kind === 2) {
-    let p = 0;
-    while (p < data.length) {
-      const sp = data.indexOf(0x20, p);
-      const nul = sp < 0 ? -1 : data.indexOf(0x00, sp);
-      if (sp < 0 || nul < 0 || nul + 21 > data.length) fail(`tree_malformed:${id}`);
-      const mode = ascii.decode(data.subarray(p, sp));
-      const child = hex(data.subarray(nul + 1, nul + 21));
-      p = nul + 21;
-      if (mode === "160000") continue; // a submodule: its commit lives in another repository
-      if (mode === "40000") out.push([child, 2]);
-      else if (/^(100644|100755|100664|120000)$/.test(mode)) out.push([child, 3]);
-      else fail(`tree_bad_mode:${id}`);
+  if (kind !== 2) return { links: NO_LINKS, malformed: null };
+  // A valid tree entry takes at least 28 bytes (`40000 x\0` and 20), so this holds every link.
+  const buf = new Uint8Array(Math.floor(data.length / 28) * LINK_BYTES);
+  let n = 0, p = 0;
+  while (p < data.length) {
+    const sp = data.indexOf(0x20, p);
+    const nul = sp < 0 ? -1 : data.indexOf(0x00, sp);
+    if (sp < 0 || nul < 0 || nul + 21 > data.length) return { links: NO_LINKS, malformed: `tree_malformed:${id}` };
+    const k = modeKind(data, p, sp);
+    if (k < 0) return { links: NO_LINKS, malformed: `tree_bad_mode:${id}` };
+    if (k > 0) {
+      buf[n] = k;
+      buf.set(data.subarray(nul + 1, nul + 21), n + 1);
+      n += LINK_BYTES;
     }
+    p = nul + 21;
   }
-  return out;
+  return { links: n === buf.length ? buf : buf.slice(0, n), malformed: null };
 }
 
 export interface Reachability { reachable: number; commits: number; trees: number; blobs: number; tags: number }
 
 /** Every ref names an object of the pack (HEAD and branches a commit), and everything they reach is there. */
-export function checkRefs(refs: GitBackupRef[], byId: PackIndex["byId"]): Reachability {
+export function checkRefs(refs: GitBackupRef[], byId: ReadonlyMap<string, IndexedObject>): Reachability {
   const stack: Array<[string, number]> = [];
   for (const r of refs) {
     const o = byId.get(r.sha);
@@ -516,7 +714,12 @@ export function checkRefs(refs: GitBackupRef[], byId: PackIndex["byId"]): Reacha
     if (o!.kind !== want) fail(`object_type_mismatch:${id}`);
     n.reachable++;
     if (o!.kind === 1) n.commits++; else if (o!.kind === 2) n.trees++; else if (o!.kind === 3) n.blobs++; else n.tags++;
-    for (const l of links(o!.kind, o!.data, id)) if (!seen.has(l[0])) stack.push(l);
+    if (o!.malformed) fail(o!.malformed);
+    const links = o!.links;
+    for (let p = 0; p < links.length; p += LINK_BYTES) {
+      const child = hexAt(links, p + 1, 20);
+      if (!seen.has(child)) stack.push([child, links[p]]);
+    }
   }
   return n;
 }
@@ -525,7 +728,8 @@ export function checkRefs(refs: GitBackupRef[], byId: PackIndex["byId"]): Reacha
 
 export interface BundleVerification extends Reachability {
   bundle_version: number; pack_version: number; objects: number; deltas: number; pack_sha1: string;
-  refs: GitBackupRef[]; inflated_bytes: number; peak_held_bytes: number; bundle_bytes: number; bundle_sha256: string;
+  refs: GitBackupRef[]; inflated_bytes: number; reinflated_bytes: number; peak_held_bytes: number; link_bytes: number;
+  bundle_bytes: number; bundle_sha256: string;
 }
 
 /** Steps 1 to 7 of the header comment, on the bytes of a bundle. Throws GitBackupError with the first failure. */
@@ -537,7 +741,8 @@ export async function verifyBundle(bytes: Uint8Array<ArrayBuffer>, maxInflated =
   idx.byId.clear();
   return {
     bundle_version: header.version, pack_version: idx.version, objects: idx.objects, deltas: idx.deltas, pack_sha1: idx.sha1,
-    refs: header.refs, inflated_bytes: idx.inflated_bytes, peak_held_bytes: idx.peak_held_bytes, bundle_bytes: bytes.length,
+    refs: header.refs, inflated_bytes: idx.inflated_bytes, reinflated_bytes: idx.reinflated_bytes, peak_held_bytes: idx.peak_held_bytes,
+    link_bytes: idx.link_bytes, bundle_bytes: bytes.length,
     bundle_sha256: hex(await crypto.subtle.digest("SHA-256", bytes)), ...reach,
   };
 }

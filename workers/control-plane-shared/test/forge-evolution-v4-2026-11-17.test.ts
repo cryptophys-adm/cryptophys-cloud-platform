@@ -145,14 +145,15 @@ test("F3. a valid evolution: one commit on main's head, pushed to evo/<id> after
   const idx = await indexPack(s.server.pushes[1].pack);
   const commit = idx.byId.get(r.head_sha!)!;
   assert.equal(commit.kind, 1);
-  const text = dec.decode(commit.data);
+  // The index keeps types and links, not content (bundle-verify.ts, 2026-11-20): the content is read again from the pack.
+  const text = dec.decode(idx.readObject(r.head_sha!)!.data);
   assert.ok(text.includes(`parent ${s.repo.main}\n`) && text.includes(`author ${EVOLVER_AUTHOR}`) && text.includes(`Evolution: ${ID}`));
   const root = /^tree ([0-9a-f]{40})/.exec(text)![1];
   // Walk the new root through the pack (new trees) and the base (unchanged subtrees).
   const entriesOf = (sha: string) => {
     const t = idx.byId.get(sha);
     if (!t) return s.repo.trees.get(sha)!.map((e) => ({ name: e.name, sha: e.hash }));
-    const out: Array<{ name: string; sha: string }> = []; let p = 0; const d = t.data;
+    const out: Array<{ name: string; sha: string }> = []; let p = 0; const d = idx.readObject(sha)!.data;
     while (p < d.length) { const sp = d.indexOf(0x20, p); const nul = d.indexOf(0, sp); out.push({ name: dec.decode(d.subarray(sp + 1, nul)), sha: [...d.subarray(nul + 1, nul + 21)].map((b) => b.toString(16).padStart(2, "0")).join("") }); p = nul + 21; }
     return out;
   };

@@ -526,7 +526,7 @@ test("CPU14. docs/SSOT.md describes the rule; none of the files it lives in is a
   for (const p of ["workers/control-plane-shared/src/forge-gate.ts", "workers/forge/src/check-plan.ts", "workers/forge/src/checks.ts", "workers/forge/src/changes.ts",
     "workers/forge/src/bundles.ts", "workers/forge/src/runner/core.ts", "workers/forge/src/runner/shims/node-fs.js"]) assert.equal(criticalPathReason(p), null, p);
   const line = read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!;
-  assert.match(line, /^Last reviewed: 2026-11-16 \(Forge check CPU, 2026-11-19 \(owner: "setuju semua", "All 3 as proposed"/);
+  assert.match(line, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Forge check CPU, 2026-11-19 \(owner: "setuju semua", "All 3 as proposed"/);
   assert.match(line, /docs_only[\s\S]*reused[\s\S]*partial[\s\S]*a run of main is always full[\s\S]*CPU1–CPU14/);
   assert.match(read("docs/SSOT.md"), /\| Forge checks \| Each new `main` commit \(and once a UTC day\): the full suite[^\n]*steps\.coverage/);
 });
