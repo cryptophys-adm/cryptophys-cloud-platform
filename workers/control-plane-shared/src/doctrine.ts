@@ -94,6 +94,19 @@ export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.f
   "omega.limit_band_intraday": { kind: "number", min: 0.1, max: 0.6 },
   "omega.limit_band_swing": { kind: "number", min: 0.1, max: 0.6 },
   "omega.limit_band_range": { kind: "number", min: 0.1, max: 0.6 },
+  // ADR-0020 Amendment 8 (owner 2026-11-20): the Position Manager council's one bounded loosening of an open position's
+  // stop, one fact per trading mode, with the units and bounds xauusd proposed (#504, relay 2026-11-20 09:05).
+  // atr_expand: ATR(14) of the closed 15m bars now over the reference ATR (at the last tighten, or at entry if the stop
+  // was never tightened); a loosening needs at least this expansion. back_share: the fraction of the way from the
+  // current, tightened stop back toward the original entry stop; 1.0 is the original stop itself, never past it.
+  "omega.pm_loosen_atr_expand_scalp": { kind: "number", min: 1.2, max: 2.5 },
+  "omega.pm_loosen_atr_expand_intraday": { kind: "number", min: 1.2, max: 2.5 },
+  "omega.pm_loosen_atr_expand_swing": { kind: "number", min: 1.2, max: 2.5 },
+  "omega.pm_loosen_atr_expand_range": { kind: "number", min: 1.2, max: 2.5 },
+  "omega.pm_loosen_back_share_scalp": { kind: "number", min: 0.25, max: 1 },
+  "omega.pm_loosen_back_share_intraday": { kind: "number", min: 0.25, max: 1 },
+  "omega.pm_loosen_back_share_swing": { kind: "number", min: 0.25, max: 1 },
+  "omega.pm_loosen_back_share_range": { kind: "number", min: 0.25, max: 1 },
 });
 
 export const DOCTRINE_RULE = /^[a-z][a-z0-9_]{2,40}$/;
