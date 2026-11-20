@@ -781,6 +781,14 @@ export interface VerifyBucket extends GitBackupBucket {
 
 /** A failure of the read itself (R2 threw), not of the bundle; retried after GIT_BACKUP_VERIFY_RETRY_MS the same day. */
 export const TRANSIENT_VERIFY_FAILURES: ReadonlySet<string> = new Set(["r2_get_failed"]);
+/**
+ * The verifier's version, recorded in every result's details as `verifier`. A failure recorded by another version
+ * (or with none: every result before version 2) is retried after GIT_BACKUP_VERIFY_RETRY_MS the same day, once by
+ * this version, as a transient failure is. Version 2 (2026-11-20): indexPack no longer holds the pack's content, so
+ * a pack_too_large_to_verify recorded by version 1 is checked again the day the fix deploys, not the next day.
+ * Raise it whenever a change to the verifier can turn a failure into a pass.
+ */
+export const VERIFIER_VERSION = 2;
 
 /**
  * Once per UTC day, after git_backup: `git bundle verify` in code of the newest stored bundle (status ok, not
@@ -797,9 +805,10 @@ export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: Verif
     const last = await env.DB.prepare("SELECT verified_at, verify_status, verify_details FROM forge_git_backups WHERE verified_at IS NOT NULL ORDER BY verified_at DESC LIMIT 1")
       .first<{ verified_at: string; verify_status: string; verify_details: string | null }>();
     if (last && last.verified_at.slice(0, 10) === day) {
-      let reason = "";
-      try { reason = String(JSON.parse(last.verify_details ?? "{}").reason ?? ""); } catch { reason = ""; }
-      const retry = last.verify_status === "failed" && TRANSIENT_VERIFY_FAILURES.has(reason) && nowMs - Date.parse(last.verified_at) >= GIT_BACKUP_VERIFY_RETRY_MS;
+      let reason = "", verifier: unknown = null;
+      try { const d = JSON.parse(last.verify_details ?? "{}") ?? {}; reason = String(d.reason ?? ""); verifier = d.verifier ?? null; } catch { reason = ""; }
+      const retry = last.verify_status === "failed" && (TRANSIENT_VERIFY_FAILURES.has(reason) || verifier !== VERIFIER_VERSION)
+        && nowMs - Date.parse(last.verified_at) >= GIT_BACKUP_VERIFY_RETRY_MS;
       if (!retry) return { outcome: "not_due", last: last.verified_at, last_status: last.verify_status };
     }
     row = await env.DB.prepare(
@@ -820,11 +829,11 @@ export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: Verif
     const v = await verifyStoredBundle(bytes, row, obj!.customMetadata, maxInflated);
     status = "verified";
     const { refs, ...rest } = v;
-    details = { ...rest, refs: refs.filter((r) => r.name !== "HEAD").length, duration_ms: Date.now() - started };
+    details = { ...rest, refs: refs.filter((r) => r.name !== "HEAD").length, duration_ms: Date.now() - started, verifier: VERIFIER_VERSION };
   } catch (e) {
     status = "failed";
     const reason = e instanceof GitBackupError ? e.message : `verify_error:${String((e as Error)?.message ?? e)}`;
-    details = { reason: reason.replace(/[^\x20-\x7e]/g, "?").slice(0, 200), duration_ms: Date.now() - started };
+    details = { reason: reason.replace(/[^\x20-\x7e]/g, "?").slice(0, 200), duration_ms: Date.now() - started, verifier: VERIFIER_VERSION };
   }
   const at = new Date(nowMs).toISOString();
   try {
