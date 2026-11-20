@@ -198,9 +198,10 @@ test("GM1. a pack whose content is far above the bound, every object below it, w
   console.log(`GM1: ${v.objects} objects (${s.ofs} ofs-, ${s.ref} ref-deltas), inflated ${v.inflated_bytes} B, peak held ${v.peak_held_bytes} B, re-inflated ${v.reinflated_bytes} B, links ${v.link_bytes} B, bound ${BOUND} B`);
 });
 
-test("GM2. git agrees: index-pack accepts the synthetic pack and gives the ids indexPack gives (where git exists)", async (t) => {
+test("GM2. git agrees: index-pack accepts the synthetic pack and gives the ids indexPack gives (where git exists)", async () => {
   const git = (() => { try { return spawnSync("git", ["--version"], { encoding: "utf8" }); } catch { return null; } })();
-  if (!git || git.status !== 0) { t.skip("git is not available here"); return; }
+  // Where git does not exist (the Forge's test Workers, whose node:test shim has no t.skip), there is nothing to compare.
+  if (!git || git.status !== 0) return;
   const s = synth(60);
   const dir = mkdtempSync(join(tmpdir(), "gate8-memory-"));
   try {
