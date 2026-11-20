@@ -1,0 +1,49 @@
+{
+  "schema": "adr.progress.v1",
+  "adr": "0021",
+  "title": "The Self-Improvement Protocol: no AI approves what it proposed",
+  "adr_file": "architecture/adr/0021-self-improvement-protocol.md",
+  "lifecycle": "accepted",
+  "lifecycle_note": "Accepted 2026-11-20 (owner: \"3. All protocols live\"). The platform holds the validator gates as doctrine bounds; xauusd and Aether build the validator, the registry and the loop.",
+  "phases": [
+    {
+      "id": "D",
+      "title": "The protocol recorded: no AI approves a strategy or rule it proposed",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0021-self-improvement-protocol.md",
+        "quote": "No AI approves a strategy or rule it proposed."
+      },
+      "note": "a documented decision"
+    },
+    {
+      "id": "F",
+      "title": "The validator gates are doctrine facts whose floors are the owner's starting values",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0021-self-improvement-protocol.md",
+        "quote": "Each bound's floor is the owner's starting value, so a tuning can only make the validator stricter, never looser."
+      },
+      "note": "built here: validator.* in control-plane-shared/src/doctrine.ts, test SI1"
+    },
+    {
+      "id": "B",
+      "title": "The breakglass path recorded, with its first use (Positioning & Liquidity)",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0021-self-improvement-protocol.md",
+        "quote": "Sekarang breakglass urgent jadi langsung live"
+      },
+      "note": "a documented decision; the floor-drop and the retro-validation are built in xauusd"
+    },
+    {
+      "id": "V",
+      "title": "The deterministic validator and the strategy registry, built in xauusd and Aether",
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "not built: the validator and the registry live in xauusd and Aether, which report nothing about them yet"
+      },
+      "note": "xauusd and Aether build it as their own RFCs"
+    }
+  ]
+}

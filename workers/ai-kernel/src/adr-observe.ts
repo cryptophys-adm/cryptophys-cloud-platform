@@ -43,6 +43,7 @@ import m0017 from "../../../architecture/adr/progress/0017.json" with { type: "j
 import m0018 from "../../../architecture/adr/progress/0018.json" with { type: "json" };
 import m0019 from "../../../architecture/adr/progress/0019.json" with { type: "json" };
 import m0020 from "../../../architecture/adr/progress/0020.json" with { type: "json" };
+import m0021 from "../../../architecture/adr/progress/0021.json" with { type: "json" };
 
 export interface BundledManifest { adr: string; file: string; manifest: unknown }
 
@@ -68,6 +69,7 @@ export const ADR_MANIFESTS: readonly BundledManifest[] = Object.freeze(([
   ["0018", m0018],
   ["0019", m0019],
   ["0020", m0020],
+  ["0021", m0021],
 ] as Array<[string, unknown]>).map(([adr, manifest]) => Object.freeze({ adr, file: `${ADR_PROGRESS_DIR}${adr}.json`, manifest })));
 
 const VISION_PATH = "organism/vision.json";

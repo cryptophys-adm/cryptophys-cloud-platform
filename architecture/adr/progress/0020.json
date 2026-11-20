@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendments 1 (AUTO), 2 (auto-arm) 11-17; 3 (profiles), 4 (TP ladder), 5 (veto) 11-18; 6 (TP2 at break-even) 11-19; 7 (limit entries), 8 (bounded SL loosening) 11-20. No platform build; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendments 1-2 on 11-17, 3-5 on 11-18, 6 on 11-19; 7 (limit entries), 8 (bounded SL loosening), 9 (WAIT-with-bias) on 11-20. No platform build but doctrine bounds; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
   "phases": [
     {
       "id": "D",
@@ -109,7 +109,17 @@
         "ref": "architecture/adr/0020-standing-trading-authorization.md",
         "quote": "Never beyond the position's original entry stop, so its money at risk stays at most the 1R sized at entry."
       },
-      "note": "a documented decision, not a build: xauusd keeps it behind a default-off switch until it is merged"
+      "note": "a decision, not a build; switch off by default. Owner 11-20 (\"2 ya\"): brokerKeyLevels with source liquidity are key levels for A8's measured reason"
+    },
+    {
+      "id": "A9",
+      "title": "Amendment 9 recorded: WAIT-with-bias entries past the quorum share only; the veto and every other guardrail kept",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "Every guardrail of that side except the quorum share. A Decision Engine veto still blocks it."
+      },
+      "note": "a documented decision, not a build: xauusd enters live only behind wait_bias_entry, off by default, after it is merged"
     },
     {
       "id": "N",

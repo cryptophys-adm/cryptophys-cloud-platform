@@ -176,6 +176,37 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **The constitution's line is unchanged.** "Never widen trading autonomy without the owner": this widening is the owner's.
 - **Order of events.** xauusd ships it behind a switch that is off by default, and turns it on only after this amendment is merged.
 
+## Amendment 9 (owner, 2026-11-20): WAIT-with-bias entries, past the quorum share only
+
+- **Origin.** xauusd proposed it (the WAIT-with-bias entry), and the owner confirmed its scope in the xauusd session. The owner then confirmed it directly to the platform session on 2026-11-20, choosing both the bias-side entry and the learned counter-bias multipliers ("1.b"). He was told first that it enters past one refusal of the Decision Engine, the quorum share, which Amendment 1's "every other entry rule" and the Guards' "arming adds no path around it" otherwise keep closed. The measured case, 18–20 Nov: bias-side plans PF 5.03, counter-bias plans PF 0.37.
+- **When.** The 15m Decision Engine's stance is WAIT and its bias is BULLISH or BEARISH.
+- **What may enter.**
+  - One live strategy-agent plan on the bias side: the one with the best score, where the score is the agent's confidence on that side (0–1) times confluence (0–1).
+  - Confluence is the mean of three parts: the plan's at_level flag; the Key Level Agent's lean toward the bias side, scaled to 0–1; and D1/H4/H1 room agreement.
+  - The score must reach `omega.wait_bias_min_score_<mode>`.
+- **What it must pass.**
+  - Every guardrail of that side except the quorum share. A Decision Engine veto still blocks it.
+  - TP1's RRR meets the mode's minimum on its own.
+  - The entry council (Amendment 7) agrees and gives a measured reason. A silent council means no entry.
+- **Size.** The smaller of Safe and the active profile.
+- **Counter-bias plans.**
+  - Blocked while the learned multiplier `omega.wait_bias_counter_<agent>_<mode>` is 0, its start value.
+  - With a multiplier w above 0, agent A's counter-bias plan becomes a candidate with the score w × confidence × confluence, on its own side. It must still reach the minimum score and pass every gate above, so w = 0.5 needs twice the confidence × confluence of a bias-side plan. Its size is unchanged.
+  - Only xauusd's tuning proposes w, from the counter-bias shadow: at least 200 discovery and 100 holdout fills, a bootstrap lower bound on mean R above 0, and Holm across cells. Aether sets it inside its bound; xauusd only reads it.
+  - Scalp's bound is 0–0, so scalp never opens a counter-bias plan.
+- **Bounds.** 56 doctrine facts in `control-plane-shared/src/doctrine.ts`, one per mode, and per strategy agent for the multiplier:
+  - `omega.wait_bias_min_score_<mode>`: 0.20–0.60, start 0.30. Scalp has the fact, but xauusd does not read it for scalp until a later change (scalp's minimum RRR is 0).
+  - `omega.wait_bias_counter_<agent>_<mode>`: 0–0.5 for intraday, swing and range, and 0–0 for scalp; start 0. The 13 agents are xauusd's STRATEGY_AGENTS: zone_pullback, sweep_reversal, breakout_retest, range_fade, pattern_peaks, pattern_lines, pattern_curve, pattern_bars, pattern_pole, pattern_gaps, pattern_legs, pattern_event, pattern_inside.
+  - An amendment of a bound is the owner's.
+- **Counts.** A WAIT-with-bias entry is an entry like any other: it counts for the cap of 3, `omega.max_positions` and the daily loss budget.
+- **Unchanged:**
+  - the Decision Engine veto and every guardrail other than the quorum share;
+  - auto-disarm, Omega's live arm, the daily loss limit and the kill switch;
+  - funds are never moved;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** "Never widen trading autonomy without the owner": this widening is the owner's.
+- **Order of events.** Stage 1 only measures (the ledger policy and the report to Aether, no live entries) and needs no amendment. Stage 2 enters live behind the owner's switch `wait_bias_entry`, off by default, and only after this amendment is merged.
+
 ## Guards
 
 - **Funds are never moved.** Arming authorises entries and closes only. No deposit, withdrawal, transfer or wallet action, at any tier, armed or not.
