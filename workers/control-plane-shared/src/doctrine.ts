@@ -177,6 +177,62 @@ export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.f
   "validator.min_oos_pf": { kind: "number", min: 1.2, max: 3 },
   "validator.min_wf_windows_positive": { kind: "integer", min: 3, max: 4 },
   "validator.sensitivity_pct": { kind: "integer", min: 20, max: 50 },
+  // xauusd's Positioning & Liquidity analyst (#505; live on merge as a breakglass under ADR-0021, owner: "Sekarang
+  // breakglass urgent jadi langsung live"). Aether moves these inside their bounds; the units and bounds are xauusd's
+  // (relay 2026-11-20 10:13). Per mode: de_weight, the share of the Decision Engine's witness weight; crowd_pctl, the
+  // percentile of the managed-money net over 156 weeks; flow_z, standard deviations of the weekly change in net;
+  // council_weight, 0 (muted) to 1; spike_pctl / thin_pctl, percentiles of M1 / 15m tick volume within its hour of the
+  // week; spread_widen, the live spread over the hour's median; sweep_lookback_min and profile_window_min, minutes of M1
+  // bars; pool_tol_atr, a multiple of ATR(14) on 15m bars; hvn_pctl, the percentile of the profile bins. Per lens:
+  // score_floor, the hit share; score_window, the scored readings.
+  "positioning.de_weight_scalp": { kind: "number", min: 0.02, max: 0.04 },
+  "positioning.de_weight_intraday": { kind: "number", min: 0.02, max: 0.06 },
+  "positioning.de_weight_swing": { kind: "number", min: 0.02, max: 0.1 },
+  "positioning.de_weight_range": { kind: "number", min: 0.02, max: 0.05 },
+  "positioning.crowd_pctl_scalp": { kind: "number", min: 0.8, max: 0.95 },
+  "positioning.crowd_pctl_intraday": { kind: "number", min: 0.8, max: 0.95 },
+  "positioning.crowd_pctl_swing": { kind: "number", min: 0.8, max: 0.95 },
+  "positioning.crowd_pctl_range": { kind: "number", min: 0.8, max: 0.95 },
+  "positioning.flow_z_scalp": { kind: "number", min: 0.5, max: 2 },
+  "positioning.flow_z_intraday": { kind: "number", min: 0.5, max: 2 },
+  "positioning.flow_z_swing": { kind: "number", min: 0.5, max: 2 },
+  "positioning.flow_z_range": { kind: "number", min: 0.5, max: 2 },
+  "liquidity.council_weight_scalp": { kind: "number", min: 0, max: 0.8 },
+  "liquidity.council_weight_intraday": { kind: "number", min: 0, max: 0.6 },
+  "liquidity.council_weight_swing": { kind: "number", min: 0, max: 0.4 },
+  "liquidity.council_weight_range": { kind: "number", min: 0, max: 0.6 },
+  "liquidity.spike_pctl_scalp": { kind: "number", min: 0.9, max: 0.99 },
+  "liquidity.spike_pctl_intraday": { kind: "number", min: 0.9, max: 0.99 },
+  "liquidity.spike_pctl_swing": { kind: "number", min: 0.9, max: 0.99 },
+  "liquidity.spike_pctl_range": { kind: "number", min: 0.9, max: 0.99 },
+  "liquidity.thin_pctl_scalp": { kind: "number", min: 0.05, max: 0.3 },
+  "liquidity.thin_pctl_intraday": { kind: "number", min: 0.05, max: 0.3 },
+  "liquidity.thin_pctl_swing": { kind: "number", min: 0.05, max: 0.3 },
+  "liquidity.thin_pctl_range": { kind: "number", min: 0.05, max: 0.3 },
+  "liquidity.spread_widen_scalp": { kind: "number", min: 1.5, max: 4 },
+  "liquidity.spread_widen_intraday": { kind: "number", min: 1.5, max: 4 },
+  "liquidity.spread_widen_swing": { kind: "number", min: 1.5, max: 4 },
+  "liquidity.spread_widen_range": { kind: "number", min: 1.5, max: 4 },
+  "liquidity.sweep_lookback_min_scalp": { kind: "integer", min: 30, max: 120 },
+  "liquidity.sweep_lookback_min_intraday": { kind: "integer", min: 60, max: 360 },
+  "liquidity.sweep_lookback_min_swing": { kind: "integer", min: 240, max: 1440 },
+  "liquidity.sweep_lookback_min_range": { kind: "integer", min: 60, max: 360 },
+  "liquidity.pool_tol_atr_scalp": { kind: "number", min: 0.02, max: 0.15 },
+  "liquidity.pool_tol_atr_intraday": { kind: "number", min: 0.02, max: 0.15 },
+  "liquidity.pool_tol_atr_swing": { kind: "number", min: 0.02, max: 0.15 },
+  "liquidity.pool_tol_atr_range": { kind: "number", min: 0.02, max: 0.15 },
+  "liquidity.hvn_pctl_scalp": { kind: "number", min: 0.8, max: 0.95 },
+  "liquidity.hvn_pctl_intraday": { kind: "number", min: 0.8, max: 0.95 },
+  "liquidity.hvn_pctl_swing": { kind: "number", min: 0.8, max: 0.95 },
+  "liquidity.hvn_pctl_range": { kind: "number", min: 0.8, max: 0.95 },
+  "liquidity.profile_window_min_scalp": { kind: "integer", min: 120, max: 480 },
+  "liquidity.profile_window_min_intraday": { kind: "integer", min: 480, max: 2880 },
+  "liquidity.profile_window_min_swing": { kind: "integer", min: 2880, max: 14400 },
+  "liquidity.profile_window_min_range": { kind: "integer", min: 480, max: 2880 },
+  "positioning.score_floor": { kind: "number", min: 0.4, max: 0.5 },
+  "liquidity.score_floor": { kind: "number", min: 0.4, max: 0.5 },
+  "positioning.score_window": { kind: "integer", min: 40, max: 200 },
+  "liquidity.score_window": { kind: "integer", min: 50, max: 300 },
 });
 
 export const DOCTRINE_RULE = /^[a-z][a-z0-9_]{2,40}$/;
