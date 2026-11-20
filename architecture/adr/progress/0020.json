@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click, with amendments 1 (AUTO) and 2 (Council auto-arm); 3 (risk profiles), 4 (TP ladder) and 5 (soft-downgrade veto) 2026-11-18; 6 (TP2 with the stop at break-even) 2026-11-19. No platform build; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendments 1 (AUTO), 2 (auto-arm) 11-17; 3 (profiles), 4 (TP ladder), 5 (veto) 11-18; 6 (TP2 at break-even) 11-19; 7 (limit entries), 8 (bounded SL loosening) 11-20. No platform build; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
   "phases": [
     {
       "id": "D",
@@ -90,6 +90,26 @@
         "quote": "a broker that refuses the stop leaves both unchanged"
       },
       "note": "a documented decision, not a build: xauusd builds it after this amendment is merged"
+    },
+    {
+      "id": "A7",
+      "title": "Amendment 7 recorded: resting limit entries under the arm, moved only toward price and cancelled on any disarm",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "A resting entry counts as an open position for the cap of 3 armed strategies"
+      },
+      "note": "a documented decision, not a build: xauusd keeps LIMIT_ENTRY_AVAILABLE false until it is merged"
+    },
+    {
+      "id": "A8",
+      "title": "Amendment 8 recorded: one council loosening of an open position's stop, never beyond the original entry stop",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "Never beyond the position's original entry stop, so its money at risk stays at most the 1R sized at entry."
+      },
+      "note": "a documented decision, not a build: xauusd keeps it behind a default-off switch until it is merged"
     },
     {
       "id": "N",
