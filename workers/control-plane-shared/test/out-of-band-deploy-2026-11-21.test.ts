@@ -157,6 +157,11 @@ test("OB4. the Orchestrator's check: critical for the kernel, a warning for anot
   assert.match(by(KERNEL).subject, /^AI Kernel runs code the platform did not deploy \(uploaded by wrangler at 2026-11-21T00:32:49\.839Z\)$/);
   assert.match(String(by(KERNEL).body.explanation), /Bindings added: analytics_engine:ANALYTICS_AGENT_RUNTIME\..*break-glass plan/);
   assert.equal(by(KERNEL).body.alert_key, `out_of_band:${KERNEL}:${id(2)}`);
+  // 21 Nov 21:35Z: the first text said the agents do not redeploy the kernel, which read as if only break-glass could restore it;
+  // the brake is what holds the routine deploy, and acknowledging the report releases it.
+  assert.match(String(by(KERNEL).body.explanation), /the council rejects every proposal \(the critical-report brake\)/);
+  assert.match(String(by(KERNEL).body.explanation), /Acknowledge it on the Owner page: the routine deploy of main then restores this Worker/);
+  assert.doesNotMatch(String(by(KERNEL).body.explanation), /do not redeploy/);
   assert.match(String(by(CONSOLE).body.explanation), /The Supervisor plans a redeploy of the desired version/);
   assert.match(by(PAPI).subject, /^A setting or secret of Platform API changed outside a deploy/);
   assert.deepEqual([...PROVENANCE_CRITICAL], [KERNEL, ORCH]);

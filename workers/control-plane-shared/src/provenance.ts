@@ -222,7 +222,7 @@ export function provenanceReport(f: ProvenanceFinding, name: string, critical: b
       body: {
         explanation: (`${name} was replaced outside the platform's deploy: version ${f.version_id.slice(0, 8)} became active at ${at}${how}, without the tag of the desired version ${f.desired_version}`
           + `${f.code_same === false ? ", and its code differs from the last version the platform deployed" : ""}.${bindings ? ` ${bindings[0].toUpperCase()}${bindings.slice(1)}.` : ""} `
-          + (critical ? "The agents do not redeploy this Worker themselves: restore it with a break-glass plan (Recovery), or confirm the change and bring it to main. Acknowledge this report on the Owner page to let routine consensus continue."
+          + (critical ? "While this report is open, the council rejects every proposal (the critical-report brake), so nothing is deployed, including the deploy that would restore this Worker. Acknowledge it on the Owner page: the routine deploy of main then restores this Worker (the Deployment Orchestrator first if it is pending, then this unit). Or restore it now with a break-glass plan (Recovery), or confirm the change and bring it to main."
             : "The Supervisor plans a redeploy of the desired version; the Owner page lists it until the Worker runs a platform version again.")).slice(0, 2000),
         out_of_band: true, alert_key: `out_of_band:${f.service_id}:${f.version_id}`, state: "open", ...f,
       },
