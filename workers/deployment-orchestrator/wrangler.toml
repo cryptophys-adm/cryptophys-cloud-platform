@@ -75,6 +75,15 @@ binding = "REGISTRY"
 service = "cryptophys-platform-registry"
 entrypoint = "RegistryRpc"
 
+# Owner 2026-11-21 ("setuju"): the alarm that does not pass through the AI Kernel. When the provenance check finds that
+# the kernel runs code the platform did not deploy, the kernel's own notices cannot be trusted to say so, so this Worker
+# tells the owner's Telegram itself (src/provenance-tick.ts). The xauusd AI Worker's OwnerNotifier holds the bot; this
+# Worker holds no Telegram credential, as the kernel does not.
+[[services]]
+binding = "OWNER_TELEGRAM"
+service = "xauusd-ai-trading-assistant"
+entrypoint = "OwnerNotifier"
+
 # ADR-0012 G2b: the Forge's bundles (the Worker modules of every passed main commit and their manifest).
 # Read only: a code-only deploy uploads the Forge's module as a new Worker version (native-deploy.ts).
 [[r2_buckets]]

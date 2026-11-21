@@ -10,7 +10,7 @@ import {
   OOB_CLEARED, OOB_DETECTED, OOB_REASON, bindingNames, classifyVersion, lastProvenanceEvent, openCodeUpload, provenanceReport, provenanceSweep, provenanceTargets,
   type DeploymentLike, type ProvenanceReader, type VersionLike,
 } from "../src/provenance.ts";
-import { PROVENANCE_CRITICAL, provenanceTick } from "../../deployment-orchestrator/src/provenance-tick.ts";
+import { OOB_NOTIFIED, PROVENANCE_CRITICAL, PROVENANCE_DIRECT, provenanceTick } from "../../deployment-orchestrator/src/provenance-tick.ts";
 import { WATCHED, watchOrchestrator } from "../../recovery-manager/src/provenance-watch.ts";
 import { unhandledProblems } from "../../ai-kernel/src/owner-inbox.ts";
 import { onlyUntaggedVersion } from "../../ai-kernel/src/supervisor.ts";
@@ -205,4 +205,38 @@ test("OB6. the drift reason ends the 'harmless untagged version' reading; the Re
   assert.equal(WATCHED, ORCH);
   assert.match(read("workers/deployment-orchestrator/src/index.ts"), /if \(minute === 10 \|\| minute === 40\) ctx\.waitUntil\(provenanceTick\(env, at\)/);
   assert.match(read("workers/recovery-manager/src/index.ts"), /ctx\.waitUntil\(watchOrchestrator\(env as never\)/);
+});
+
+test("OB7. the alarm outside the kernel: a code upload on the AI Kernel goes straight to the owner's Telegram from the Orchestrator, once, and is audited", async () => {
+  const db = db0();
+  const state = {
+    [KERNEL]: [{ at: "2026-11-21T00:32:49.839Z", source: "wrangler", v: wrangler1 }, { at: "2026-11-20T12:26:36.324Z", source: "api", v: native }],
+    [CONSOLE]: [{ at: "2026-11-21T00:35:00.000Z", source: "wrangler", v: version(8, { etag: "rogue", source: "wrangler" }) }, { at: "2026-11-20T13:23:11.000Z", source: "api", v: version(10, { tag: TAG, etag: "console" }) }],
+    [PAPI]: [{ at: "2026-11-21T00:33:09.064Z", source: "wrangler", v: secret }, { at: "2026-11-20T13:10:16.649Z", source: "api", v: papiNative }],
+  };
+  const cf = cloudflare(state);
+  const sent: Array<{ change: string; title: string; lines: string[]; link: string }> = [];
+  let fail = false;
+  const telegram = { notify: async (n: { change: string; title: string; lines: string[]; link: string }) => { if (fail) throw new Error("bot down"); sent.push(n); return { sent: true }; } };
+  // The kernel's report path is gone (a replaced kernel): no AGENTS binding at all. The owner still hears.
+  await provenanceTick({ DB: db as never, OWNER_TELEGRAM: telegram }, NOW, cf.reader);
+  assert.deepEqual(sent.map((n) => [n.change, n.title, n.link]), [["opened", "AI Kernel runs code the platform did not deploy", "https://nexus.cryptophys.work/console/#/owner"]], "the kernel only: the Console and a secret change go the usual way");
+  assert.match(sent[0].lines[0], /^Version 00000000 became active at 2026-11-21T00:32:49\.839Z by wrangler, outside the consensus deploy \(expected 1b6507682d40\)\.$/);
+  assert.deepEqual(sent[0].lines.slice(1), ["Bindings added: analytics_engine:ANALYTICS_AGENT_RUNTIME", "This message comes from the Deployment Orchestrator, not from the AI Kernel. If it was not you, treat the account's credentials as exposed."]);
+  assert.deepEqual(events(db, OOB_NOTIFIED).map((e) => [e.subject, e.outcome, e.payload.result]), [[KERNEL, "sent", "sent"]]);
+  assert.deepEqual([...PROVENANCE_DIRECT], [KERNEL]);
+  // The same version at the next tick: nothing more.
+  await provenanceTick({ DB: db as never, OWNER_TELEGRAM: telegram }, NOW + 30 * 60_000, cf.reader);
+  assert.equal(sent.length, 1);
+  // A second upload while the bot is down, and without the binding: audited as failed, nothing thrown.
+  fail = true;
+  state[KERNEL].unshift({ at: "2026-11-21T11:43:43.939Z", source: "wrangler", v: wrangler2 });
+  await provenanceTick({ DB: db as never, OWNER_TELEGRAM: telegram }, NOW + 12 * 3_600_000, cf.reader);
+  state[KERNEL].unshift({ at: "2026-11-21T12:00:00.000Z", source: "wrangler", v: version(13, { etag: "third", source: "wrangler" }) });
+  await provenanceTick({ DB: db as never }, NOW + 13 * 3_600_000, cf.reader);
+  assert.deepEqual(events(db, OOB_NOTIFIED).map((e) => [e.outcome, e.payload.result]), [["sent", "sent"], ["failed", "failed: bot down"], ["failed", "failed: owner_telegram_not_bound"]]);
+  // The binding is the kernel's own default channel: the xauusd OwnerNotifier; the Orchestrator holds no bot token.
+  const toml = read("workers/deployment-orchestrator/wrangler.toml");
+  assert.match(toml, /\[\[services\]\]\nbinding = "OWNER_TELEGRAM"\nservice = "xauusd-ai-trading-assistant"\nentrypoint = "OwnerNotifier"\n/);
+  assert.doesNotMatch(toml, /TELEGRAM_BOT|BOT_TOKEN/);
 });

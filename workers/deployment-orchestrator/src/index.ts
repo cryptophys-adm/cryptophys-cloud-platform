@@ -21,7 +21,7 @@ import { D1_BOOKMARK_PERMISSION, DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployPar
 import { MAX_NAMED_DESTRUCTIVE } from "../../control-plane-shared/src/break-glass.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
-import { provenanceTick } from "./provenance-tick.ts";
+import { provenanceTick, type OwnerTelegram } from "./provenance-tick.ts";
 import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, resolveBreakGlassNotices, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
 import { TOPOLOGY_ITEM } from "../../control-plane-shared/src/break-glass.ts";
 
@@ -53,6 +53,8 @@ export interface Env extends NativeRollbackEnv {
   DB: D1Database;
   /** AI Kernel agent binding (advisory reports). */
   AGENTS?: AgentRpcBinding;
+  /** Owner 2026-11-21: the xauusd AI Worker's OwnerNotifier, for the provenance alarm outside the kernel (provenance-tick.ts). */
+  OWNER_TELEGRAM?: OwnerTelegram;
   /** Dedicated Deployment Orchestrator AI engine (advisory only). */
   AI?: AiBinding;
   AI_MODEL?: string;
