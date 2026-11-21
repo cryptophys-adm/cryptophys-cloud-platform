@@ -319,7 +319,8 @@ test("AP10. the seed is honest: what the platform cannot see is open with a reas
   assert.deepEqual(p20("A8").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "Never beyond the position's original entry stop, so its money at risk stays at most the 1R sized at entry." }, "A8: a loosened stop never passes the original entry stop");
   assert.deepEqual(p20("A9").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "Every guardrail of that side except the quorum share. A Decision Engine veto still blocks it." }, "A9: WAIT-with-bias passes every guardrail but the quorum share");
   assert.match(p20("A8").note ?? "", /\("2 ya"\): brokerKeyLevels with source liquidity are key levels/, "A8: the owner's clarification of 2026-11-20");
-  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "N", "R"]);
+  assert.deepEqual(p20("A10").evidence, { kind: "doc_asserted", ref: "architecture/adr/0020-standing-trading-authorization.md", quote: "A setting can only tighten inside a profile, never widen it." }, "A10: risk bounds follow the profile");
+  assert.deepEqual(a20.phases.map((ph) => ph.id), ["D", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "N", "R"]);
   assert.equal(criticalPathReason(`${PROGRESS}0020.json`), null, "0020.json is not a guard path");
   // ADR-0018: the registry migration 0074 is on main now, so X3 measures it.
   assert.ok(predicateLeaves(byId("0018").phases.find((ph) => ph.id === "X3")!.evidence).some((p) => p.kind === "migration_applied" && p.name === "0074_register_cta.sql"));

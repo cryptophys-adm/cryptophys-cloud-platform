@@ -69,9 +69,25 @@ export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.f
   "calendar.blackout_after_min": { kind: "integer", min: 15, max: 120 },
   "omega.max_signal_age_min": { kind: "number", min: 5, max: 15 },
   "omega.max_spread_points": { kind: "integer", min: 20, max: 100 },
-  "omega.max_positions": { kind: "integer", min: 1, max: 3 },
-  "omega.max_daily_loss_pct": { kind: "number", min: 1, max: 5 },
-  "omega.risk_pct": { kind: "number", min: 0.1, max: 2 },
+  // ADR-0020 Amendment 10 (owner 2026-11-21, "tabel disetujui"): Omega's risk bounds follow the account profile
+  // (xauusd src/account-spec.mjs PROFILES): each ceiling is the profile's hard limit. risk_pct: percent of the account
+  // per trade; max_daily_loss_pct: percent of the account per UTC day; max_positions: open positions. The limits in
+  // force are the smaller of the profile's and the engine's setting. The single facts (omega.risk_pct,
+  // omega.max_daily_loss_pct, omega.max_positions: the engine's stored settings) are information now, unbounded, so
+  // the council amends risk only under the per-profile names. The Custom profile (the engine's settings, with no
+  // limit of its own in xauusd) is bounded as Aggressive (owner, "2a").
+  "omega.risk_pct_safe": { kind: "number", min: 0.1, max: 2 },
+  "omega.risk_pct_conservative": { kind: "number", min: 0.1, max: 5 },
+  "omega.risk_pct_aggressive": { kind: "number", min: 0.1, max: 10 },
+  "omega.max_daily_loss_pct_safe": { kind: "number", min: 0.1, max: 3 },
+  "omega.max_daily_loss_pct_conservative": { kind: "number", min: 0.1, max: 6 },
+  "omega.max_daily_loss_pct_aggressive": { kind: "number", min: 0.1, max: 10 },
+  "omega.max_positions_safe": { kind: "integer", min: 1, max: 1 },
+  "omega.max_positions_conservative": { kind: "integer", min: 1, max: 2 },
+  "omega.max_positions_aggressive": { kind: "integer", min: 1, max: 3 },
+  "omega.risk_pct_custom": { kind: "number", min: 0.1, max: 10 },
+  "omega.max_daily_loss_pct_custom": { kind: "number", min: 0.1, max: 10 },
+  "omega.max_positions_custom": { kind: "integer", min: 1, max: 3 },
   // ADR-0020 Amendment 7 (owner 2026-11-20; xauusd RFC_OMEGA_LIMIT_ENTRY, #496/#497): Omega's resting limit entries,
   // one fact per trading mode, learned inside these bounds. life: integer minutes from the EA's placed_ms to deletion;
   // move_max_atr: total move toward price in ATR(14) of closed 15m bars; cancel_share_drop: absolute drop of the order

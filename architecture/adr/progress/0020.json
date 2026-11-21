@@ -4,7 +4,7 @@
   "title": "Standing trading authorization: arming a strategy is the owner's standing click",
   "adr_file": "architecture/adr/0020-standing-trading-authorization.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendments 1-2 on 11-17, 3-5 on 11-18, 6 on 11-19; 7 (limit entries), 8 (bounded SL loosening), 9 (WAIT-with-bias) on 11-20. No platform build but doctrine bounds; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
+  "lifecycle_note": "Merged 2026-11-17 by the owner's click; amendments 1-2 on 11-17, 3-5 on 11-18, 6 on 11-19, 7-9 on 11-20, 10 (risk bounds per profile) on 11-21. No platform build but doctrine bounds; xauusd's RFC_STRATEGY_RECOMMENDATION and later RFCs implement it.",
   "phases": [
     {
       "id": "D",
@@ -120,6 +120,16 @@
         "quote": "Every guardrail of that side except the quorum share. A Decision Engine veto still blocks it."
       },
       "note": "a documented decision, not a build: xauusd enters live only behind wait_bias_entry, off by default, after it is merged"
+    },
+    {
+      "id": "A10",
+      "title": "Amendment 10 recorded: Omega's risk bounds follow the account profile, the engine setting only tightens",
+      "evidence": {
+        "kind": "doc_asserted",
+        "ref": "architecture/adr/0020-standing-trading-authorization.md",
+        "quote": "A setting can only tighten inside a profile, never widen it."
+      },
+      "note": "a decision and its doctrine bounds (omega.*_<profile>); xauusd already enforces the table; Aether mirrors the bounds"
     },
     {
       "id": "N",

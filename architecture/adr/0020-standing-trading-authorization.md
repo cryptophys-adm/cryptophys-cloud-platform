@@ -207,6 +207,33 @@ The constitution's line now reads: "Never move funds; a trading action needs the
 - **The constitution's line is unchanged.** "Never widen trading autonomy without the owner": this widening is the owner's.
 - **Order of events.** Stage 1 only measures (the ledger policy and the report to Aether, no live entries) and needs no amendment. Stage 2 enters live behind the owner's switch `wait_bias_entry`, off by default, and only after this amendment is merged.
 
+## Amendment 10 (owner, 2026-11-21): risk bounds follow the account profile
+
+- **Origin.** The doctrine bounded Omega's risk with one static range each (`omega.risk_pct` 0.1–2, `omega.max_daily_loss_pct` 1–5, `omega.max_positions` 1–3), written before the account profiles of Amendment 3. The owner's live Conservative profile has a 6% daily loss limit, outside that range, so Aether and Cerebrum would refuse the value xauusd reports. The owner asked on 2026-11-20: "bukankah harusnya dinamis mengikuti profil dan setup engine ?". xauusd sent the table it enforces (`src/account-spec.mjs` PROFILES), and the owner confirmed it directly to the platform session on 2026-11-21 ("tabel disetujui"; for the Custom profile, "2a": bounded as Aggressive).
+- **The table.** Each profile's hard limits, as xauusd enforces them:
+
+  | Profile | Risk per trade (target) | Hard cap per trade | Total open risk | Daily loss | Max positions | Modes allowed |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Safe | 1% | 2% | 2% | 3% | 1 | swing, intraday |
+  | Conservative | 2% | 5% | 5% | 6% | 2 | intraday, swing, range |
+  | Aggressive | 5% | 10% | 10% | 10% | 3 | scalp, intraday, swing, range |
+
+- **Profile and engine setup together.** The limits in force are the smaller of the profile's and the engine's setting, for each value. A setting can only tighten inside a profile, never widen it.
+- **Bounds per profile.** `control-plane-shared/src/doctrine.ts` bounds one fact per profile, with the profile's hard limit as the ceiling:
+  - `omega.risk_pct_<profile>`: 0.1 up to 2 (Safe), 5 (Conservative), 10 (Aggressive and Custom);
+  - `omega.max_daily_loss_pct_<profile>`: 0.1 up to 3 (Safe), 6 (Conservative), 10 (Aggressive and Custom);
+  - `omega.max_positions_<profile>`: 1 (Safe), 1 to 2 (Conservative), 1 to 3 (Aggressive and Custom).
+- **The single facts are information.** `omega.risk_pct`, `omega.max_daily_loss_pct` and `omega.max_positions` (the engine's stored settings) are no longer bounded: xauusd keeps reporting them, and the council amends risk only under the per-profile names. A change to a single fact, or to a bound, is the owner's.
+- **No bounds by mode.** xauusd has no separate risk limits per trading mode; a profile only limits which modes may run. Reversal probation halves the risk and the hard cap, which only tightens.
+- **The Custom profile is bounded as Aggressive.** It takes the engine's settings, and xauusd enforced no limit on them (its input ranges reach 10% risk per trade, 20% daily loss and 5 positions). The owner set its ceiling to Aggressive's: 10% per trade, 10% daily loss, 3 positions (`omega.*_custom`). xauusd applies the same ceiling to a Custom account.
+- **Which row applies.** xauusd reports the active profile and the limits in force as facts (`omega.profile`, `omega.effective_risk_pct`, `omega.effective_max_daily_loss_pct`, `omega.effective_max_positions`), so Aether and Cerebrum read a value against its own profile's row.
+- **Unchanged:**
+  - Amendment 3: the ceiling is the owner's, an upgrade is one step and never mid-trade, a downgrade is always allowed;
+  - the daily loss limit and the kill switch still disarm everything and return the account to Safe;
+  - the Decision Engine veto; funds are never moved;
+  - the xauusd external ceiling and the platform's trading capability rules.
+- **The constitution's line is unchanged.** "Never widen trading autonomy without the owner": the wider ceilings of Conservative and Aggressive are the owner's own profiles (Amendment 3), now also the doctrine's.
+
 ## Guards
 
 - **Funds are never moved.** Arming authorises entries and closes only. No deposit, withdrawal, transfer or wallet action, at any tier, armed or not.

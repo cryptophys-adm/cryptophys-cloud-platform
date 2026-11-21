@@ -53,7 +53,8 @@ test("K1. migration 0045: the amendments table and one tier-1 Knowledge Council 
 test("K2. hard bounds: operational facts only, inside their bounds; weights sum to 1", () => {
   assert.equal(boundProblem("decision.quorum_min_intraday", 0.55), null);
   assert.match(String(boundProblem("decision.quorum_min_intraday", 0.9)), /outside 0.45-0.7/);
-  assert.match(String(boundProblem("omega.risk_pct", 3)), /outside/);
+  assert.match(String(boundProblem("omega.risk_pct_safe", 3)), /outside/);
+  assert.match(String(boundProblem("omega.risk_pct", 3)), /not a council-amendable fact/, "the engine's stored setting is information only (ADR-0020 Amendment 10)");
   assert.match(String(boundProblem("parity.approval_candles", 30)), /not a council-amendable fact/);
   assert.match(String(boundProblem("decision.trading_mode", "range")), /not a council-amendable fact/, "the mode in force is information only (owner 2026-11-19)");
   assert.equal(boundProblem("decision.witness_weights", { D1: 0.3, H4: 0.3, H1: 0.2, M15: 0.2 }), null);
