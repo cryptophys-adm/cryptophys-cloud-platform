@@ -1,5 +1,7 @@
 # Platform API Post-Deployment Verification
 
+> **Superseded (2026-11-21).** This is an early-November baseline kept as history. It describes the GitHub deploy path that ADR-0012 replaced: the canonical repository is `cryptophys/platform` on Cloudflare Artifacts, and platform Workers are deployed only by consensus through the Deployment Orchestrator (or the owner's break-glass plan). What runs today is in [`docs/SSOT.md`](SSOT.md); where this page disagrees, `docs/SSOT.md` is right.
+
 ## Scope
 
 This runbook verifies the currently deployed Platform API Worker. It does not claim that the full Cryptophys control plane is implemented.

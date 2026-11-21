@@ -1,5 +1,7 @@
 # Infrastructure State and Recovery Contract
 
+> **Superseded (2026-11-21).** This is an early-November baseline kept as history. It describes the GitHub deploy path that ADR-0012 replaced: the canonical repository is `cryptophys/platform` on Cloudflare Artifacts, and platform Workers are deployed only by consensus through the Deployment Orchestrator (or the owner's break-glass plan). What runs today is in [`docs/SSOT.md`](../docs/SSOT.md); where this page disagrees, `docs/SSOT.md` is right.
+
 **Status:** Approved baseline for implementation; backend provisioning remains pending.  
 **Scope:** Provisioning and lifecycle management of resources owned by Cryptophys Cloud Platform.
 

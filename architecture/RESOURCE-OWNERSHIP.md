@@ -1,5 +1,7 @@
 # Resource Ownership Register
 
+> **Superseded (2026-11-21).** This is an early-November baseline kept as history. It describes the GitHub deploy path that ADR-0012 replaced: the canonical repository is `cryptophys/platform` on Cloudflare Artifacts, and platform Workers are deployed only by consensus through the Deployment Orchestrator (or the owner's break-glass plan). What runs today is in [`docs/SSOT.md`](../docs/SSOT.md); where this page disagrees, `docs/SSOT.md` is right.
+
 Every Cloudflare resource must have an owner, purpose, environment, data classification, lifecycle, and recovery plan before production binding. The machine-readable copy of this register for Workers is the `service_registry` table served by the Platform Registry (`GET /v1/services`).
 
 Owner for every row below: `cryptophys-adm`. Environment: `production`.

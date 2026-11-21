@@ -1,5 +1,7 @@
 # Control Plane Deployment Runbook
 
+> **Superseded (2026-11-21).** This is an early-November baseline kept as history. It describes the GitHub deploy path that ADR-0012 replaced: the canonical repository is `cryptophys/platform` on Cloudflare Artifacts, and platform Workers are deployed only by consensus through the Deployment Orchestrator (or the owner's break-glass plan). What runs today is in [`docs/SSOT.md`](SSOT.md); where this page disagrees, `docs/SSOT.md` is right.
+
 Deploys six Control Plane Workers from one reviewed `main` commit with `.github/workflows/deploy-control-plane.yml`: `cryptophys-platform-registry`, `cryptophys-policy-engine`, `cryptophys-audit-ledger`, `cryptophys-recovery-manager`, `cryptophys-ai-kernel` and `cryptophys-drift-detector`. The Platform API and Deployment Orchestrator use separate workflows.
 
 ## One-time configuration

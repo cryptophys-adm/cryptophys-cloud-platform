@@ -1,5 +1,7 @@
 # Architecture Baseline — Cryptophys Cloud Platform
 
+> **Superseded (2026-11-21).** This is an early-November baseline kept as history. It describes the GitHub deploy path that ADR-0012 replaced: the canonical repository is `cryptophys/platform` on Cloudflare Artifacts, and platform Workers are deployed only by consensus through the Deployment Orchestrator (or the owner's break-glass plan). What runs today is in [`docs/SSOT.md`](../docs/SSOT.md); where this page disagrees, `docs/SSOT.md` is right.
+
 **Status:** Initial baseline, revision 1  
 **Source of truth:** This repository  
 **Runtime target:** Cloudflare-native; no Kubernetes, Talos, containers, or long-running Linux hosts.

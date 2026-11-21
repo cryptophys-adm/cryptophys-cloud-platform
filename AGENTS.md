@@ -1,5 +1,7 @@
 # Agent instructions
 
+**Read first (2026-11-21).** The canonical repository is `cryptophys/platform` on Cloudflare Artifacts; any other copy (GitHub included) is a mirror that may be days behind. Read `docs/SSOT.md` before acting on any other document. Never deploy from a checkout: no `wrangler deploy`, `wrangler versions upload` or `wrangler secret put` against a platform Worker. Deploys go by consensus through the Deployment Orchestrator or by the owner's break-glass plan; a code upload from anywhere else is an out-of-band deploy and is raised to the owner.
+
 Coding agents working in this repository (for example Antigravity) start with
 `taskplane-tasks/ANTIGRAVITY.md`, then `taskplane-tasks/CONTEXT.md`, then the task's `PROMPT.md`.
 Never deploy, never merge, never commit secrets, and never touch `.github/workflows/*`.
