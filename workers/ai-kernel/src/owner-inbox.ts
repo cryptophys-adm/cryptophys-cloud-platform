@@ -32,6 +32,7 @@ import { resolvedLaterSql } from "./syscall.ts";
 import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 import { latestGitBackupVerify } from "../../control-plane-shared/src/git-backup.ts";
 import { readIdentitySource } from "../../control-plane-shared/src/identity-source.ts";
+import { OOB_DETECTED, openCodeUpload } from "../../control-plane-shared/src/provenance.ts";
 import { RANKING, rankInbox } from "../../control-plane-shared/src/owner-inbox-rank.ts";
 import { draftsAwaitingOwner } from "./proposals.ts";
 import { autonomyNotices } from "./autonomy.ts";
@@ -71,7 +72,9 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path";
+export type ProblemCode = "out_of_band_deploy" | "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path";
+/** out_of_band_deploy: a code upload outside the platform is looked for this far back (it stays listed while it is the Worker's newest provenance event). */
+export const OUT_OF_BAND_WINDOW_MS = 30 * 24 * 3_600_000;
 /** The Orchestrator's own failed native deploy of its unit is listed this long, unless a later deploy of it succeeded. */
 export const EXECUTOR_FAILURE_WINDOW_MS = 24 * 3_600_000;
 export interface ProductionProblem {
@@ -471,6 +474,31 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }
   } catch { noPath = []; }
 
+  // 13. out_of_band_deploy (owner 2026-11-21, control-plane-shared/src/provenance.ts): a platform Worker runs code the
+  //     platform did not deploy (the Orchestrator's, or for the Orchestrator the Recovery Manager's, provenance check
+  //     found a code upload without the tag of a platform deploy, and no later check found a platform version). Listed
+  //     at once, with no grace period and whatever plan is open: the owner hears that a Worker was replaced. One item
+  //     per Worker; it closes when the Worker runs a platform version again (deployment.out_of_band_cleared).
+  let outOfBand: ProductionProblem[] = [];
+  try {
+    const rows = (await db.prepare(
+      `SELECT subject, outcome, created_at, payload_json FROM audit_events WHERE event_type = ? AND created_at >= ? AND created_at <= ?
+        ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+    ).bind(OOB_DETECTED, iso(now - OUT_OF_BAND_WINDOW_MS), iso(now), INBOX_LIMIT).all<{ subject: string; outcome: string; created_at: string; payload_json: string | null }>()).results ?? [];
+    const seen = new Set<string>();
+    for (const r of rows) {
+      if (seen.has(r.subject)) continue;
+      seen.add(r.subject);
+      const open = await openCodeUpload(db, r.subject);
+      if (!open) continue;
+      outOfBand.push({
+        code: "out_of_band_deploy", subject: r.subject,
+        detail: `${serviceName(r.subject)} runs code that the platform did not deploy: version ${open.version_id.slice(0, 8)} became active at ${open.deployed_at ?? "an unknown time"}${open.source ? ` by ${open.source}` : ""}, outside the consensus deploy. If it was not you, treat the account's credentials as exposed. Restore the Worker with a deploy of main (a break-glass plan for the AI Kernel or the Orchestrator), or bring the change to main`.slice(0, 600),
+        since: open.deployed_at ?? open.detected_at, link: "#/infrastructure",
+      });
+    }
+  } catch { outOfBand = []; }
+
   let identities: ProductionProblem[] = [];
   const src = await readIdentitySource(db);
   if (src.status === "invalid") {
@@ -481,5 +509,5 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }];
   }
 
-  return [...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities];
+  return [...outOfBand, ...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities];
 }

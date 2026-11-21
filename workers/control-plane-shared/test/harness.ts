@@ -80,6 +80,11 @@ export function migratedDb(options: { recordLedger?: boolean } = {}): FakeD1 {
     raw.exec(readFileSync(join(MIGRATIONS, file), "utf8"));
     if (options.recordLedger !== false) raw.prepare("INSERT INTO d1_migrations (name) VALUES (?)").run(file);
   }
+  // The migrations seed agents with fixed dates. The Supervisor proposes to retire an agent that has done nothing for
+  // RETIRE_IDLE_DAYS since it was registered, and most tests run its cycle on the real clock: on 2026-11-21T12:00Z the
+  // aether-* agents (seeded 2026-11-07T12:00Z) crossed 14 days, every such cycle made one more proposal, and 20 tests
+  // failed on a calendar date. A fresh registry is as old as the test: a test that wants an old agent adds its own.
+  raw.prepare("UPDATE agents SET created_at = ? WHERE voter = 0").run(new Date().toISOString());
   return new FakeD1(raw);
 }
 

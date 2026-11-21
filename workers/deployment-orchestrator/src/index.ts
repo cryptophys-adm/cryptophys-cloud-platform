@@ -21,6 +21,7 @@ import { D1_BOOKMARK_PERMISSION, DESTRUCTIVE_DEPLOY_ACTION, destructiveDeployPar
 import { MAX_NAMED_DESTRUCTIVE } from "../../control-plane-shared/src/break-glass.ts";
 import { applyAccess, CloudflareApi, planAccess, type AccessPlan } from "./native-access.ts";
 import { CloudflareRetire, executeRetire, isPermissionRefusal, NATIVE_RETIRE_EXECUTOR, planRetire, RETIRABLE, type RetirePlan } from "./native-retire.ts";
+import { provenanceTick } from "./provenance-tick.ts";
 import { BREAK_GLASS_EXECUTOR, breakGlassChoice, breakGlassLockName, breakGlassRequestKey, readBreakGlassPlan, reportBreakGlass, resolveBreakGlassNotices, unitDeployInProgress, type BreakGlassChoice } from "./recovery-deploy.ts";
 import { TOPOLOGY_ITEM } from "../../control-plane-shared/src/break-glass.ts";
 
@@ -1795,6 +1796,8 @@ export default {
     ctx.waitUntil(runNativeExecutors(env, at).then(() => undefined, log("native_executor_failed")));
     // Hardening (d): a succeeded break-glass deploy's owner notice closes after 24 hours (a "Resolved:" report).
     if (minute === 10 || minute === 40) ctx.waitUntil(resolveBreakGlassNotices(env.DB, env.AGENTS, at).then(() => undefined, log("break_glass_resolve_failed")));
+    // Owner 2026-11-21: what each platform Worker runs, against what the platform deployed (provenance-tick.ts).
+    if (minute === 10 || minute === 40) ctx.waitUntil(provenanceTick(env, at).then(() => undefined, log("provenance_failed")));
     // Owner 2026-11-16: the identity table's one-time seed (a no-op once any row exists).
     if (minute === 10 || minute === 40) ctx.waitUntil(seedIdentities(env).then(() => undefined, log("identity_seed_failed")));
   },

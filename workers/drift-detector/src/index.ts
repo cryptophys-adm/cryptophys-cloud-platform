@@ -1,4 +1,5 @@
 import { explainCode, serviceName } from "../../control-plane-shared/src/plain.ts";
+import { OOB_REASON, openCodeUpload } from "../../control-plane-shared/src/provenance.ts";
 import type { BaseEnv, D1PreparedStatement, ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 import { driftSignature } from "../../control-plane-shared/src/drift-state.ts";
 import { isRetiredService, notRetiredSql } from "../../control-plane-shared/src/retired.ts";
@@ -258,6 +259,9 @@ export async function observe(env: Env, trigger: string, actor: string): Promise
     else if (!p.version_tag) reasons.push("observed_version_unavailable");
     else if (p.version_tag !== row.desired_version) reasons.push("version_mismatch");
     const drifted = !p.healthy || (managed && p.version_tag !== row.desired_version);
+    // Owner 2026-11-21 (provenance.ts): the Orchestrator found that this Worker runs code the platform did not deploy.
+    // With this reason an untagged version is no longer read as a harmless dashboard change.
+    if (managed && drifted && p.version_tag !== row.desired_version && await openCodeUpload(env.DB, row.service_id)) reasons.push(OOB_REASON);
     const status = row.status === "disabled" ? "disabled" : !p.healthy ? "unavailable" : drifted ? "degraded" : "healthy";
     const { observationId, recorded } = await record(env, latest.get(row.service_id), trigger, {
       serviceId: row.service_id, observedAt, drifted, reasons,

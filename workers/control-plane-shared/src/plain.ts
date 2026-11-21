@@ -52,6 +52,7 @@ export const REASON_TEXT: Record<string, string> = {
   // Drift reasons
   version_mismatch: "the running version differs from the expected version",
   observed_version_unavailable: "the service is healthy but did not report its version (for example after a settings or secret change)",
+  out_of_band_code_upload: "the service runs code that the platform did not deploy (uploaded outside the deploy path)",
   desired_version_unset: "no expected version is recorded for this service",
   health_check_failed: "the health check failed",
   no_observation_binding: "the Drift Detector has no connection to this service",

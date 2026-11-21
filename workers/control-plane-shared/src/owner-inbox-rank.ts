@@ -51,12 +51,13 @@ const TRADING_KIND = k("critical", "trading_safety");
 /** An action this table does not know yet (a new critical action) still lists, as normal and blocking nothing. */
 const UNKNOWN_CONSENSUS_KIND = k("normal");
 
-/** Production problems no agent is handling (owner-inbox.ts unhandledProblems(), 11 codes). */
+/** Production problems no agent is handling (owner-inbox.ts unhandledProblems(), 13 codes). */
 export const PROBLEM_KINDS: Readonly<Record<string, Kind>> = {
   executor_deploy_failed: k("critical", "deploys", "cutover_gate"),
   self_unhealthy: k("critical", "deploys"),
   deploys_stalled: k("critical", "deploys"),
   deploy_no_path: k("critical", "deploys"),
+  out_of_band_deploy: k("critical", "deploys"),
   git_backup_unverified: k("high", "cutover_gate", "deploys"),
   drift_unhandled: k("high", "deploys"),
   observations_stale: k("high", "deploys"),

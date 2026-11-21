@@ -50,7 +50,7 @@ test("H0b-3. the kind tables: every critical consensus action is listed; trading
   for (const a of ["change_access", "retire_worker", "deploy_destructive_migration"]) assert.deepEqual(CONSENSUS_KINDS[a], { urgency: "high", blocks: ["cutover_gate", "deploys"] }, a);
   for (const a of ["register_privileged_agent", "admit_voter", "retire_agent", "amend_constitution"]) assert.deepEqual(CONSENSUS_KINDS[a], { urgency: "normal", blocks: [] }, a);
   assert.deepEqual(Object.keys(PROBLEM_KINDS).sort(), ["break_glass_deployed", "build_minutes_exhausted", "critical_advisory", "deploy_no_path", "deploys_stalled", "drift_unhandled", "executor_deploy_failed",
-    "git_backup_unverified", "identity_source_invalid", "observations_stale", "recovery_failed", "self_unhealthy"], "owner-inbox.ts ProblemCode, all 12");
+    "git_backup_unverified", "identity_source_invalid", "observations_stale", "out_of_band_deploy", "recovery_failed", "self_unhealthy"], "owner-inbox.ts ProblemCode, all 13");
   assert.equal(PROBLEM_KINDS.break_glass_deployed.urgency, "normal");
   assert.deepEqual(PROBLEM_KINDS.executor_deploy_failed.blocks, ["deploys", "cutover_gate"]);
 });

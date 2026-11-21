@@ -16,6 +16,7 @@ import type { RecoveryDeployBinding } from "./autonomous.ts";
 import { backupIfStale, type R2BucketLike } from "./backup.ts";
 import { archiveRetiredTables, type ArchiveBucket } from "./archive.ts";
 import { anchorTick, type AnchorBucket } from "./anchor.ts";
+import { watchOrchestrator } from "./provenance-watch.ts";
 import type { ExecutionContextLike, ScheduledEventLike } from "../../control-plane-shared/src/types.ts";
 
 /** The Policy Engine's RPC surface (workers/policy-engine/src/worker.ts PolicyRpc). */
@@ -330,6 +331,11 @@ export default {
     ctx.waitUntil(anchorTick(env).then(
       (r) => { if (r.outcome !== "not_due") console.log(JSON.stringify({ event: "ledger_anchor", ...r })); },
       (e: unknown) => console.error(JSON.stringify({ event: "ledger_anchor", status: "failed", message: String((e as Error)?.message ?? e).slice(0, 300) })),
+    ));
+    // Owner 2026-11-21: what the Deployment Orchestrator runs, against what the platform deployed (provenance-watch.ts).
+    ctx.waitUntil(watchOrchestrator(env as never).then(
+      (r) => { if ("findings" in r && r.findings.some((f) => f.recorded)) console.log(JSON.stringify({ event: "provenance_watch", findings: r.findings.length })); },
+      (e: unknown) => console.error(JSON.stringify({ event: "provenance_watch", status: "failed", message: String((e as Error)?.message ?? e).slice(0, 300) })),
     ));
     // Retire draft redeploy plans that a later deploy made unnecessary (superseded.ts).
     ctx.waitUntil(retireSupersededDrafts(env.DB).then(
