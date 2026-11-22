@@ -611,3 +611,11 @@ ADR-0017 H4 adds the owner's autonomy dial (owner's answers of 2026-11-18). It d
 - With no level set, the class of §1 decides, as before.
 
 `control-plane-shared/src/autonomy-dial.ts` holds these rules and is a guard path (consensus_kill_switch).
+
+## Amendment 2026-11-22: a privileged agent's capability change waits for the owner's click
+
+Owner 2026-11-22, "Jalur klik owner (Rekomendasi)". Until now a registered agent whose DNA declared a new capability set that holds a privileged capability (above tier 1, or `consensus.propose`) had no way out: the routine `update_agent_capabilities` refuses such a set, and `register_privileged_agent` only registers a new agent. The census reported the finding and nothing applied it (Aether's `knowledge-council` and its new read `consensus.status` were the first case).
+
+- A new **critical** action, `update_privileged_agent_capabilities`: the census proposes it for a registered agent whose new set holds a privileged capability. It waits in `pending_owner` and executes only after one owner approval click; the kernel (`ownerDecide`), the executor (`verifyConsensusExecution` on a critical proposal) and the Policy Engine (`owner_approved` at the execute stage) each require it. The autonomy dial can never make it routine (its ceiling is owner_click).
+- Its guards: the new set may keep the privileged capabilities the agent already holds and may add none (adding one stays a registration); removing capabilities is allowed, since it only narrows; the set stays within the agent's origin ceiling, the host is unchanged, and no unknown, prohibited or tier 3 capability is accepted. The votes check these from the registered set in the consensus evidence, and the executor checks them again from the registry row and the latest census.
+- `update_agent_capabilities` stays routine and still never applies a privileged set. Nothing else changes.

@@ -34,7 +34,7 @@ export const GROUP_ACTIONS: Readonly<Record<Exclude<AutonomyGroup, "trading">, r
   merges: ["merge_change", "merge_owner_change"],
   recovery: ["rollback_worker_version", "observe_drift"],
   registry: ["set_desired_version", "registry_disable_service", "registry_enable_service", "retire_worker"],
-  agents: ["suspend_agent", "resume_agent", "retire_agent", "register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "register_privileged_agent", "admit_voter", "register_principal"],
+  agents: ["suspend_agent", "resume_agent", "retire_agent", "register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "register_privileged_agent", "update_privileged_agent_capabilities", "admit_voter", "register_principal"],
   policy: ["set_policy_parameter", "amend_doctrine", "amend_constitution"],
   protected: ["restore_d1_bookmark", "rotate_secret", "change_access", "agents_enable"],
 };

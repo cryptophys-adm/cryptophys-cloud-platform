@@ -485,7 +485,7 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       // unknown capability (cns_211153f4: register_privileged_agent adr-steward, 8-0, adr.observe) although it is
       // routine once deployed. Such a registration is not proposed: it waits as a finding until a kernel that knows
       // every capability runs. Nothing is weakened: an unknown capability is never registered either way.
-      if ((prop.action === "register_agent" || prop.action === "register_privileged_agent" || prop.action === "update_agent_capabilities") && Array.isArray(prop.params.capabilities)) {
+      if ((prop.action === "register_agent" || prop.action === "register_privileged_agent" || prop.action === "update_agent_capabilities" || prop.action === "update_privileged_agent_capabilities") && Array.isArray(prop.params.capabilities)) {
         const unknown = (prop.params.capabilities as unknown[]).map(String).filter((c) => !Object.hasOwn(CAPABILITIES, c));
         if (unknown.length) {
           report.findings.push({ kind: "organism", service_id: prop.target, action: "none", why: `registration of ${prop.target} waits: ${unknown.join(", ")} is unknown to the running kernel (its deploy is pending)`.slice(0, 300) });
