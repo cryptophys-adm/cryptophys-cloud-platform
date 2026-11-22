@@ -88,7 +88,7 @@ test("LM1. learning capabilities have no max_per_hour, hourlyLimit() ignores one
   try { assert.equal(hourlyLimit("memory.remember"), null); } finally { CAPABILITIES["memory.remember"] = saved; }
   // Other tier 1 capabilities keep their limits.
   assert.equal(hourlyLimit("recovery.propose"), CAPABILITIES["recovery.propose"]!.max_per_hour);
-  assert.equal(hourlyLimit("consensus.propose"), 4);
+  assert.equal(hourlyLimit("consensus.propose"), 8); // 4 until the owner raised it on 2026-11-22
   const db = migratedDb();
   for (const [subject, cap] of [["agent:auditor", "memory.remember"], ["agent:aether-curator", "knowledge.propose"]] as const) {
     const checks = await agentSyscallChecks(db as never, subject, cap);

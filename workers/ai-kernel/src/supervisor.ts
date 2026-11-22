@@ -147,7 +147,7 @@ export function templateProposal(s: ServiceObs): Proposal {
 /**
  * Owner 2026-11-14: consensus.propose's hourly window as the Policy Engine counts it (capabilities.ts, check
  * rate_limit): the syscalls this agent CONSUMED in the last hour (agent_syscall_consumptions, written by
- * verifySyscallDecision when an allowed call is dispatched) against max_per_hour (4). A denied attempt is never
+ * verifySyscallDecision when an allowed call is dispatched) against max_per_hour (8 since 2026-11-22, 4 before). A denied attempt is never
  * consumed, so it does not move the window; it only adds a denied syscall (19 in one day, measured 2026-11-14).
  * The window reopens when its oldest counting consumption is an hour old. The Policy Engine stays the authority:
  * this only avoids calls it is certain to refuse.

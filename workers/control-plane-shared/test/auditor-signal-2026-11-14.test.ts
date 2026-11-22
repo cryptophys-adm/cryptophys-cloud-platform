@@ -264,12 +264,12 @@ test("C1. the window counts consumed syscalls in the last hour (denied attempts 
   consume(db, 3, [50, 30, 10]);
   db.raw.prepare("INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at) VALUES ('act_d', 'supervisor', 'consensus.propose', 1, null, 'denied', '{}', '{\"reason\":\"failed: rate_limit\"}', ?)").run(new Date(now - 60_000).toISOString());
   const open = await consensusProposeWindow(db as never, "supervisor", now);
-  assert.deepEqual([open.used, open.limit, open.full, open.reopens_at], [3, 4, false, null]);
+  assert.deepEqual([open.used, open.limit, open.full, open.reopens_at], [3, 8, false, null]);
   db.raw.prepare("INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at) VALUES ('dec_window_x', 'supervisor', 'consensus.propose', ?)").run(new Date(now - 70 * 60_000).toISOString());
   assert.equal((await consensusProposeWindow(db as never, "supervisor", now)).used, 3, "a consumption older than an hour has left the window");
-  consume(db, 1, [5]);
+  consume(db, 5, [5, 4, 3, 2, 1]); // 8 an hour since 2026-11-22 (owner)
   const full = await consensusProposeWindow(db as never, "supervisor", now);
-  assert.deepEqual([full.used, full.full], [4, true]);
+  assert.deepEqual([full.used, full.full], [8, true]);
   const oldest = db.raw.prepare("SELECT MIN(consumed_at) AS t FROM agent_syscall_consumptions WHERE consumed_at >= ?").get(new Date(now - 3_600_000).toISOString()) as any;
   assert.equal(full.reopens_at, new Date(Date.parse(oldest.t) + 3_600_000).toISOString());
 });
@@ -278,11 +278,11 @@ test("C2. a full window: the Supervisor skips consensus.propose (no denied sysca
   const { env, db } = kernelEnv();
   persistentDrift(db);
   persistentDrift(db, "cryptophys-platform-registry");
-  consume(db, 4, [50, 40, 30, 20]);
+  consume(db, 8, [50, 45, 40, 35, 30, 25, 20, 15]);
   const cycle = await runCycle(env as never, memory(), "scheduled");
   const windows = cycle.findings.filter((f) => f.kind === "rate_window");
   assert.equal(windows.length, 1, "one finding per cycle, however many proposals wait");
-  assert.match(String(windows[0].why), /^consensus\.propose window full until \d\d:\d\d UTC \(4 of 4 in the last hour\)/);
+  assert.match(String(windows[0].why), /^consensus\.propose window full until \d\d:\d\d UTC \(8 of 8 in the last hour\)/);
   assert.equal(windows[0].reopens_at, new Date(Date.parse((db.raw.prepare("SELECT MIN(consumed_at) AS t FROM agent_syscall_consumptions").get() as any).t) + 3_600_000).toISOString());
   assert.deepEqual(proposeRows(db), [], "no consensus.propose syscall recorded, denied or otherwise");
   assert.deepEqual(proposeDecisions(db), [], "the Policy Engine was not asked");

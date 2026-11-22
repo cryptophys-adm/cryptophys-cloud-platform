@@ -404,11 +404,11 @@ test("OB11. Supervisor safeguards: baseline under 3 days, the brake, the rate wi
   db2.raw.prepare("INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at) VALUES ('rpt_brake', 'owner@example.com', 'handled already', ?)").run(new Date().toISOString());
   await runCycle(k2.env as never, k2.memory, "scheduled", at2 + 15 * 60_000);
   assert.equal(proposals(db2).length, 1, "proposed once the brake is off");
-  // The rate window: consensus.propose used 4 times in the last hour.
+  // The rate window: consensus.propose used 8 times in the last hour (its limit since 2026-11-22).
   const db3 = migratedDb();
   const k3 = kernelEnv(db3);
   const at3 = await spikeAfterDeploy(db3);
-  for (let i = 0; i < 4; i++) db3.raw.prepare("INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at) VALUES (?, 'supervisor', 'consensus.propose', ?)").run(`pol_${i}`, new Date(Date.now() - (i + 1) * 60_000).toISOString());
+  for (let i = 0; i < 8; i++) db3.raw.prepare("INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at) VALUES (?, 'supervisor', 'consensus.propose', ?)").run(`pol_${i}`, new Date(Date.now() - (i + 1) * 60_000).toISOString());
   const c3 = await runCycle(k3.env as never, k3.memory, "scheduled", at3);
   assert.equal(proposals(db3).length, 0);
   assert.ok(c3.findings.some((f: any) => f.kind === "rate_window"));

@@ -452,9 +452,11 @@ test("IR-6. one redeploy per unit and revision, not a loop: a dashboard edit aft
   // The owner saves again: revision 3 differs on every unit, so each is redeployed once, one per cycle, in deploy order.
   const r3 = await ownerSaves(w.db, [...NEW_EMAILS, "third@cryptophys.work"]);
   assert.equal(r3, 3);
+  // The window is 8 an hour since 2026-11-22 (owner): four other proposals of the hour (merges) leave room for three deploys.
+  for (let k = 0; k < 4; k++) w.db.raw.prepare("INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at) VALUES (?, 'supervisor', 'consensus.propose', ?)").run(`dec_ir6_merge_${k}`, new Date(Date.now() - 30 * 60_000).toISOString());
   let last = await cycle(w);
   for (let k = 0; k < 4; k++) last = await cycle(w);
-  // The Supervisor's consensus.propose window (4 an hour) holds the fourth unit of the hour.
+  // The Supervisor's consensus.propose window (8 an hour, half of it used by merges here) holds the fourth unit of the hour.
   assert.ok(last.findings.some((f) => f.kind === "rate_window"));
   assert.equal(deployProposals(w.db).length, 4);
   w.db.raw.prepare("UPDATE agent_syscall_consumptions SET consumed_at = ?").run(new Date(Date.now() - 61 * 60_000).toISOString());
@@ -523,10 +525,10 @@ test("IR-7. the brake, one deploy per target an hour, the daily limit, main's pe
   assert.deepEqual(forgeDeploys.map((p) => [p.params.commit_sha, p.params.redeploy ?? null]), [[MAIN, null]], "main's deploy of the Forge, not an identity redeploy");
   assert.ok(identityFindings(pendingCycle).some((f) => f.service_id === FORGE && /main's pending deploy of forge writes identity revision 2/.test(String(f.why))), JSON.stringify(identityFindings(pendingCycle)));
 
-  // The consensus.propose window (4 an hour): full, nothing is proposed.
+  // The consensus.propose window (8 an hour since 2026-11-22): full, nothing is proposed.
   const v = await world({ current: ["deployment-orchestrator", "control-plane"] });
   await ownerSaves(v.db, NEW_EMAILS);
-  for (let k = 0; k < 4; k++) {
+  for (let k = 0; k < 8; k++) {
     v.db.raw.prepare("INSERT INTO agent_syscall_consumptions (decision_id, agent_id, capability, consumed_at) VALUES (?, 'supervisor', 'consensus.propose', ?)").run(`dec_ir7_${k}`, new Date(Date.now() - 60_000).toISOString());
   }
   const full = await cycle(v);
