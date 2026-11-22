@@ -67,7 +67,8 @@ export async function githubMirrorTick(env: MirrorEnv, nowMs: number, fetchImpl:
   const last = await lastMirrorEvent(env.DB);
   const lastPayload = (() => { try { return JSON.parse(last?.payload_json ?? "{}") as Record<string, unknown>; } catch { return {}; } })();
   const event = result.outcome === "pushed" ? "forge.github_mirror_pushed" : result.outcome === "diverged" ? "forge.github_mirror_diverged" : "forge.github_mirror_failed";
-  const repeat = last?.event_type === event && lastPayload.from === result.from && lastPayload.to === result.to && lastPayload.reason === (result.reason ?? null)
+  // The payload stores a missing value as null; compare the same way (a failed discovery has no `from`, 22 Nov 04:49Z audited every tick).
+  const repeat = last?.event_type === event && (lastPayload.from ?? null) === (result.from ?? null) && (lastPayload.to ?? null) === (result.to ?? null) && (lastPayload.reason ?? null) === (result.reason ?? null)
     // The tick's own clock (payload.at), not the row's wall-clock created_at: the same tick time always gives the same answer.
     && (result.outcome === "diverged" || nowMs - Date.parse(String(lastPayload.at ?? last.created_at)) < MIRROR_FAILURE_REAUDIT_MS);
   if (!repeat) {

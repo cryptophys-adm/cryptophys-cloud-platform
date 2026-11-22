@@ -126,3 +126,16 @@ test("GM6. wired into the Forge tick behind the token; only refs/heads/main is e
   assert.doesNotMatch(src, /console\.(log|error)\([^)]*TOKEN/, "the token is never logged");
   assert.match(read("docs/SSOT.md"), /GitHub mirror sync/);
 });
+
+test("GM7. a failed discovery (no `from`) is audited once per 6 hours too, not at every tick (22 Nov 04:37Z and 04:49Z)", async () => {
+  const db = migratedDb();
+  const refused = (async () => new Response("forbidden", { status: 403 })) as never;
+  const env = { DB: db as never, ARTIFACTS: artifacts(), GITHUB_MIRROR_TOKEN: TOKEN };
+  const r = await githubMirrorTick(env, NOW, refused);
+  assert.deepEqual([r.outcome, r.from, r.reason], ["failed", undefined, "mirror_discovery_http_403"]);
+  await githubMirrorTick(env, NOW + 15 * 60_000, refused);
+  await githubMirrorTick(env, NOW + 30 * 60_000, refused);
+  assert.equal((await audits(db)).length, 1);
+  await githubMirrorTick(env, NOW + MIRROR_FAILURE_REAUDIT_MS + 60_000, refused);
+  assert.equal((await audits(db)).length, 2);
+});
