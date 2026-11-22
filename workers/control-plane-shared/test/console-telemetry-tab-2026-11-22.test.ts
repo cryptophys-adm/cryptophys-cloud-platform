@@ -113,6 +113,6 @@ test("TT7. no guard path is touched; docs/SSOT.md records the tab", () => {
   for (const p of [`${UI}components/MetabolismPanels.tsx`, `${UI}components/viz.tsx`, `${UI}lib/telemetry.ts`, `${UI}pages/Organism.tsx`, `${UI}App.tsx`,
     "workers/console/ui/scripts/render-smoke.mjs", "workers/control-plane-shared/test/console-telemetry-tab-2026-11-22.test.ts", "docs/SSOT.md"]) assert.equal(criticalPathReason(p), null, p);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \(Console Telemetry tab, 2026-11-22 \(the frontend mockup the owner approved, "lanjutkan semua dan tetap berkoordinasi dengan orkestrator"\): [^\n]*`#\/organism\/telemetry`/);
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Console Telemetry tab, 2026-11-22 \(the frontend mockup the owner approved, "lanjutkan semua dan tetap berkoordinasi dengan orkestrator"\): [^\n]*`#\/organism\/telemetry`/);
   assert.match(ssot, /\n  - The Console's Organism page has a Telemetry tab \(`#\/organism\/telemetry`, [^\n]*hours before `first_point_at` are hatched as no data/);
 });
