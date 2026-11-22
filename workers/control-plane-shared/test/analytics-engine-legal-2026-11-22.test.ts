@@ -81,6 +81,9 @@ function* sources(dir: URL): Generator<string> {
 }
 
 /** The only modules that may touch the datasets (step 2 adds the writer here). None of them reads the data back. */
+/** The only module that reads the datasets back (step 4): for the Console's Telemetry tab, never for a decision. */
+export const TELEMETRY_READERS: readonly string[] = ["workers/ai-kernel/src/analytics/read.ts"];
+
 export const TELEMETRY_MODULES: readonly string[] = [
   // Step 2 (2026-11-22): the writer and the one module that names the bindings.
   "workers/ai-kernel/src/analytics/telemetry.ts",
@@ -96,6 +99,13 @@ test("AL3. telemetry only: no module outside the list touches the datasets, none
   assert.deepEqual(touching.sort(), [...TELEMETRY_MODULES].sort(), "a new reader or writer of Analytics Engine joins TELEMETRY_MODULES in review");
   // Reading the data back to decide anything is ruled out (ADR-0015 decision 6): no SQL query against the datasets in code.
   for (const f of TELEMETRY_MODULES) assert.doesNotMatch(read(f), /\.query\(|FROM\s+cryptophys_/i, `${f} writes only`);
+  // Step 4 (2026-11-22): the one reader, behind the Console's Telemetry route only.
+  const readers: string[] = [];
+  for (const f of sources(new URL("workers/", ROOT))) if (/analytics_engine\/sql/.test(read(f))) readers.push(f);
+  assert.deepEqual(readers.sort(), [...TELEMETRY_READERS].sort(), "a new reader of Analytics Engine joins TELEMETRY_READERS in review");
+  const importers = (mod: string) => [...sources(new URL("workers/", ROOT))].filter((f) => f !== mod && read(f).includes(`/${mod.split("/").pop()}"`));
+  assert.deepEqual(importers("workers/ai-kernel/src/analytics/read.ts"), ["workers/ai-kernel/src/telemetry-view.ts"], "only the telemetry view imports the reader");
+  assert.deepEqual(importers("workers/ai-kernel/src/telemetry-view.ts"), ["workers/ai-kernel/src/index.ts"], "only the route imports the view");
   const binders = readdirSync(new URL("workers/", ROOT))
     .filter((d) => existsSync(new URL(`workers/${d}/wrangler.toml`, ROOT)) && /analytics_engine_datasets/.test(read(`workers/${d}/wrangler.toml`)));
   assert.deepEqual(binders, ["ai-kernel"]);

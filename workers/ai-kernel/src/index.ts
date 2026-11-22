@@ -50,6 +50,7 @@ import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTy
 import { DirectiveError, draftFromDirective } from "./directives.ts";
 import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
 import { listIncidents } from "./incidents.ts";
+import { TelemetryReadError, TelemetryRequestError, telemetryView } from "./telemetry-view.ts";
 import { startInvocation, trackJob } from "./analytics/index.ts";
 import { reputationView } from "./corrections-read.ts";
 import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection, recordCouncilCorrection, recordProposalCorrection, type Recorded } from "./corrections.ts";
@@ -159,6 +160,16 @@ export default {
       if (path === "/v1/owner/inbox" && request.method === "GET") return json(await ownerInbox(env.DB));
       if (path === "/v1/metabolism" && request.method === "GET") return json(await metabolismView(env));
       if (path === "/v1/mesh" && request.method === "GET") return json(await meshView(env));
+      // ADR-0015 decision 6, phase 3, step 4 (owner 2026-11-22): the Console's Telemetry tab, read only, display only.
+      if (path === "/v1/telemetry" && request.method === "GET") {
+        try {
+          return json(await telemetryView(env as never, url.searchParams));
+        } catch (err) {
+          if (err instanceof TelemetryRequestError) return errorResponse(400, err.message);
+          if (err instanceof TelemetryReadError) return errorResponse(502, err.message);
+          throw err;
+        }
+      }
       // ADR-0016 T0: the organism's vision (organism/vision.json of this deploy), read-only, for the Console's Vision page.
       if (path === "/v1/vision" && request.method === "GET") return json(visionView());
       // ADR Steward step 4 (docs/design/ADR-STEWARD.md §5): each ADR's progress as the Steward stored it, read-only, for
