@@ -27,6 +27,7 @@ import { WORK_REPO, workBranchesTick } from "./work-repo.ts";
 import { gitBackupTick, type GitBackupBucket } from "./git-backup.ts";
 import { gitBackupVerifyTick, type VerifyBucket } from "./bundle-verify.ts";
 import { crSourcesTick } from "./transfer.ts";
+import { githubMirrorTick } from "./github-mirror.ts";
 import { mergeSpikeUntilProven } from "./merge.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
@@ -40,6 +41,8 @@ export interface TickEnv {
   EXT_ORGANISM_AETHER?: { dna(): Promise<unknown> };
   /** Owner 2026-11-15/16: cryptophys-cta's DNA (OrganismDna, dna() only), held to the general external ceiling. */
   EXT_ORGANISM_CTA?: { dna(): Promise<unknown> };
+  /** Owner 2026-11-22 ("sinkron otomatis"): the GitHub mirror's token (Forge secret), read only by github-mirror.ts. */
+  GITHUB_MIRROR_TOKEN?: string;
 }
 
 /**
@@ -103,6 +106,8 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
     // Gate 5: the G3a spike, on the scratch repository only, until one run has succeeded (then a no-op).
     await step("merge_spike", () => mergeSpikeUntilProven(env as never, nowMs()));
   }
+  // Owner 2026-11-22 ("opsi a", "sinkron otomatis"): GitHub's main follows canonical main, by fast-forward only (no-op without the token).
+  if (env.ARTIFACTS && env.GITHUB_MIRROR_TOKEN) await step("github_mirror", () => githubMirrorTick(env as never, nowMs()));
   // Owner 2026-11-12: the account's Workers Builds minutes against the free-tier budget (hourly; read only).
   if (env.CF_BUILDS_API_TOKEN) await step("build_usage", () => buildUsageTick(env, nowMs()));
   if (env.ARTIFACTS) {

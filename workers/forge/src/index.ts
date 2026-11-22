@@ -86,6 +86,8 @@ export interface Env {
   /** ADR-0012 §5d: the owner's Workers Builds API token (Forge secret), read only by cr-builds.ts. */
   CF_BUILDS_API_TOKEN?: string;
   CR_TYPECHECK_WORKER?: string;
+  /** Owner 2026-11-22: a fine-grained GitHub token, Contents read/write on cryptophys-adm/cryptophys-cloud-platform only (Forge secret), read only by github-mirror.ts. */
+  GITHUB_MIRROR_TOKEN?: string;
 }
 
 const HEX40 = /^[0-9a-f]{40}$/;
