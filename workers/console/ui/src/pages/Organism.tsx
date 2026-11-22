@@ -13,6 +13,7 @@ import { Badge, Dot, Empty, ErrorBox, Panel } from "../components/ui";
 import { useOverview } from "../lib/overview";
 import CloudflareUsage from "../components/CloudflareUsage";
 import ObserverVitals from "../components/ObserverVitals";
+import TelemetryPanels from "../components/MetabolismPanels";
 import { usePoll } from "../lib/usePoll";
 import { call } from "../lib/api";
 import { ago, listOf } from "../lib/format";
@@ -38,7 +39,28 @@ const tone = (m?: string) => (m === "survival" ? "amber" : m === "growth" ? "cya
 const usd = (v: unknown) => (typeof v === "number" ? `${v < 0 ? "−" : ""}$${Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 2 })}` : "—");
 const num = (v: unknown, unit = "") => (typeof v === "number" ? `${v.toLocaleString("en-US", { maximumFractionDigits: 1 })}${unit}` : "—");
 
-export default function Organism() {
+/** The Organism page's tabs (frontend mockup 2026-11-22, owner approved): #/organism and #/organism/telemetry. */
+export const ORGANISM_TABS = [
+  { id: "metabolism", label: "Metabolism", href: "#/organism" },
+  { id: "telemetry", label: "Telemetry", href: "#/organism/telemetry" },
+] as const;
+
+export default function Organism({ section }: { section?: string }) {
+  const tab = section === "telemetry" ? "telemetry" : "metabolism";
+  return (
+    <div className="flex flex-col gap-4">
+      <nav aria-label="Organism tabs" className="flex gap-1 border-b border-white/10">
+        {ORGANISM_TABS.map((t) => (
+          <a key={t.id} href={t.href} aria-current={t.id === tab ? "page" : undefined}
+            className={`-mb-px border-b-2 px-3 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] ${t.id === tab ? "border-cyan-400 text-cyan-200" : "border-transparent text-slate-500 hover:text-slate-300"}`}>{t.label}</a>
+        ))}
+      </nav>
+      {tab === "telemetry" ? <TelemetryPanels /> : <Metabolism />}
+    </div>
+  );
+}
+
+function Metabolism() {
   const { ov } = useOverview();
   const services = ov?.services ?? [];
   const omegaService = services.find((s) => s.service_id === "xauusd-omega");
