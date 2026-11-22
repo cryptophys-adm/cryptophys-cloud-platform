@@ -82,9 +82,10 @@ const HEX64 = /^[0-9a-f]{64}$/;
  * script's decimal digits count (\p{Nd}: Arabic-Indic ٤٠٩٥ as well as 4095; 2026-11-22, review of xauusd #521), and
  * normalizeText has already folded full-width digits (NFKC) and dropped zero-width characters inside a number.
  */
-// A letter O written for a zero (4O95) counts too: a standalone token of 3+ digits-or-O with at least two digits and one O
+// A letter O written for a zero (4O95, a round 4OOO) counts too: a standalone token of 3+ digits-or-O with one O at least
+// and either two digits or a leading digit and 4+ characters; the Latin, Cyrillic and Greek capital and small O
 // (owner 2026-11-22, "ya sesuai saranmu"). Shorthand such as 95.50 or 4.1k does not: it would mask rates and counts.
-const PRICE_G = /(?:(?<![\p{L}\p{Nd}])(?=[\p{Nd}Oo]*[Oo])(?=[Oo]*\p{Nd}[Oo]*\p{Nd})[\p{Nd}Oo]{3,}(?:[.,][\p{Nd}Oo]+)?(?![\p{L}\p{Nd}])|\p{Nd}{1,3}(?:[.,\s_'’]\p{Nd}{3})+(?:[.,]\p{Nd}+)?|\p{Nd}{3,}(?:[.,]\p{Nd}+)?)/gu;
+const PRICE_G = /(?:(?<![\p{L}\p{Nd}])(?=[\p{Nd}OoОоΟο]*[OoОоΟο])(?=[OoОоΟο]*\p{Nd}[OoОоΟο]*\p{Nd}|\p{Nd}[\p{Nd}OoОоΟο]{3})[\p{Nd}OoОоΟο]{3,}(?:[.,][\p{Nd}OoОоΟο]+)?(?![\p{L}\p{Nd}])|\p{Nd}{1,3}(?:[.,\s_'’]\p{Nd}{3})+(?:[.,]\p{Nd}+)?|\p{Nd}{3,}(?:[.,]\p{Nd}+)?)/gu;
 const PRICE = new RegExp(PRICE_G.source, "u");
 /** A record never carries a parameter or a price-like field, at any depth. */
 const FORBIDDEN_KEYS = new Set(["params", "parameters", "values", "value", "change", "changes", "patch", "set", "weight_delta"]);

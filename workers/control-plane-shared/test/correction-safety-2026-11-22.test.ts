@@ -33,8 +33,8 @@ test("CS2. price forms in other scripts or with invisible characters are masked;
 });
 
 test("CS4. a letter O for a zero is masked; shorthand, rates, counts and plain words are not (owner 2026-11-22, \"ya sesuai saranmu\")", () => {
-  for (const s of ["SL at 4O95 too tight", "SL at 4o95 too tight"]) assert.equal(safeText(s, new Set() as never), "SL at [level] too tight", s);
-  for (const s of ["TP 95.50", "near 4.1k", "hit rate 57.5%", "GOOD call, too soon", "OO7 agent", "4O was fine"]) {
+  for (const s of ["SL at 4O95 too tight", "SL at 4o95 too tight", "SL at 4OOO too tight", "SL at 4OOO.5 too tight", "SL at 1OOO too tight", "SL at 4\u041E95 too tight", "SL at 4\u039F\u039F\u039F too tight"]) assert.equal(safeText(s, new Set() as never), "SL at [level] too tight", s);
+  for (const s of ["TP 95.50", "near 4.1k", "hit rate 57.5%", "GOOD call, too soon", "OO7 agent", "4O was fine", "1OO% sure", "a 1OO agents"]) {
     const r = new Set<string>();
     assert.equal(safeText(s, r as never), s, s);
     assert.equal(r.size, 0, s);
