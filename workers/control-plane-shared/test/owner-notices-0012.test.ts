@@ -177,7 +177,7 @@ test("O5. wiring: kernel schedule, kernel route, Console route and panel", () =>
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
   // Owner 2026-11-13 (Alerts page): the run also gets the AlertVault, which holds the alert channels' bot tokens.
   // Owner 2026-11-16: the pass is also kept (fullPass) so the owner_attention pass after the cycle waits for it.
-  assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(fullPass = reconcileNotices\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}, event\.scheduledTime\)/);
+  assert.match(idx, /if \(minute === 22 \|\| minute === 52\) \{\n\s+ctx\.waitUntil\(fullPass = trackJob\(env, "owner_notices", reconcileNotices\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}, event\.scheduledTime\)\)/);
   assert.match(idx, /path === "\/v1\/notices" && request\.method === "GET"/);
   assert.match(readFileSync(new URL("workers/console/src/ui/routes.ts", ROOT), "utf8"), /r\("kernel\.notices", "kernel", "GET", "\/v1\/notices", false, null\)/);
   const command = readFileSync(new URL("workers/console/ui/src/pages/Command.tsx", ROOT), "utf8");

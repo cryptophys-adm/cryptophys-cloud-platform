@@ -50,6 +50,7 @@ import { ProposalError, decideProposal, expireDrafts, listTypedProposals, readTy
 import { DirectiveError, draftFromDirective } from "./directives.ts";
 import { AutonomyError, autoDowngrade, autonomyView, setAutonomyLevel } from "./autonomy.ts";
 import { listIncidents } from "./incidents.ts";
+import { startInvocation, trackJob } from "./analytics/index.ts";
 import { reputationView } from "./corrections-read.ts";
 import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection, recordCouncilCorrection, recordProposalCorrection, type Recorded } from "./corrections.ts";
 
@@ -516,43 +517,46 @@ export default {
   },
 
   async scheduled(event: ScheduledEventLike, env: Env, ctx: ExecutionContextLike): Promise<void> {
-    const cycle = env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID)).cycle("scheduled").then(() => undefined, (err) => {
+    // ADR-0015 decision 6, phase 3 (owner 2026-11-22): each job of the tick is timed into Analytics Engine (telemetry only;
+    // trackJob hands back the same promise, so what each job does and how its failure is logged is unchanged).
+    startInvocation(event.scheduledTime);
+    const cycle = trackJob(env, "supervisor_cycle", env.SUPERVISOR.get(env.SUPERVISOR.idFromName(AGENT_ID)).cycle("scheduled")).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "supervisor_cycle_failed", message: String((err as Error)?.message ?? err) }));
     });
     ctx.waitUntil(cycle);
     const minute = new Date(event.scheduledTime).getUTCMinutes();
     if (minute === 22 && env.SIGNAL_ANALYST) {
-      ctx.waitUntil(env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID)).cycle("scheduled").then(() => undefined, (err) => {
+      ctx.waitUntil(trackJob(env, "signal_analyst_cycle", env.SIGNAL_ANALYST.get(env.SIGNAL_ANALYST.idFromName(SIGNAL_ANALYST_ID)).cycle("scheduled")).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "signal_analyst_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     if (minute === 37 && env.AUDITOR) {
-      ctx.waitUntil(env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID)).cycle("scheduled").then(() => undefined, (err) => {
+      ctx.waitUntil(trackJob(env, "auditor_cycle", env.AUDITOR.get(env.AUDITOR.idFromName(AUDITOR_ID)).cycle("scheduled")).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "auditor_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     // ADR Steward (docs/design/ADR-STEWARD.md §4.3): every tick. One indexed audit query decides whether a pass is due
     // (a watched event, a new deploy, a quiet window's end, the 02:52 UTC daily pass); otherwise it writes nothing.
     if (env.ADR_STEWARD) {
-      ctx.waitUntil(env.ADR_STEWARD.get(env.ADR_STEWARD.idFromName(ADR_STEWARD_ID)).cycle("scheduled").then(() => undefined, (err) => {
+      ctx.waitUntil(trackJob(env, "adr_steward_cycle", env.ADR_STEWARD.get(env.ADR_STEWARD.idFromName(ADR_STEWARD_ID)).cycle("scheduled")).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "adr_steward_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     // ADR-0014 §11 (docs/design/EVOLVER.md §4, step V2): record council tasks and the platform's own inventory findings
     // as evolution intents, at every tick. It writes intents and their state updates only; it never acts.
-    ctx.waitUntil(intakeEvolutionIntents(env.DB, event.scheduledTime).then(() => undefined, (err) => {
+    ctx.waitUntil(trackJob(env, "evolution_intake", intakeEvolutionIntents(env.DB, event.scheduledTime)).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "evolution_intake_failed", message: String((err as Error)?.message ?? err) }));
     }));
     // The evolver (ADR-0014 §11, docs/design/EVOLVER.md §5): every tick; a tick is a few indexed reads unless every gate
     // holds (on, no kill switch, not shadow, nothing in flight, 4 hours since the last start, quiet, not frozen).
     if (env.EVOLVER) {
-      ctx.waitUntil(env.EVOLVER.get(env.EVOLVER.idFromName(EVOLVER_ID)).cycle("scheduled").then(() => undefined, (err) => {
+      ctx.waitUntil(trackJob(env, "evolver_cycle", env.EVOLVER.get(env.EVOLVER.idFromName(EVOLVER_ID)).cycle("scheduled")).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "evolver_cycle_failed", message: String((err as Error)?.message ?? err) }));
       }));
     }
     // HAIC H4: every tick, a fresh regression of a group (a rollback after a deploy, three failed executions in a row)
     // lowers that group's autonomy one level; only the owner raises it again.
-    ctx.waitUntil(autoDowngrade(env.DB, event.scheduledTime).then(async (lowered) => {
+    ctx.waitUntil(trackJob(env, "autonomy_downgrade", autoDowngrade(env.DB, event.scheduledTime)).then(async (lowered) => {
       if (lowered.length) await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "autonomy" } }]);
     }, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "autonomy_downgrade_failed", message: String((err as Error)?.message ?? err) }));
@@ -561,7 +565,7 @@ export default {
     // persistent census finding), deduplicated and capped; each waits in the owner's inbox until the owner begins it.
     let proposals: Promise<void> = Promise.resolve();
     if (minute === 7 && env.COUNCIL) {
-      ctx.waitUntil(proposals = proposeCouncils(env as never, event.scheduledTime).then(() => undefined, (err) => {
+      ctx.waitUntil(proposals = trackJob(env, "council_proposals", proposeCouncils(env as never, event.scheduledTime)).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "council_proposals_failed", message: String((err as Error)?.message ?? err) }));
       }));
       // HAIC H2: typed proposal drafts past their 7-day window expire.
@@ -583,7 +587,7 @@ export default {
     // ADR-0012 phase 2: owner notices (replaces the owner-attention and drift-alert GitHub workflows).
     let fullPass: Promise<void> = Promise.resolve();
     if (minute === 22 || minute === 52) {
-      ctx.waitUntil(fullPass = reconcileNotices({ ...env, ALERT_VAULT: alertVaultOf(env) }, event.scheduledTime)
+      ctx.waitUntil(fullPass = trackJob(env, "owner_notices", reconcileNotices({ ...env, ALERT_VAULT: alertVaultOf(env) }, event.scheduledTime))
         .then((changes) => (changes.some((c) => OWNER_CHANNEL_TOPICS.includes(c.topic as never) && c.change !== "unchanged") ? publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "notices" } }]) : undefined)).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "owner_notices_failed", message: String((err as Error)?.message ?? err) }));
       }));
@@ -598,7 +602,7 @@ export default {
     }));
     // Owner 2026-11-16 ("pakai cara 2 lewat kernel"): relay the xauusd Worker's EA heartbeat reports to the alert
     // channels that list ea_heartbeat, at every tick (report-relay.ts).
-    ctx.waitUntil(relayReports({ DB: env.DB, ALERT_VAULT: alertVaultOf(env), OWNER_TELEGRAM: env.OWNER_TELEGRAM }, event.scheduledTime).then(() => undefined, (err) => {
+    ctx.waitUntil(trackJob(env, "report_relay", relayReports({ DB: env.DB, ALERT_VAULT: alertVaultOf(env), OWNER_TELEGRAM: env.OWNER_TELEGRAM }, event.scheduledTime)).then(() => undefined, (err) => {
       console.error(JSON.stringify({ service: SERVICE, event: "report_relay_failed", message: String((err as Error)?.message ?? err) }));
     }));
     const d = new Date(event.scheduledTime);
