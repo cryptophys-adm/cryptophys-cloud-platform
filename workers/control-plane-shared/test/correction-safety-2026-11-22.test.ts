@@ -32,6 +32,15 @@ test("CS2. price forms in other scripts or with invisible characters are masked;
   assert.equal(r.size, 0);
 });
 
+test("CS4. a letter O for a zero is masked; shorthand, rates, counts and plain words are not (owner 2026-11-22, \"ya sesuai saranmu\")", () => {
+  for (const s of ["SL at 4O95 too tight", "SL at 4o95 too tight"]) assert.equal(safeText(s, new Set() as never), "SL at [level] too tight", s);
+  for (const s of ["TP 95.50", "near 4.1k", "hit rate 57.5%", "GOOD call, too soon", "OO7 agent", "4O was fine"]) {
+    const r = new Set<string>();
+    assert.equal(safeText(s, r as never), s, s);
+    assert.equal(r.size, 0, s);
+  }
+});
+
 test("CS3. a stored record whose text or category_raw hides a price behind an invisible character is invalid", () => {
   const base = {
     schema: "correction.v1", correction_id: "cor_bbbbbbbbbbbbbbbb", side: "nexus", source: "nexus_card", label: "owner_correction", rating: null,
