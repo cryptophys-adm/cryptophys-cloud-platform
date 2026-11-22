@@ -328,10 +328,12 @@ test("H3e-10. an agent not granted is denied both: corrections.record and correc
   assert.match((await rpcSyscall(s2.env as never, AETHER, CURATOR, "corrections.read", {}) as any).reason, /capability_granted/);
 });
 
-test("H3e-11. the SSOT: line 5 begins with H3e, the collaboration section lists H3e as built, and the ceilings name the two agents", () => {
+test("H3e-11. the SSOT: line 5 carries H3e's entry, the collaboration section lists H3e as built, and the ceilings name the two agents", () => {
   const ssot = read("docs/SSOT.md");
   const line = ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!;
-  assert.ok(line.startsWith(`Last reviewed: 2026-11-16 (HAIC H3e, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; the H3 answers of 2026-11-19, "Setuju semua rekomendasi"): `));
+  // Later changes put their own entries first on line 5 (2026-11-22: "begins with" failed every branch after H3e).
+  assert.ok(line.startsWith("Last reviewed: 2026-11-16 ("));
+  assert.ok(line.includes(`(HAIC H3e, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; the H3 answers of 2026-11-19, "Setuju semua rekomendasi"): `) || line.includes(`; HAIC H3e, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; the H3 answers of 2026-11-19, "Setuju semua rekomendasi"): `), "H3e's entry");
   for (const want of ["`corrections.record`", "`corrections.read`", "`nexus-teacher`", "`aether-curator`", "Migration 0086", "LM10", "`merge_owner_change`"]) assert.ok(line.includes(want), want);
   assert.ok(line.indexOf("HAIC H3e, 2026-11-22") < line.indexOf("HAIC H3d, 2026-11-19"), "H3e before H3d");
   assert.match(ssot, /\*\*Built on the platform:\*\* H0 [^\n]*the Nexus ingress and the Aether pull \(H3e/);
