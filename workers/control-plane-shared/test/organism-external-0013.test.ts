@@ -114,7 +114,7 @@ test("X1. the external ceiling: tier 1, no seat, four capabilities; organs outsi
   assert.throws(() => externalOrgans(XAUUSD, { schema: "other", organs: [] }), /not xauusd-organism\.v1/);
 });
 
-test("X2. the census reads XAUUSD's DNA next to main's: today's 14 agents are consistent; organs carry their origin", async () => {
+test("X2. the census reads XAUUSD's DNA next to main's: today's 15 agents are consistent; organs carry their origin", async () => {
   const db = registeredDb();
   const r = await censusTick(db as never, repoWith(realDna()), Date.now(), reader(() => xauusdDna(db)));
   assert.equal(r.status, "consistent", JSON.stringify((db.raw.prepare("SELECT findings FROM forge_organism_census").get() as any)?.findings));
@@ -123,7 +123,7 @@ test("X2. the census reads XAUUSD's DNA next to main's: today's 14 agents are co
   const census = (await latestCensusRow({ DB: db } as never))!;
   const ai = census.genome.find((o) => o.service === AI)!;
   assert.equal(ai.origin, "xauusd");
-  assert.equal(ai.agents.length, 14);
+  assert.equal(ai.agents.length, 15); // 14 + PF1's hud-mizan-oracle (0087)
   assert.equal(census.genome.find((o) => o.service === "cryptophys-ai-kernel")!.origin, undefined, "main's organs have no origin");
 });
 

@@ -46,13 +46,13 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
   // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37, minus the
   // seven idle agents 0047 dismantles (signal-engine, 2 XAUUSD desks, 4 HUD agents) = 30, minus the
   // H1 chain's unused Analyst and Counselor identities of 0048 = 28, plus HAIC H3e's nexus-teacher of 0086 (tested in
-  // corrections-ingress-h3e.test.ts) = 29.
-  assert.equal(rows.length, 29);
+  // corrections-ingress-h3e.test.ts) = 29, plus PF1's hud-mizan-oracle of 0087 (xauusd B27) = 30.
+  assert.equal(rows.length, 30);
   assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 5);
   const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
-  assert.equal(xauusdAgents.length, 14);
+  assert.equal(xauusdAgents.length, 15);
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
-  assert.equal(hudAgents.length, 10);
+  assert.equal(hudAgents.length, 11);
   for (const gone of ["signal-engine", "xauusd-news-analyst", "xauusd-technical-analyst", "hud-gabfx-price-action", "hud-grid-bot-protocol", "hud-playbook-execution", "hud-r37-funnel", "xauusd-analyst", "xauusd-counselor"]) {
     assert.ok(!rows.some((r) => r.agent_id === gone), `${gone} is dismantled by 0047/0048`);
   }

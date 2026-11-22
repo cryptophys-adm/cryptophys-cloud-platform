@@ -1030,3 +1030,31 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", nt_code) a
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", nt_sql, re.I), "0086 is not destructive"
 nt_db.close()
 print("PASS: 0086 nexus-teacher (additive: one agent row, corrections.record only, tier 1, no seat, rows kept, applies twice)")
+# Migration 0087 (PF1, 2026-11-22; xauusd B27, the Mizan Oracle): one HUD agent row, hud-mizan-oracle, hosted by the
+# xauusd AI Worker, tier 1, exactly the external ceiling every hud-* row holds, no seat. INSERT OR IGNORE as 0016 and
+# 0086: every other row is kept; applying it again changes nothing.
+mz_db = sqlite3.connect(":memory:")
+mz_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0087_":
+        mz_db.executescript(migration.read_text(encoding="utf-8"))
+def mz_snapshot():
+    return {r[0]: mz_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in mz_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+mz_schema_before = mz_db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+mz_before = mz_snapshot()
+assert not any(r[0] == "hud-mizan-oracle" for r in mz_before["agents"])
+mz_sql = (ROOT / "0087_hud_mizan_oracle.sql").read_text(encoding="utf-8")
+mz_db.executescript(mz_sql)
+assert mz_db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == mz_schema_before, "0087 changes no schema"
+mz_after = mz_snapshot()
+assert {k: v for k, v in mz_after.items() if k != "agents"} == {k: v for k, v in mz_before.items() if k != "agents"}, "0087 keeps every other table"
+assert [r for r in mz_after["agents"] if r[0] != "hud-mizan-oracle"] == mz_before["agents"], "0087 keeps every agent row"
+mz_row = mz_db.execute("SELECT host_worker, tier_max, capabilities_json, status, voter, updated_by FROM agents WHERE agent_id = 'hud-mizan-oracle'").fetchone()
+assert mz_row == ("xauusd-ai-trading-assistant", 1, '["signals.observe","reports.publish","memory.recall","memory.remember"]', "enabled", 0, "migration:0087"), mz_row
+mz_db.executescript(mz_sql)
+assert mz_snapshot() == mz_after, "0087 applied again changes nothing"
+mz_code = "\n".join(line.split("--", 1)[0] for line in mz_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", mz_code) and mz_code.count("INSERT OR IGNORE INTO AGENTS") == 1 and mz_code.count("INSERT") == 1, "0087 only inserts the one agent row"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", mz_sql, re.I), "0087 is not destructive"
+mz_db.close()
+print("PASS: 0087 hud-mizan-oracle (additive: one HUD agent row, external ceiling, tier 1, no seat, rows kept, applies twice)")
