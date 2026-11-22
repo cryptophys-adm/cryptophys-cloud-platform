@@ -172,6 +172,13 @@ export function violatesAdvisoryLanguage(value: unknown): boolean {
   }
 }
 
+/** The finish reason of a completion (OpenAI-style `choices[0].finish_reason`, or a top-level one), or null. */
+export function finishReasonOf(completion: unknown): string | null {
+  const c = completion as { choices?: { finish_reason?: unknown }[]; finish_reason?: unknown } | null;
+  const r = c?.choices?.[0]?.finish_reason ?? c?.finish_reason;
+  return typeof r === "string" ? r : null;
+}
+
 export class AiEngine {
   readonly service: string;
   readonly model: string;
@@ -363,6 +370,10 @@ export class AiEngine {
             }
           }
         }
+        // A reasoning model spends its thinking tokens out of max_tokens (2026-11-22: every council position on
+        // deepseek-v4.1-flash came back empty or cut off). When the model says it stopped at the limit, the category
+        // says so, so a too-small budget is told apart from a model that answered badly.
+        if (category !== null && finishReasonOf(completion) === "length") category = "output_budget_exhausted";
       }
 
       if (category === null) {

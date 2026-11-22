@@ -41,7 +41,7 @@ const INSTRUCTIONS = [
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const task: AiTask<Candidate> = {
-  name: "directive_draft", instructions: INSTRUCTIONS, maxInputChars: 8_000, maxOutputTokens: 900,
+  name: "directive_draft", instructions: INSTRUCTIONS, maxInputChars: 8_000, maxOutputTokens: 3_000, // thinking included (CHAT_MODEL reasons; council fix 2026-11-22)
   validate(o: unknown): Candidate | null {
     if (!isObj(o)) return null;
     const kind = o.kind === null ? null : (TP_KINDS as readonly string[]).includes(String(o.kind)) ? (o.kind as TpKind) : undefined;
