@@ -44,7 +44,8 @@ export default function App() {
   let page; let current = head;
   switch (head) {
     // Owner 2026-11-11: the Metabolism page duplicated Organism and is removed; an old #/metabolism link lands on Organism.
-    case "organism":
+    // Frontend mockup 2026-11-22 (owner approved): #/organism/telemetry opens the Telemetry tab (GET /v1/telemetry).
+    case "organism": page = <Organism section={id} />; break;
     case "metabolism": page = <Organism />; current = "organism"; break;
     // Owner 2026-11-13: the one page where the platform needs a person; every owner email and Telegram message links here.
     // HAIC H0c: #/owner/<item_id> opens one ranked item (the deep link every owner notice carries since H0d).

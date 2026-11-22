@@ -8,7 +8,7 @@
  *  - text never wears a series colour; a swatch beside it carries identity;
  *  - every chart has a hover tooltip, and every value is also reachable as text (legend or table).
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, ChevronsUpDown, ArrowDown, ArrowUp } from "lucide-react";
 
@@ -23,7 +23,7 @@ const AXIS = "#3a404a";
 /* ------------------------------------------------------------------ tooltip */
 
 interface TipState { x: number; y: number; content: ReactNode }
-function useTip() {
+export function useTip() {
   const [tip, setTip] = useState<TipState | null>(null);
   const show = (e: { clientX: number; clientY: number }, content: ReactNode) => setTip({ x: e.clientX, y: e.clientY, content });
   const showAt = (el: Element, content: ReactNode) => { const r = el.getBoundingClientRect(); setTip({ x: r.left + r.width / 2, y: r.top, content }); };
@@ -34,11 +34,11 @@ function useTip() {
   ) : null;
   return { show, showAt, hide, node };
 }
-const TipRow = ({ color, value, label }: { color: string; value: ReactNode; label: ReactNode }) => (
+export const TipRow = ({ color, value, label }: { color: string; value: ReactNode; label: ReactNode }) => (
   <div className="flex items-center gap-2"><span className="h-[2px] w-3 shrink-0 rounded-sm" style={{ background: color }} /><b className="mono text-slate-100">{value}</b><span className="text-slate-400">{label}</span></div>
 );
 
-function useWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
+export function useWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
   const ref = useRef<T>(null);
   const [w, setW] = useState(0);
   useEffect(() => {
@@ -370,4 +370,52 @@ export function Stat({ label, value, sub, tone }: { label: string; value: ReactN
   );
 }
 
+/* ------------------------------------------------------------------ hourly series with gaps (Telemetry tab, 2026-11-22) */
+
+/** The hatch of an hour with no data (before the first point a dataset holds): never drawn as 0. */
+export const NO_DATA = "#3a404a";
+/** An SVG pattern id for the "no data" hatch, unique per chart (React's useId without its colons, so url(#id) resolves). */
+export function useHatchId(): string { return `hatch-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`; }
+export function HatchDef({ id }: { id: string }) {
+  return (
+    <defs>
+      <pattern id={id} patternUnits="userSpaceOnUse" width={5} height={5} patternTransform="rotate(45)">
+        <rect width={5} height={5} fill="#11161d" /><line x1={0} y1={0} x2={0} y2={5} stroke={NO_DATA} strokeWidth={2} />
+      </pattern>
+    </defs>
+  );
+}
+
+/**
+ * A single-series sparkline over aligned buckets: a gap where a bucket is null (no point, never 0), and the leading
+ * `noData` buckets hatched as "no data". Fewer than two measured points draw no line: "—".
+ */
+export function Sparkline({ points, label, color = STATUS.info, noData = 0, width = 112, height = 26 }: { points: Array<number | null>; label: string; color?: string; noData?: number; width?: number; height?: number }) {
+  const hatch = useHatchId();
+  const vals = points.filter((p): p is number => typeof p === "number" && Number.isFinite(p));
+  if (vals.length < 2) return <span className="text-[10px] text-slate-500" data-spark="none">—</span>;
+  const max = Math.max(...vals) || 1;
+  const step = width / Math.max(points.length - 1, 1);
+  const segs: string[] = [];
+  let cur = "";
+  points.forEach((p, i) => {
+    if (typeof p !== "number" || !Number.isFinite(p)) { if (cur) segs.push(cur); cur = ""; return; }
+    cur += `${cur ? "L" : "M"}${(i * step).toFixed(1)},${(height - 2 - (p / max) * (height - 4)).toFixed(1)}`;
+  });
+  if (cur) segs.push(cur);
+  const hatchW = noData > 0 ? Math.min(width, noData * step) : 0;
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label}, ${points.length} hours, peak ${max.toLocaleString("en-US")}`}>
+      <title>{`${label}: peak ${max.toLocaleString("en-US")} over ${points.length} h`}</title>
+      {hatchW > 0 && <><HatchDef id={hatch} /><rect data-nodata="spark" x={0} y={0} width={hatchW} height={height} fill={`url(#${hatch})`} opacity={0.7} /></>}
+      {segs.map((d, i) => d.includes("L")
+        ? <path key={i} d={d} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        : <circle key={i} cx={Number(d.slice(1).split(",")[0])} cy={Number(d.split(",")[1])} r={1.5} fill={color} />)}
+    </svg>
+  );
+}
+
 export const surface = SURFACE;
+export const grid = GRID;
+export const axis = AXIS;
+export { niceMax };
