@@ -68,11 +68,12 @@ export async function githubMirrorTick(env: MirrorEnv, nowMs: number, fetchImpl:
   const lastPayload = (() => { try { return JSON.parse(last?.payload_json ?? "{}") as Record<string, unknown>; } catch { return {}; } })();
   const event = result.outcome === "pushed" ? "forge.github_mirror_pushed" : result.outcome === "diverged" ? "forge.github_mirror_diverged" : "forge.github_mirror_failed";
   const repeat = last?.event_type === event && lastPayload.from === result.from && lastPayload.to === result.to && lastPayload.reason === (result.reason ?? null)
-    && (result.outcome === "diverged" || nowMs - Date.parse(last.created_at) < MIRROR_FAILURE_REAUDIT_MS);
+    // The tick's own clock (payload.at), not the row's wall-clock created_at: the same tick time always gives the same answer.
+    && (result.outcome === "diverged" || nowMs - Date.parse(String(lastPayload.at ?? last.created_at)) < MIRROR_FAILURE_REAUDIT_MS);
   if (!repeat) {
     await appendAuditEvent(env.DB, {
       event_type: event, actor: "system:forge-github-mirror", subject: "refs/heads/main", outcome: result.outcome,
-      payload: { remote: GITHUB_MIRROR_REMOTE, from: result.from ?? null, to: result.to ?? null, reason: result.reason ?? null, ...(result.objects !== undefined ? { objects: result.objects, pack_bytes: result.pack_bytes } : {}) },
+      payload: { at: new Date(nowMs).toISOString(), remote: GITHUB_MIRROR_REMOTE, from: result.from ?? null, to: result.to ?? null, reason: result.reason ?? null, ...(result.objects !== undefined ? { objects: result.objects, pack_bytes: result.pack_bytes } : {}) },
     });
   }
   return result;
