@@ -98,6 +98,9 @@ export function validateAnswer(output: unknown): ChatAnswer | null {
 // ---------------------------------------------------------------- secrets (§3.3 "No secrets in or out")
 
 const SECRET_SHAPES: readonly RegExp[] = [
+  // A whole PEM private key, header to END line (or to the end of the text when the END line is missing): the header
+  // alone was redacted and the key body passed (2026-11-22, review of xauusd #521). It runs before the header rule.
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\bsk-[A-Za-z0-9_-]{20,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
