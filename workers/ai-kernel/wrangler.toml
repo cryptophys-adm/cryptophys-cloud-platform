@@ -40,6 +40,21 @@ NOTIFY_FROM = "alerts@notify.cryptophys.work"
 # HAIC H1 (owner Q2 2026-11-16): the chat's own daily budget, in turns (a turn is at most 3 model calls), apart from the
 # AI requests above. The chat's model is CHAT_MODEL (control-plane-shared/src/conversation.ts), its own allow-list.
 CHAT_DAILY_TURN_LIMIT = "40"
+# ADR-0015 decision 6, phase 3 (owner 2026-11-22, "upgrade kernel agar binding itu menjadi legal ..."): the sample rate of
+# the kernel's Analytics Engine telemetry (1 = every event). Set out of band on 2026-11-21 and adopted here unchanged.
+ANALYTICS_SAMPLE_RATE = "1"
+
+# ADR-0015 decision 6, phase 3 (owner 2026-11-22): Workers Analytics Engine datasets for telemetry only. They were bound
+# out of band by a wrangler upload on 2026-11-21 and are adopted here with the same names (config-diff.ts, `adopted`).
+# Telemetry is not a record of truth: it is sampled and kept about three months. Audit, money, trades, decisions,
+# proposals and votes never go there, and nothing reads it back to decide (test analytics-engine-legal-2026-11-22).
+[[analytics_engine_datasets]]
+binding = "ANALYTICS_AGENT_RUNTIME"
+dataset = "cryptophys_agent_runtime"
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS_CONTROL_PLANE"
+dataset = "cryptophys_control_plane"
 
 [[d1_databases]]
 binding = "DB"

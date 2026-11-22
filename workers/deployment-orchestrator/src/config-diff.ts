@@ -274,7 +274,8 @@ export interface ConfigPlan {
   metadata: VersionSettings;
   /** Script-level changes a version upload cannot carry, applied after the new version is verified live. */
   steps: PlanStep[];
-  changes: { added: string[]; removed: string[]; changed: string[]; settings: string[] };
+  /** `adopted` (2026-11-22): bindings the target config newly declares that were already live with exactly that record. */
+  changes: { added: string[]; removed: string[]; changed: string[]; settings: string[]; adopted?: string[] };
   /**
    * 2026-11-16 (binding props lost out of band): the service bindings the active version does not bind as the target
    * config declares, for a reason the toml diff does not explain. `restored` are planned from the config (sent as
@@ -423,6 +424,7 @@ export function planConfigChange(runningToml: string, targetToml: string, active
   const planned = new Map<string, BindingRecord>();
   const sources: Record<string, "active" | "config"> = {};
   const changes = { added: [] as string[], removed: [] as string[], changed: [] as string[], settings };
+  const adopted: string[] = [];
 
   // The running config must describe what is active for every binding the diff touches.
   const matchesRunning = (k: string): Ineligible | null => {
@@ -448,7 +450,18 @@ export function planConfigChange(runningToml: string, targetToml: string, active
       continue;
     }
     if (runMap.has(k) && !same(runMap.get(k), tgtMap.get(k))) continue; // changed: built below
-    if (!runMap.has(k) && tgtMap.has(k)) return no(`binding_set_outside_config:${k}`);
+    if (!runMap.has(k) && tgtMap.has(k)) {
+      // 2026-11-22 (owner: the VPS's analytics bindings made legal): main may declare a binding that is already
+      // live, set out of band, if the declaration is exactly the live record (no placeholder, every field equal).
+      // It is adopted: kept verbatim, nothing changes at runtime, and the plan names it. Any difference is still
+      // refused (a --var moved into the config, a dashboard binding with another value).
+      const declared = resolve(tgtMap.get(k)!, undefined, a);
+      if ("unresolved" in declared || !recordMatches(declared.record, a)) return no(`binding_set_outside_config:${k}`);
+      planned.set(k, a);
+      sources[k] = "active";
+      adopted.push(k);
+      continue;
+    }
     planned.set(k, a);
     sources[k] = "active";
   }
@@ -457,6 +470,7 @@ export function planConfigChange(runningToml: string, targetToml: string, active
     if (t.type === "service") continue; // planned below, from the config
     const r = runMap.get(k);
     if (r && same(r, t)) continue; // unchanged: kept from the active version above
+    if (!r && adopted.includes(k)) continue; // adopted: kept from the active version above
     if (r) {
       const bad = matchesRunning(k);
       if (bad) return bad;
@@ -520,6 +534,7 @@ export function planConfigChange(runningToml: string, targetToml: string, active
   }
   const bindings = [...planned.values()].sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
   for (const list of [changes.added, changes.removed, changes.changed]) list.sort();
+  if (adopted.length) (changes as ConfigPlan["changes"]).adopted = adopted.sort();
   return {
     eligible: true, bindings, sources, secrets, keep_bindings: [...SECRET_TYPES], metadata, steps, changes,
     service_bindings: { restored: restored.sort((a, b) => a.name.localeCompare(b.name)), undeclared: undeclared.sort(), unverifiable: unverifiable.sort() },

@@ -46,7 +46,7 @@
       ],
       "evidence": {
         "kind": "not_measurable_yet",
-        "reason": "no Analytics Engine dataset is bound"
+        "reason": "datasets bound on the AI Kernel since 2026-11-22 (owner); no writer yet, so nothing is measured"
       }
     },
     {
