@@ -155,3 +155,30 @@ test("IN6. the production_unhandled notice events keep each problem as an item (
   assert.match(src, /items: n\.active \? n\.items : \[\]/);
   assert.match(src, /key: `\$\{p\.code\}:\$\{p\.subject\}`/);
 });
+
+test("IN-OOB. an out-of-band report resolves when the same Worker's version is cleared later; another version or Worker does not", async () => {
+  // 2026-11-22: the kernel's upload of 21 Nov (rpt_3a2ef787) was restored at 22:40 and still showed as mitigated.
+  const db = migratedDb();
+  const R = "rpt_3a2ef787-91e6-4ba8-89fa-5f1dd8f72531";
+  const now = Date.parse("2026-11-22T10:40:00.000Z");
+  report(db, R, "AI Kernel runs code the platform did not deploy (uploaded by wrangler at 2026-11-21T11:43:43.939691Z)",
+    { out_of_band: true, alert_key: "out_of_band:cryptophys-ai-kernel:28da2b46-e050-4ce", explanation: "x" }, "2026-11-21T16:10:29.722Z");
+  db.raw.prepare("INSERT INTO agent_report_acknowledgements (report_id, acknowledged_by, reason, acknowledged_at) VALUES (?, ?, 'known, the kernel was restored', ?)").run(R, APPROVER_EMAIL, "2026-11-21T21:39:17.194Z");
+  const one = async () => (await listIncidents(db as never, now)).incidents.find((i) => i.incident_id === `inc_${R}`)!;
+  assert.equal((await one()).status, "mitigated");
+  // A clear of another Worker, or of another version of the kernel, changes nothing.
+  audit(db, "deployment.out_of_band_cleared", "cryptophys-console", { was_version_id: "28da2b46-e050-4ce8-9fe6-a31cd8aa7166" }, "2026-11-21T22:00:00.000Z");
+  audit(db, "deployment.out_of_band_cleared", "cryptophys-ai-kernel", { was_version_id: "7b993fa9-1389-4ed0-b9f0-ae214c0fca2b" }, "2026-11-21T22:10:00.000Z");
+  assert.equal((await one()).status, "mitigated");
+  // The kernel no longer runs 28da2b46: resolved, with the clear in the timeline.
+  audit(db, "deployment.out_of_band_cleared", "cryptophys-ai-kernel", { service_id: "cryptophys-ai-kernel", tag: "8337fa0dbb50", was: "code_upload", was_version_id: "28da2b46-e050-4ce8-9fe6-a31cd8aa7166" }, "2026-11-21T22:40:06.016Z");
+  const i = await one();
+  assert.deepEqual([i.status, i.resolved_at, i.mitigated_at], ["resolved", "2026-11-21T22:40:06.016Z", "2026-11-21T21:39:17.194Z"]);
+  assert.match(i.status_reason, /out-of-band cleared/);
+  assert.match(i.timeline.find((e) => e.kind === "out_of_band_cleared")!.text, /runs a platform version again \(8337fa0dbb50\)/);
+  // A clear before the report does not count.
+  const db2 = migratedDb();
+  report(db2, R, "AI Kernel runs code", { out_of_band: true, alert_key: "out_of_band:cryptophys-ai-kernel:28da2b46-e050-4ce" }, "2026-11-21T16:10:29.722Z");
+  audit(db2, "deployment.out_of_band_cleared", "cryptophys-ai-kernel", { was_version_id: "28da2b46-e050-4ce8-9fe6-a31cd8aa7166" }, "2026-11-21T16:00:00.000Z");
+  assert.equal((await listIncidents(db2 as never, now)).incidents.find((x) => x.incident_id === `inc_${R}`)!.status, "open");
+});
