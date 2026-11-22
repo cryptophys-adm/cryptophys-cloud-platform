@@ -234,7 +234,7 @@ test("EH8. wiring: every kernel tick relays; the Alerts page names the topic; th
   const read = (p: string) => readFileSync(new URL(`../../../${p}`, import.meta.url), "utf8");
   const idx = read("workers/ai-kernel/src/index.ts");
   const sched = idx.slice(idx.indexOf("async scheduled("));
-  assert.match(sched, /\n    ctx\.waitUntil\(relayReports\(/, "the cron calls relayReports at the top level of scheduled, not behind a minute condition");
+  assert.match(sched, /\n    ctx\.waitUntil\(trackJob\(env, "report_relay", relayReports\(/, "the cron calls relayReports at the top level of scheduled, not behind a minute condition");
   assert.match(read("workers/ai-kernel/wrangler.toml"), /crons = \["7,22,37,52 \* \* \* \*"\]/);
   const ui = read("workers/console/ui/src/pages/Alerts.tsx");
   assert.match(ui, /ea_heartbeat: "XAUUSD EA heartbeat/);

@@ -181,7 +181,7 @@ test("N8. a failing cycle still runs the pass afterwards; the pass after the cyc
   assert.equal(s.owner().length, 1, "the proposal recorded before the failure is still notified");
 
   const idx = readFileSync(new URL("workers/ai-kernel/src/index.ts", ROOT), "utf8");
-  assert.match(idx, /const cycle = env\.SUPERVISOR\.get\(env\.SUPERVISOR\.idFromName\(AGENT_ID\)\)\.cycle\("scheduled"\)/);
+  assert.match(idx, /const cycle = trackJob\(env, "supervisor_cycle", env\.SUPERVISOR\.get\(env\.SUPERVISOR\.idFromName\(AGENT_ID\)\)\.cycle\("scheduled"\)\)/); // timed since 2026-11-22
   // HAIC H1.5d: the hourly council proposals (:07) settle first too, so a new proposal is notified in the same tick.
   assert.match(idx, /ctx\.waitUntil\(Promise\.all\(\[cycle, fullPass, proposals\]\)\.then\(\(\) => reconcileOwnerAttentionNow\(\{ \.\.\.env, ALERT_VAULT: alertVaultOf\(env\) \}\)\)/);
 });

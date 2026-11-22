@@ -179,7 +179,7 @@ test("D6. the static guard: the proposal module reads and proposes only; the ker
   for (const imp of src.matchAll(/^import [\s\S]*? from "([^"]+)";/gm)) assert.doesNotMatch(imp[1], /consensus|syscall|executor|recovery|deploy|merge|git-write|evolution|forge|knowledge|ai-engine/, imp[1]);
   assert.doesNotMatch(src, /consensus\.propose|\.syscall\(|\.dispatch\(|POLICY\.evaluate|DEPLOY\.|\bAI\b\.run|INSERT INTO|UPDATE |DELETE /, "no write but through the council's object, no model call");
   const idx = read("workers/ai-kernel/src/index.ts");
-  assert.match(idx, /if \(minute === 7 && env\.COUNCIL\) \{\n\s+ctx\.waitUntil\(proposals = proposeCouncils\(/);
+  assert.match(idx, /if \(minute === 7 && env\.COUNCIL\) \{\n\s+ctx\.waitUntil\(proposals = trackJob\(env, "council_proposals", proposeCouncils\(/); // timed since 2026-11-22
   assert.match(idx, /Promise\.all\(\[cycle, fullPass, proposals\]\)\.then\(\(\) => reconcileOwnerAttentionNow\(/);
   const mig = read("workers/control-plane-migrations/0080_council_proposals.sql");
   const code = mig.split("\n").map((l) => l.split("--")[0]).join("\n").toUpperCase();

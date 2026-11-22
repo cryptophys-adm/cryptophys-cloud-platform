@@ -81,7 +81,11 @@ function* sources(dir: URL): Generator<string> {
 }
 
 /** The only modules that may touch the datasets (step 2 adds the writer here). None of them reads the data back. */
-export const TELEMETRY_MODULES: readonly string[] = [];
+export const TELEMETRY_MODULES: readonly string[] = [
+  // Step 2 (2026-11-22): the writer and the one module that names the bindings.
+  "workers/ai-kernel/src/analytics/telemetry.ts",
+  "workers/ai-kernel/src/analytics/writer.ts",
+];
 
 test("AL3. telemetry only: no module outside the list touches the datasets, none reads them back, and only the kernel binds them", () => {
   const touching: string[] = [];

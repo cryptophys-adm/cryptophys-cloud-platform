@@ -23,6 +23,8 @@ import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
 import { observeAdr } from "./adr-observe.ts";
 import { readCouncilDecisions } from "./council-decisions.ts";
+import { recordSyscall } from "./analytics/telemetry.ts";
+import type { SyscallOutcome } from "./analytics/datasets.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -925,7 +927,19 @@ async function record(env: SyscallEnv, agentId: string, capability: string, tier
   return actionId;
 }
 
+/**
+ * Every agent syscall, timed, with one Analytics Engine point for its outcome (ADR-0015 decision 6, phase 3; owner
+ * 2026-11-22). Telemetry only: the point carries the capability, tier, outcome and latency, never the input or result,
+ * and it cannot change the outcome (analytics/telemetry.ts swallows its own errors).
+ */
 export async function syscall(env: SyscallEnv, agentId: string, capability: string, input: JsonObject = {}): Promise<SyscallResult> {
+  const started = Date.now();
+  const result = await syscallOnce(env, agentId, capability, input);
+  recordSyscall(env, agentId, capability, result.tier, result.outcome as SyscallOutcome, Date.now() - started);
+  return result;
+}
+
+async function syscallOnce(env: SyscallEnv, agentId: string, capability: string, input: JsonObject): Promise<SyscallResult> {
   const cap = Object.hasOwn(CAPABILITIES, capability) ? CAPABILITIES[capability] : undefined;
   const tier = cap?.tier ?? 3;
   if (tier === 0) {

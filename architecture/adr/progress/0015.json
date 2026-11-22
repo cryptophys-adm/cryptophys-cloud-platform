@@ -46,7 +46,7 @@
       ],
       "evidence": {
         "kind": "not_measurable_yet",
-        "reason": "datasets bound on the AI Kernel since 2026-11-22 (owner); no writer yet, so nothing is measured"
+        "reason": "datasets bound on the AI Kernel since 2026-11-22; it writes syscalls and cron jobs; no reader shows them yet"
       }
     },
     {
