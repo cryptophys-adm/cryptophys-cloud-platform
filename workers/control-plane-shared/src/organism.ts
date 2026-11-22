@@ -174,7 +174,8 @@ export const EXTERNAL_CEILING = Object.freeze({
  * doctrine.ts DOCTRINE_ACTIONS); amend_constitution stays critical (the owner's click). An Aether agent not named
  * here has only what both ceilings allow (signals.observe, reports.publish): no memory, trading, deploy, merge or
  * fund capability, no seat, tier 1. HAIC H3e (docs/design/HAIC-H3.md §7.3; owner 2026-11-19) adds one read: the
- * curator's corrections.read (tier 0), the Aether pull of the Nexus corrections.
+ * curator's corrections.read (tier 0), the Aether pull of the Nexus corrections. Owner 2026-11-22 ("ya kerjakan nomor 1
+ * dan semuanya") adds one more read: knowledge-council's consensus.status (tier 0), the outcome of its own proposals.
  */
 export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
   tier_max: 1,
@@ -186,7 +187,11 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
     // Aether's own DNA declares it (the census's update_agent_capabilities, routine).
     "aether-curator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status", "corrections.read"]),
     "aether-calibrator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status"]),
-    "knowledge-council": Object.freeze(["consensus.propose", "doctrine.status", "reports.publish"]),
+    // Owner 2026-11-22: the council reads the outcome of its own proposals (read only), once Aether's DNA declares it and
+    // the census's finding agent_capabilities_changed is settled. Its set holds the privileged consensus.propose, so the
+    // routine update_agent_capabilities does not apply it (consensus-rules.ts; ai-kernel organism.ts proposalFor), and no
+    // other consensus action does yet: until one does, the census reports the finding and the grant waits.
+    "knowledge-council": Object.freeze(["consensus.propose", "doctrine.status", "reports.publish", "consensus.status"]),
   }),
   proposals: Object.freeze({
     "knowledge-council": Object.freeze(["amend_doctrine", "amend_constitution"]),
