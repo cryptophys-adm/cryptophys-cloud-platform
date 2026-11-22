@@ -432,8 +432,8 @@ export interface TestWorkerCode {
   limits?: { cpuMs?: number };
 }
 
-/** What one request to a test Worker carries: the Worker's content id, and the run's data as the JSON body. */
-export interface TestWorkerRequest { id: string; body: string }
+/** What one request to a test Worker carries: the Worker's content id, and the run's data as the JSON body (UTF-8). */
+export interface TestWorkerRequest { id: string; body: Uint8Array<ArrayBuffer> }
 
 /**
  * The protocol of env.BUNDLER (ForgeBundler.bundleWorker(dir, commit)). A binding cannot be hashed, so its
@@ -458,9 +458,18 @@ export function testWorkerCode(group: Array<{ file: string; code: string }>, sha
   return { compatibilityDate: COMPATIBILITY_DATE, mainModule: "entry.js", modules, env, globalOutbound: null, ...(limits ? { limits } : {}) };
 }
 
-/** The body of a request to a test Worker: the commit (for the bundler callback) and the snapshot the node:fs shim serves. */
-export function testWorkerRequest(id: string, snapshotText: string, commit?: string): TestWorkerRequest {
-  return { id, body: `{"commit":${JSON.stringify(commit ?? null)},"snapshot":${snapshotText}}` };
+/**
+ * The body of every request to the run's test Workers: the commit (for the bundler callback) and the snapshot the
+ * node:fs shim serves, as UTF-8 bytes. It is the same for every group, so a run encodes it once (2026-11-22: a
+ * fresh copy of the ~9 MB body per group, as a string and again as bytes, pushed the Forge isolate over its 128 MB
+ * limit in 4 of 10 full runs). A request body is copied when it is sent, so the one array serves every request.
+ */
+export function testWorkerBody(snapshot: Snapshot, commit?: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(`{"commit":${JSON.stringify(commit ?? null)},"snapshot":${JSON.stringify(snapshot)}}`);
+}
+
+export function testWorkerRequest(id: string, body: Uint8Array<ArrayBuffer>): TestWorkerRequest {
+  return { id, body };
 }
 
 /** A stand-in for a compiled WebAssembly module, which has no bytes to hash: its import and export signature. */
@@ -524,7 +533,7 @@ export interface SuiteDeps {
  */
 export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: string[], commit?: string): Promise<SuiteResult> {
   const files = only ?? testFiles(snapshot);
-  const snapshotText = JSON.stringify(snapshot);
+  const body = testWorkerBody(snapshot, commit);
   const result = emptyResult();
   const workers: WorkerStats = { groups: 0, bundles: 0, loads: 0 };
   const ids = new Set<string>();
@@ -552,7 +561,7 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
         workers.loads++;
         const t0 = Date.now();
         try {
-          const report = await deps.runWorker(code, testWorkerRequest(id, snapshotText, commit));
+          const report = await deps.runWorker(code, testWorkerRequest(id, body));
           for (const f of report?.files ?? []) if (typeof f?.file === "string" && Array.isArray(f.reads)) reads.set(f.file, f.reads.map(String));
           return { report };
         } finally { wallMs += Date.now() - t0; }

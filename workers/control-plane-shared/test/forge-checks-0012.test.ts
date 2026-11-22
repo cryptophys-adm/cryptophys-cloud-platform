@@ -122,7 +122,8 @@ test("FC4. one test Worker per group, without network access, with the bundler c
     assert.equal(code.modules["snapshot.json.txt"], undefined, "the snapshot is not in the Worker's code");
     assert.ok(!JSON.stringify(code.modules).includes(h("c")), "nor is the commit");
     assert.equal(requests[i].id, await testWorkerId(code), "the Worker is addressed by its code");
-    assert.deepEqual(JSON.parse(requests[i].body), { commit: h("c"), snapshot }, "the run's data comes in the request");
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(requests[i].body)), { commit: h("c"), snapshot }, "the run's data comes in the request");
+    assert.equal(requests[i].body, requests[0].body, "one body for the whole run, encoded once (2026-11-22, Forge memory)");
   }
   assert.deepEqual(r.workers, { groups: 3, bundles: 5, loads: 5 }, "three groups, two isolated reruns: five distinct Workers, five requests");
   assert.deepEqual(loaded.slice(3).map((c) => (c.modules["files.json"] as { json: string[] }).json.length), [1, 1]);
@@ -593,8 +594,8 @@ test("FC20. a test Worker is addressed by its code: equal bundles keep the id ac
   const second = await run(later, h("2"));
   assert.deepEqual(second.seen[0].code, code);
   assert.equal(second.seen[0].request.id, request.id);
-  assert.deepEqual(JSON.parse(second.seen[0].request.body), { commit: h("2"), snapshot: later });
-  assert.deepEqual(JSON.parse(request.body), { commit: h("1"), snapshot: base });
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(second.seen[0].request.body)), { commit: h("2"), snapshot: later });
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(request.body)), { commit: h("1"), snapshot: base });
   assert.deepEqual(second.result.workers, { groups: 1, bundles: 1, loads: 1 });
 
   // A source a test imports changed: a new Worker. So does a new CPU limit.
