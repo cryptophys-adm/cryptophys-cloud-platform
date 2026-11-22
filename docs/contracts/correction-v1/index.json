@@ -1,6 +1,6 @@
 {
   "schema": "correction-v1.fixtures",
-  "contract": "docs/design/HAIC-H3.md §4",
+  "contract": "docs/design/HAIC-H3.md \u00a74",
   "note": "Every valid file passes validateCorrection; every invalid file fails with at least the expected error.",
   "files": [
     {
@@ -93,6 +93,12 @@
       "file": "invalid/subject-not-agent-model-or-seat.json",
       "expect_errors": [
         "target.subject"
+      ]
+    },
+    {
+      "file": "invalid/category-raw-with-price.json",
+      "expect_errors": [
+        "category_raw_carries_price"
       ]
     }
   ]

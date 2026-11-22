@@ -138,6 +138,205 @@
         "dedup_sha256": "e3f9fe9d5c9a65c85bd0ceab106b52f059ae797494afb364f8139b208d11615e",
         "category_raw": "vibes"
       }
+    },
+    {
+      "name": "category-raw-masked",
+      "input": {
+        "side": "nexus",
+        "source": "nexus_card",
+        "category": "SL at 4095.5 too tight, token sk-abcdefghijklmnopqrstuvwx1234",
+        "target": {
+          "ref": "ev:xauusd/card/d_9",
+          "subject": "seat:prophet",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "xauusd_nexus_access",
+        "now": "2026-11-22T09:40:00Z",
+        "correction_id": "cor_8888888888888888"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "other",
+        "category_raw": "SL at [level] too tight, token [redacted]",
+        "text": null,
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [
+          "secret",
+          "price"
+        ],
+        "content_sha256": "2d24fec2c214ac57592b02df21f5cb62f7bbb2ee450300a504c45b8a1ab8c3b0",
+        "dedup_sha256": "5912d099ab3c861d1c38181cad51ecbc1ae3c3b64367f75196500644df50a42c"
+      }
+    },
+    {
+      "name": "price-full-width",
+      "input": {
+        "side": "nexus",
+        "source": "nexus_card",
+        "category": "reading_wrong",
+        "text": "SL at \uff14\uff10\uff19\uff15 was too tight",
+        "target": {
+          "ref": "ev:xauusd/card/d_10",
+          "subject": "seat:prophet",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "xauusd_nexus_access",
+        "now": "2026-11-22T09:50:00Z",
+        "correction_id": "cor_aaaaaaaaaaaaaaa1"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "reading_wrong",
+        "text": "SL at [level] was too tight",
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [
+          "price"
+        ],
+        "content_sha256": "c3f3a6a7a448310b33e027e64feef560c7fb226fb23255a0085b443a5d6cf776",
+        "dedup_sha256": "e4ba505143bc1f0418b389e326821b111f033463cac6a86cb78d098b22bc9504"
+      }
+    },
+    {
+      "name": "price-arabic-indic",
+      "input": {
+        "side": "nexus",
+        "source": "nexus_card",
+        "category": "reading_wrong",
+        "text": "SL at \u0664\u0660\u0669\u0665 was too tight",
+        "target": {
+          "ref": "ev:xauusd/card/d_10",
+          "subject": "seat:prophet",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "xauusd_nexus_access",
+        "now": "2026-11-22T09:50:00Z",
+        "correction_id": "cor_aaaaaaaaaaaaaaa2"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "reading_wrong",
+        "text": "SL at [level] was too tight",
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [
+          "price"
+        ],
+        "content_sha256": "c3f3a6a7a448310b33e027e64feef560c7fb226fb23255a0085b443a5d6cf776",
+        "dedup_sha256": "e4ba505143bc1f0418b389e326821b111f033463cac6a86cb78d098b22bc9504"
+      }
+    },
+    {
+      "name": "price-zero-width",
+      "input": {
+        "side": "nexus",
+        "source": "nexus_card",
+        "category": "reading_wrong",
+        "text": "SL at 40\u200b95 was too tight",
+        "target": {
+          "ref": "ev:xauusd/card/d_10",
+          "subject": "seat:prophet",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "xauusd_nexus_access",
+        "now": "2026-11-22T09:50:00Z",
+        "correction_id": "cor_aaaaaaaaaaaaaaa3"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "reading_wrong",
+        "text": "SL at [level] was too tight",
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [
+          "price"
+        ],
+        "content_sha256": "c3f3a6a7a448310b33e027e64feef560c7fb226fb23255a0085b443a5d6cf776",
+        "dedup_sha256": "e4ba505143bc1f0418b389e326821b111f033463cac6a86cb78d098b22bc9504"
+      }
+    },
+    {
+      "name": "price-letter-o",
+      "input": {
+        "side": "nexus",
+        "source": "nexus_card",
+        "category": "reading_wrong",
+        "text": "SL at 4O95 was too tight",
+        "target": {
+          "ref": "ev:xauusd/card/d_10",
+          "subject": "seat:prophet",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "xauusd_nexus_access",
+        "now": "2026-11-22T09:50:00Z",
+        "correction_id": "cor_aaaaaaaaaaaaaaa4"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "reading_wrong",
+        "text": "SL at [level] was too tight",
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [
+          "price"
+        ],
+        "content_sha256": "c3f3a6a7a448310b33e027e64feef560c7fb226fb23255a0085b443a5d6cf776",
+        "dedup_sha256": "e4ba505143bc1f0418b389e326821b111f033463cac6a86cb78d098b22bc9504"
+      }
+    },
+    {
+      "name": "price-letter-o-round",
+      "input": {
+        "side": "nexus",
+        "source": "nexus_card",
+        "category": "reading_wrong",
+        "text": "SL at 4OOO was too tight",
+        "target": {
+          "ref": "ev:xauusd/card/d_10",
+          "subject": "seat:prophet",
+          "as_of": null
+        }
+      },
+      "context": {
+        "actor": "owner:owner@example.com",
+        "owner": true,
+        "attested_by": "xauusd_nexus_access",
+        "now": "2026-11-22T09:50:00Z",
+        "correction_id": "cor_aaaaaaaaaaaaaaa5"
+      },
+      "expect": {
+        "label": "owner_correction",
+        "category": "reading_wrong",
+        "text": "SL at [level] was too tight",
+        "evidence_refs": [],
+        "weight": 3,
+        "redactions": [
+          "price"
+        ],
+        "content_sha256": "c3f3a6a7a448310b33e027e64feef560c7fb226fb23255a0085b443a5d6cf776",
+        "dedup_sha256": "e4ba505143bc1f0418b389e326821b111f033463cac6a86cb78d098b22bc9504"
+      }
     }
   ],
   "refused": [
