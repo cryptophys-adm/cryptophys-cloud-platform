@@ -92,6 +92,9 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 /** Trim and collapse every whitespace run; case is kept (the same rule as ai-kernel/src/learning-dedup.ts). */
 export const normalizeText = (s: string): string => s.trim().replace(/\s+/g, " ");
 
+/** The longest owner-typed category kept beside category "other". */
+export const CATEGORY_RAW_MAX = 60;
+
 /** Keys that name a parameter or a price, anywhere in a value. */
 export function forbiddenCorrectionKeys(value: unknown, path = "correction"): string[] {
   if (Array.isArray(value)) return value.flatMap((v, i) => forbiddenCorrectionKeys(v, `${path}[${i}]`));
@@ -166,7 +169,9 @@ export async function buildCorrection(input: CorrectionInput, ctx: CorrectionCon
   let categoryRaw: string | undefined;
   if (typeof input.category === "string" && input.category.trim()) {
     if (CORRECTION_CATEGORIES.includes(input.category as CorrectionCategory)) category = input.category as CorrectionCategory;
-    else { category = "other"; categoryRaw = input.category.slice(0, 60); }
+    // The owner's own word is kept, made safe as the text is (2026-11-22, review of xauusd #521: a typed category such as
+    // "SL at 4095.5 too tight" was stored unmasked): secrets redacted, prices masked, then cut to 60 characters.
+    else { category = "other"; categoryRaw = (safeText(input.category, redactions) ?? "").slice(0, CATEGORY_RAW_MAX) || undefined; }
   }
   const text = safeText(input.text, redactions);
   if (!rating && !category && !text) return { ok: false, error: "empty" };
@@ -239,7 +244,11 @@ export function validateCorrection(c: unknown): string[] {
   if (label === "owner_rating" && c.rating === null) errors.push("owner_rating_without_rating");
   if (label === "owner_correction" && c.category === null && c.text === null) errors.push("owner_correction_without_content");
   if (label === "owner_decision" && c.text === null) errors.push("owner_decision_without_reason");
-  if (c.category_raw !== undefined && (c.category !== "other" || typeof c.category_raw !== "string")) errors.push("category_raw");
+  if (c.category_raw !== undefined && (c.category !== "other" || typeof c.category_raw !== "string" || c.category_raw.length > CATEGORY_RAW_MAX)) errors.push("category_raw");
+  else if (typeof c.category_raw === "string") {
+    if (secretInText(c.category_raw)) errors.push("category_raw_carries_secret");
+    if (PRICE.test(c.category_raw)) errors.push("category_raw_carries_price");
+  }
   if (c.invalid_refs !== undefined && !(Number.isInteger(c.invalid_refs) && (c.invalid_refs as number) > 0)) errors.push("invalid_refs");
   return errors;
 }
