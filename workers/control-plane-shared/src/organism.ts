@@ -187,10 +187,9 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
     // Aether's own DNA declares it (the census's update_agent_capabilities, routine).
     "aether-curator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status", "corrections.read"]),
     "aether-calibrator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status"]),
-    // Owner 2026-11-22: the council reads the outcome of its own proposals (read only), once Aether's DNA declares it and
-    // the census's finding agent_capabilities_changed is settled. Its set holds the privileged consensus.propose, so the
-    // routine update_agent_capabilities does not apply it (consensus-rules.ts; ai-kernel organism.ts proposalFor), and no
-    // other consensus action does yet: until one does, the census reports the finding and the grant waits.
+    // Owner 2026-11-22: the council reads the outcome of its own proposals (read only), once Aether's DNA declares it. Its
+    // set holds the privileged consensus.propose, so the census proposes update_privileged_agent_capabilities, critical:
+    // the owner's click ("Jalur klik owner (Rekomendasi)"; consensus-rules.ts, ai-kernel organism.ts).
     "knowledge-council": Object.freeze(["consensus.propose", "doctrine.status", "reports.publish", "consensus.status"]),
   }),
   proposals: Object.freeze({

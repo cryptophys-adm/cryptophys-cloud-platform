@@ -81,7 +81,7 @@ async function setPolicyParameter(env: SyscallEnv, proposalId: string, decisionI
 
 /** ADR-0013 phase 3 registrations: routine ones run in phase 2's set, seats and privileged agents after an owner click. */
 const ROUTINE_REGISTRATIONS = ["register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "set_policy_parameter"];
-const CRITICAL_REGISTRATIONS = ["register_privileged_agent", "admit_voter"];
+const CRITICAL_REGISTRATIONS = ["register_privileged_agent", "admit_voter", "update_privileged_agent_capabilities"];
 
 
 export async function consensusMode(env: SyscallEnv): Promise<ConsensusMode> {
@@ -98,9 +98,10 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
   const reg = await env.DB.prepare("SELECT service_id, status, desired_version FROM service_registry").all<{ service_id: string; status: string; desired_version: string | null }>();
   // ADR-0013: the council is data (agents.voter, migration 0041). Before 0041 is applied the founding
   // seats stand in, so a deploy that ships this code ahead of its migration keeps voting.
-  let ag: { results: Array<{ agent_id: string; status: string; host_worker: string; voter: number }> };
+  let ag: { results: Array<{ agent_id: string; status: string; host_worker: string; voter: number; capabilities_json?: string | null }> };
   try {
-    ag = await env.DB.prepare("SELECT agent_id, status, host_worker, voter FROM agents").all<{ agent_id: string; status: string; host_worker: string; voter: number }>();
+    // Owner 2026-11-22: update_privileged_agent_capabilities' vote compares the new set with the registered one.
+    ag = await env.DB.prepare("SELECT agent_id, status, host_worker, voter, capabilities_json FROM agents").all<{ agent_id: string; status: string; host_worker: string; voter: number; capabilities_json: string | null }>();
   } catch {
     const legacy = await env.DB.prepare("SELECT agent_id, status, host_worker FROM agents").all<{ agent_id: string; status: string; host_worker: string }>();
     ag = { results: legacy.results.map((a) => ({ ...a, voter: (VOTERS as readonly string[]).includes(a.agent_id) ? 1 : 0 })) };
@@ -114,13 +115,22 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
     audit_valid: chain.valid,
     services: Object.fromEntries(ov.services.map((s) => [s.service_id, s])),
     registry: Object.fromEntries(reg.results.map((r) => [r.service_id, { status: r.status, desired_version: r.desired_version }])),
-    agents: Object.fromEntries(ag.results.map((a) => [a.agent_id, { status: a.status, host_worker: a.host_worker, voter: a.voter === 1 }])),
+    agents: Object.fromEntries(ag.results.map((a) => {
+      const caps = capabilitiesOf(a.capabilities_json);
+      return [a.agent_id, { status: a.status, host_worker: a.host_worker, voter: a.voter === 1, ...(caps ? { capabilities: caps } : {}) }];
+    })),
     critical_reports_24h: openCriticalReports(ov.agent_reports_24h),
     executing_plan_targets: plans.results.map((p) => p.service_id),
     recent_same: same?.n ?? 0,
     // G3b: a merge vote reads the change request's state as the Forge computes it; unreadable is null (every voter rejects).
     ...(MERGE_ACTIONS.has(action) ? { change: await mergeEvidence(env, target) } : {}),
   };
+}
+
+/** A registered capability set, or undefined when it is missing or not a list of strings. */
+function capabilitiesOf(json: string | null | undefined): string[] | undefined {
+  if (typeof json !== "string") return undefined;
+  try { const v = JSON.parse(json); return Array.isArray(v) && v.every((c) => typeof c === "string") ? v : undefined; } catch { return undefined; }
 }
 
 async function mergeEvidence(env: SyscallEnv, crId: string): Promise<Evidence["change"]> {

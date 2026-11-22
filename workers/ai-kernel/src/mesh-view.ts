@@ -11,7 +11,7 @@ import type { KernelHttpEnv } from "./kernel.ts";
 import { executionHosts } from "./execution-hosts.ts";
 import { ADR_STEWARD_ID } from "./adr-steward.ts";
 
-const REGISTRATION_ACTIONS = ["register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "register_privileged_agent", "admit_voter"];
+const REGISTRATION_ACTIONS = ["register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "register_privileged_agent", "admit_voter", "update_privileged_agent_capabilities"];
 
 async function rows<T>(run: () => Promise<{ results: T[] }>): Promise<T[]> {
   try { return (await run()).results ?? []; } catch { return []; }

@@ -94,8 +94,8 @@ function kernelEnv(db: Db) {
  * The grants the ceiling holds ahead of the registry and Aether's DNA. HAIC H3e (docs/design/HAIC-H3.md §7.3; owner
  * 2026-11-19): the curator's corrections.read arrives when Aether's DNA declares it (the census's routine
  * update_agent_capabilities). consensus.status (owner 2026-11-22): knowledge-council's read of its own proposals arrives
- * when Aether's DNA declares it and the census's agent_capabilities_changed is settled (consensus-status-2026-11-22.test.ts
- * CS9). Until then the ceiling is today's grants plus exactly these.
+ * when Aether's DNA declares it and the owner clicks the census's update_privileged_agent_capabilities
+ * (consensus-status-2026-11-22.test.ts CS9-CS11). Until then the ceiling is today's grants plus exactly these.
  */
 const AHEAD: Record<string, string[]> = { "aether-curator": ["corrections.read"], "knowledge-council": ["consensus.status"] };
 const today = (id: string) => [...AETHER_CEILING.agents[id]].filter((c) => !(AHEAD[id] ?? []).includes(c)).sort();

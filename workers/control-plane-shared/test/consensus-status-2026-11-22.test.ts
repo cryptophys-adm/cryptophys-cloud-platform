@@ -3,22 +3,27 @@
 // proposals (consensus_proposals.proposer_agent_id), at most 50 ids a call. Another agent's id, or an unknown one, reads
 // { proposal_id, status: "not_found" }. No params, evidence, votes, outcome, owner identity or owner reason. Only
 // AETHER_CEILING grants it, to knowledge-council; EXTERNAL_CEILING is not widened. The grant arrives when Aether's DNA
-// declares it and the census's finding is settled (CS8 pins how the census treats it today).
+// declares it: the council also holds the privileged consensus.propose, so the census proposes the critical
+// update_privileged_agent_capabilities, which waits for the owner's click (owner 2026-11-22, "Jalur klik owner
+// (Rekomendasi)"; CS9-CS11).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { CAPABILITIES, hourlyLimit, verifySyscallDecision } from "../src/capabilities.ts";
 import { isLearningCapability } from "../src/power-mode.ts";
-import { castVote, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
+import { PRIVILEGED_UPDATE, castVote, classify, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
+import { actionCeiling, groupOf } from "../src/autonomy-dial.ts";
+import { describeAction } from "../src/plain.ts";
 import { AETHER_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, XAUUSD_CEILING, externalCeilingFor, externalCeilingViolations } from "../src/organism.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
 import { syscall } from "../../ai-kernel/src/syscall.ts";
 import { rpcSyscall } from "../../ai-kernel/src/agent-rpc.ts";
-import { OWNER_DECISION_WINDOW_MS, expireOwnerProposals, ownerDecide } from "../../ai-kernel/src/consensus.ts";
+import { OWNER_DECISION_WINDOW_MS, PHASE3_EXECUTABLE, PHASE4_EXECUTABLE, expireOwnerProposals, ownerDecide } from "../../ai-kernel/src/consensus.ts";
+import { runCycle } from "../../ai-kernel/src/supervisor.ts";
 import { CONSENSUS_STATUS_MAX } from "../../ai-kernel/src/consensus-status.ts";
-import { latestCensusRow, proposalFor } from "../../ai-kernel/src/organism.ts";
+import { executeRegistration, latestCensusRow, proposalFor } from "../../ai-kernel/src/organism.ts";
 import { censusTick } from "../../forge/src/census.ts";
 import type { ArtifactsReader, ArtifactsTreeEntry } from "../../forge/src/checks.ts";
 
@@ -49,7 +54,7 @@ function setup() {
   const status = async (ids: unknown, agent = COUNCIL, props: unknown = AETHER_PROPS) => await rpcSyscall(env as never, props, agent, CAP, { proposal_ids: ids } as never) as any;
   return { db, env, status };
 }
-/** Aether's DNA declares the council's consensus.status and the grant is applied (CS8: how the census treats it today). */
+/** Aether's DNA declares the council's consensus.status and the owner's click applies it (CS10 runs that path). */
 function grantCouncil(db: Db) {
   db.raw.prepare("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?").run(JSON.stringify([...AETHER_CEILING.agents[COUNCIL]]), COUNCIL);
 }
@@ -100,6 +105,10 @@ test("CS1. consensus.status is tier 0 and read only; only AETHER_CEILING grants 
   // The guard paths this change touches: capabilities.ts and organism.ts (the owner's click); the kernel read is routine.
   assert.equal(criticalPathReason("workers/control-plane-shared/src/capabilities.ts"), "evolution_guard");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
+  // The owner-click path for a privileged agent's capability change (CS9-CS11).
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/consensus-rules.ts"), "consensus_kill_switch");
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/autonomy-dial.ts"), "consensus_kill_switch");
+  assert.equal(criticalPathReason("architecture/adr/0009-consensus-autonomy.md"), "adr_0009_0012");
   for (const p of ["workers/ai-kernel/src/consensus-status.ts", "workers/ai-kernel/src/syscall.ts", "workers/control-plane-shared/test/consensus-status-2026-11-22.test.ts", "workers/control-plane-shared/test/aether-ceiling-schedule.test.ts", "docs/SSOT.md"]) {
     assert.equal(criticalPathReason(p), null, p);
   }
@@ -293,7 +302,25 @@ function aetherDna(councilCaps: string[]) {
   return { schema: "aether-organism.v1", organs: [{ $schema_version: 1, service: HOST, display_name: "Aether", kind: "service", deploy_unit: null, access: false, rollback: false, drift: { via: "rpc", binding: "EXT_AETHER" }, agents, engines: [{ task: "embed_texts" }] }] };
 }
 
-test("CS9. Aether's DNA declaring it is a census finding within the ceiling; the council also holds the privileged consensus.propose, so the routine update does not apply it", async () => {
+function cycleEnv(db: Db) {
+  const policyEnv = baseEnv("cryptophys-policy-engine", db);
+  const mem = new Map<string, unknown>();
+  const env: Record<string, unknown> = {
+    ...baseEnv("cryptophys-ai-kernel", db, { OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`, APPROVER_IDENTITIES: APPROVER_EMAIL }),
+    AI: fakeAi({ response: "not json" }),
+    POLICY: { evaluate: async (input: Record<string, unknown>) => { const p = parsePolicyRequest(input); if (p instanceof Error) throw p; return decide(policyEnv as never, p); } },
+    RECOVERY: { propose: async (agentId: string, decisionId: string) => { await verifySyscallDecision(db, decisionId, agentId, "recovery.propose"); return { plan: {} }; } },
+    MEMORY: { upsert: async () => ({}), query: async () => ({ matches: [] }), deleteByIds: async () => ({}) },
+    DEPLOY: { pendingDeploys: async () => ({ main_sha: null, ci_green: false, units: [], skipped: [] }) },
+    CANONICAL_MAIN: { mainHead: async () => ({ main_sha: MAIN }) },
+  };
+  const memory = { async get<T>(k: string) { return mem.get(k) as T | undefined; }, async put(k: string, v: unknown) { mem.set(k, structuredClone(v)); } };
+  return { env, memory, policyEnv };
+}
+const capsOf = (db: Db, id: string) => (JSON.parse((db.raw.prepare("SELECT capabilities_json FROM agents WHERE agent_id = ?").get(id) as any).capabilities_json) as string[]).sort();
+const TODAY = ["consensus.propose", "doctrine.status", "reports.publish"];
+
+test("CS9. the owner's click path (owner 2026-11-22, \"Jalur klik owner (Rekomendasi)\"): a privileged agent's capability change is proposed, critical, and the votes keep its guards", async () => {
   const db = registeredDb();
   const declared = [...AETHER_CEILING.agents[COUNCIL]];
   await censusTick(db as never, repoWith(realDna()), Date.now(), [{ origin: AETHER, dna: async () => aetherDna(declared) }]);
@@ -301,29 +328,121 @@ test("CS9. Aether's DNA declaring it is a census finding within the ceiling; the
   const finding = census.findings.find((f) => f.kind === "agent_capabilities_changed" && f.subject === COUNCIL)!;
   assert.ok(finding, census.findings.map((f) => `${f.kind} ${f.subject}`).join("; "));
   assert.ok(!census.findings.some((f) => f.kind === "external_agent_refused"), "within Aether's ceiling");
-  // consensus.propose is privileged: the census proposes no routine update_agent_capabilities, and a vote refuses one.
+  // consensus.propose is privileged: the census proposes the critical update, never the routine one.
   assert.deepEqual(privilegedCapabilities(declared), ["consensus.propose"]);
-  assert.equal(proposalFor(census, finding), null);
-  const e: Evidence = {
+  const prop = proposalFor(census, finding)!;
+  assert.deepEqual([prop.action, prop.target, prop.params.service, prop.params.tier_max], [PRIVILEGED_UPDATE, COUNCIL, HOST, 1]);
+  assert.deepEqual([...(prop.params.capabilities as string[])].sort(), [...declared].sort());
+  assert.equal(classify(PRIVILEGED_UPDATE), "critical");
+  assert.equal(classify("update_agent_capabilities"), "routine", "the routine action is unchanged");
+  assert.ok(PHASE4_EXECUTABLE.has(PRIVILEGED_UPDATE) && !PHASE3_EXECUTABLE.has(PRIVILEGED_UPDATE), "executed only after the owner's click");
+  assert.equal(groupOf(PRIVILEGED_UPDATE), "agents");
+  assert.equal(actionCeiling(PRIVILEGED_UPDATE), "owner_click", "the autonomy dial can never make it routine");
+  assert.match(describeAction(PRIVILEGED_UPDATE, COUNCIL), /^set, as its DNA declares, the capabilities of the privileged agent /);
+  // The votes.
+  const e = (registered: string[] | undefined): Evidence => ({
     agents_enabled: true, audit_valid: true, services: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0,
     registry: { [HOST]: { status: "healthy", desired_version: null } },
-    agents: { [COUNCIL]: { status: "enabled", host_worker: HOST, voter: false } },
+    agents: { [COUNCIL]: { status: "enabled", host_worker: HOST, voter: false, ...(registered ? { capabilities: registered } : {}) } },
+  });
+  const vote = (action: string, capabilities: string[], registered: string[] | null = TODAY) =>
+    castVote("policy-engine", { action, target: COUNCIL, params: { service: HOST, capabilities, tier_max: 1 }, class: classify(action)! } as Proposal, e(registered ?? undefined));
+  assert.equal(vote(PRIVILEGED_UPDATE, declared).vote, "approve");
+  assert.match(vote(PRIVILEGED_UPDATE, declared).reason, /the owner decides/);
+  assert.equal(vote(PRIVILEGED_UPDATE, ["consensus.propose", "reports.publish"]).vote, "approve", "removing capabilities only narrows");
+  // Never as routine; only with the owner's click.
+  assert.match(vote("update_agent_capabilities", declared).reason, /privileged capabilities are never updated as routine, only by update_privileged_agent_capabilities with the owner's click: consensus\.propose/);
+  // A privileged capability the agent does not hold is never added by an update.
+  assert.match(vote(PRIVILEGED_UPDATE, declared, ["doctrine.status", "reports.publish"]).reason, /a privileged capability the agent does not hold is never added by an update: consensus\.propose/);
+  assert.match(vote(PRIVILEGED_UPDATE, declared, null).reason, /registered capabilities are unknown/, "fails closed");
+  // A capability outside the ceiling, or a forbidden one, is still refused.
+  assert.match(vote(PRIVILEGED_UPDATE, [...declared, "memory.recall"]).reason, /above the external-organ ceiling: capability memory\.recall/);
+  const tier2 = vote(PRIVILEGED_UPDATE, [...declared, "code.propose"]);
+  assert.deepEqual([tier2.vote, /never added by an update: code\.propose/.test(tier2.reason)], ["reject", true], tier2.reason);
+  assert.match(vote(PRIVILEGED_UPDATE, [...declared, "deploy.release"]).reason, /unknown or prohibited/);
+  // A set with no privileged capability is the routine action's.
+  assert.match(vote(PRIVILEGED_UPDATE, ["doctrine.status", "reports.publish", CAP]).reason, /no privileged capability: update_agent_capabilities is the routine action/);
+});
+
+test("CS10. the council's grant: the Supervisor proposes it, it waits as pending_owner, refuses to run without the click and applies after it", async () => {
+  const db = registeredDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  const { env, memory, policyEnv } = cycleEnv(db);
+  const declared = [...AETHER_CEILING.agents[COUNCIL]];
+  const t0 = Date.now();
+  const reader = [{ origin: AETHER, dna: async () => aetherDna(declared) }];
+  await censusTick(db as never, repoWith(realDna()), t0 - 60_000, reader);
+  await runCycle(env as never, memory, "scheduled", t0);
+  const rows = db.raw.prepare("SELECT * FROM consensus_proposals WHERE target = ? AND action IN ('update_agent_capabilities', ?) ORDER BY rowid").all(COUNCIL, PRIVILEGED_UPDATE) as any[];
+  assert.equal(rows.length, 1, JSON.stringify(rows.map((r) => [r.action, r.status])));
+  const [p] = rows;
+  assert.deepEqual([p.action, p.class, p.status, p.passed], [PRIVILEGED_UPDATE, "critical", "pending_owner", 1], p.outcome_json);
+  assert.deepEqual(capsOf(db, COUNCIL), TODAY, "nothing changes before the click");
+  // Without the owner's approval: the Policy Engine denies, and the executor refuses even when forced to executing.
+  const pol = await decide(policyEnv as never, parsePolicyRequest({ subject: "owner:x", action: "consensus.execute", resource: `${PRIVILEGED_UPDATE}:${COUNCIL}`, context: { class: "critical", passed: true, stage: "execute", proposal_id: p.proposal_id } }) as never) as any;
+  assert.equal(pol.decision, "deny");
+  assert.ok((pol.checks ?? pol.evidence?.checks ?? []).some((c: any) => c.id === "owner_approved" && !c.passed), JSON.stringify(pol));
+  db.raw.prepare("UPDATE consensus_proposals SET status = 'executing', policy_decision_id = ?, policy_decision = 'allow' WHERE proposal_id = ?").run(pol.decision_id, p.proposal_id);
+  db.raw.prepare("UPDATE policy_decisions SET decision = 'allow' WHERE decision_id = ?").run(pol.decision_id);
+  await assert.rejects(executeRegistration(env as never, p.proposal_id, pol.decision_id, { action: PRIVILEGED_UPDATE, target: COUNCIL, params: JSON.parse(p.params_json) }, "test", () => false), /consensus_owner_approval_required/);
+  assert.deepEqual(capsOf(db, COUNCIL), TODAY);
+  db.raw.prepare("UPDATE consensus_proposals SET status = 'pending_owner', policy_decision_id = ?, policy_decision = ? WHERE proposal_id = ?").run(p.policy_decision_id, p.policy_decision, p.proposal_id);
+  // Before the click the council is not granted the read.
+  const before = await rpcSyscall(env as never, AETHER_PROPS, COUNCIL, CAP, { proposal_ids: [] }) as any;
+  assert.match(before.reason, /capability_granted/);
+  // The owner's click: executed through the critical path, audited; the council now reads its proposals.
+  const out = await ownerDecide(env as never, p.proposal_id, "approve", APPROVER_EMAIL, null);
+  assert.equal(out.status, "executed", JSON.stringify(out));
+  assert.deepEqual(capsOf(db, COUNCIL), [...declared].sort());
+  const audit = db.raw.prepare("SELECT actor, payload_json FROM audit_events WHERE event_type = 'agent.capabilities_updated' AND subject = ?").all(`agent:${COUNCIL}`) as any[];
+  assert.equal(audit.length, 1);
+  assert.deepEqual(JSON.parse(audit[0].payload_json).previous.sort(), TODAY);
+  assert.match(audit[0].actor, new RegExp(`^owner:${APPROVER_EMAIL.replace(/[.]/g, "\\.")} via consensus:`));
+  const after = await rpcSyscall(env as never, AETHER_PROPS, COUNCIL, CAP, { proposal_ids: [p.proposal_id] }) as any;
+  assert.equal(after.outcome, "succeeded", JSON.stringify(after));
+  // The Supervisor proposed the update, not the council: the council's read does not reveal it.
+  assert.deepEqual(after.result.proposals, [{ proposal_id: p.proposal_id, status: "not_found" }]);
+  // The census settles.
+  await censusTick(db as never, repoWith(realDna()), t0 + 31 * 60_000, reader);
+  assert.ok(!(await latestCensusRow({ DB: db } as never))!.findings.some((f) => f.kind === "agent_capabilities_changed" && f.subject === COUNCIL), "the census settles");
+});
+
+test("CS11. the executor holds the guards too: no privileged capability the agent does not hold; the routine action never applies a privileged set", async () => {
+  const db = registeredDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+  const { env } = cycleEnv(db);
+  // The council registered without consensus.propose: its DNA asking for it back is a new privileged capability.
+  db.raw.prepare("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?").run(JSON.stringify(["doctrine.status", "reports.publish"]), COUNCIL);
+  const declared = [...AETHER_CEILING.agents[COUNCIL]];
+  await censusTick(db as never, repoWith(realDna()), Date.now() - 60_000, [{ origin: AETHER, dna: async () => aetherDna(declared) }]);
+  const census = (await latestCensusRow({ DB: db } as never))!;
+  const params = { service: HOST, capabilities: declared, tier_max: 1, main_sha: census.main_sha };
+  // A proposal forced to executing with the owner's approval and an allow on record: the executor still refuses.
+  const force = async (action: string) => {
+    const id = cnsId();
+    const at = new Date().toISOString();
+    db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+      VALUES (?, 'supervisor', ?, ?, ?, ?, '{}', 'deploy', 1, 1, 0, 1, NULL, 'allow', 'executing', '{}', ?, ?)`).run(id, action, COUNCIL, classify(action), JSON.stringify(params), at, at);
+    db.raw.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, 'approve', ?, NULL, ?)").run(id, APPROVER_EMAIL, at);
+    const pol = await decide(baseEnv("cryptophys-policy-engine", db) as never, parsePolicyRequest({ subject: `owner:${APPROVER_EMAIL}`, action: "consensus.execute", resource: `${action}:${COUNCIL}`, context: { class: classify(action), passed: true, stage: "execute", proposal_id: id } }) as never) as any;
+    db.raw.prepare("UPDATE policy_decisions SET decision = 'allow' WHERE decision_id = ?").run(pol.decision_id);
+    db.raw.prepare("UPDATE consensus_proposals SET policy_decision_id = ? WHERE proposal_id = ?").run(pol.decision_id, id);
+    return executeRegistration(env as never, id, pol.decision_id, { action, target: COUNCIL, params }, "test", () => false);
   };
-  const vote = castVote("policy-engine", { action: "update_agent_capabilities", target: COUNCIL, params: { service: HOST, capabilities: declared, tier_max: 1 }, class: "routine" } as Proposal, e);
-  assert.equal(vote.vote, "reject");
-  assert.match(vote.reason, /privileged capabilities are never updated as routine: consensus\.propose/);
-  const caps = JSON.parse((db.raw.prepare("SELECT capabilities_json FROM agents WHERE agent_id = ?").get(COUNCIL) as any).capabilities_json);
-  assert.deepEqual(caps.sort(), ["consensus.propose", "doctrine.status", "reports.publish"], "the registry keeps today's grants");
+  await assert.rejects(force(PRIVILEGED_UPDATE), /new_privileged_capability/);
+  await assert.rejects(force("update_agent_capabilities"), /privileged_needs_owner/);
+  assert.deepEqual(capsOf(db, COUNCIL), ["doctrine.status", "reports.publish"], "nothing applied");
 });
 
 // ------------------------------------------------------------------------------------------- 4. the SSOT
 
-test("CS10. the SSOT: line 5 carries the consensus.status entry; the external origins row names the council's read", () => {
+test("CS12. the SSOT: line 5 carries the consensus.status entry and the owner-click rule; the external origins row names the council's read; ADR-0009 records the amendment", () => {
   const ssot = read("docs/SSOT.md");
   const line5 = ssot.split("\n")[4];
   // The repository's convention: the entry may follow later entries on line 5.
   assert.match(line5, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?consensus\.status, 2026-11-22/);
   assert.ok(line5.includes(`consensus.status, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; requested for Aether's knowledge council): `));
-  for (const want of ["`consensus.status`", "`knowledge-council`", "`not_found`", "`expired`", "guard path"]) assert.ok(line5.includes(want), want);
+  for (const want of ["`consensus.status`", "`knowledge-council`", "`not_found`", "`expired`", "guard path", "`update_privileged_agent_capabilities`", "\"Jalur klik owner (Rekomendasi)\"", "`merge_owner_change`"]) assert.ok(line5.includes(want), want);
+  assert.match(read("architecture/adr/0009-consensus-autonomy.md"), /^## Amendment 2026-11-22: a privileged agent's capability change waits for the owner's click\n\nOwner 2026-11-22, "Jalur klik owner \(Rekomendasi\)"/m);
   assert.match(ssot, /\*\*External origins[^\n]*`aether-curator` may also hold the read-only `corrections\.read`[^\n]*`knowledge-council` the read-only `consensus\.status`/);
 });

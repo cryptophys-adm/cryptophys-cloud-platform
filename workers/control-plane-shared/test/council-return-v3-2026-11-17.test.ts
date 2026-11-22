@@ -119,7 +119,8 @@ test("R2. the votes: the moderator's new set is approved; a set above the ceilin
   const vote = (q: Proposal) => castVote("platform-api", q, e);
   assert.equal(vote(p(MOD, [...EXTERNAL_CEILING.capabilities, READ])).vote, "approve");
   assert.match(vote(p("hud-prophet", [...EXTERNAL_CEILING.capabilities, READ])).reason, /above the external-organ ceiling: capability council\.decisions\.read/);
-  assert.match(vote(p(MOD, [...EXTERNAL_CEILING.capabilities, "consensus.propose"])).reason, /privileged capabilities are never updated as routine/);
+  // Owner 2026-11-22 ("Jalur klik owner (Rekomendasi)"): never as routine; only update_privileged_agent_capabilities, the owner's click.
+  assert.match(vote(p(MOD, [...EXTERNAL_CEILING.capabilities, "consensus.propose"])).reason, /privileged capabilities are never updated as routine, only by update_privileged_agent_capabilities with the owner's click: consensus\.propose/);
   assert.match(vote(p(MOD, ["move.funds"])).reason, /unknown or prohibited/);
   assert.match(vote(p("ghost", [READ])).reason, /not registered/);
   assert.match(vote(p(MOD, [READ], "xauusd-omega")).reason, /registered on xauusd-ai-trading-assistant/);

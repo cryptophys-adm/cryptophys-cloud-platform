@@ -43,6 +43,10 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   register_agent: { class: "routine", target: "agent", description: "Register an agent its Worker's DNA declares (no privileged capability)" },
   // ADR-0014 §11 (docs/design/EVOLVER.md §8, 2026-11-17): the census finding agent_capabilities_changed had no way out.
   update_agent_capabilities: { class: "routine", target: "agent", description: "Set a registered agent's capabilities to what its Worker's DNA now declares (no privileged capability; within its origin's ceiling)" },
+  // Owner 2026-11-22 ("Jalur klik owner (Rekomendasi)"): a capability change whose set keeps a privileged capability is no
+  // longer left without a way out; it waits for the owner's click. It never adds a privileged capability the agent does
+  // not already hold (that stays a registration), and stays within its origin's ceiling.
+  update_privileged_agent_capabilities: { class: "critical", target: "agent", description: "Set the capabilities of a registered agent whose set holds a privileged capability to what its Worker's DNA now declares (no privileged capability it does not already hold; within its origin's ceiling); one owner approval click" },
   register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
   // Owner 2026-11-15 ("Aksi retire_engine"): the mirror of register_engine, for an engine its Worker's DNA no longer declares.
   retire_engine: { class: "routine", target: "service", description: "Retire an AI engine (task) its Worker's DNA no longer declares (status retired; no data deleted)" },
@@ -137,6 +141,8 @@ export function councilSeats(e: Pick<Evidence, "agents">): string[] {
   return Object.entries(e.agents).filter(([, a]) => a.voter && a.status === "enabled").map(([id]) => id).sort();
 }
 const REGISTRATION = new Set(["register_agent", "register_privileged_agent"]);
+/** Owner 2026-11-22: the capability change of an agent whose set holds a privileged capability (critical). */
+export const PRIVILEGED_UPDATE = "update_privileged_agent_capabilities";
 const ENGINE_TASK = /^[a-z][a-z0-9_]{2,62}$/;
 const ACTIVE_SERVICE_STATUSES = new Set(["registered", "healthy", "degraded"]);
 
@@ -164,8 +170,10 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "registration is consistent" };
   }
   // update_agent_capabilities: the checks of register_agent on an agent that is already registered on that host. A set
-  // that holds a privileged capability is never routine; it needs a registration the owner clicks (not this action).
-  if (p.action === "update_agent_capabilities") {
+  // that holds a privileged capability is never routine: it is update_privileged_agent_capabilities, the owner's click
+  // (owner 2026-11-22, "Jalur klik owner (Rekomendasi)"), which may keep the privileged capabilities the agent already
+  // holds and add none.
+  if (p.action === "update_agent_capabilities" || p.action === PRIVILEGED_UPDATE) {
     const agent = e.agents[p.target];
     if (!agent) return { vote: "reject", reason: "agent is not registered" };
     const host = String(p.params.service ?? "");
@@ -177,13 +185,21 @@ function registrationVote(voter: string, p: Proposal, e: Evidence): { vote: Vote
     const forbidden = forbiddenCapabilities(caps);
     if (forbidden.length) return { vote: "reject", reason: `unknown or prohibited capabilities: ${forbidden.join(", ")}` };
     const privileged = privilegedCapabilities(caps);
-    if (privileged.length) return { vote: "reject", reason: `privileged capabilities are never updated as routine: ${privileged.join(", ")}` };
+    if (p.action === "update_agent_capabilities" && privileged.length) {
+      return { vote: "reject", reason: `privileged capabilities are never updated as routine, only by ${PRIVILEGED_UPDATE} with the owner's click: ${privileged.join(", ")}` };
+    }
+    if (p.action === PRIVILEGED_UPDATE) {
+      if (!privileged.length) return { vote: "reject", reason: "no privileged capability: update_agent_capabilities is the routine action" };
+      if (!Array.isArray(agent.capabilities)) return { vote: "reject", reason: "the agent's registered capabilities are unknown" };
+      const added = privileged.filter((c) => !agent.capabilities!.includes(c));
+      if (added.length) return { vote: "reject", reason: `a privileged capability the agent does not hold is never added by an update: ${added.join(", ")}` };
+    }
     const origin = EXTERNAL_ORIGINS.find((o) => o.services.includes(host));
     if (origin) {
       const over = externalCeilingViolations({ id: p.target, tier_max: Number(p.params.tier_max), capabilities: caps }, origin);
       if (over.length) return { vote: "reject", reason: `above the external-organ ceiling: ${over.join(", ")}` };
     }
-    return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : "capability update is consistent" };
+    return { vote: "approve", reason: voter === "supervisor" ? "declared in the DNA census" : p.action === PRIVILEGED_UPDATE ? "capability update keeps only privileged capabilities already held; the owner decides" : "capability update is consistent" };
   }
   // retire_engine mirrors register_engine: the same checks every voter can make; the executor proves the DNA side.
   if (p.action === "register_engine" || p.action === "retire_engine") {
@@ -230,7 +246,8 @@ export interface Evidence {
   audit_valid: boolean;
   services: Record<string, ServiceState>;
   registry: Record<string, { status: string; desired_version: string | null }>;
-  agents: Record<string, { status: string; host_worker: string; voter?: boolean }>;
+  /** capabilities: the registered set (agents.capabilities_json), read by update_privileged_agent_capabilities' vote. */
+  agents: Record<string, { status: string; host_worker: string; voter?: boolean; capabilities?: string[] }>;
   critical_reports_24h: number;
   executing_plan_targets: string[];
   recent_same: number;
