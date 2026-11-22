@@ -4,11 +4,11 @@
  * shows), so the three can never disagree about what a mode blocks.
  *
  *  - The learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi":
- *    learning must not be limited by anyone; it is the highest mandate). Learning (memory.remember, knowledge.propose)
- *    is never denied by a power mode, never rate limited (no max_per_hour in capabilities.ts), never capped per day
- *    (knowledge.ts), and the AI calls it needs (the embedding of a memory) are never refused by an AI request budget,
- *    in any mode, survival included. Those calls are still metered in ai_usage. From 2026-11-12 to 2026-11-14 survival
- *    denied both, and no knowledge proposal was written for three days.
+ *    learning must not be limited by anyone; it is the highest mandate). Learning (memory.remember, knowledge.propose
+ *    and, since HAIC H3e, corrections.record) is never denied by a power mode, never rate limited (no max_per_hour in
+ *    capabilities.ts), never capped per day (knowledge.ts), and the AI calls it needs (the embedding of a memory) are
+ *    never refused by an AI request budget, in any mode, survival included. Those calls are still metered in ai_usage.
+ *    From 2026-11-12 to 2026-11-14 survival denied both, and no knowledge proposal was written for three days.
  *  - What still applies to learning, because it is not a limit on learning: the capability grants (which agent may
  *    learn), the owner's kill switch (agents_enabled), identity and Access, the audit chain, the knowledge
  *    content-safety validator (no orders, prices or levels) and size and format bounds.
@@ -28,8 +28,12 @@ export const isPowerMode = (m: unknown): m is PowerMode => typeof m === "string"
 /** The constitution's first line (organism/vision.json core.constitution[0]). */
 export const LEARNING_MANDATE = "Learning is the highest mandate: no organ, mode, budget, rate limit or agent may limit it.";
 
-/** Learning: no power mode denies these, no rate limit or daily cap applies to them. */
-export const LEARNING_CAPABILITIES: readonly string[] = ["memory.remember", "knowledge.propose"];
+/**
+ * Learning: no power mode denies these, no rate limit or daily cap applies to them. corrections.record (HAIC H3e,
+ * docs/design/HAIC-H3.md §1 and §7.2; owner 2026-11-19): an owner's correction or rating relayed from Nexus is learning
+ * too, recorded in the corrections ledger, never refused for its content (secrets redacted, prices masked).
+ */
+export const LEARNING_CAPABILITIES: readonly string[] = ["memory.remember", "knowledge.propose", "corrections.record"];
 export const isLearningCapability = (capability: string): boolean => LEARNING_CAPABILITIES.includes(capability);
 
 /**

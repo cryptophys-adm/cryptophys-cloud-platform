@@ -75,7 +75,7 @@ const knowledgeItem = (itemId: string) => ({
 // ---------------------------------------------------------------- 1. no rate limit
 
 test("LM1. learning capabilities have no max_per_hour, hourlyLimit() ignores one if it came back, and no rate_limit check runs", async () => {
-  assert.deepEqual([...LEARNING_CAPABILITIES], ["memory.remember", "knowledge.propose"]);
+  assert.deepEqual([...LEARNING_CAPABILITIES], ["memory.remember", "knowledge.propose", "corrections.record"]); // corrections.record: HAIC H3e (LM10)
   for (const cap of LEARNING_CAPABILITIES) {
     assert.ok(Object.hasOwn(CAPABILITIES, cap), cap);
     assert.equal(CAPABILITIES[cap]!.max_per_hour, undefined, `${cap} has no max_per_hour`);
@@ -273,4 +273,41 @@ test("LM9. power-mode.ts is a guard path (learning_mandate): the Forge reports i
   // The other files that carry a learning rule are guard paths too: the catalog (rate limits) and the vision core.
   assert.equal(criticalPathReason("workers/control-plane-shared/src/capabilities.ts"), "evolution_guard");
   assert.equal(criticalPathReason("organism/vision.json"), "vision_core");
+});
+
+// ---------------------------------------------------------------- 7. corrections.record (HAIC H3e)
+
+test("LM10. corrections.record: 100 calls in one hour, in survival, all succeed, written and metered; no max_per_hour; the kill switch still stops it", async () => {
+  // HAIC H3e (docs/design/HAIC-H3.md §1, §7.2, §11 step 5; owner 2026-11-19): an owner's Nexus correction is learning.
+  assert.ok(isLearningCapability("corrections.record"));
+  assert.equal(CAPABILITIES["corrections.record"]!.tier, 1);
+  assert.equal(CAPABILITIES["corrections.record"]!.max_per_hour, undefined, "no max_per_hour");
+  assert.equal(hourlyLimit("corrections.record"), null);
+  const saved = CAPABILITIES["corrections.record"]!;
+  CAPABILITIES["corrections.record"] = { ...saved, max_per_hour: 1 };
+  try { assert.equal(hourlyLimit("corrections.record"), null, "a max_per_hour put back is ignored"); } finally { CAPABILITIES["corrections.record"] = saved; }
+  const { env, db } = kernelEnv();
+  setPowerMode(db, "survival");
+  exhaustAiBudget(db);
+  const NEXUS = { host_worker: "xauusd-ai-trading-assistant" };
+  const correction = (i: number) => ({
+    side: "nexus", source: "nexus_card", label: "owner_correction", rating: "down", category: "reading_wrong",
+    target: { ref: `ev:xauusd/card/d_lm10_${i}`, subject: "seat:prophet", as_of: "2026-11-22T09:00:00Z" },
+    text: `The reading on card ${i} ignored the session.`, actor: `owner:${APPROVER_EMAIL}`,
+  });
+  for (let i = 0; i < 100; i++) {
+    const r = await rpcSyscall(env as never, NEXUS, "nexus-teacher", "corrections.record", correction(i));
+    assert.equal(r.outcome, "succeeded", `#${i + 1}: ${JSON.stringify(r)}`);
+  }
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM corrections WHERE side = 'nexus' AND actor = ?").get(`owner:${APPROVER_EMAIL}`) as { n: number }).n, 100);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'nexus-teacher' AND capability = 'corrections.record'").get() as { n: number }).n, 100, "every call is metered");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM policy_decisions WHERE decision = 'deny'").get() as { n: number }).n, 0, "no denial at all");
+  const checks = await agentSyscallChecks(db as never, "agent:nexus-teacher", "corrections.record");
+  assert.ok(!checks.some((c) => c.id === "rate_limit"), "no rate_limit check");
+  assert.equal((await verifyAuditChain(db as never)).valid, true, "the audit chain is kept");
+  // Kept: the owner's kill switch stops it, as every agent syscall.
+  db.raw.prepare("UPDATE kernel_controls SET value = '0' WHERE control = 'agents_enabled'").run();
+  const off = await rpcSyscall(env as never, NEXUS, "nexus-teacher", "corrections.record", correction(100));
+  assert.notEqual(off.outcome, "succeeded");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM corrections WHERE side = 'nexus'").get() as { n: number }).n, 100, "nothing written with the kill switch off");
 });

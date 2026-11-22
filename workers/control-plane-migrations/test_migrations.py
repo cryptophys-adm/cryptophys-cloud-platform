@@ -1001,3 +1001,32 @@ assert cl_code.count("CREATE TABLE IF NOT EXISTS") == 3 and cl_code.count("CREAT
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", cl_sql, re.I), "0085 is not destructive"
 cl_db.close()
 print("PASS: 0085 collaborators (additive: reviewer and expires_at on platform_accounts, three tables, one index, no row, CHECKs hold, rows kept)")
+# Migration 0086 (HAIC H3e, docs/design/HAIC-H3.md §7.2; owner 2026-11-19): the Nexus ingress's sender, the next free
+# number after 0085. Additive: one agent row (nexus-teacher, hosted by the xauusd AI Worker, tier 1, corrections.record
+# only, no seat), INSERT OR IGNORE as 0045 registered knowledge-council. Every other row is kept; applying it again,
+# or after the row exists, changes nothing.
+nt_db = sqlite3.connect(":memory:")
+nt_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0086_":
+        nt_db.executescript(migration.read_text(encoding="utf-8"))
+def nt_snapshot():
+    return {r[0]: nt_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in nt_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+nt_schema_before = nt_db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+nt_before = nt_snapshot()
+assert not any(r[0] == "nexus-teacher" for r in nt_before["agents"])
+nt_sql = (ROOT / "0086_nexus_teacher.sql").read_text(encoding="utf-8")
+nt_db.executescript(nt_sql)
+assert nt_db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == nt_schema_before, "0086 changes no schema"
+nt_after = nt_snapshot()
+assert {k: v for k, v in nt_after.items() if k != "agents"} == {k: v for k, v in nt_before.items() if k != "agents"}, "0086 keeps every other table"
+assert [r for r in nt_after["agents"] if r[0] != "nexus-teacher"] == nt_before["agents"], "0086 keeps every agent row"
+nt_row = nt_db.execute("SELECT host_worker, tier_max, capabilities_json, status, voter, updated_by FROM agents WHERE agent_id = 'nexus-teacher'").fetchone()
+assert nt_row == ("xauusd-ai-trading-assistant", 1, '["corrections.record"]', "enabled", 0, "migration:0086"), nt_row
+nt_db.executescript(nt_sql)
+assert nt_snapshot() == nt_after, "0086 applied again changes nothing"
+nt_code = "\n".join(line.split("--", 1)[0] for line in nt_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", nt_code) and nt_code.count("INSERT OR IGNORE INTO AGENTS") == 1 and nt_code.count("INSERT") == 1, "0086 only inserts the one agent row"
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", nt_sql, re.I), "0086 is not destructive"
+nt_db.close()
+print("PASS: 0086 nexus-teacher (additive: one agent row, corrections.record only, tier 1, no seat, rows kept, applies twice)")

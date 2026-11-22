@@ -322,7 +322,7 @@ test("H3d-10. the SSOT: line 5 begins with H3d, the collaboration section says w
   for (const want of ["teachingRecord(rows, now)", "`GET /v1/reputation?subject=`", "`ev:platform/correction/<id>`", "\"Owner corrections\"", "LM6 unchanged", "teaching-record-h3d (H3d-1..10)", "5/13"]) assert.ok(line.includes(want), want);
   assert.ok(line.indexOf("HAIC H3d, 2026-11-19") < line.indexOf("HAIC H3c, 2026-11-19"), "H3d before H3c");
   assert.match(ssot, /\*\*Built on the platform:\*\* H0 [^\n]*the teaching record and the ledger's reads \(H3d/);
-  assert.match(ssot, /\*\*Not built yet:\*\* H3e–H3h /);
+  assert.match(ssot, /\*\*Not built yet:\*\* H3f–H3h /); // H3e–H3h until HAIC H3e (2026-11-22) was built
   const { CONSOLE_ALLOW_LIST } = await import("../../console/src/index.ts");
   assert.equal(CONSOLE_ALLOW_LIST.length, 95); // 95 since kernel.telemetry (2026-11-22)
   assert.ok(ssot.includes(`a ${CONSOLE_ALLOW_LIST.length}-row allow-list`));
