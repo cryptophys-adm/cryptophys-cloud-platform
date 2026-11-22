@@ -1,0 +1,25 @@
+{
+  "schema": "correction.v1",
+  "correction_id": "cor_8888888888888888",
+  "side": "nexus",
+  "source": "nexus_card",
+  "label": "owner_correction",
+  "rating": null,
+  "category": "other",
+  "target": {
+    "ref": "ev:xauusd/card/d_9",
+    "subject": "seat:prophet",
+    "as_of": null
+  },
+  "text": null,
+  "evidence_refs": [],
+  "actor": "owner:owner@example.com",
+  "attested_by": "xauusd_nexus_access",
+  "weight": 3,
+  "supersedes": null,
+  "redactions": [],
+  "created_at": "2026-11-22T09:40:00Z",
+  "category_raw": "SL at 4095.5 too tight",
+  "content_sha256": "2d24fec2c214ac57592b02df21f5cb62f7bbb2ee450300a504c45b8a1ab8c3b0",
+  "dedup_sha256": "5912d099ab3c861d1c38181cad51ecbc1ae3c3b64367f75196500644df50a42c"
+}
