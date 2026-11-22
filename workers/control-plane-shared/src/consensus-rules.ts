@@ -45,7 +45,7 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   update_agent_capabilities: { class: "routine", target: "agent", description: "Set a registered agent's capabilities to what its Worker's DNA now declares (no privileged capability; within its origin's ceiling)" },
   // Owner 2026-11-22 ("Jalur klik owner (Rekomendasi)"): a capability change whose set keeps a privileged capability is no
   // longer left without a way out; it waits for the owner's click. It never adds a privileged capability the agent does
-  // not already hold (that stays a registration), and stays within its origin's ceiling.
+  // not already hold (no consensus path does: that takes a migration or a new ADR), and stays within its origin's ceiling.
   update_privileged_agent_capabilities: { class: "critical", target: "agent", description: "Set the capabilities of a registered agent whose set holds a privileged capability to what its Worker's DNA now declares (no privileged capability it does not already hold; within its origin's ceiling); one owner approval click" },
   register_engine: { class: "routine", target: "service", description: "Register an AI engine (task) its Worker's DNA declares" },
   // Owner 2026-11-15 ("Aksi retire_engine"): the mirror of register_engine, for an engine its Worker's DNA no longer declares.
@@ -272,6 +272,8 @@ export const DEPLOYISH = new Set(["deploy_commit", "rollback_worker_version", "r
 export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   const v = (vote: Vote["vote"], reason: string): Vote => ({ voter, vote, reason: reason.slice(0, 300) });
   if (p.class === "prohibited") return v("reject", "prohibited action");
+  // Review 2026-11-22: an action this voter's code does not know fails closed (a voter deployed before the action was added).
+  if (classify(p.action) === null) return v("reject", "unknown action for this voter's code");
   const base = baseline(e);
   if (base && p.action !== "agents_enable") return v("reject", base);
   const registration = registrationVote(voter, p, e);

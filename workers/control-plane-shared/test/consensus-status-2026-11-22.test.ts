@@ -12,9 +12,10 @@ import { readFileSync } from "node:fs";
 import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
 import { CAPABILITIES, hourlyLimit, verifySyscallDecision } from "../src/capabilities.ts";
 import { isLearningCapability } from "../src/power-mode.ts";
-import { PRIVILEGED_UPDATE, castVote, classify, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
+import { PRIVILEGED_UPDATE, VOTERS, castVote, classify, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { actionCeiling, groupOf } from "../src/autonomy-dial.ts";
 import { describeAction } from "../src/plain.ts";
+import { rankInbox } from "../src/owner-inbox-rank.ts";
 import { AETHER_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, XAUUSD_CEILING, externalCeilingFor, externalCeilingViolations } from "../src/organism.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
@@ -102,14 +103,17 @@ test("CS1. consensus.status is tier 0 and read only; only AETHER_CEILING grants 
   const xau = (id: string, capabilities: string[]) => externalCeilingViolations({ id, tier_max: 1, voter: false, capabilities }, XAUUSD);
   assert.deepEqual(xau("xauusd-moderator", [...EXTERNAL_CEILING.capabilities, "council.decisions.read", CAP]), [`capability ${CAP}`]);
   assert.deepEqual(xau(COUNCIL, [CAP]), [`capability ${CAP}`]);
-  // The guard paths this change touches: capabilities.ts and organism.ts (the owner's click); the kernel read is routine.
+  // The guard paths this change touches: capabilities.ts and organism.ts (the owner's click).
   assert.equal(criticalPathReason("workers/control-plane-shared/src/capabilities.ts"), "evolution_guard");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
   // The owner-click path for a privileged agent's capability change (CS9-CS11).
   assert.equal(criticalPathReason("workers/control-plane-shared/src/consensus-rules.ts"), "consensus_kill_switch");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/autonomy-dial.ts"), "consensus_kill_switch");
   assert.equal(criticalPathReason("architecture/adr/0009-consensus-autonomy.md"), "adr_0009_0012");
-  for (const p of ["workers/ai-kernel/src/consensus-status.ts", "workers/ai-kernel/src/syscall.ts", "workers/control-plane-shared/test/consensus-status-2026-11-22.test.ts", "workers/control-plane-shared/test/aether-ceiling-schedule.test.ts", "docs/SSOT.md"]) {
+  // Review 2026-11-22: the read's scope and the census executors are guard paths too.
+  assert.equal(criticalPathReason("workers/ai-kernel/src/consensus-status.ts"), "capability_ceiling");
+  assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), "consensus_kill_switch");
+  for (const p of ["workers/ai-kernel/src/syscall.ts", "workers/control-plane-shared/test/consensus-status-2026-11-22.test.ts", "workers/control-plane-shared/test/aether-ceiling-schedule.test.ts", "docs/SSOT.md"]) {
     assert.equal(criticalPathReason(p), null, p);
   }
 });
@@ -339,6 +343,9 @@ test("CS9. the owner's click path (owner 2026-11-22, \"Jalur klik owner (Rekomen
   assert.equal(groupOf(PRIVILEGED_UPDATE), "agents");
   assert.equal(actionCeiling(PRIVILEGED_UPDATE), "owner_click", "the autonomy dial can never make it routine");
   assert.match(describeAction(PRIVILEGED_UPDATE, COUNCIL), /^set, as its DNA declares, the capabilities of the privileged agent /);
+  // The owner's inbox: not reversible, since no consensus action gives back a privileged capability the update removes.
+  const [item] = rankInbox({ approvals: { recovery_plans: [], consensus: [{ proposal_id: "cns_x", action: PRIVILEGED_UPDATE, target: COUNCIL, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + HOUR).toISOString(), approvals: 5, eligible: 5 }], knowledge: [] }, critical_reports: [], production_problems: [] });
+  assert.deepEqual(item.risk, { class: "critical", reversible: false, blast_radius: "agent" });
   // The votes.
   const e = (registered: string[] | undefined): Evidence => ({
     agents_enabled: true, audit_valid: true, services: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0,
@@ -407,34 +414,124 @@ test("CS10. the council's grant: the Supervisor proposes it, it waits as pending
   assert.ok(!(await latestCensusRow({ DB: db } as never))!.findings.some((f) => f.kind === "agent_capabilities_changed" && f.subject === COUNCIL), "the census settles");
 });
 
-test("CS11. the executor holds the guards too: no privileged capability the agent does not hold; the routine action never applies a privileged set", async () => {
-  const db = registeredDb();
-  db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
-  const { env } = cycleEnv(db);
+/**
+ * A proposal forced to executing with the owner's approval and an allow on record: what the executor itself refuses,
+ * whatever the votes said.
+ */
+async function forceExec(db: Db, env: unknown, action: string, params: Record<string, unknown>) {
+  const id = cnsId();
+  const at = new Date().toISOString();
+  db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+    VALUES (?, 'supervisor', ?, ?, ?, ?, '{}', 'deploy', 1, 1, 0, 1, NULL, 'allow', 'executing', '{}', ?, ?)`).run(id, action, COUNCIL, classify(action), JSON.stringify(params), at, at);
+  db.raw.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, 'approve', ?, NULL, ?)").run(id, APPROVER_EMAIL, at);
+  const pol = await decide(baseEnv("cryptophys-policy-engine", db) as never, parsePolicyRequest({ subject: `owner:${APPROVER_EMAIL}`, action: "consensus.execute", resource: `${action}:${COUNCIL}`, context: { class: classify(action), passed: true, stage: "execute", proposal_id: id } }) as never) as any;
+  db.raw.prepare("UPDATE policy_decisions SET decision = 'allow' WHERE decision_id = ?").run(pol.decision_id);
+  db.raw.prepare("UPDATE consensus_proposals SET policy_decision_id = ? WHERE proposal_id = ?").run(pol.decision_id, id);
+  return executeRegistration(env as never, id, pol.decision_id, { action, target: COUNCIL, params }, "test", () => false);
+}
+/** A census row written as given, without the census's own checks in front (status changes, one agent_capabilities_changed). */
+function rawCensus(db: Db, councilCaps: string[]) {
+  const genome = [{ service: HOST, kind: "service", origin: "aether", engines: ["embed_texts"], agents: [{ id: COUNCIL, display_name: COUNCIL, capabilities: councilCaps, tier_max: 1, voter: false }] }];
+  const findings = [{ kind: "agent_capabilities_changed", subject: COUNCIL, detail: `agent ${COUNCIL}: test` }];
+  db.raw.prepare("INSERT INTO forge_organism_census (main_sha, status, organs, agents, engines, voters, findings, genome, taken_at) VALUES (?, 'changes', 1, 1, 1, 0, ?, ?, ?)")
+    .run(MAIN, JSON.stringify(findings), JSON.stringify(genome), new Date(Date.now() - 60_000).toISOString());
+  return { service: HOST, capabilities: councilCaps, tier_max: 1, main_sha: MAIN };
+}
+const deployMode = (db: Db) => db.raw.prepare("UPDATE consensus_controls SET value = 'deploy' WHERE control = 'mode'").run();
+const councilProposals = (db: Db) => db.raw.prepare("SELECT action, status FROM consensus_proposals WHERE target = ? AND action IN ('update_agent_capabilities', ?)").all(COUNCIL, PRIVILEGED_UPDATE) as any[];
+
+test("CS11. the executor holds the guards too: no new privileged capability; the routine action never applies a privileged set, even to an agent that holds it", async () => {
   // The council registered without consensus.propose: its DNA asking for it back is a new privileged capability.
+  const db = registeredDb();
+  deployMode(db);
+  const { env } = cycleEnv(db);
   db.raw.prepare("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?").run(JSON.stringify(["doctrine.status", "reports.publish"]), COUNCIL);
   const declared = [...AETHER_CEILING.agents[COUNCIL]];
   await censusTick(db as never, repoWith(realDna()), Date.now() - 60_000, [{ origin: AETHER, dna: async () => aetherDna(declared) }]);
-  const census = (await latestCensusRow({ DB: db } as never))!;
-  const params = { service: HOST, capabilities: declared, tier_max: 1, main_sha: census.main_sha };
-  // A proposal forced to executing with the owner's approval and an allow on record: the executor still refuses.
-  const force = async (action: string) => {
-    const id = cnsId();
-    const at = new Date().toISOString();
-    db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
-      VALUES (?, 'supervisor', ?, ?, ?, ?, '{}', 'deploy', 1, 1, 0, 1, NULL, 'allow', 'executing', '{}', ?, ?)`).run(id, action, COUNCIL, classify(action), JSON.stringify(params), at, at);
-    db.raw.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, 'approve', ?, NULL, ?)").run(id, APPROVER_EMAIL, at);
-    const pol = await decide(baseEnv("cryptophys-policy-engine", db) as never, parsePolicyRequest({ subject: `owner:${APPROVER_EMAIL}`, action: "consensus.execute", resource: `${action}:${COUNCIL}`, context: { class: classify(action), passed: true, stage: "execute", proposal_id: id } }) as never) as any;
-    db.raw.prepare("UPDATE policy_decisions SET decision = 'allow' WHERE decision_id = ?").run(pol.decision_id);
-    db.raw.prepare("UPDATE consensus_proposals SET policy_decision_id = ? WHERE proposal_id = ?").run(pol.decision_id, id);
-    return executeRegistration(env as never, id, pol.decision_id, { action, target: COUNCIL, params }, "test", () => false);
-  };
-  await assert.rejects(force(PRIVILEGED_UPDATE), /new_privileged_capability/);
-  await assert.rejects(force("update_agent_capabilities"), /privileged_needs_owner/);
+  const params = { service: HOST, capabilities: declared, tier_max: 1, main_sha: (await latestCensusRow({ DB: db } as never))!.main_sha };
+  await assert.rejects(forceExec(db, env, PRIVILEGED_UPDATE, params), /new_privileged_capability/);
+  await assert.rejects(forceExec(db, env, "update_agent_capabilities", params), /privileged_needs_owner/);
   assert.deepEqual(capsOf(db, COUNCIL), ["doctrine.status", "reports.publish"], "nothing applied");
+  // The council registered as today (it holds consensus.propose): the routine action still never applies the set.
+  const db2 = registeredDb();
+  deployMode(db2);
+  const { env: env2 } = cycleEnv(db2);
+  await censusTick(db2 as never, repoWith(realDna()), Date.now() - 60_000, [{ origin: AETHER, dna: async () => aetherDna(declared) }]);
+  const params2 = { service: HOST, capabilities: declared, tier_max: 1, main_sha: (await latestCensusRow({ DB: db2 } as never))!.main_sha };
+  await assert.rejects(forceExec(db2, env2, "update_agent_capabilities", params2), /privileged_needs_owner/);
+  assert.deepEqual(capsOf(db2, COUNCIL), TODAY, "unchanged");
 });
 
-// ------------------------------------------------------------------------------------------- 4. the SSOT
+test("CS11b. the Supervisor does not propose an update that adds a privileged capability: it waits as a finding, cycle after cycle", async () => {
+  const db = registeredDb();
+  deployMode(db);
+  const { env, memory } = cycleEnv(db);
+  db.raw.prepare("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?").run(JSON.stringify(["doctrine.status", "reports.publish"]), COUNCIL);
+  const t0 = Date.now();
+  await censusTick(db as never, repoWith(realDna()), t0 - 60_000, [{ origin: AETHER, dna: async () => aetherDna([...AETHER_CEILING.agents[COUNCIL]]) }]);
+  for (const at of [t0, t0 + 25 * HOUR]) {
+    const report = await runCycle(env as never, memory, "scheduled", at) as any;
+    assert.ok((report.findings as any[]).some((f) => f.service_id === COUNCIL && f.action === "none"
+      && f.why === "capability update of knowledge-council waits: consensus.propose is a new privileged capability; an update never adds one"), JSON.stringify(report.findings));
+  }
+  assert.deepEqual(councilProposals(db), [], "never proposed, so never rejected 8-0 and never holding the cycle's registration slot");
+  assert.deepEqual(capsOf(db, COUNCIL), ["doctrine.status", "reports.publish"]);
+});
+
+test("CS11c. without the census in front: the executor's own ceiling, host and class checks; the Supervisor's unknown-capability wait", async () => {
+  const declared = [...AETHER_CEILING.agents[COUNCIL]];
+  // Above the ceiling (a census that let it through): the executor refuses.
+  const db1 = registeredDb(); deployMode(db1);
+  await assert.rejects(forceExec(db1, cycleEnv(db1).env, PRIVILEGED_UPDATE, rawCensus(db1, [...declared, "memory.recall"])), /external_ceiling/);
+  // The registered agent's host differs from its DNA's.
+  const db2 = registeredDb(); deployMode(db2);
+  db2.raw.prepare("UPDATE agents SET host_worker = 'cryptophys-forge' WHERE agent_id = ?").run(COUNCIL);
+  await assert.rejects(forceExec(db2, cycleEnv(db2).env, PRIVILEGED_UPDATE, rawCensus(db2, declared)), /host_differs_from_dna/);
+  // A set with no privileged capability is never applied by the critical action.
+  const db3 = registeredDb(); deployMode(db3);
+  await assert.rejects(forceExec(db3, cycleEnv(db3).env, PRIVILEGED_UPDATE, rawCensus(db3, ["doctrine.status", "reports.publish", CAP])), /not_privileged/);
+  for (const db of [db1, db2, db3]) assert.deepEqual(capsOf(db, COUNCIL), TODAY, "nothing applied");
+  // A capability unknown to the running kernel: the privileged update waits as a finding, like a registration.
+  const db4 = registeredDb(); deployMode(db4);
+  const { env, memory } = cycleEnv(db4);
+  rawCensus(db4, [...declared, "future.read"]);
+  const report = await runCycle(env as never, memory, "scheduled", Date.now()) as any;
+  assert.ok((report.findings as any[]).some((f) => f.service_id === COUNCIL && f.why === "registration of knowledge-council waits: future.read is unknown to the running kernel (its deploy is pending)"), JSON.stringify(report.findings));
+  assert.deepEqual(councilProposals(db4), []);
+});
+
+test("CS11d. a voter fails closed on an action its code does not know", () => {
+  const e: Evidence = {
+    agents_enabled: true, audit_valid: true, services: {}, critical_reports_24h: 0, executing_plan_targets: [], recent_same: 0, registry: {}, agents: {},
+  };
+  assert.equal(classify("rotate_everything"), null);
+  for (const voter of [...VOTERS, "supervisor"]) {
+    const v = castVote(voter as never, { action: "rotate_everything", target: "platform", params: {}, class: "routine" } as Proposal, e);
+    assert.deepEqual([v.vote, v.reason], ["reject", "unknown action for this voter's code"], voter);
+  }
+  // A known action still reaches the voter's own rule.
+  assert.notEqual(castVote("policy-engine", { action: "observe_drift", target: "platform", params: {}, class: "routine" } as Proposal, e).reason, "unknown action for this voter's code");
+});
+
+test("CS11e. read-backs: expires_at counts from created_at, not decided_at; an executed and a failed-after-approval proposal", async () => {
+  const s = setup();
+  grantCouncil(s.db);
+  const now = Date.now();
+  const createdAt = new Date(now - 3 * HOUR).toISOString();
+  const decidedAt = new Date(now - HOUR).toISOString();
+  const waiting = proposal(s.db, { created_at: createdAt });
+  s.db.raw.prepare("UPDATE consensus_proposals SET decided_at = ? WHERE proposal_id = ?").run(decidedAt, waiting);
+  const executed = proposal(s.db, { status: "executed" });
+  const failed = proposal(s.db, { status: "failed" });
+  for (const id of [executed, failed]) s.db.raw.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, 'approve', ?, 'go', ?)").run(id, APPROVER_EMAIL, decidedAt);
+  const r = await s.status([waiting, executed, failed]);
+  assert.equal(r.outcome, "succeeded", JSON.stringify(r));
+  const [w, x, f] = r.result.proposals;
+  assert.deepEqual([w.status, w.decided_at, w.expires_at], ["pending_owner", decidedAt, new Date(Date.parse(createdAt) + OWNER_DECISION_WINDOW_MS).toISOString()]);
+  assert.deepEqual([x.status, x.owner_decision, "expires_at" in x], ["executed", "approve", false]);
+  assert.deepEqual([f.status, f.owner_decision, "expires_at" in f], ["failed", "approve", false]);
+  assert.ok(!JSON.stringify(r.result).includes(APPROVER_EMAIL));
+});
 
 test("CS12. the SSOT: line 5 carries the consensus.status entry and the owner-click rule; the external origins row names the council's read; ADR-0009 records the amendment", () => {
   const ssot = read("docs/SSOT.md");
@@ -442,7 +539,7 @@ test("CS12. the SSOT: line 5 carries the consensus.status entry and the owner-cl
   // The repository's convention: the entry may follow later entries on line 5.
   assert.match(line5, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?consensus\.status, 2026-11-22/);
   assert.ok(line5.includes(`consensus.status, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; requested for Aether's knowledge council): `));
-  for (const want of ["`consensus.status`", "`knowledge-council`", "`not_found`", "`expired`", "guard path", "`update_privileged_agent_capabilities`", "\"Jalur klik owner (Rekomendasi)\"", "`merge_owner_change`"]) assert.ok(line5.includes(want), want);
+  for (const want of ["`consensus.status`", "`knowledge-council`", "`not_found`", "`expired`", "guard path", "`update_privileged_agent_capabilities`", "\"Jalur klik owner (Rekomendasi)\"", "`merge_owner_change`", "unknown action for this voter's code", "`ai-kernel/src/organism.ts`", "`ai-kernel/src/consensus-status.ts`"]) assert.ok(line5.includes(want), want);
   assert.match(read("architecture/adr/0009-consensus-autonomy.md"), /^## Amendment 2026-11-22: a privileged agent's capability change waits for the owner's click\n\nOwner 2026-11-22, "Jalur klik owner \(Rekomendasi\)"/m);
   assert.match(ssot, /\*\*External origins[^\n]*`aether-curator` may also hold the read-only `corrections\.read`[^\n]*`knowledge-council` the read-only `consensus\.status`/);
 });

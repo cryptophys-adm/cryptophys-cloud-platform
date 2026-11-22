@@ -67,6 +67,14 @@ export function findAgentGene(census: CensusRow | null, agentId: string): { serv
   return null;
 }
 
+/**
+ * The privileged capabilities of `next` that `registered` does not hold. An update never adds one (owner 2026-11-22): the
+ * vote, the executor and the Supervisor (which then does not propose the update) all refuse it.
+ */
+export function newPrivilegedCapabilities(registered: readonly string[], next: readonly string[]): string[] {
+  return privilegedCapabilities([...next]).filter((c) => !registered.includes(c));
+}
+
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
 /**
@@ -149,7 +157,8 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
  * the host must be unchanged, and an external organ's gene is held to its origin's ceiling again here. Status, seat and
  * tier are not touched. A set with a privileged capability is update_privileged_agent_capabilities (owner 2026-11-22,
  * "Jalur klik owner (Rekomendasi)"): critical, so verifyConsensusExecution requires the owner's approval, and every
- * privileged capability in it must already be registered to the agent; adding one stays a registration.
+ * privileged capability in it must already be registered to the agent. No consensus path adds a privileged capability
+ * to a registered agent: that takes a migration or a new ADR.
  */
 async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: { action: string; target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
   const census = await currentCensus(env, p.params.main_sha);
@@ -174,7 +183,7 @@ async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: {
   let previous: string[] = [];
   try { const v = JSON.parse(row.capabilities_json); if (Array.isArray(v)) previous = v.map(String); } catch { previous = []; }
   if (sameSet(previous, caps)) throw new Error("capabilities_unchanged");
-  if (privileged.some((c) => !previous.includes(c))) throw new Error("new_privileged_capability");
+  if (newPrivilegedCapabilities(previous, caps).length) throw new Error("new_privileged_capability");
   await requireActiveHost(env, service);
   try {
     await appendAuditEventWithMutation(env.DB, {
@@ -383,7 +392,8 @@ export function proposalFor(
     return { action, target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
   }
   // A capability change: routine with no privileged capability; with one, the owner's click (owner 2026-11-22, "Jalur klik
-  // owner (Rekomendasi)"). The vote and the executor refuse a privileged capability the agent does not already hold.
+  // owner (Rekomendasi)"). The vote and the executor refuse a privileged capability the agent does not already hold, and
+  // the Supervisor does not propose such a set (newPrivilegedCapabilities).
   if (finding.kind === "agent_capabilities_changed") {
     const d = findAgentGene(census, finding.subject);
     if (!d?.gene.capabilities) return null;

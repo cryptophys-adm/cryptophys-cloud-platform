@@ -390,8 +390,11 @@ test("AS4. an open retire_agent of a scheduled agent that is not idle by its sch
 test("AC-G. the external capability ceilings (organism.ts) are a guard path: raising one is merge_owner_change", async () => {
   const { criticalPathReason, CRITICAL_PATHS } = await import("../src/guard-paths.ts");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
-  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "capability_ceiling").length, 1);
-  assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), null);
+  // Review 2026-11-22: consensus.status's scope (ai-kernel/src/consensus-status.ts) is the second capability_ceiling path;
+  // the kernel's organism.ts (the census executors) is a consensus rule, never the ceiling.
+  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "capability_ceiling").length, 2);
+  assert.equal(criticalPathReason("workers/ai-kernel/src/consensus-status.ts"), "capability_ceiling");
+  assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), "consensus_kill_switch");
 });
 
 test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling, bound in the Forge like Aether's; unbound, it is not read", () => {

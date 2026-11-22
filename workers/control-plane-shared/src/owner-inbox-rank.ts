@@ -84,7 +84,9 @@ export const AUTONOMY_RAISE_KIND = k("low");
 /** Known reversibility of a critical action once executed (null: not stated; the UI shows "—"). */
 const REVERSIBLE: Readonly<Record<string, boolean>> = {
   merge_owner_change: true, change_access: true, amend_constitution: true, agents_enable: true, admit_voter: true,
-  register_privileged_agent: true, update_privileged_agent_capabilities: true, register_principal: true,
+  register_privileged_agent: true, register_principal: true,
+  // Review 2026-11-22: a privileged capability the update removes cannot be given back by any consensus action.
+  update_privileged_agent_capabilities: false,
   retire_worker: false, retire_agent: false, deploy_destructive_migration: false, restore_d1_bookmark: false, rotate_secret: false,
 };
 
