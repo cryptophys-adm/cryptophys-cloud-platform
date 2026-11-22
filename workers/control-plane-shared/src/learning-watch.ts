@@ -2,14 +2,16 @@
  * Learning observed, never blocked (owner 2026-11-14, after the learning mandate in power-mode.ts).
  *
  * Once an hour, in the account-wide Observer's run (cryptophys-platform-api, cron :27; no new cron), the last complete
- * UTC hour of learning calls is read from agent_actions (memory.remember and knowledge.propose, any outcome) and
+ * UTC hour of learning calls is read from agent_actions (memory.remember, knowledge.propose and, since HAIC H3e,
+ * corrections.record; any outcome) and
  * compared per agent with that agent's 7-day hourly baseline. Two findings, in the Observer's metric form
  * (observer_findings: worker = "agent:<id>", value, baseline_7d, sample), both kind "anomaly", severity "info" and
  * report_only (never a rollback):
  *  - learning_volume: the hour's count >= LEARNING_SPIKE_RATIO x max(baseline, LEARNING_BASELINE_FLOOR). The floor
  *    of 1 call an hour means a quiet or new agent needs at least 10 calls in an hour to count as a spike;
  *  - learning_repeat: the same subject at least LEARNING_REPEAT_MIN times in the hour (memory.remember: the same
- *    memory id returned, that is an exact duplicate that dedup answered; knowledge.propose: the same item_id).
+ *    memory id returned, that is an exact duplicate that dedup answered; knowledge.propose: the same item_id;
+ *    corrections.record: the same correction id, a deduplicated correction).
  * The Observer's hourly advisory report carries them to the owner, and the Supervisor reads them as advisory cycle
  * findings (ai-kernel/src/observer-watch.ts). Nothing is throttled, denied or changed: these are readings only.
  */
@@ -54,6 +56,7 @@ export async function learningHour(db: D1Database, hourStartMs: number): Promise
     `SELECT agent_id, capability, subject, COUNT(*) AS n FROM (
        SELECT agent_id, capability,
               CASE capability WHEN 'memory.remember' THEN json_extract(result_json, '$.memory.memory_id')
+                              WHEN 'corrections.record' THEN json_extract(result_json, '$.correction_id')
                               ELSE json_extract(input_json, '$.item.item_id') END AS subject
        FROM agent_actions WHERE created_at >= ?1 AND created_at < ?2 AND capability IN (${slots(3)}))
      WHERE subject IS NOT NULL GROUP BY agent_id, capability, subject HAVING COUNT(*) >= ${LEARNING_REPEAT_MIN}
