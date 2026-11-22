@@ -324,6 +324,6 @@ test("H3d-10. the SSOT: line 5 begins with H3d, the collaboration section says w
   assert.match(ssot, /\*\*Built on the platform:\*\* H0 [^\n]*the teaching record and the ledger's reads \(H3d/);
   assert.match(ssot, /\*\*Not built yet:\*\* H3e–H3h /);
   const { CONSOLE_ALLOW_LIST } = await import("../../console/src/index.ts");
-  assert.equal(CONSOLE_ALLOW_LIST.length, 94);
+  assert.equal(CONSOLE_ALLOW_LIST.length, 95); // 95 since kernel.telemetry (2026-11-22)
   assert.ok(ssot.includes(`a ${CONSOLE_ALLOW_LIST.length}-row allow-list`));
 });

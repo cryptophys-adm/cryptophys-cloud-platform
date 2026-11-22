@@ -38,6 +38,7 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // Owner 2026-11-13: the Owner page reads what waits for a person (approvals, open critical reports) in one call.
   r("kernel.owner_inbox", "kernel", "GET", "/v1/owner/inbox", false, null),
   r("kernel.metabolism", "kernel", "GET", "/v1/metabolism", false, null),
+  r("kernel.telemetry", "kernel", "GET", "/v1/telemetry", false, null),
   r("kernel.mesh", "kernel", "GET", "/v1/mesh", false, null),
   // ADR-0016 T0: the organism's vision (organism/vision.json), read-only, for the Vision page.
   r("kernel.vision", "kernel", "GET", "/v1/vision", false, null),
