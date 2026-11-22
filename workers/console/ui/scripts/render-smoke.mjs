@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const ROUTES = ["owner", "", "agents", "agents/supervisor", "cognition", "consensus", "knowledge", "recovery", "recovery/plan_00000000-0000-0000-0000-000000000000",
-  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "alerts", "councils", "proposals", "autonomy", "vision"];
+  "infrastructure", "policy", "ledger", "pipelines", "markets", "users", "code", "organism", "organism/telemetry", "alerts", "councils", "proposals", "autonomy", "vision"];
 const MOCK = {
   "/api/whoami": { actor: "owner@example.com", type: "user", operator: true, approver: true, role: "approver", owner: true, viewer: false },
   "/api/registry/v1/accounts": {
@@ -454,6 +454,56 @@ MOCK["/api/kernel/v1/autonomy"] = { available: true, raise_rule: { window_days: 
     grp("trading", "Trading", "owner_click", "owner_click", []),
   ] };
 MOCK[`/api/kernel/v1/councils/${CS2}`].session.typed_proposal = { proposal_id: TP2, errors: [] };
+// The Organism page's Telemetry tab (frontend mockup 2026-11-22, owner approved): GET /v1/telemetry in the shape the
+// kernel serves (telemetry-view.ts), per window and group. The first point is 6 hours into the window, so those hours are
+// hatched as no data; one hour after it has no point at all (null, a gap, never 0); one row has no latency p50.
+const TELEMETRY = "/api/kernel/v1/telemetry";
+const tq = (window, group) => `${TELEMETRY}?window=${window}&group=${group}`;
+const TV_HOUR = 3_600_000;
+const TV_CURRENT = Math.floor(NOW / TV_HOUR) * TV_HOUR;
+const TV_NO_DATA = 6;
+const TV_GAP = 9;
+const TV_JOBS = ["supervisor_cycle", "signal_analyst_cycle", "auditor_cycle", "adr_steward_cycle", "evolution_intake", "evolver_cycle", "autonomy_downgrade", "council_proposals", "owner_notices", "report_relay"];
+const TV_KEYS = {
+  agent: ["supervisor", "signal-analyst", "auditor", "adr-steward", "evolver", "knowledge-curator"],
+  capability: ["consensus.propose", "memory.write", "knowledge.propose", "ai.request"],
+};
+function telemetryFixture(window, group) {
+  const hours = window === "7d" ? 168 : 24;
+  const buckets = Array.from({ length: hours }, (_, i) => new Date(TV_CURRENT - (hours - 1 - i) * TV_HOUR).toISOString());
+  const head = { window, group, bucket_s: 3600, from: buckets[0], to: new Date(NOW).toISOString(), cache_s: 60, sampled: true, buckets, configured: true, generated_at: new Date(NOW).toISOString(),
+    first_point_at: new Date(Date.parse(buckets[TV_NO_DATA]) + 13 * 60_000).toISOString(),
+    deploys: [{ at: new Date(Date.parse(buckets[TV_NO_DATA]) + 13 * 60_000).toISOString(), deploy_version: "785b0e235bac", previous: null }, { at: new Date(Date.parse(buckets[hours - 4]) + 20 * 60_000).toISOString(), deploy_version: "d4c3b2a1f0e9", previous: "785b0e235bac" }] };
+  const point = (i) => i >= TV_NO_DATA && i !== TV_GAP;
+  const sumAt = (rows, f, i) => (rows.some((r) => r[f][i] !== null) ? rows.reduce((s, r) => s + (r[f][i] ?? 0), 0) : null);
+  if (group === "job") {
+    const jobs = TV_JOBS.map((subject, k) => {
+      const runs_by_bucket = buckets.map((_, i) => (point(i) ? (k < 4 ? 4 : 1) : null));
+      const failed_by_bucket = runs_by_bucket.map((r, i) => (r === null ? null : (k === 1 && i % 5 === 0) || (k === 6 && i === hours - 2) ? 1 : (k === 3 && i === hours - 3 ? 3 : 0)));
+      const runs = runs_by_bucket.reduce((s, v) => s + (v ?? 0), 0), failed = failed_by_bucket.reduce((s, v) => s + (v ?? 0), 0);
+      return { subject, service: "cryptophys-ai-kernel", runs, failed, duration_ms: { p50: 40 + k * 35, p95: k === 9 ? null : 120 + k * 90 }, runs_by_bucket, failed_by_bucket };
+    });
+    return { ...head, summary: { runs: jobs.reduce((s, j) => s + j.runs, 0), failed: jobs.reduce((s, j) => s + j.failed, 0) },
+      summary_by_bucket: { runs: buckets.map((_, i) => sumAt(jobs, "runs_by_bucket", i)), failed: buckets.map((_, i) => sumAt(jobs, "failed_by_bucket", i)) }, jobs };
+  }
+  const keys = TV_KEYS[group];
+  const series = keys.map((key, k) => {
+    const syscalls = buckets.map((_, i) => (point(i) ? Math.max(1, 30 - k * 5 + ((i * (k + 3)) % 7)) : null));
+    return { key, syscalls, denied: syscalls.map((v, i) => (v === null ? null : k === 1 && i % 4 === 0 ? 2 : 0)), failed: syscalls.map((v, i) => (v === null ? null : k === 2 && i % 6 === 0 ? 1 : 0)) };
+  });
+  const tot = (s, f) => s[f].reduce((n, v) => n + (v ?? 0), 0);
+  const totals = series.map((s, k) => ({ key: s.key, syscalls: tot(s, "syscalls"), denied: tot(s, "denied"), failed: tot(s, "failed"),
+    deny_rate: tot(s, "denied") / tot(s, "syscalls"), fail_rate: tot(s, "failed") / tot(s, "syscalls"), latency_ms: { p50: k === keys.length - 1 ? null : 6 + k * 3, p95: 24 + k * 11 } }));
+  const syscalls = totals.reduce((n, t) => n + t.syscalls, 0), denied = totals.reduce((n, t) => n + t.denied, 0), failed = totals.reduce((n, t) => n + t.failed, 0);
+  return { ...head, summary: { syscalls, denied, failed, deny_rate: denied / syscalls, fail_rate: failed / syscalls, latency_ms: { p50: 9, p95: 41 } },
+    summary_by_bucket: { syscalls: buckets.map((_, i) => sumAt(series, "syscalls", i)), denied: buckets.map((_, i) => sumAt(series, "denied", i)), failed: buckets.map((_, i) => sumAt(series, "failed", i)),
+      latency_p95_ms: buckets.map((_, i) => (point(i) ? 30 + (i % 5) * 4 : null)) },
+    series, totals };
+}
+for (const w of ["24h", "7d"]) for (const g of ["agent", "capability", "job"]) MOCK[tq(w, g)] = telemetryFixture(w, g);
+MOCK[TELEMETRY] = MOCK[tq("24h", "agent")];
+/** The kernel without its two telemetry secrets: configured false, with the buckets only. */
+const telemetryOff = (window, group) => { const f = telemetryFixture(window, group); return { window, group, bucket_s: 3600, from: f.from, to: f.to, cache_s: 60, sampled: true, buckets: f.buckets, configured: false, generated_at: f.generated_at }; };
 const EMPTY_INBOX = { schema: "owner-inbox.v1", observed_at: at(0), consensus_mode: "deploy", approvals: { recovery_plans: [], consensus: [], knowledge: [] }, critical_reports: [], production_problems: [], counts: { approvals: 0, critical_reports: 0, production_problems: 0 } };
 const OPERATOR = { actor: "ops@example.com", type: "user", operator: true, approver: false, role: "operator", owner: false, viewer: false };
 /** Per-check replacements of mocked responses (the Owner page as an operator, and with nothing open). */
@@ -466,12 +516,16 @@ const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/htm
 
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent((req.url ?? "/").split("?")[0]);
+  const query = (req.url ?? "").includes("?") ? `?${(req.url ?? "").split("?")[1]}` : "";
   if (u === "/console") { res.writeHead(301, { location: "/console/" }); return res.end(); }
   if (!u.startsWith("/console/")) { res.writeHead(404); return res.end(); }
   u = u.slice("/console".length);
   if (u.startsWith("/api/")) {
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify(OVERRIDE[u] ?? MOCK[u] ?? {}));
+    // A fixture may be keyed by its query (GET /v1/telemetry per window and group); { __status } answers that status.
+    const body = OVERRIDE[u + query] ?? MOCK[u + query] ?? OVERRIDE[u] ?? MOCK[u] ?? {};
+    if (body && typeof body.__status === "number") { res.statusCode = body.__status; return res.end(JSON.stringify({ error: body.error ?? "error" })); }
+    return res.end(JSON.stringify(body));
   }
   const file = path.join(dist, u === "/" ? "index.html" : u);
   if (!file.startsWith(dist) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end(); }
@@ -874,6 +928,81 @@ for (const width of [390, 1440]) {
     await p.close();
   }
 }
+// The Organism page's Telemetry tab (frontend mockup 2026-11-22, owner approved): two reads of GET /v1/telemetry (the
+// syscalls by agent or capability, and the cron jobs), the hours before the first point hatched, the tail folded into
+// Other (top 3 agents, top 2 capabilities), "—" for a null, an explicit "not configured" state, and an error box with
+// Retry for the one read that failed while the other still draws.
+const TELEMETRY_OFF = Object.fromEntries([TELEMETRY, ...["24h", "7d"].flatMap((w) => ["agent", "capability", "job"].map((g) => tq(w, g)))].map((k) => {
+  const [, qs = "window=24h&group=agent"] = k.split("?");
+  const p = new URLSearchParams(qs);
+  return [k, telemetryOff(p.get("window"), p.get("group"))];
+}));
+const TELEMETRY_CHECKS = [
+  { name: "agent 24h", override: {}, reads: [tq("24h", "agent"), tq("24h", "job")], series: 4, hatched: { hours: 6, cron: 6 }, deploys: 2,
+    want: ["Organism · telemetry", "Syscalls per hour · by agent · 24h", "Other (3)", "supervisor", "in Other", "Deny and fail rate · by agent", "Syscall latency p50–p95 · by agent",
+      "Cron duration p50–p95 · 24h", "Failed cron runs per hour · 24h", "supervisor_cycle", "report_relay", "▾ 785b0e2", "42 ms", "of 374 runs", "no data", "top 3 agents"],
+    not: ["Telemetry is not configured", "Could not load this page", "neuron", "token"] },
+  { name: "capability", override: {}, click: 'button[aria-pressed]:text-is("capability")', reads: [tq("24h", "capability")], series: 3, hatched: { hours: 6, cron: 6 }, deploys: 2,
+    want: ["Syscalls per hour · by capability · 24h", "Other (2)", "consensus.propose", "memory.write", "top 2 capabilities"], not: ["Other (3)", "Telemetry is not configured"] },
+  { name: "7d", override: {}, click: 'button[aria-pressed]:text-is("7d")', reads: [tq("7d", "agent"), tq("7d", "job")], series: 4, hatched: { hours: 6, cron: 6 }, deploys: 2,
+    want: ["Syscalls per hour · by agent · 7d", "Failed cron runs per hour · 7d", "Other (3)"], not: ["Telemetry is not configured"] },
+  { name: "not configured", override: TELEMETRY_OFF, reads: [tq("24h", "agent"), tq("24h", "job")], series: null, hatched: null, deploys: 0, dashes: 5,
+    want: ["Telemetry is not configured", "AE_TELEMETRY_TOKEN", "syscalls are not measured", "cron runs are not measured"], not: ["Syscalls per hour", "Failed cron runs per hour", "Cron duration", "Deny and fail rate", " ms"] },
+  { name: "job read fails", override: { [tq("24h", "job")]: { __status: 500, error: "telemetry_read_failed" } }, reads: [tq("24h", "agent"), tq("24h", "job")], series: 4, hatched: { hours: 6, cron: 0 }, deploys: 2, retry: tq("24h", "job"),
+    want: ["Could not load this page.", "telemetry_read_failed", "Retry", "Syscalls per hour · by agent · 24h"], not: ["Telemetry is not configured", "supervisor_cycle"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of TELEMETRY_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: process.env.SHOTS ? 2 : 1 });
+    const requested = [];
+    page.on("pageerror", (e) => problems.push(`${width}px telemetry/${check.name} page error: ${e.message}`));
+    page.on("request", (r) => { const u = new URL(r.url()); requested.push(`${u.pathname.replace(/^\/console/, "")}${u.search}`); });
+    // Both reads answered and the charts measured their width (a wide page at a device scale of 2 takes longer).
+    const drawn = () => page.waitForFunction(() => document.querySelectorAll('[data-testid="telemetry-tab"] [data-telemetry="not-configured"], [data-testid="telemetry-tab"] svg[data-series], [data-testid="telemetry-tab"] [role="alert"]').length >= 1
+      && !document.querySelector('[data-testid="telemetry-tab"] .animate-pulse'), null, { timeout: 8000 }).catch(() => {});
+    await page.goto(`${base}#/organism/telemetry`);
+    await page.waitForTimeout(900);
+    await drawn();
+    if (check.click) { await page.click(check.click); await page.waitForTimeout(700); await drawn(); }
+    await page.waitForTimeout(300);
+    const tab = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="telemetry-tab"]');
+      if (!el) return null;
+      const n = (sel) => el.querySelectorAll(sel).length;
+      const count = (sel) => [...el.querySelectorAll(sel)].map((e) => Number(e.getAttribute("data-nodata-count")));
+      return { text: el.textContent ?? "", series: el.querySelector("svg[data-series]")?.getAttribute("data-series") ?? null, hours: count('[data-nodata="hours"]'), cron: count('[data-nodata="cron"]'),
+        deploys: n("[data-deploy]"), tiles: [...el.querySelectorAll("[data-telemetry-tile]")].map((t) => t.querySelector(".mono")?.textContent ?? ""),
+        tab: document.querySelector('nav[aria-label="Organism tabs"] [aria-current="page"]')?.textContent ?? null };
+    });
+    if (!tab) { problems.push(`${width}px telemetry (${check.name}): no Telemetry tab`); await page.close(); continue; }
+    if (tab.tab !== "Telemetry") problems.push(`${width}px telemetry (${check.name}): the current tab is ${tab.tab}`);
+    for (const w of check.want) if (!tab.text.includes(w)) problems.push(`${width}px telemetry (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (tab.text.includes(w)) problems.push(`${width}px telemetry (${check.name}): shows "${w}"`);
+    if (tab.tiles.length !== 5) problems.push(`${width}px telemetry (${check.name}): ${tab.tiles.length} tiles, expected 5`);
+    if (check.dashes && tab.tiles.filter((t) => t === "—").length !== check.dashes) problems.push(`${width}px telemetry (${check.name}): tiles ${JSON.stringify(tab.tiles)}, expected every value "—"`);
+    if (!check.dashes && !tab.text.includes("—")) problems.push(`${width}px telemetry (${check.name}): a null value is not shown as "—"`);
+    if (String(check.series ?? null) !== String(tab.series)) problems.push(`${width}px telemetry (${check.name}): ${tab.series} stacked series, expected ${check.series} (the tail folded into Other)`);
+    if (check.hatched) {
+      if (!tab.hours.length || tab.hours.some((h) => h !== check.hatched.hours)) problems.push(`${width}px telemetry (${check.name}): hours before the first point hatched ${JSON.stringify(tab.hours)}, expected ${check.hatched.hours}`);
+      if ((check.hatched.cron ? [check.hatched.cron] : []).join() !== tab.cron.join()) problems.push(`${width}px telemetry (${check.name}): cron grid hatched ${JSON.stringify(tab.cron)}, expected ${check.hatched.cron}`);
+    } else if (tab.hours.length || tab.cron.length) problems.push(`${width}px telemetry (${check.name}): hatches hours without a measured window`);
+    if (tab.deploys !== check.deploys) problems.push(`${width}px telemetry (${check.name}): ${tab.deploys} deploy markers, expected ${check.deploys}`);
+    for (const r of check.reads) if (!requested.includes(r)) problems.push(`${width}px telemetry (${check.name}): ${r} was not read`);
+    const api = requested.filter((u) => u.startsWith("/api/kernel/v1/telemetry") || u.startsWith("/api/kernel/v1/metabolism"));
+    if (api.some((u) => !u.startsWith("/api/kernel/v1/telemetry?"))) problems.push(`${width}px telemetry (${check.name}): the tab read ${JSON.stringify(api)}`);
+    if (check.retry) {
+      const before = requested.filter((u) => u === check.retry).length;
+      await page.click('[role="alert"] button:text-is("Retry")');
+      await page.waitForTimeout(500);
+      if (requested.filter((u) => u === check.retry).length <= before) problems.push(`${width}px telemetry (${check.name}): Retry did not read ${check.retry} again`);
+    }
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/organism/telemetry (${check.name}): horizontal scroll of ${overflow}px`);
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-telemetry-${check.name.replace(/ /g, "_")}.png`), fullPage: true });
+    await page.close();
+  }
+}
 OVERRIDE = {};
 await browser.close();
 server.close();
@@ -881,4 +1010,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), and the Infrastructure detail panel (${DETAIL_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), and the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases) at both widths.`);
