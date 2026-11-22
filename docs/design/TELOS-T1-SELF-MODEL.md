@@ -1,6 +1,6 @@
 # Design: Telos T1, the daily self-model snapshot
 
-- **Status:** design (2026-11-22), for the owner's review; nothing is built.
+- **Status:** design accepted by the owner on 2026-11-22 (§11, "setuju semua"); step 1 (T1a, the contract: `workers/control-plane-shared/src/self-model.ts`) built, the rest not built.
 - **Owner request (2026-11-22):** asked to fix the feedback loops that never ran, the owner answered "ya kerjakan nomor 1 dan semuanya" (yes, do number 1 and all of them). T1 is the first missing loop: every KPI baseline in `organism/vision.json` is `null`, and nothing measures the organism against its own goals.
 - **Implements:** ADR-0016 §2 ("A self-model") and phase T1 ("Self-model snapshot, daily"). The progress manifest `architecture/adr/progress/0016.json` says of T1: `not_measurable_yet: "no self-model table or R2 snapshot exists yet"`, with the reading `adr_index_live`, and next "Build the daily self-model; its Memory section reads the ADR Steward's documents".
 - **Reads with:** ADR-0016 ("Rules that do not change": learning is the highest mandate, no fund movement, guard paths); ADR-0015 (one D1 row with a JSON body; telemetry is never a record of truth); ADR-0020 §3 rule 1 and `docs/design/HAIC-H3.md` §4.4 (no price level leaves xauusd); `docs/design/ADR-STEWARD.md` (its documents are T1's "Memory: ADR index"); `docs/SSOT.md`; `AGENTS.md` (Console truthfulness).
@@ -287,6 +287,8 @@ If the owner chooses R2 (Q1, option B), step 4 adds an R2 binding to `ai-kernel/
 8. **Q8. The chat tool `self_model` in T1.** Recommended: yes, read-only, one section at a time.
 9. **Q9. xauusd, Aether and CTA beyond what the platform already holds.** Recommended: T1 reads D1 only. Omega health, market regime and session calendar stay null (`source_outside_platform`) until a reviewed read-only path is designed.
 10. **Q10. Console placement.** Recommended: a "measured" cell on each KPI of the Vision page, plus the `#/vision/self` sub-page.
+
+**Owner answers (2026-11-22, "setuju semua").** Every recommended default in this section is accepted: D1 only (no R2 in T1), 400-day retention, 00:52 UTC with retries, the §6 bindings as written, no AI summary, infrastructure cost only, the job runs under the kill switch, the chat tool, D1-only ecosystem reads, and the Vision page cell plus #/vision/self.
 
 ## 12. Implementation order (small mergeable steps, each its own change request through Forge checks and consensus)
 
