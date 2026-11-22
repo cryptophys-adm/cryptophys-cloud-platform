@@ -111,6 +111,7 @@ const ACTION_TEXT: Record<string, string> = {
   update_agent_capabilities: "set, as its DNA declares, the capabilities of the agent",
   register_agent: "register the new agent",
   register_privileged_agent: "register the new privileged agent",
+  update_privileged_agent_capabilities: "set, as its DNA declares, the capabilities of the privileged agent",
   register_engine: "register a new AI engine on",
   retire_engine: "retire an AI engine its DNA no longer declares on",
   admit_voter: "give a council seat to",

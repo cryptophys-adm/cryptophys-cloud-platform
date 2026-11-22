@@ -17,7 +17,7 @@ import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { OWNER_DECISION_WINDOW_MS, expireOwnerProposals } from "./consensus.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
-import { latestCensusRow, latestCensusRows, proposalFor, undeclaredEngineProven, undeclaredEnginePersistent, RETIRE_ENGINE_PERSIST_ROWS, type CensusRow } from "./organism.ts";
+import { latestCensusRow, latestCensusRows, newPrivilegedCapabilities, proposalFor, undeclaredEngineProven, undeclaredEnginePersistent, RETIRE_ENGINE_PERSIST_ROWS, type CensusRow } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { KERNEL_AGENTS, RETIRE_EXEMPT_HOSTS, RETIRE_IDLE_DAYS, TARGET } from "../../control-plane-shared/src/consensus-rules.ts";
 import { SCHEDULED_IDLE_REASON, idleWindowMs, isIdle } from "../../control-plane-shared/src/agent-idle.ts";
@@ -485,10 +485,24 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       // unknown capability (cns_211153f4: register_privileged_agent adr-steward, 8-0, adr.observe) although it is
       // routine once deployed. Such a registration is not proposed: it waits as a finding until a kernel that knows
       // every capability runs. Nothing is weakened: an unknown capability is never registered either way.
-      if ((prop.action === "register_agent" || prop.action === "register_privileged_agent" || prop.action === "update_agent_capabilities") && Array.isArray(prop.params.capabilities)) {
+      if ((prop.action === "register_agent" || prop.action === "register_privileged_agent" || prop.action === "update_agent_capabilities" || prop.action === "update_privileged_agent_capabilities") && Array.isArray(prop.params.capabilities)) {
         const unknown = (prop.params.capabilities as unknown[]).map(String).filter((c) => !Object.hasOwn(CAPABILITIES, c));
         if (unknown.length) {
           report.findings.push({ kind: "organism", service_id: prop.target, action: "none", why: `registration of ${prop.target} waits: ${unknown.join(", ")} is unknown to the running kernel (its deploy is pending)`.slice(0, 300) });
+          continue;
+        }
+      }
+      // Review 2026-11-22: an update never adds a privileged capability (the vote and the executor refuse it). A DNA that
+      // adds one is not proposed, or the council would reject it 8-0 every cooldown and take the cycle's one registration
+      // slot each time; it waits as a finding. An unreadable registered set counts as adding (fail closed).
+      if (prop.action === "update_privileged_agent_capabilities" && Array.isArray(prop.params.capabilities)) {
+        const row = await env.DB.prepare("SELECT capabilities_json FROM agents WHERE agent_id = ?").bind(prop.target).first<{ capabilities_json: string }>();
+        let registered: string[] | null = null;
+        try { const v = row ? JSON.parse(row.capabilities_json) : null; registered = Array.isArray(v) ? v.map(String) : null; } catch { registered = null; }
+        const next = (prop.params.capabilities as unknown[]).map(String);
+        const added = newPrivilegedCapabilities(registered ?? [], next);
+        if (added.length) {
+          report.findings.push({ kind: "organism", service_id: prop.target, action: "none", why: `capability update of ${prop.target} waits: ${added.join(", ")} is a new privileged capability; an update never adds one`.slice(0, 300) });
           continue;
         }
       }

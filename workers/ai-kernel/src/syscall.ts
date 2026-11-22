@@ -20,6 +20,7 @@ import { notRetiredSql } from "../../control-plane-shared/src/retired.ts";
 import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.ts";
 import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
+import { consensusStatus } from "./consensus-status.ts";
 import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
 import { observeAdr } from "./adr-observe.ts";
@@ -875,6 +876,8 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "council.decisions.read": (env, input, agentId) => readCouncilDecisions(env, agentId, input),
   // HAIC H3e (docs/design/HAIC-H3.md §7.3): the Aether pull of the Nexus corrections, oldest first, by cursor, read only.
   "corrections.read": async (env, input, agentId) => await readNexusCorrections(env.DB, agentId, input) as unknown as JsonObject,
+  // Owner 2026-11-22: the status, owner decision and decision time of the caller's own consensus proposals, read only.
+  "consensus.status": (env, input, agentId) => consensusStatus(env.DB, agentId, input),
 };
 
 /**

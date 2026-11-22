@@ -38,6 +38,10 @@ export const CAPABILITIES: Record<string, Capability> = {
   // limit, no power-mode denial, never refused for its content) and only XAUUSD_CEILING grants it, to nexus-teacher;
   // corrections.read is read only and only AETHER_CEILING grants it, to aether-curator. EXTERNAL_CEILING is not widened.
   "corrections.read": { tier: 0, reversible: true, description: "Read the Nexus owner corrections of the ledger, oldest first, by cursor, at most 50 (read only)" },
+  // Owner 2026-11-22 ("ya kerjakan nomor 1 dan semuanya"): Aether's knowledge-council reads the outcome of its own
+  // doctrine proposals (an owner rejection, an owner window that lapsed). Scoped to the caller's proposals; only
+  // AETHER_CEILING grants it, to knowledge-council. EXTERNAL_CEILING is not widened.
+  "consensus.status": { tier: 0, reversible: true, description: "Read the status, the owner's decision and the decision time of the calling agent's own consensus proposals, at most 50 ids (read only)" },
   "corrections.record": { tier: 1, reversible: true, description: "Record one Nexus owner correction or rating (correction.v1) in the corrections ledger (learning: no rate limit, never refused for its content)" },
   // ADR-0014 §2 and §11, docs/design/EVOLVER.md §5-§6: the evolver's two capabilities. code.read reads canonical main
   // (paths in the evolvable scope, bounded); code.propose hands one evolution's edits to the Forge, which re-checks

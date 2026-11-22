@@ -19,6 +19,9 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^workers\/control-plane-shared\/src\/consensus-(rules|exec|vote)\.ts$/, "consensus_kill_switch"],
   // HAIC H4 (owner 2026-11-18): the autonomy dial lowers what consensus may execute; its rules are the consensus's own.
   [/^workers\/control-plane-shared\/src\/autonomy-dial\.ts$/, "consensus_kill_switch"],
+  // Review 2026-11-22: the census executors (a privileged agent's capability change keeps only the privileged capabilities
+  // it already holds) are the consensus's own rules too.
+  [/^workers\/ai-kernel\/src\/organism\.ts$/, "consensus_kill_switch"],
   [/^\.github\/scripts\/remove-worker-secrets\.sh$/, "secrets"],
   [/^workers\/control-plane-shared\/src\/secrets\.ts$/, "secrets"],
   [/^architecture\/adr\/00(09|12)-/, "adr_0009_0012"],
@@ -42,6 +45,8 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // Owner 2026-11-14 ("naikan batas kapabilitas aether"): the external capability ceilings (the general one and
   // Aether's per-agent one) live in organism.ts; raising any of them is the owner's, never a routine merge.
   [/^workers\/control-plane-shared\/src\/organism\.ts$/, "capability_ceiling"],
+  // Review 2026-11-22: consensus.status scopes the read to the caller's own proposals; widening it reveals other agents'.
+  [/^workers\/ai-kernel\/src\/consensus-status\.ts$/, "capability_ceiling"],
   // Hardening (d), 2026-11-14: the break-glass deploy bypasses the deploy planner, so its rules are the owner's.
   [/^workers\/control-plane-shared\/src\/break-glass\.ts$/, "break_glass"],
   [/^workers\/deployment-orchestrator\/src\/recovery-deploy\.ts$/, "break_glass"],

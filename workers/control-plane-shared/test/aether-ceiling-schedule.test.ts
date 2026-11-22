@@ -91,30 +91,33 @@ function kernelEnv(db: Db) {
 // ------------------------------------------------------------------------------------------- A. the ceiling
 
 /**
- * HAIC H3e (docs/design/HAIC-H3.md §7.3; owner 2026-11-19): the one grant the ceiling holds ahead of the registry and
- * Aether's DNA. The curator's corrections.read arrives when Aether's DNA declares it (the census's routine
- * update_agent_capabilities); until then the ceiling is today's grants plus exactly this.
+ * The grants the ceiling holds ahead of the registry and Aether's DNA. HAIC H3e (docs/design/HAIC-H3.md §7.3; owner
+ * 2026-11-19): the curator's corrections.read arrives when Aether's DNA declares it (the census's routine
+ * update_agent_capabilities). consensus.status (owner 2026-11-22): knowledge-council's read of its own proposals arrives
+ * when Aether's DNA declares it and the owner clicks the census's update_privileged_agent_capabilities
+ * (consensus-status-2026-11-22.test.ts CS9-CS11). Until then the ceiling is today's grants plus exactly these.
  */
-const H3E_AHEAD: Record<string, string[]> = { "aether-curator": ["corrections.read"] };
-const today = (id: string) => [...AETHER_CEILING.agents[id]].filter((c) => !(H3E_AHEAD[id] ?? []).includes(c)).sort();
+const AHEAD: Record<string, string[]> = { "aether-curator": ["corrections.read"], "knowledge-council": ["consensus.status"] };
+const today = (id: string) => [...AETHER_CEILING.agents[id]].filter((c) => !(AHEAD[id] ?? []).includes(c)).sort();
 
-test("AC1. Aether's ceiling is exactly what its agents hold today: the registered grants (0027, 0029, 0045) and its DNA, plus H3e's corrections.read for the curator", () => {
+test("AC1. Aether's ceiling is exactly what its agents hold today: the registered grants (0027, 0029, 0045) and its DNA, plus H3e's corrections.read for the curator and consensus.status for the council", () => {
   const db = registeredDb();
   const rows = db.raw.prepare("SELECT agent_id, tier_max, voter, capabilities_json FROM agents WHERE host_worker = ? ORDER BY agent_id").all(HOST) as any[];
   assert.deepEqual(rows.map((r) => r.agent_id), Object.keys(AETHER_CEILING.agents).sort(), "one ceiling entry per registered Aether agent, no more");
-  for (const [id, ahead] of Object.entries(H3E_AHEAD)) for (const c of ahead) assert.ok(AETHER_CEILING.agents[id].includes(c), `${id}: ${c} is in the ceiling`);
+  for (const [id, ahead] of Object.entries(AHEAD)) for (const c of ahead) assert.ok(AETHER_CEILING.agents[id].includes(c), `${id}: ${c} is in the ceiling`);
   assert.deepEqual([...AETHER_CEILING.agents["aether-curator"]].sort(), ["corrections.read", "knowledge.propose", "knowledge.status", "reports.publish"]);
+  assert.deepEqual([...AETHER_CEILING.agents["knowledge-council"]].sort(), ["consensus.propose", "consensus.status", "doctrine.status", "reports.publish"]);
   for (const r of rows) {
-    assert.deepEqual(JSON.parse(r.capabilities_json).sort(), today(r.agent_id), `${r.agent_id}: ceiling = registered grants (+ H3e)`);
+    assert.deepEqual(JSON.parse(r.capabilities_json).sort(), today(r.agent_id), `${r.agent_id}: ceiling = registered grants (+ the grants ahead)`);
     assert.deepEqual([r.tier_max, r.voter], [AETHER_CEILING.tier_max, 0]);
   }
-  for (const a of AETHER_AGENTS) assert.deepEqual([...a.capabilities].sort(), today(a.id), `${a.id}: ceiling = DNA (+ H3e)`);
+  for (const a of AETHER_AGENTS) assert.deepEqual([...a.capabilities].sort(), today(a.id), `${a.id}: ceiling = DNA (+ the grants ahead)`);
   // knowledge-council proposes the two doctrine actions, exactly the kernel's restriction (consensus.ts propose).
   assert.deepEqual(Object.keys(AETHER_CEILING.proposals), ["knowledge-council"]);
   assert.deepEqual([...AETHER_CEILING.proposals["knowledge-council"]].sort(), [...DOCTRINE_ACTIONS].sort());
   // The union holds nothing beyond today's grants: no memory, trading, deploy, merge, fund or seat.
   const union = [...new Set(Object.values(AETHER_CEILING.agents).flat())].sort();
-  assert.deepEqual(union, ["consensus.propose", "corrections.read", "doctrine.status", "knowledge.propose", "knowledge.status", "reports.publish", "signals.observe"]);
+  assert.deepEqual(union, ["consensus.propose", "consensus.status", "corrections.read", "doctrine.status", "knowledge.propose", "knowledge.status", "reports.publish", "signals.observe"]);
   // Aether's DNA as served passes whole.
   const { organs, refused } = externalOrgans(AETHER, aetherDna());
   assert.deepEqual(refused, []);
@@ -387,8 +390,11 @@ test("AS4. an open retire_agent of a scheduled agent that is not idle by its sch
 test("AC-G. the external capability ceilings (organism.ts) are a guard path: raising one is merge_owner_change", async () => {
   const { criticalPathReason, CRITICAL_PATHS } = await import("../src/guard-paths.ts");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
-  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "capability_ceiling").length, 1);
-  assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), null);
+  // Review 2026-11-22: consensus.status's scope (ai-kernel/src/consensus-status.ts) is the second capability_ceiling path;
+  // the kernel's organism.ts (the census executors) is a consensus rule, never the ceiling.
+  assert.equal(CRITICAL_PATHS.filter(([, reason]) => reason === "capability_ceiling").length, 2);
+  assert.equal(criticalPathReason("workers/ai-kernel/src/consensus-status.ts"), "capability_ceiling");
+  assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), "consensus_kill_switch");
 });
 
 test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling, bound in the Forge like Aether's; unbound, it is not read", () => {

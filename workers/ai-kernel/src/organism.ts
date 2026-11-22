@@ -7,7 +7,10 @@
  *     enabled engine its organ's DNA no longer declares (census finding undeclared_engine); status 'retired',
  *     nothing deleted (ai_usage keeps its history); a DNA that declares the task again re-registers it;
  *   - register_privileged_agent (a capability above tier 1, or consensus.propose): critical, owner click;
- *   - admit_voter (a council seat, one per Worker): critical, owner click.
+ *   - admit_voter (a council seat, one per Worker): critical, owner click;
+ *   - update_agent_capabilities (2026-11-17): routine, a capability set with no privileged capability;
+ *   - update_privileged_agent_capabilities (owner 2026-11-22, "Jalur klik owner (Rekomendasi)"): critical, owner click,
+ *     a set that keeps privileged capabilities the agent already holds and adds none.
  *
  * Every executor re-verifies the passed proposal and its Policy Engine decision, and takes the gene
  * from the latest census (the DNA the Forge read from main), never from the proposal's params alone:
@@ -62,6 +65,14 @@ export function findAgentGene(census: CensusRow | null, agentId: string): { serv
     if (gene) return { service: organ.service, gene, ...(organ.origin ? { origin: organ.origin } : {}) };
   }
   return null;
+}
+
+/**
+ * The privileged capabilities of `next` that `registered` does not hold. An update never adds one (owner 2026-11-22): the
+ * vote, the executor and the Supervisor (which then does not propose the update) all refuse it.
+ */
+export function newPrivilegedCapabilities(registered: readonly string[], next: readonly string[]): string[] {
+  return privilegedCapabilities([...next]).filter((c) => !registered.includes(c));
 }
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
@@ -143,10 +154,13 @@ async function registerAgent(env: SyscallEnv, proposalId: string, p: { action: s
 /**
  * ADR-0014 §11 (docs/design/EVOLVER.md §8, 2026-11-17): set a registered agent's capabilities to what its DNA now
  * declares (census finding agent_capabilities_changed). The gene comes from the latest census, as for a registration;
- * the host must be unchanged, no capability may be privileged (that needs a registration the owner clicks), and an
- * external organ's gene is held to its origin's ceiling again here. Status, seat and tier are not touched.
+ * the host must be unchanged, and an external organ's gene is held to its origin's ceiling again here. Status, seat and
+ * tier are not touched. A set with a privileged capability is update_privileged_agent_capabilities (owner 2026-11-22,
+ * "Jalur klik owner (Rekomendasi)"): critical, so verifyConsensusExecution requires the owner's approval, and every
+ * privileged capability in it must already be registered to the agent. No consensus path adds a privileged capability
+ * to a registered agent: that takes a migration or a new ADR.
  */
-async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: { target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
+async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: { action: string; target: string; params: JsonObject }, actor: string): Promise<JsonObject> {
   const census = await currentCensus(env, p.params.main_sha);
   requireCensusFinding(census, "agent_capabilities_changed", p.target);
   const declared = findAgentGene(census, p.target);
@@ -156,7 +170,8 @@ async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: {
   if (String(p.params.service ?? "") !== service) throw new Error("host_differs_from_dna");
   if (!Array.isArray(p.params.capabilities) || !sameSet(p.params.capabilities.map(String), caps)) throw new Error("capabilities_differ_from_dna");
   if (caps.length === 0 || forbiddenCapabilities(caps).length) throw new Error("forbidden_capability");
-  if (privilegedCapabilities(caps).length) throw new Error("privileged_needs_owner");
+  const privileged = privilegedCapabilities(caps);
+  if ((privileged.length > 0) !== (p.action === "update_privileged_agent_capabilities")) throw new Error(privileged.length ? "privileged_needs_owner" : "not_privileged");
   if (declared.origin !== undefined) {
     const origin = EXTERNAL_ORIGINS.find((o) => o.origin === declared.origin);
     if (!origin || !origin.services.includes(service)) throw new Error("external_origin_unknown");
@@ -168,6 +183,7 @@ async function updateAgentCapabilities(env: SyscallEnv, proposalId: string, p: {
   let previous: string[] = [];
   try { const v = JSON.parse(row.capabilities_json); if (Array.isArray(v)) previous = v.map(String); } catch { previous = []; }
   if (sameSet(previous, caps)) throw new Error("capabilities_unchanged");
+  if (newPrivilegedCapabilities(previous, caps).length) throw new Error("new_privileged_capability");
   await requireActiveHost(env, service);
   try {
     await appendAuditEventWithMutation(env.DB, {
@@ -350,6 +366,7 @@ export async function executeRegistration(
     case "register_engine":
       return registerEngine(env, proposalId, p, actor);
     case "update_agent_capabilities":
+    case "update_privileged_agent_capabilities":
       return updateAgentCapabilities(env, proposalId, p, actor);
     case "retire_engine":
       return retireEngine(env, proposalId, p, actor);
@@ -374,11 +391,14 @@ export function proposalFor(
     const action = privilegedCapabilities(d.gene.capabilities).length ? "register_privileged_agent" : "register_agent";
     return { action, target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
   }
-  // A capability change that stays routine (no privileged capability); a privileged one waits for the owner as a finding.
+  // A capability change: routine with no privileged capability; with one, the owner's click (owner 2026-11-22, "Jalur klik
+  // owner (Rekomendasi)"). The vote and the executor refuse a privileged capability the agent does not already hold, and
+  // the Supervisor does not propose such a set (newPrivilegedCapabilities).
   if (finding.kind === "agent_capabilities_changed") {
     const d = findAgentGene(census, finding.subject);
-    if (!d?.gene.capabilities || privilegedCapabilities(d.gene.capabilities).length) return null;
-    return { action: "update_agent_capabilities", target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
+    if (!d?.gene.capabilities) return null;
+    const action = privilegedCapabilities(d.gene.capabilities).length ? "update_privileged_agent_capabilities" : "update_agent_capabilities";
+    return { action, target: d.gene.id, params: { service: d.service, capabilities: d.gene.capabilities, tier_max: d.gene.tier_max ?? 0, main_sha: census.main_sha } };
   }
   if (finding.kind === "unregistered_engine") {
     const i = finding.subject.lastIndexOf(":");
