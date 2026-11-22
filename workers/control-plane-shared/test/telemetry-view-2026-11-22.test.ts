@@ -13,7 +13,7 @@ const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
 const NOW = Date.parse("2026-11-22T04:30:00.000Z");
 const ACCOUNT = "c".repeat(32);
 const TOKEN = "analytics-read-token-TESTONLY";
-const env = { CF_ANALYTICS_TOKEN: TOKEN, CF_ANALYTICS_ACCOUNT_ID: ACCOUNT };
+const env = { AE_TELEMETRY_TOKEN: TOKEN, AE_TELEMETRY_ACCOUNT_ID: ACCOUNT };
 const q = (s: string) => new URLSearchParams(s);
 
 /** A fake Analytics Engine SQL API: answers by the shape of the query, records every call. */
@@ -35,7 +35,7 @@ test("TV1. without the kernel's two secrets: configured false, the buckets, and 
   assert.equal(r.configured, false);
   assert.equal((r.buckets as string[]).length, 24);
   assert.equal(api.calls.length, 0);
-  assert.equal((await telemetryView({ CF_ANALYTICS_TOKEN: TOKEN, CF_ANALYTICS_ACCOUNT_ID: "not-an-account" }, q(""), NOW, api.fetchImpl)).configured, false);
+  assert.equal((await telemetryView({ AE_TELEMETRY_TOKEN: TOKEN, AE_TELEMETRY_ACCOUNT_ID: "not-an-account" }, q(""), NOW, api.fetchImpl)).configured, false);
   await assert.rejects(telemetryView(env, q("window=30d"), NOW, api.fetchImpl), /invalid_window/);
   await assert.rejects(telemetryView(env, q("group=trades"), NOW, api.fetchImpl), /invalid_group/);
   assert.deepEqual(hourBuckets(NOW, 3), ["2026-11-22T02:00:00.000Z", "2026-11-22T03:00:00.000Z", "2026-11-22T04:00:00.000Z"]);
@@ -123,4 +123,13 @@ test("TV5. wired: kernel route, one read-only allow-list row, the Console route"
   assert.match(idx, /TelemetryReadError\) return errorResponse\(502, err\.message\)/);
   assert.deepEqual(CONSOLE_ALLOW_LIST.filter((a) => a.path === "/v1/telemetry"), [{ service: "kernel", method: "GET", path: "/v1/telemetry" }]);
   assert.deepEqual(UI_ROUTES.find((r) => r.id === "kernel.telemetry"), { id: "kernel.telemetry", service: "kernel", method: "GET", path: "/v1/telemetry", approverOnly: false, confirm: null });
+});
+
+test("TV6. the kernel's telemetry token is its own: AE_TELEMETRY_* only, never the Platform API's CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID", () => {
+  // Owner 2026-11-22: "supaya terisolasi buat token penamaan baru saja khusus analytic engine ini".
+  for (const f of ["workers/ai-kernel/src/analytics/read.ts", "workers/ai-kernel/src/telemetry-view.ts"]) {
+    const src = read(f).split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
+    assert.doesNotMatch(src, /CF_ANALYTICS_TOKEN|CF_ACCOUNT_ID|CF_BILLING_TOKEN/, f);
+  }
+  assert.match(read("workers/ai-kernel/src/analytics/read.ts"), /export interface AnalyticsReadEnv \{ AE_TELEMETRY_TOKEN\?: string; AE_TELEMETRY_ACCOUNT_ID\?: string \}/);
 });

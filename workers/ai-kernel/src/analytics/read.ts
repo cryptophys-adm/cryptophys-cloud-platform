@@ -3,13 +3,15 @@
 // else: no decision, vote, budget or gate reads it (test analytics-engine-legal AL3 holds TELEMETRY_READERS to
 // telemetry-view.ts). Every query is fixed in code; the only inputs are a window of hours from a closed list.
 //
-// Secrets (set by the owner on cryptophys-ai-kernel): CF_ANALYTICS_TOKEN (Account Analytics Read) and
-// CF_ANALYTICS_ACCOUNT_ID. The token goes only to api.cloudflare.com, in the Authorization header; it is never logged,
+// Secrets (set by the owner on cryptophys-ai-kernel; owner 2026-11-22: "supaya terisolasi buat token penamaan baru saja khusus
+// analytic engine ini"): AE_TELEMETRY_TOKEN, its own token (Account Analytics Read), never the Platform API's
+// CF_ANALYTICS_TOKEN, and
+// AE_TELEMETRY_ACCOUNT_ID. The token goes only to api.cloudflare.com, in the Authorization header; it is never logged,
 // stored or returned.
 export const ANALYTICS_SQL_HOST = "api.cloudflare.com";
 export const QUERY_TIMEOUT_MS = 10_000;
 
-export interface AnalyticsReadEnv { CF_ANALYTICS_TOKEN?: string; CF_ANALYTICS_ACCOUNT_ID?: string }
+export interface AnalyticsReadEnv { AE_TELEMETRY_TOKEN?: string; AE_TELEMETRY_ACCOUNT_ID?: string }
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 export type Row = Record<string, string | number | null>;
 
@@ -18,18 +20,18 @@ export class TelemetryReadError extends Error {}
 const ACCOUNT = /^[0-9a-f]{32}$/;
 
 export function readerConfigured(env: AnalyticsReadEnv): boolean {
-  return typeof env.CF_ANALYTICS_TOKEN === "string" && env.CF_ANALYTICS_TOKEN.length > 0 && ACCOUNT.test(env.CF_ANALYTICS_ACCOUNT_ID ?? "");
+  return typeof env.AE_TELEMETRY_TOKEN === "string" && env.AE_TELEMETRY_TOKEN.length > 0 && ACCOUNT.test(env.AE_TELEMETRY_ACCOUNT_ID ?? "");
 }
 
 /** Run one fixed SELECT through the Workers Analytics Engine SQL API; rows as the API returns them (FORMAT JSON). */
 export async function runSql(env: AnalyticsReadEnv, sql: string, fetchImpl: Fetch = (i, init) => fetch(i, init)): Promise<Row[]> {
   if (!readerConfigured(env)) throw new TelemetryReadError("telemetry_not_configured");
   if (!/^\s*SELECT\s/i.test(sql) || /;\s*\S/.test(sql)) throw new TelemetryReadError("select_only");
-  const url = `https://${ANALYTICS_SQL_HOST}/client/v4/accounts/${env.CF_ANALYTICS_ACCOUNT_ID}/analytics_engine/sql`;
+  const url = `https://${ANALYTICS_SQL_HOST}/client/v4/accounts/${env.AE_TELEMETRY_ACCOUNT_ID}/analytics_engine/sql`;
   let res: Response;
   try {
     const signal = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(QUERY_TIMEOUT_MS) : undefined;
-    res = await fetchImpl(url, { method: "POST", redirect: "manual", body: `${sql.trim()} FORMAT JSON`, headers: { authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}`, "content-type": "text/plain" }, ...(signal ? { signal } : {}) });
+    res = await fetchImpl(url, { method: "POST", redirect: "manual", body: `${sql.trim()} FORMAT JSON`, headers: { authorization: `Bearer ${env.AE_TELEMETRY_TOKEN}`, "content-type": "text/plain" }, ...(signal ? { signal } : {}) });
   } catch {
     throw new TelemetryReadError("telemetry_unreachable");
   }
