@@ -9,7 +9,8 @@
 import type { IdentityDrift } from "../../control-plane-shared/src/identity-redeploy.ts";
 import type { BaseEnv } from "../../control-plane-shared/src/types.ts";
 import type { JsonObject } from "../../control-plane-shared/src/http.ts";
-import { CAPABILITIES, agentSyscallChecks, agentsEnabled } from "../../control-plane-shared/src/capabilities.ts";
+import { CAPABILITIES, agentSyscallChecks, agentsEnabled, verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
+import { isOwner } from "../../control-plane-shared/src/access.ts";
 import { readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
 import { LEARNING_CAPABILITIES } from "../../control-plane-shared/src/power-mode.ts";
 import { appendAuditEvent, verifyAuditChain, verifyAuditChainIncremental } from "../../control-plane-shared/src/audit.ts";
@@ -23,6 +24,7 @@ import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
 import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
 import { observeAdr } from "./adr-observe.ts";
 import { readCouncilDecisions } from "./council-decisions.ts";
+import { nexusActorEmail, readNexusCorrections, recordNexusCorrection } from "./corrections.ts";
 import { recordSyscall } from "./analytics/telemetry.ts";
 import type { SyscallOutcome } from "./analytics/datasets.ts";
 
@@ -54,6 +56,8 @@ export interface DeployRpcBinding {
 }
 
 export interface SyscallEnv extends BaseEnv {
+  /** The owners (access.ts isOwner): corrections.record gives weight 3 only to an attested actor in this list (HAIC H3e, Q9). */
+  APPROVER_IDENTITIES?: string;
   XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> };
   POLICY: PolicyRpcBinding;
   RECOVERY: RecoveryRpcBinding;
@@ -869,7 +873,21 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   },
   // ADR-0014 §11, docs/design/EVOLVER.md §8: the return path, scoped to the calling agent's origin.
   "council.decisions.read": (env, input, agentId) => readCouncilDecisions(env, agentId, input),
+  // HAIC H3e (docs/design/HAIC-H3.md §7.3): the Aether pull of the Nexus corrections, oldest first, by cursor, read only.
+  "corrections.read": async (env, input, agentId) => await readNexusCorrections(env.DB, agentId, input) as unknown as JsonObject,
 };
+
+/**
+ * HAIC H3e (docs/design/HAIC-H3.md §7.2): corrections.record, learning. The decision is verified and consumed (metered in
+ * agent_syscall_consumptions, never rate limited), then the record is written by the ledger. Weight 3 only when the
+ * attested actor is an owner of the platform (isOwner over APPROVER_IDENTITIES); any other actor is recorded at weight 1.
+ */
+async function recordCorrectionSyscall(env: SyscallEnv, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
+  await verifySyscallDecision(env.DB, decisionId, agentId, "corrections.record");
+  const email = nexusActorEmail(input);
+  const owner = email !== null && isOwner({ type: "user", subject: email }, env);
+  return await recordNexusCorrection(env.DB, agentId, input, { email, owner }) as unknown as JsonObject;
+}
 
 /**
  * Owner 2026-11-11: the doctrine amendments Cerebrum executed (doctrine_amendments, migration 0045),
@@ -896,6 +914,7 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "memory.remember": return { memory: await rememberMemory(env, agentId, decisionId, input) };
     case "consensus.propose": return { proposal: await consensusPropose(env, agentId, decisionId, input) };
     case "knowledge.propose": return { proposal: await proposeKnowledge(env.DB, agentId, decisionId, input) };
+    case "corrections.record": return await recordCorrectionSyscall(env, agentId, decisionId, input);
     // ADR-0014 §11 (EVOLVER.md §6): the Forge verifies and consumes the decision, re-checks everything, writes evo/<id>.
     case "code.propose": {
       if (!env.FORGE_EVOLUTION) throw new Error("forge_evolution_binding_missing");
@@ -914,7 +933,23 @@ function auditJson(value: JsonObject): string {
   return bytes <= MAX_AUDIT_JSON_BYTES ? serialized : JSON.stringify({ truncated: true, original_bytes: bytes });
 }
 
-async function record(env: SyscallEnv, agentId: string, capability: string, tier: number, decisionId: string | null, outcome: string, input: JsonObject, result: JsonObject): Promise<string> {
+/**
+ * What agent_actions keeps of a syscall's input. A correction's text and refs stay in the corrections ledger only,
+ * redacted and masked (HAIC H3e, docs/design/HAIC-H3.md §4.4–§4.5): the action row keeps its shape, never the raw text.
+ */
+function recordedInput(capability: string, input: JsonObject): JsonObject {
+  if (capability !== "corrections.record") return input;
+  const t = input.target && typeof input.target === "object" && !Array.isArray(input.target) ? input.target as Record<string, unknown> : {};
+  const short = (v: unknown) => (typeof v === "string" ? v.slice(0, 60) : null);
+  return {
+    source: short(input.source), label: short(input.label), rating: short(input.rating), category: short(input.category),
+    subject: short(t.subject), text_chars: typeof input.text === "string" ? input.text.length : 0,
+    evidence_refs: Array.isArray(input.evidence_refs) ? input.evidence_refs.length : 0, omitted: "text and refs are kept in the corrections ledger only",
+  };
+}
+
+async function record(env: SyscallEnv, agentId: string, capability: string, tier: number, decisionId: string | null, outcome: string, rawInput: JsonObject, result: JsonObject): Promise<string> {
+  const input = recordedInput(capability, rawInput);
   const actionId = newId("act");
   await env.DB.prepare(
     `INSERT INTO agent_actions (action_id, agent_id, capability, tier, decision_id, outcome, input_json, result_json, created_at)

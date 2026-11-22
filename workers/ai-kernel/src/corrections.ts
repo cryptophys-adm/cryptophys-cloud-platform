@@ -297,3 +297,92 @@ export async function backfillChatRatingsOnce(db: D1Database): Promise<BackfillR
   if (report.complete) await appendAuditEvent(db, { event_type: BACKFILL_DONE_EVENT, actor: BACKFILL_ACTOR, subject: "corrections:backfill", outcome: "done", payload: report });
   return report;
 }
+
+// ---------------------------------------------------------------- H3e: the Nexus ingress and the Aether pull
+//
+// HAIC H3e (docs/design/HAIC-H3.md §7.1–§7.3; owner 2026-11-19, "Setuju semua rekomendasi"). Two agent syscalls, both
+// dispatched by ai-kernel/src/syscall.ts, which checks the grant, the kill switch and (for the record) the Policy
+// Engine's single-use decision before it calls in here:
+// - corrections.record (tier 1, learning): nexus-teacher, the one agent XAUUSD_CEILING grants it, relays an owner's
+//   Nexus correction. Side nexus, attested_by xauusd_nexus_access; weight 3 only when the attested actor is an owner of
+//   the platform (the caller resolves isOwner, Q9), else weight 1 and never refused. Content is made safe by the contract
+//   (secrets redacted, prices masked, text truncated), deduplicated and audited, exactly as POST /v1/corrections.
+// - corrections.read (tier 0): aether-curator, the one agent AETHER_CEILING grants it, pulls the nexus corrections,
+//   oldest first, at most NEXUS_READ_MAX per call, after a cursor of created_at and correction_id (the
+//   council.decisions.read pattern). Each read that returns a record is audited as correction.delivered (ids only).
+
+export const NEXUS_SOURCES = ["nexus_card", "nexus_room", "nexus_engine", "nexus_council"] as const;
+/** What Nexus may send: an owner's correction or rating. Reject reasons and reviewer corrections are Cerebrum's. */
+export const NEXUS_LABELS = ["owner_rating", "owner_correction"] as const;
+export const NEXUS_READ_MAX = 50;
+const NEXUS_EMAIL = /^[^\s@:"<>]{1,64}@[^\s@:"<>]{1,190}$/;
+
+/**
+ * The attested actor of a Nexus correction ("owner:<access email>" or the bare email), lower-cased; null when it is
+ * missing or not an email. The caller decides with it whether the actor is an owner of the platform.
+ */
+export function nexusActorEmail(input: Record<string, unknown>): string | null {
+  const raw = typeof input.actor === "string" ? input.actor.trim().replace(/^owner:/i, "") : "";
+  return NEXUS_EMAIL.test(raw) ? raw.toLowerCase() : null;
+}
+
+/**
+ * corrections.record: one Nexus correction into the ledger. The input is a correction.v1 without its id and hashes;
+ * whatever the platform decides itself (weight, attested_by, redactions, times, ids, hashes) is ignored if sent. A
+ * parameter or price key anywhere is refused, as is a side other than nexus, a source that is not a Nexus one or a
+ * label Nexus does not send: structural errors only. The actor is stored as owner:<email> for an owner, nexus:<email>
+ * for any other attested email and agent:<sender> when none is attested; only the first gets weight 3.
+ */
+export async function recordNexusCorrection(db: D1Database, agentId: string, input: Record<string, unknown>, who: { email: string | null; owner: boolean }): Promise<{ correction_id: string; deduplicated: boolean; redactions: string[] }> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw bad("a correction.v1 object");
+  const forbidden = forbiddenCorrectionKeys(input, "input").filter((k) => !/^input\.target\.(ref|subject|as_of)$/.test(k));
+  if (forbidden.length) throw bad(`forbidden_key: ${forbidden[0]}`);
+  if (input.side !== undefined && input.side !== null && input.side !== "nexus") throw bad("invalid_side: a Nexus correction is side nexus");
+  if (!NEXUS_SOURCES.includes(input.source as never)) throw bad(`invalid_source: one of ${NEXUS_SOURCES.join(", ")}`);
+  if (input.label !== undefined && input.label !== null && !NEXUS_LABELS.includes(input.label as never)) throw bad(`invalid_label: one of ${NEXUS_LABELS.join(", ")}`);
+  const t = input.target && typeof input.target === "object" && !Array.isArray(input.target) ? input.target as Record<string, unknown> : null;
+  const owner = who.owner && who.email !== null;
+  const actor = owner ? `owner:${who.email}` : who.email ? `nexus:${who.email}` : `agent:${agentId}`;
+  const out = await recordCorrection(db, {
+    side: "nexus", source: input.source, label: input.label ?? undefined, rating: input.rating, category: input.category, text: input.text,
+    evidence_refs: input.evidence_refs, supersedes: input.supersedes, target: t ? { ref: t.ref, subject: t.subject, as_of: t.as_of } : null,
+  }, { actor, owner, attested_by: "xauusd_nexus_access" });
+  return { correction_id: out.correction.correction_id, deduplicated: out.deduplicated, redactions: [...out.correction.redactions] };
+}
+
+const NEXUS_CURSOR = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\|(cor_[0-9a-f]{16})$/;
+
+/**
+ * corrections.read: the nexus corrections after `cursor` ("<created_at>|<correction_id>" of the last record read),
+ * oldest first, at most NEXUS_READ_MAX. `side` may be given and must be nexus: Aether reads no Cerebrum correction.
+ * Each record is the stored correction.v1 (text already redacted and masked). Before migration 0084: available false.
+ */
+export async function readNexusCorrections(db: D1Database, agentId: string, input: Record<string, unknown>): Promise<{ available: boolean; corrections: Correction[]; next_cursor: string | null }> {
+  if (input.side !== undefined && input.side !== null && input.side !== "nexus") throw new Error("invalid_side");
+  let after = { at: "", id: "" };
+  if (input.cursor !== undefined && input.cursor !== null && input.cursor !== "") {
+    const m = typeof input.cursor === "string" ? NEXUS_CURSOR.exec(input.cursor) : null;
+    if (!m) throw new Error("invalid_cursor");
+    after = { at: m[1], id: m[2] };
+  }
+  let rows: Array<{ correction_id: string; body_json: string; created_at: string }>;
+  try {
+    rows = (await db.prepare(
+      `SELECT correction_id, body_json, created_at FROM corrections
+       WHERE side = 'nexus' AND (created_at > ? OR (created_at = ? AND correction_id > ?)) ORDER BY created_at, correction_id LIMIT ${NEXUS_READ_MAX}`,
+    ).bind(after.at, after.at, after.id).all<{ correction_id: string; body_json: string; created_at: string }>()).results ?? [];
+  } catch (err) {
+    if (/no such table/i.test(String((err as Error)?.message ?? err))) return { available: false, corrections: [], next_cursor: null };
+    throw err;
+  }
+  // The contract's record only: a ledger-only field (the Q8 backfill marks, never on a nexus row) is left out.
+  const corrections = rows.map((r) => { const { backfilled: _b, ...c } = ledgerBody(r.body_json); return c as Correction; });
+  const last = rows.at(-1);
+  if (last) {
+    await appendAuditEvent(db, {
+      event_type: "correction.delivered", actor: `agent:${agentId}`, subject: "corrections:nexus", outcome: "delivered",
+      payload: { count: rows.length, correction_ids: rows.map((r) => r.correction_id), cursor: (input.cursor as string | undefined) || null },
+    });
+  }
+  return { available: true, corrections, next_cursor: last ? `${last.created_at}|${last.correction_id}` : (typeof input.cursor === "string" && input.cursor) ? input.cursor : null };
+}

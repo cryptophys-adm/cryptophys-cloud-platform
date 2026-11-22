@@ -45,11 +45,12 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
   // plus the 4 Aether agents of 0027 (TP-027, tested in register-aether-tp027.test.ts) = 36, plus the
   // Knowledge Council of 0045 (owner 2026-11-11, tested in knowledge-council-0045.test.ts) = 37, minus the
   // seven idle agents 0047 dismantles (signal-engine, 2 XAUUSD desks, 4 HUD agents) = 30, minus the
-  // H1 chain's unused Analyst and Counselor identities of 0048 = 28.
-  assert.equal(rows.length, 28);
+  // H1 chain's unused Analyst and Counselor identities of 0048 = 28, plus HAIC H3e's nexus-teacher of 0086 (tested in
+  // corrections-ingress-h3e.test.ts) = 29.
+  assert.equal(rows.length, 29);
   assert.equal(rows.filter((r) => r.host_worker === "cryptophys-aether").length, 5);
   const xauusdAgents = rows.filter((r) => r.host_worker === "xauusd-ai-trading-assistant");
-  assert.equal(xauusdAgents.length, 13);
+  assert.equal(xauusdAgents.length, 14);
   const hudAgents = xauusdAgents.filter((r) => r.agent_id.startsWith("hud-"));
   assert.equal(hudAgents.length, 10);
   for (const gone of ["signal-engine", "xauusd-news-analyst", "xauusd-technical-analyst", "hud-gabfx-price-action", "hud-grid-bot-protocol", "hud-playbook-execution", "hud-r37-funnel", "xauusd-analyst", "xauusd-counselor"]) {
@@ -60,7 +61,9 @@ test("0016 & 0017 register 31 tier-1 agents and add platform, XAUUSD, and HUD re
     if (r.agent_id !== "supervisor") {
       assert.equal(r.tier_max, 1, `${r.agent_id} must be capped at tier_max=1`);
       const caps = JSON.parse(r.capabilities_json) as string[];
-      assert.ok(caps.includes("reports.publish"), `${r.agent_id} must be able to publish reports`);
+      // HAIC H3e: nexus-teacher only relays the owner's Nexus corrections; it holds corrections.record and nothing else.
+      if (r.agent_id === "nexus-teacher") assert.deepEqual(caps, ["corrections.record"], "nexus-teacher holds corrections.record only");
+      else assert.ok(caps.includes("reports.publish"), `${r.agent_id} must be able to publish reports`);
     }
     const caps = JSON.parse(r.capabilities_json) as string[];
     assert.ok(caps.length > 0);
