@@ -142,7 +142,9 @@ test("AL3. wiring: the vault Durable Object, the Console routes and page, the me
   assert.match(toml, /name = "ALERT_VAULT_NS"\nclass_name = "AlertVault"/);
   assert.match(toml, /tag = "v4"\nnew_sqlite_classes = \["AlertVault"\]/);
   assert.match(read("ai-kernel/src/worker.ts"), /export class AlertVault extends DurableObject<Env>/);
-  assert.match(read("console/ui/src/components/AppShell.tsx"), /href="#\/alerts"/);
+  // Frontend mockup 2026-11-22 (owner approved): Alerts moved from the account menu into the nav (group Admin).
+  assert.match(read("console/ui/src/components/AppShell.tsx"), /\{ label: "Alerts", href: "#\/alerts", key: "alerts", icon: BellRing \}/);
+  assert.match(read("console/ui/src/components/AppShell.tsx"), /\{ title: "Admin", keys: \["users", "alerts"\] \}/);
   assert.match(read("console/ui/src/App.tsx"), /case "alerts": page = <Alerts \/>/);
   const page = read("console/ui/src/pages/Alerts.tsx");
   assert.match(page, /type="password"/, "the token field is masked");

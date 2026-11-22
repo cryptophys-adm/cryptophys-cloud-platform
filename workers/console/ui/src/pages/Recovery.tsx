@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Plus, Trash2, Wrench } from "lucide-react";
-import { Badge, Empty, Field, Panel, Skeleton } from "../components/ui";
+import { Badge, Empty, ErrorBox, Field, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -53,6 +53,7 @@ export default function Recovery() {
   const rows = listOf(plans.data, "plans");
   return (
     <div className="flex flex-col gap-3">
+      <ErrorBox error={plans.error ?? services.error} onRetry={() => { void plans.refresh(); void services.refresh(); }} stale={Boolean(plans.data)} />
       <Panel title="Recovery Plans" icon={<Wrench className="h-3.5 w-3.5 text-amber-300" />}
         right={<div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 text-[11px] text-slate-400"><input type="checkbox" checked={synthetic} onChange={(e) => setSynthetic(e.target.checked)} />deploy checks</label>

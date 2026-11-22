@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft, Bot, KeyRound, Pause, Play, Zap } from "lucide-react";
-import { Badge, Dot, Empty, Field, JsonView, Panel, Skeleton } from "../components/ui";
+import { Badge, Dot, Empty, ErrorBox, Field, JsonView, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -39,6 +39,7 @@ export default function AgentDetail({ id }: { id: string }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <ErrorBox error={agent.error ?? actions.error ?? rep.error} onRetry={() => { void agent.refresh(); void actions.refresh(); void rep.refresh(); }} stale={Boolean(agent.data)} />
       <a href="#/agents" className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-slate-500 hover:text-cyan-300"><ArrowLeft className="h-3 w-3" />AI Mesh</a>
       <Panel title={<span className="mono normal-case tracking-normal text-slate-200">{id}</span>} icon={<Bot className="h-3.5 w-3.5 text-cyan-300" />}
         right={<div className="flex gap-2"><Badge tone={a.status === "enabled" ? "green" : "slate"}>{a.status ?? "—"}</Badge><Badge tone="purple">tier {a.tier_max ?? "—"}</Badge></div>}>

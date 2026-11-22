@@ -4,14 +4,14 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useOverview } from "../lib/overview";
 import { ago, listOf } from "../lib/format";
-import { ActivityChart, CATEGORICAL, DataTable, STATUS, StatusBar, bucketize } from "../components/viz";
+import { ActivityChart, DataTable, StatusBar, bucketize } from "../components/viz";
 
-// Display only: the share of advisory decisions per kind, never an instruction. Polarity, so the
-// diverging pair (blue <-> red) with a neutral gray middle, not the status colours.
+// Display only: the share of advisory decisions per kind, never an instruction. Frontend mockup 2026-11-22 (owner
+// approved): the trading colours, each with its own glyph so the kind never rests on colour alone. Green is for bullish only.
 const DECISION = [
-  { key: "BUY", label: "BUY (advisory)", color: CATEGORICAL[0] },
-  { key: "HOLD", label: "HOLD / other", color: STATUS.neutral },
-  { key: "SELL", label: "SELL (advisory)", color: CATEGORICAL[7] },
+  { key: "BUY", label: "▲ BUY (advisory)", color: "#1a9c50" },
+  { key: "HOLD", label: "■ HOLD / other", color: "#d9a21b" },
+  { key: "SELL", label: "▼ SELL (advisory)", color: "#c23a3a" },
 ];
 const dKey = (d?: string) => (d === "BUY" || d === "SELL" ? d : "HOLD");
 

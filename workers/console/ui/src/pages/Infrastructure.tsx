@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { ChevronRight, Eye, Server } from "lucide-react";
-import { Badge, Dot, Panel, Skeleton } from "../components/ui";
+import { Badge, Dot, ErrorBox, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -34,6 +34,7 @@ export default function Infrastructure() {
 
   return (
     <div className="flex flex-col gap-3">
+      <ErrorBox error={reg.error ?? drift.error} onRetry={reload} stale={Boolean(reg.data)} />
       <Panel title="Services & Drift" icon={<Server className="h-3.5 w-3.5 text-cyan-300" />}
         right={<button type="button" className="btn" disabled={busy} onClick={() => { setBusy(true); act({ route: "drift.observe", body: {}, title: "Observe now", done: "Observation complete.", after: () => { setBusy(false); reload(); }, onError: () => setBusy(false) }); }}>
           <Eye className="h-3.5 w-3.5" />{busy ? "Observing…" : "Observe now"}</button>}>

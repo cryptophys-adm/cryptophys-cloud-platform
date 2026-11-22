@@ -70,3 +70,18 @@ export function Field({ label, children, className }: { label: string; children:
 export function severityTone(s?: string): "red" | "amber" | "green" | "slate" {
   return s === "critical" ? "red" : s === "warning" ? "amber" : s === "info" ? "green" : "slate";
 }
+
+/**
+ * A load that failed (frontend mockup 2026-11-22, owner approved): what failed, in the API's own words, and a Retry.
+ * Renders nothing without an error. Data already shown stays; the box says it may be stale.
+ */
+export function ErrorBox({ error, onRetry, stale = false }: { error: string | null | undefined; onRetry: () => void; stale?: boolean }) {
+  if (!error) return null;
+  return (
+    <div role="alert" className="glass flex flex-wrap items-center gap-3 border-red-500/30 px-4 py-3 text-[13px]">
+      <span aria-hidden="true" className="inline-block h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px] border-red-500 bg-red-500" />
+      <span className="flex-1 text-red-200">{stale ? "Refresh failed; showing the last data. " : "Could not load this page. "}<span className="mono text-red-300/80">{error}</span></span>
+      <button type="button" className="btn" onClick={onRetry}>Retry</button>
+    </div>
+  );
+}

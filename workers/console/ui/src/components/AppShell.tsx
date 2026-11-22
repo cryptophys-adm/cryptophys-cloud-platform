@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import {
-  Activity, Bot, Brain, CandlestickChart, ChevronRight, Database, GitBranch, Menu, Scale, Server, ShieldCheck,
+  Activity, Bot, Brain, CandlestickChart, Database, GitBranch, Menu, Scale, Server,
   Sparkles, Terminal, Wrench, X, ExternalLink, Home, Gavel, Users,
   FolderGit2, LogOut, UserRound, ArrowLeftRight, Inbox, BellRing, Compass, MessageSquareText, UsersRound, FileCheck2, Gauge } from "lucide-react";
 import { ACCESS_LOGOUT, SWITCH_ACCOUNT } from "../lib/api";
@@ -10,36 +10,49 @@ import { useOverview } from "../lib/overview";
 import { Dot } from "./ui";
 import CognitionPanel from "./CognitionPanel";
 import LiveEventBus from "./LiveEventBus";
-import { ago } from "../lib/format";
+import { StatusRow, StatusStrip } from "./HeaderStatus";
 import { serviceName } from "../lib/plain";
 
 export const NAV = [
   // Owner 2026-11-13: approvals and open critical reports, the only things that need a person, come first.
   { label: "Owner", href: "#/owner", key: "owner", icon: Inbox },
   { label: "Command", href: "#/", key: "", icon: Terminal },
+  { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
+  { label: "Markets", href: "#/markets", key: "markets", icon: CandlestickChart },
   // HAIC H1c: the owners' read-only chat with the organism.
   { label: "Ask", href: "#/ask", key: "ask", icon: MessageSquareText },
   // HAIC H1.5c: Call for Councils (evidence-bound deliberations that end in options for the owner's pick).
   { label: "Councils", href: "#/councils", key: "councils", icon: UsersRound },
   // HAIC H2: typed proposals (drafts the owner confirms or rejects).
   { label: "Proposals", href: "#/proposals", key: "proposals", icon: FileCheck2 },
-  { label: "Organism", href: "#/organism", key: "organism", icon: Sparkles },
-  // ADR-0016 T0: the vision the organism grows toward (read-only).
-  { label: "Vision", href: "#/vision", key: "vision", icon: Compass },
-  { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
-  { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Consensus", href: "#/consensus", key: "consensus", icon: Gavel },
   // HAIC H4: the autonomy dial (the owner lowers a group of actions, or raises it back to its ADR-0009 class).
   { label: "Autonomy", href: "#/autonomy", key: "autonomy", icon: Gauge },
+  { label: "AI Mesh", href: "#/agents", key: "agents", icon: Bot },
+  { label: "Cognition", href: "#/cognition", key: "cognition", icon: Brain },
   { label: "Knowledge", href: "#/knowledge", key: "knowledge", icon: Sparkles },
+  // ADR-0016 T0: the vision the organism grows toward (read-only).
+  { label: "Vision", href: "#/vision", key: "vision", icon: Compass },
   { label: "Recovery", href: "#/recovery", key: "recovery", icon: Wrench },
   { label: "Infrastructure", href: "#/infrastructure", key: "infrastructure", icon: Server },
-  { label: "Policy", href: "#/policy", key: "policy", icon: Scale },
-  { label: "Ledger", href: "#/ledger", key: "ledger", icon: Database },
   { label: "Pipelines", href: "#/pipelines", key: "pipelines", icon: GitBranch },
   { label: "Code", href: "#/code", key: "code", icon: FolderGit2 },
-  { label: "Markets", href: "#/markets", key: "markets", icon: CandlestickChart },
+  { label: "Policy", href: "#/policy", key: "policy", icon: Scale },
+  { label: "Ledger", href: "#/ledger", key: "ledger", icon: Database },
   { label: "Users", href: "#/users", key: "users", icon: Users },
+  // Frontend mockup 2026-11-22 (owner approved): Alerts moves out of the account menu into the nav.
+  { label: "Alerts", href: "#/alerts", key: "alerts", icon: BellRing },
+];
+
+/** The nav's groups (frontend mockup 2026-11-22, owner approved), by NAV key, in NAV order. */
+export const NAV_GROUPS: { title: string; keys: string[] }[] = [
+  { title: "Live", keys: ["owner", "", "organism", "markets"] },
+  { title: "Decide", keys: ["ask", "councils", "proposals", "consensus", "autonomy"] },
+  { title: "Agents", keys: ["agents", "cognition"] },
+  { title: "Knowledge", keys: ["knowledge", "vision"] },
+  { title: "Operations", keys: ["recovery", "infrastructure", "pipelines", "code"] },
+  { title: "Audit", keys: ["policy", "ledger"] },
+  { title: "Admin", keys: ["users", "alerts"] },
 ];
 
 function PriorityQueue() {
@@ -90,25 +103,6 @@ function OrganStrip() {
   );
 }
 
-function Doctrine() {
-  const { ov } = useOverview();
-  const verified = ov?.agents_enabled !== undefined;
-  return (
-    <div className="glass p-4">
-      <div className="eyebrow mb-3">Cockpit Doctrine</div>
-      <div className="space-y-2 text-[13px] text-slate-400">
-        <div className="flex items-center gap-2"><ChevronRight className="h-4 w-4 text-cyan-300" />No anonymous operator surface</div>
-        <div className="flex items-center gap-2"><ChevronRight className="h-4 w-4 text-cyan-300" />Every action links to evidence</div>
-        <div className="flex items-center gap-2"><ChevronRight className="h-4 w-4 text-cyan-300" />Advisory only: no orders, no funds</div>
-        <div className="flex items-center gap-2">
-          <ChevronRight className={`h-4 w-4 ${verified ? "text-emerald-300" : "text-slate-500"}`} />
-          <span className={verified ? "text-emerald-300" : "text-slate-500"}>{verified ? "Control plane verified" : "Awaiting control plane"}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** The signed-in person's role, as /api/whoami reports it. */
 export function roleLabel(who: { owner?: boolean; approver: boolean; role?: string; viewer?: boolean }): string {
   if (who.owner) return "Owner";
@@ -133,7 +127,6 @@ function AccountMenu() {
           <div className="mono break-all text-[12px] text-slate-200">{who.actor}</div>
           <div className="mt-1 text-[11px] text-cyan-200">{roleLabel(who)}</div>
         </div>
-        <a role="menuitem" href="#/alerts" className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><BellRing className="h-4 w-4 text-slate-500" />Alerts</a>
         <a role="menuitem" href={SWITCH_ACCOUNT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-slate-300 hover:bg-white/5 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
         <a role="menuitem" href={ACCESS_LOGOUT} className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-rose-200 hover:bg-rose-500/10"><LogOut className="h-4 w-4" />Sign out</a>
       </div>
@@ -141,89 +134,83 @@ function AccountMenu() {
   );
 }
 
+/** The Owner item's badge: open critical reports plus plans waiting for approval, as the overview reports them. */
+function ownerCount(ov: ReturnType<typeof useOverview>["ov"]): number | null {
+  const critical = ov?.agent_reports_24h?.latest_critical;
+  const plans = ov?.open_agent_plans;
+  return critical && plans ? critical.length + plans.length : null;
+}
+
 export default function AppShell({ current, children }: { current: string; children: ReactNode }) {
   const { who } = useSession();
   const { ov } = useOverview();
   const [open, setOpen] = useState(false);
-  const agentsOn = ov?.agents_enabled;
+  const owner = ownerCount(ov);
+  const byKey = new Map(NAV.map((n) => [n.key, n]));
 
-  const navLinks = (mobile: boolean) => NAV.map((item) => {
+  const navLink = (item: (typeof NAV)[number], mobile: boolean) => {
     const active = item.key === current;
     return (
       <a key={item.key} href={item.href} onClick={() => setOpen(false)} aria-current={active ? "page" : undefined}
-        className={`inline-flex items-center gap-2 rounded-md border font-semibold transition ${mobile ? "px-4 py-3 text-[13px]" : "px-3 py-2 text-[12px]"} ${active ? "border-cyan-400/40 bg-cyan-400/10 text-white" : "border-transparent text-slate-400 hover:border-white/10 hover:bg-white/5 hover:text-white"}`}>
-        <item.icon className={`h-4 w-4 ${active ? "text-cyan-300" : "text-slate-500"}`} />{item.label}
+        className={`flex items-center gap-2.5 rounded-md border font-semibold transition ${mobile ? "min-h-[44px] px-4 text-[13px]" : "px-2.5 py-1.5 text-[12.5px]"} ${active ? "border-cyan-400/40 bg-cyan-400/10 text-white" : "border-transparent text-slate-400 hover:border-white/10 hover:bg-white/5 hover:text-white"}`}>
+        <item.icon className={`h-4 w-4 shrink-0 ${active ? "text-cyan-300" : "text-slate-500"}`} />
+        <span className="flex-1">{item.label}</span>
+        {item.key === "owner" && owner !== null && owner > 0 && <span className="mono rounded-full bg-red-500/15 px-1.5 text-[11px] font-bold text-red-300" title="Open items for the owner">{owner}</span>}
       </a>
     );
-  });
+  };
+  const navGroups = (mobile: boolean) => NAV_GROUPS.map((g) => (
+    <div key={g.title} className="flex flex-col gap-0.5">
+      <div className="px-2.5 pb-1 pt-3 text-[11px] font-semibold text-slate-500">{g.title}</div>
+      {g.keys.map((k) => byKey.get(k)).filter((n): n is (typeof NAV)[number] => Boolean(n)).map((n) => navLink(n, mobile))}
+    </div>
+  ));
 
   return (
     <div className="min-h-screen text-slate-100">
       <header className="relative z-30 border-b border-white/10 bg-obsidian-panel/90 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-[1680px] items-center gap-3 px-3 py-3 sm:px-6 sm:py-4">
+        <div className="mx-auto flex max-w-[1680px] items-center gap-3 px-3 py-3 sm:px-6">
+          <button type="button" className="rounded-md border border-white/10 bg-white/4 p-2.5 text-slate-400 hover:text-white md:hidden"
+            onClick={() => setOpen((o) => !o)} aria-label="Toggle navigation" aria-expanded={open}>
+            {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
           <a href="https://nexus.cryptophys.work/" className="flex items-center gap-3" aria-label="Nexus home">
-            <motion.div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-400/10 sm:h-11 sm:w-11"
+            <motion.div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-400/10"
               animate={{ boxShadow: ["0 0 0 rgba(34,211,238,0)", "0 0 22px rgba(34,211,238,0.35)", "0 0 0 rgba(34,211,238,0)"] }}
               transition={{ duration: 4, repeat: Infinity }}>
-              <Activity className="h-4 w-4 text-cyan-300 sm:h-5 sm:w-5" />
+              <Activity className="h-4 w-4 text-cyan-300" />
             </motion.div>
             <div>
-              <div className="text-xs uppercase tracking-[0.35em] text-cyan-300/80">Cryptophys Cerebrum</div>
-              <div className="text-sm font-semibold text-white">Autonomous Mission Control</div>
+              <div className="text-[12px] font-semibold text-cyan-300/90">Cryptophys Cerebrum</div>
+              <div className="text-sm font-semibold text-white">Mission Control</div>
             </div>
           </a>
-          <div className="ml-auto hidden items-center gap-2 sm:flex">
-            <span className="chip border-emerald-400/20 bg-emerald-400/10 text-emerald-300"><ShieldCheck className="h-3 w-3" />Access Verified</span>
-            <span className={`chip ${who.approver ? "border-violet-400/20 bg-violet-400/10 text-violet-200" : "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"}`}>{roleLabel(who)}</span>
-            <span className={`chip ${agentsOn === false ? "border-rose-400/20 bg-rose-400/10 text-rose-300" : "border-amber-400/20 bg-amber-400/10 text-amber-200"}`}>
-              <Dot tone={agentsOn === false ? "red" : "green"} pulse={agentsOn !== false} />{agentsOn === false ? "Mesh halted" : "Mesh live"}
-            </span>
+          <div className="ml-auto hidden lg:block"><StatusStrip /></div>
+          <div className="ml-auto flex items-center gap-2 lg:ml-0">
+            <span className={`chip hidden sm:inline-flex ${who.approver ? "border-violet-400/20 bg-violet-400/10 text-violet-200" : "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"}`}>{roleLabel(who)}</span>
             <AccountMenu />
           </div>
-          <button type="button" className="ml-auto rounded-md border border-white/10 bg-white/4 p-2 text-slate-400 hover:text-white md:hidden"
-            onClick={() => setOpen((o) => !o)} aria-label="Toggle navigation" aria-expanded={open}>
-            {open ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
-          </button>
         </div>
+        <div className="hidden border-t border-white/10 px-3 py-2 md:block lg:hidden"><StatusStrip /></div>
+        <StatusRow />
       </header>
 
-      <nav className="border-b border-white/10 bg-obsidian-bar" aria-label="Console">
-        <div className="mx-auto flex max-w-[1680px] items-center gap-2 px-3 py-3 sm:px-6">
-          <div className="hidden flex-wrap items-center gap-1 md:flex">{navLinks(false)}</div>
-          <div className="flex items-center gap-2 md:hidden">
-            {NAV.filter((n) => n.key === current).map((n) => <span key={n.key} className="inline-flex items-center gap-2 text-[12px] font-semibold text-white"><n.icon className="h-4 w-4 text-cyan-300" />{n.label}</span>)}
-          </div>
-          <div className="ml-auto hidden items-center gap-2 rounded-md border border-white/10 bg-white/3 px-3 py-2 text-[11px] uppercase tracking-[0.2em] text-slate-500 lg:flex">
-            <Sparkles className="h-3.5 w-3.5 text-cyan-300" />Observe → reason → act → attest
-          </div>
-        </div>
-        {open && (
-          <div className="mx-auto flex max-w-[1680px] flex-col gap-1 px-3 pb-3 md:hidden">
-            {navLinks(true)}
-            <a href="https://nexus.cryptophys.work/" className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><Home className="h-4 w-4 text-slate-500" />Nexus</a>
-            <div className="mt-1 border-t border-white/10 px-4 pt-3 text-[11px] text-slate-500">Signed in as <span className="mono break-all text-slate-300">{who.actor}</span> · {roleLabel(who)}</div>
-            <a href={SWITCH_ACCOUNT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-slate-400 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
-            <a href={ACCESS_LOGOUT} className="inline-flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-semibold text-rose-200 hover:text-rose-100"><LogOut className="h-4 w-4" />Sign out</a>
-          </div>
-        )}
-      </nav>
+      {open && (
+        <nav className="border-b border-white/10 bg-obsidian-bar px-3 pb-3 md:hidden" aria-label="Console">
+          {navGroups(true)}
+          <a href="https://nexus.cryptophys.work/" className="mt-2 flex min-h-[44px] items-center gap-3 rounded-md px-4 text-[13px] font-semibold text-slate-400 hover:text-white"><Home className="h-4 w-4 text-slate-500" />Nexus</a>
+          <div className="mt-1 border-t border-white/10 px-4 pt-3 text-[12px] text-slate-500">Signed in as <span className="mono break-all text-slate-300">{who.actor}</span> · {roleLabel(who)}</div>
+          <a href={SWITCH_ACCOUNT} className="flex min-h-[44px] items-center gap-3 rounded-md px-4 text-[13px] font-semibold text-slate-400 hover:text-white"><ArrowLeftRight className="h-4 w-4 text-slate-500" />Switch account</a>
+          <a href={ACCESS_LOGOUT} className="flex min-h-[44px] items-center gap-3 rounded-md px-4 text-[13px] font-semibold text-rose-200 hover:text-rose-100"><LogOut className="h-4 w-4" />Sign out</a>
+        </nav>
+      )}
 
       <div className="mx-auto flex max-w-[1680px] gap-5 px-3 py-3 sm:px-6 sm:py-5">
-        <aside className="hidden w-[260px] shrink-0 flex-col gap-4 xl:flex">
-          <PriorityQueue />
-          <Doctrine />
+        <aside className="hidden w-[230px] shrink-0 flex-col gap-4 md:flex">
+          <nav className="glass p-2" aria-label="Console">{navGroups(false)}</nav>
+          <div className="hidden xl:block"><PriorityQueue /></div>
         </aside>
-        <main className="min-w-0 flex-1">
-          <div className="glass mb-5 flex flex-wrap items-center gap-2 px-4 py-3 text-[11px] uppercase tracking-[0.2em] text-slate-400">
-            <span className="text-cyan-300">identity</span>
-            <span className="mono normal-case tracking-normal text-slate-200">{who.actor}</span>
-            <span className="text-slate-600">|</span>
-            <span>source</span><span className="mono normal-case tracking-normal text-slate-300">cloudflare-access</span>
-            <span className="text-slate-600">|</span>
-            <span>observed</span><span className="mono normal-case tracking-normal text-slate-300">{ago(ov?.observed_at)}</span>
-          </div>
-          {children}
-        </main>
+        <main className="min-w-0 flex-1">{children}</main>
         <aside className="hidden w-[320px] shrink-0 flex-col gap-4 2xl:flex">
           <CognitionPanel />
           <LiveEventBus />
@@ -231,7 +218,7 @@ export default function AppShell({ current, children }: { current: string; child
       </div>
 
       <footer className="sticky bottom-0 z-20 border-t border-white/10 bg-obsidian-foot/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-[1680px] items-center gap-4 overflow-x-auto px-3 py-3 text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500 sm:px-6">
+        <div className="mx-auto flex max-w-[1680px] items-center gap-4 overflow-x-auto px-3 py-3 text-[12px] font-medium text-slate-500 sm:px-6">
           <OrganStrip />
           <a href="https://nexus.cryptophys.work/" className="ml-auto inline-flex items-center gap-1 whitespace-nowrap text-cyan-300/80 hover:text-cyan-200">Nexus <ExternalLink className="h-3 w-3" /></a>
         </div>

@@ -9,7 +9,7 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react";
-import { Badge, Dot, Empty, Panel } from "../components/ui";
+import { Badge, Dot, Empty, ErrorBox, Panel } from "../components/ui";
 import { useOverview } from "../lib/overview";
 import CloudflareUsage from "../components/CloudflareUsage";
 import ObserverVitals from "../components/ObserverVitals";
@@ -45,7 +45,7 @@ export default function Organism() {
   const aetherService = services.find((s) => s.service_id === "cryptophys-aether");
 
   // Live values from AI Kernel (GET /v1/metabolism), never computed or invented in the browser.
-  const { data } = usePoll(() => call("kernel.metabolism"), 60_000);
+  const { data, error, refresh } = usePoll(() => call("kernel.metabolism"), 60_000);
   const live: any = data?.live ?? {};
   const cycles = listOf(data, "cycles");
   const ledger = listOf(data, "ledger");
@@ -82,6 +82,7 @@ export default function Organism() {
 
   return (
     <div className="flex flex-col gap-4">
+      <ErrorBox error={error} onRetry={() => void refresh()} stale={Boolean(data)} />
       {/* Header Banner */}
       <div className="glass p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

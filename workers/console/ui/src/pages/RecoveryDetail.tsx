@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AlertTriangle, ArrowLeft, Ban, Bot, Check, CircleDashed, ExternalLink, Loader2, Lock, MinusCircle, ShieldCheck, XCircle } from "lucide-react";
-import { Badge, Panel, Skeleton } from "../components/ui";
+import { Badge, ErrorBox, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -86,7 +86,7 @@ export default function RecoveryDetail({ id }: { id: string }) {
   const { who, act } = useSession();
   // Poll quickly while the AI is working; stop when the plan is settled.
   const [live, setLive] = useState(true);
-  const { data, loading, refresh } = usePoll(async () => {
+  const { data, loading, error, refresh } = usePoll(async () => {
     const r = await call("recovery.plan", id);
     const st = (r?.plan ?? r)?.status;
     setLive(st === "approved" || st === "executing");
@@ -99,6 +99,7 @@ export default function RecoveryDetail({ id }: { id: string }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <ErrorBox error={error} onRetry={reload} stale={Boolean(data)} />
       <a href="#/recovery" className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-slate-500 hover:text-cyan-300"><ArrowLeft className="h-3 w-3" />Recovery</a>
       <Panel title={<span className="mono normal-case tracking-normal text-slate-200">{pid}</span>} right={<Badge tone={(plan.resolution ? "green" : statusTone(plan.status)) as any}>{plan.resolution ? "superseded" : plan.status ?? "—"}</Badge>}>
         {loading && !data ? <Skeleton rows={5} /> : (
