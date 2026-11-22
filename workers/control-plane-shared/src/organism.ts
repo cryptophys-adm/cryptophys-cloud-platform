@@ -173,7 +173,8 @@ export const EXTERNAL_CEILING = Object.freeze({
  * the two doctrine actions and nothing else, as the kernel already enforces (ai-kernel/src/consensus.ts propose,
  * doctrine.ts DOCTRINE_ACTIONS); amend_constitution stays critical (the owner's click). An Aether agent not named
  * here has only what both ceilings allow (signals.observe, reports.publish): no memory, trading, deploy, merge or
- * fund capability, no seat, tier 1.
+ * fund capability, no seat, tier 1. HAIC H3e (docs/design/HAIC-H3.md §7.3; owner 2026-11-19) adds one read: the
+ * curator's corrections.read (tier 0), the Aether pull of the Nexus corrections.
  */
 export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
   tier_max: 1,
@@ -181,7 +182,9 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
   agents: Object.freeze({
     "aether-guardian": Object.freeze(["signals.observe", "reports.publish"]),
     "aether-auditor": Object.freeze(["signals.observe", "reports.publish"]),
-    "aether-curator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status"]),
+    // HAIC H3e (docs/design/HAIC-H3.md §7.3; owner 2026-11-19): the curator pulls the Nexus corrections (read only), once
+    // Aether's own DNA declares it (the census's update_agent_capabilities, routine).
+    "aether-curator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status", "corrections.read"]),
     "aether-calibrator": Object.freeze(["reports.publish", "knowledge.propose", "knowledge.status"]),
     "knowledge-council": Object.freeze(["consensus.propose", "doctrine.status", "reports.publish"]),
   }),
@@ -194,13 +197,17 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
  * xauusd's ceiling (ADR-0014 §11, docs/design/EVOLVER.md §8; owner 2026-11-17: "aktifkan evolver sekarang termasuk jalur
  * balik"). Every xauusd agent keeps exactly EXTERNAL_CEILING. Only the council's moderator, which hands owner-accepted
  * council tasks to the platform, may also read their state back (council.decisions.read, tier 0, read only). No seat,
- * no proposal, tier 1, as before.
+ * no proposal, tier 1, as before. HAIC H3e (docs/design/HAIC-H3.md §7.2; owner 2026-11-19): nexus-teacher, which relays
+ * the owner's Nexus corrections, holds corrections.record (tier 1, learning) and only that.
  */
 export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
   tier_max: EXTERNAL_CEILING.tier_max,
   capabilities: EXTERNAL_CEILING.capabilities,
   agents: Object.freeze({
     "xauusd-moderator": Object.freeze([...EXTERNAL_CEILING.capabilities, "council.decisions.read"]),
+    // HAIC H3e (docs/design/HAIC-H3.md §7.2; owner 2026-11-19, "Setuju semua rekomendasi"): the dedicated sender of the
+    // owner's Nexus corrections (migration 0086). It holds corrections.record and nothing else, not even EXTERNAL_CEILING.
+    "nexus-teacher": Object.freeze(["corrections.record"]),
   }),
   proposals: Object.freeze({}),
 });

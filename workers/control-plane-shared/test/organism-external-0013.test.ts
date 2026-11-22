@@ -54,11 +54,14 @@ const organ = (service: string, agents: unknown[] = [], engines: string[] = []) 
 });
 const agent = (id: string, capabilities = CAPS, extra: Record<string, unknown> = {}) => ({ id, display_name: id, capabilities, tier_max: 1, voter: false, ...extra });
 
-/** The XAUUSD DNA as served: the 13 agents registered today, plus what the test grows. */
+/**
+ * The XAUUSD DNA as served: the 14 agents registered today, plus what the test grows. Each declares what it holds: the
+ * general ceiling, except nexus-teacher (HAIC H3e, migration 0086), which declares corrections.record only.
+ */
 function xauusdDna(db: Db, grow: { agents?: unknown[]; engines?: string[] } = {}) {
   const grown = new Set((grow.agents ?? []).map((a) => (a as { id: string }).id));
   const live = (db.raw.prepare("SELECT agent_id FROM agents WHERE host_worker = ? ORDER BY agent_id").all(AI) as Array<{ agent_id: string }>)
-    .filter((r) => !grown.has(r.agent_id)).map((r) => agent(r.agent_id));
+    .filter((r) => !grown.has(r.agent_id)).map((r) => agent(r.agent_id, r.agent_id === "nexus-teacher" ? ["corrections.record"] : CAPS));
   return {
     schema: XAUUSD.schema,
     organs: [
@@ -111,7 +114,7 @@ test("X1. the external ceiling: tier 1, no seat, four capabilities; organs outsi
   assert.throws(() => externalOrgans(XAUUSD, { schema: "other", organs: [] }), /not xauusd-organism\.v1/);
 });
 
-test("X2. the census reads XAUUSD's DNA next to main's: today's 13 agents are consistent; organs carry their origin", async () => {
+test("X2. the census reads XAUUSD's DNA next to main's: today's 14 agents are consistent; organs carry their origin", async () => {
   const db = registeredDb();
   const r = await censusTick(db as never, repoWith(realDna()), Date.now(), reader(() => xauusdDna(db)));
   assert.equal(r.status, "consistent", JSON.stringify((db.raw.prepare("SELECT findings FROM forge_organism_census").get() as any)?.findings));
@@ -120,7 +123,7 @@ test("X2. the census reads XAUUSD's DNA next to main's: today's 13 agents are co
   const census = (await latestCensusRow({ DB: db } as never))!;
   const ai = census.genome.find((o) => o.service === AI)!;
   assert.equal(ai.origin, "xauusd");
-  assert.equal(ai.agents.length, 13);
+  assert.equal(ai.agents.length, 14);
   assert.equal(census.genome.find((o) => o.service === "cryptophys-ai-kernel")!.origin, undefined, "main's organs have no origin");
 });
 

@@ -1,6 +1,6 @@
 # Design: HAIC H3 (corrections and ratings become knowledge)
 
-Status: accepted by the owner on 2026-11-19; H3a built.
+Status: accepted by the owner on 2026-11-19; H3a–H3d built; H3e built on 2026-11-22 (one owner change, `merge_owner_change`; migration 0086).
 
 - **Implements:** ADR-0017 Decision 4 ("Teaching: owner corrections become knowledge (Nexus)"), owner decision 3 of 2026-11-14 ("Corrections in Nexus are recorded as high-weight learning"), and phase H3 of `docs/design/HAIC-H0-H1.md` §5.
 - **Reads with:**

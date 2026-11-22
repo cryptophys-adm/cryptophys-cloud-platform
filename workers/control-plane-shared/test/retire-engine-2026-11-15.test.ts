@@ -69,10 +69,10 @@ const organ = (service: string, agents: unknown[] = [], engines: string[] = []) 
   $schema_version: 1, service, display_name: service, kind: "service", deploy_unit: null, access: false, rollback: false,
   drift: { via: "rpc", binding: "EXT_XAUUSD_AI" }, agents, engines: engines.map((task) => ({ task })),
 });
-/** The XAUUSD DNA as served: its registered agents, and these engines on the AI Worker. */
+/** The XAUUSD DNA as served: its registered agents, and these engines on the AI Worker (nexus-teacher, 0086: corrections.record only). */
 function xauusdDna(db: Db, engines: string[] = []) {
   const live = (db.raw.prepare("SELECT agent_id FROM agents WHERE host_worker = ? ORDER BY agent_id").all(AI) as Array<{ agent_id: string }>)
-    .map((r) => ({ id: r.agent_id, display_name: r.agent_id, capabilities: [...EXTERNAL_CEILING.capabilities], tier_max: 1, voter: false }));
+    .map((r) => ({ id: r.agent_id, display_name: r.agent_id, capabilities: r.agent_id === "nexus-teacher" ? ["corrections.record"] : [...EXTERNAL_CEILING.capabilities], tier_max: 1, voter: false }));
   return { schema: XAUUSD.schema, organs: [organ(AI, live, engines), ...XAUUSD.services.filter((s) => s !== AI).map((s) => organ(s))] };
 }
 const xauusdRead = (db: Db): ExternalDnaReader[] => [{ origin: XAUUSD, dna: async () => xauusdDna(db) }];
