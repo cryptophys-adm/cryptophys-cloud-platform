@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Database, Download, ShieldCheck } from "lucide-react";
-import { Badge, Empty, Field, JsonView, Panel, Skeleton } from "../components/ui";
+import { Badge, Empty, ErrorBox, Field, JsonView, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -13,7 +13,7 @@ export default function Ledger() {
   const { notify } = useSession();
   const [type, setType] = useState("");
   const [subject, setSubject] = useState("");
-  const { data, loading, refresh } = usePoll(() => call("audit.events", undefined, undefined, { limit: "200", event_type: type.trim(), subject: subject.trim() }), 60_000, [type, subject]);
+  const { data, loading, error, refresh } = usePoll(() => call("audit.events", undefined, undefined, { limit: "200", event_type: type.trim(), subject: subject.trim() }), 60_000, [type, subject]);
   const [verify, setVerify] = useState<any>(null);
   const [detail, setDetail] = useState<any>(null);
   const rows = listOf(data, "events");
@@ -37,6 +37,7 @@ export default function Ledger() {
 
   return (
     <div className="flex flex-col gap-3">
+      <ErrorBox error={error} onRetry={() => void refresh()} stale={Boolean(data)} />
       <Panel title="Hash Chain" icon={<ShieldCheck className="h-3.5 w-3.5 text-emerald-300" />}
         right={<div className="flex gap-2">
           <button type="button" className="btn" onClick={() => call("audit.verify").then(setVerify).catch((e) => notify("err", e.message))}><ShieldCheck className="h-3.5 w-3.5" />Verify chain</button>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Badge, JsonView, Panel, Skeleton } from "../components/ui";
+import { Badge, ErrorBox, JsonView, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useSession } from "../lib/session";
@@ -17,7 +17,7 @@ const failedChecks = (reason: unknown) => String(reason ?? "").replace(/^failed:
 
 export default function Policy() {
   const { notify } = useSession();
-  const { data, loading } = usePoll(() => call("policy.decisions", undefined, undefined, { limit: "100" }), 60_000);
+  const { data, loading, error, refresh } = usePoll(() => call("policy.decisions", undefined, undefined, { limit: "100" }), 60_000);
   const [detail, setDetail] = useState<any>(null);
   const [check, setCheck] = useState<string | null>(null);
   const rows = listOf(data, "decisions");
@@ -41,6 +41,7 @@ export default function Policy() {
 
   return (
     <div className="flex flex-col gap-3">
+      <ErrorBox error={error} onRetry={() => void refresh()} stale={Boolean(data)} />
       {stats.length > 0 && (
         <div className="grid gap-3 lg:grid-cols-2">
           <Panel title={`Decisions over time · last ${stats.length}`} right={manual > 0 ? <span className="text-[10px] text-slate-500">{manual} manual evaluation{manual === 1 ? "" : "s"} not counted</span> : undefined}>
