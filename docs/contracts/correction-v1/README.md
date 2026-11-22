@@ -19,7 +19,8 @@ contract, the wording of messages is not.
 
 Rules that every side keeps:
 - a correction is never refused for its content: secrets are redacted, price-like numbers masked as `[level]`, text
-  truncated to 500 characters, an unknown category stored as `other`; each step is flagged in `redactions`;
+  truncated to 500 characters, an unknown category stored as `other` with the typed word kept as `category_raw`, made
+  safe the same way (secrets redacted, prices masked, at most 60 characters; 2026-11-22); each step is flagged in `redactions`;
 - a record never carries a parameter, a value to set or a price-like field; a correction changes no trading parameter,
   no weight, no proposal and no gate;
 - weight 3 for the owner's ratings and corrections, 1 for the owner's reject reasons, 2 for H5 reviewers and 1 for any
