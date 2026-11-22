@@ -151,10 +151,24 @@ async function reportIncident(db: D1Database, id: string, report: ReportRow): Pr
   const done = (await rows<{ report_id: string; created_at: string }>(db,
     "SELECT report_id, created_at FROM agent_reports WHERE subject = ? AND created_at > ? ORDER BY created_at LIMIT 1", `Resolved: ${report.subject}`.slice(0, 300), report.created_at))[0] ?? null;
   if (done) timeline.push({ at: done.created_at, kind: "resolved_report", text: `Resolved report: ${clip(report.subject, 180)}`, ref: done.report_id });
+  // An out-of-band report (deployment-orchestrator, body.out_of_band, alert_key out_of_band:<worker>:<version>) is resolved
+  // when the Orchestrator later records that the same Worker no longer runs that version (deployment.out_of_band_cleared,
+  // payload.was_version_id): nobody writes a "Resolved:" report for it (2026-11-22: the kernel's upload of 21 Nov was
+  // restored at 22:40 that day and still showed as mitigated).
+  const body = parse(report.body_json);
+  const oob = body.out_of_band === true && typeof body.alert_key === "string" ? /^out_of_band:([a-z0-9-]+):([0-9a-f-]{8,})$/.exec(body.alert_key) : null;
+  const cleared = !done && oob ? (await rows<{ created_at: string; payload_json: string | null }>(db,
+    "SELECT created_at, payload_json FROM audit_events WHERE event_type = 'deployment.out_of_band_cleared' AND subject = ? AND created_at > ? ORDER BY created_at LIMIT 20", oob[1], report.created_at))
+    .find((e) => String(parse(e.payload_json).was_version_id ?? "").startsWith(oob[2])) ?? null : null;
+  if (cleared) {
+    const p = parse(cleared.payload_json);
+    timeline.push({ at: cleared.created_at, kind: "out_of_band_cleared", text: `${serviceName(oob![1])} runs a platform version again${p.tag ? ` (${clip(p.tag, 40)})` : ""}` });
+  }
+  const resolvedAt = done?.created_at ?? cleared?.created_at ?? null;
   return {
-    incident_id: id, title: clip(report.subject, 200), status: done ? "resolved" : ack ? "mitigated" : "open",
-    status_reason: done ? "the reporting agent reported it resolved" : ack ? "acknowledged; not reported resolved yet" : "not acknowledged",
-    opened_at: report.created_at, mitigated_at: ack?.acknowledged_at ?? null, resolved_at: done?.created_at ?? null,
+    incident_id: id, title: clip(report.subject, 200), status: resolvedAt ? "resolved" : ack ? "mitigated" : "open",
+    status_reason: done ? "the reporting agent reported it resolved" : cleared ? "the Worker runs a platform version again (out-of-band cleared)" : ack ? "acknowledged; not reported resolved yet" : "not acknowledged",
+    opened_at: report.created_at, mitigated_at: ack?.acknowledged_at ?? null, resolved_at: resolvedAt,
     unit: null, services: [], commit: null, report_id: report.report_id, request_id: null, timeline, summary: INCIDENT_SUMMARIES[id] ?? null,
   };
 }
