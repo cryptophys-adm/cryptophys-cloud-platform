@@ -249,6 +249,19 @@ export const DOCTRINE_BOUNDS: Readonly<Record<string, DoctrineBound>> = Object.f
   "liquidity.score_floor": { kind: "number", min: 0.4, max: 0.5 },
   "positioning.score_window": { kind: "integer", min: 40, max: 200 },
   "liquidity.score_window": { kind: "integer", min: 50, max: 300 },
+  // xauusd's Mizan Oracle as a Decision Engine witness (RFC_INDICATOR_ADOPTION stage 5; owner 2026-11-22, relayed by
+  // the coordinator 2026-11-23 and asked of this session directly: "langsung promote saja", "Council naik, auto mati").
+  // Mirrors Aether's DOCTRINE_BOUNDS. Per mode: de_weight, the share of the Decision Engine's witness weight, starting at
+  // 0.02; the council may raise it to 0.04, and 0 is allowed because the witness drops to 0 when its hit share falls
+  // below the floor. Per lens: score_floor, the hit share (start 0.45); score_window, the scored readings (start 100);
+  // min_readings, the scored readings needed before the floor applies (start 40).
+  "mizan.de_weight_scalp": { kind: "number", min: 0, max: 0.04 },
+  "mizan.de_weight_intraday": { kind: "number", min: 0, max: 0.04 },
+  "mizan.de_weight_swing": { kind: "number", min: 0, max: 0.04 },
+  "mizan.de_weight_range": { kind: "number", min: 0, max: 0.04 },
+  "mizan.score_floor": { kind: "number", min: 0.4, max: 0.6 },
+  "mizan.score_window": { kind: "integer", min: 50, max: 200 },
+  "mizan.min_readings": { kind: "integer", min: 20, max: 100 },
 });
 
 export const DOCTRINE_RULE = /^[a-z][a-z0-9_]{2,40}$/;
