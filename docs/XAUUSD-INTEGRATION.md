@@ -37,6 +37,39 @@ Migration 0016 registered **21 agents**. Every one has these properties:
 | `memory.recall` | 0 | — | `{ query ≤ 1000, top_k ≤ 5 }`; only the agent's own memories |
 | `signals.observe` | 0 | — | Not needed. It reads the xauusd API itself. |
 
+**Per-agent grants** (`XAUUSD_CEILING` in `control-plane-shared/src/organism.ts`, a guard path). Three xauusd agents differ from the table above:
+
+| agent_id | Capabilities | Registered by |
+|---|---|---|
+| `xauusd-moderator` | the four above, plus `council.decisions.read` (tier 0, the council return path) | migration 0016; the grant by the census (ADR-0014 §11) |
+| `nexus-teacher` | `corrections.record` only (tier 1, learning) | migration 0086 (HAIC H3e) |
+| `shadow-knowledge` | `knowledge.verdict` only (tier 1, learning: no rate limit) | not seeded: the xauusd DNA declares it, then the census's routine `register_agent` (PF3, 2026-11-24) |
+
+**`knowledge.verdict`** (PF3; owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"). The shadow-knowledge arm writes its verdict on one of Aether's autonomous knowledge items (kinds `caution` and `role_reminder`) back to the platform; Aether's curator reads it with `knowledge.status` (`latest_verdict`). Declare the agent in xauusd's `organism.json` with exactly `capabilities: ["knowledge.verdict"]`, `tier_max: 1` and no seat; any other capability is above the ceiling and the census refuses the gene. The agent id is the one constant `SHADOW_KNOWLEDGE_AGENT`; renaming it is a one-line platform change.
+
+```ts
+await env.AGENTS.syscall("shadow-knowledge", "knowledge.verdict", {
+  item_id: "k-prophet-trap",          // /^k-[a-z0-9-]{1,40}$/, the knowledge item's id
+  item_version: 1,                    // integer 1..999
+  verdict: "not_better",              // live | retired | not_better | worse | holdout_failed (terminal)
+                                      // collecting | inconclusive | not_tested (not terminal)
+  reason: "Treat 9 hits against control 26 over the window.", // 10..300 characters after whitespace is collapsed
+  evidence: {                         // optional, and every key in it is optional; no other key is accepted
+    arm: "treat",                     // /^[a-z0-9_.-]{1,32}$/, no run of 3+ digits
+    window_start: "2026-11-10T00:00:00Z", window_end: "2026-11-23T00:00:00Z", // ISO UTC (Z), stored with milliseconds
+    rows: 140, scored: 35, treat_hits: 9, control_hits: 26, aa_changed: 0, aa_total: 20, // non-negative integers
+    p_value: 0.4124, p_holm: 0.82,    // numbers in 0..1, stored rounded to 4 decimals
+    charts: ["60", "240"],            // at most 8, each /^[0-9]{1,4}$|^[a-z0-9_]{1,16}$/ ("1d", not "1D")
+    rule: "holm_0.05+aa",             // /^[a-z0-9_.+-]{1,40}$/, no run of 3+ digits
+  },
+});
+```
+
+- The proposal is found by `(item_id, item_version)` in any status, from any proposer; the newest when several match. An unknown one fails with `knowledge_proposal_not_found: <item_id>@<version>`; a `param_candidate` fails with `knowledge_verdict_kind_refused`; a bad input fails with `invalid_knowledge_verdict: <errors>` and writes nothing.
+- The reason is never refused for its content: secrets are redacted and prices masked as `[level]`, as in `correction.v1`. A forbidden key (a price, level, entry, stop, take profit, lot, param, action or vote word, as in the self-model) is refused at the top level and in `evidence`.
+- Idempotent on `(proposal, verdict, window_end)`: a repeat returns the stored row with `deduplicated: true`. A new `window_end` is a new row, so send `collecting` with each window's end.
+- The answer: `{ verdict_id, proposal_id, item_id, item_version, verdict, terminal, reason, evidence, window_end, created_at, deduplicated }`. The proposal's status is never changed by a verdict.
+
 **Agents cannot register themselves.** To add, rename or retire an agent, send the platform owner its `agent_id`, display name and purpose. The platform changes the registry through a reviewed D1 migration.
 
 Today the agents **cannot publish**, because the xauusd Worker has no binding to the kernel. The steps below add it.

@@ -124,12 +124,13 @@ test("MB4. in survival the Policy Engine allows knowledge.propose and memory.rem
     assert.equal(res.decision, "allow", `${subject} ${cap}: ${res.reason}`);
     assert.ok(!res.checks.some((c) => c.id === "power_mode_survival"), `${cap} has no survival check`);
   }
-  assert.deepEqual([...LEARNING_CAPABILITIES], ["memory.remember", "knowledge.propose", "corrections.record"]); // corrections.record: HAIC H3e
+  assert.deepEqual([...LEARNING_CAPABILITIES], ["memory.remember", "knowledge.propose", "corrections.record", "knowledge.verdict"]); // corrections.record: HAIC H3e; knowledge.verdict: PF3
   // AI-heavy capabilities are denied in survival; learning and consensus.propose never are, even if listed.
   assert.equal(survivalDenies("ai.heavy_draft", ["ai.heavy_draft"]), true);
   assert.equal(survivalDenies("memory.remember", ["memory.remember"]), false);
   assert.equal(survivalDenies("knowledge.propose", ["knowledge.propose"]), false);
   assert.equal(survivalDenies("corrections.record", ["corrections.record"]), false);
+  assert.equal(survivalDenies("knowledge.verdict", ["knowledge.verdict"]), false);
   assert.equal(survivalDenies("consensus.propose", ["consensus.propose"]), false);
   assert.ok(!SURVIVAL_DENIED_CAPABILITIES.some((c) => LEARNING_CAPABILITIES.includes(c)));
   // Other AI work (drafts, recall embeddings) reserves from survival's quarter budget. The embeddings memory.remember
@@ -146,7 +147,7 @@ test("MB4. in survival the Policy Engine allows knowledge.propose and memory.rem
   assert.equal(await reserved("2026-11-15", 8), 8, "homeostasis: the full budget");
   // The rules the Console shows: nothing blocked by policy today, AI at 25%, learning allowed.
   assert.deepEqual(powerModeEffects("survival"), {
-    mode: "survival", blocked_capabilities: [], learning_capabilities: ["memory.remember", "knowledge.propose", "corrections.record"], never_throttled: ["consensus.propose"],
+    mode: "survival", blocked_capabilities: [], learning_capabilities: ["memory.remember", "knowledge.propose", "corrections.record", "knowledge.verdict"], never_throttled: ["consensus.propose"],
     ai_budget: { ratio: 0.25, max_per_service: 20, max_account: 50 },
   });
   assert.equal(powerModeEffects("growth")!.ai_budget.ratio, 1, "an automatic growth never raises budgets");
@@ -279,7 +280,7 @@ test("MB8. GET /v1/metabolism says the mode, its reason and what it blocks; a va
   assert.match(v.mode.reason, /^market closed \(weekend\)/);
   assert.equal(v.mode.reason_at, new Date(SATURDAY).toISOString());
   assert.deepEqual(v.mode.blocked_capabilities, []);
-  assert.deepEqual(v.mode.learning_capabilities, ["memory.remember", "knowledge.propose", "corrections.record"]);
+  assert.deepEqual(v.mode.learning_capabilities, ["memory.remember", "knowledge.propose", "corrections.record", "knowledge.verdict"]);
   assert.deepEqual(v.mode.ai_budget, { ratio: 0.25, max_per_service: 20, max_account: 50 });
   // No billing reading: the burn and the projection are not measured (null), the budget is.
   assert.deepEqual([v.mode.budget.usd_month, v.mode.budget.projected_month_usd, v.mode.budget.burn_usd_day, v.mode.budget.burn_source], [30, null, null, "estimate"]);

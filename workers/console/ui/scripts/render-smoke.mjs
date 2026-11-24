@@ -72,8 +72,16 @@ const MOCK = {
     { topic: "owner_attention", channel: "owner", active: true, fingerprint: "f", title: "3 item(s) wait for your approval", link: "https://nexus.cryptophys.work/console/#/owner", lines: ["Recovery plan for Cerebrum Console (by agent:supervisor)", "Critical action: admit forge-steward to the council (proposed by supervisor)", "Knowledge proposal k-param-prophet-r37-statemaxage-16@1 (param candidate, by aether-calibrator)"] },
     { topic: "drift", channel: "console", active: true, fingerprint: "d", title: "Drift in production: 1 service(s)", link: "https://nexus.cryptophys.work/console/#/infrastructure", lines: ["Policy Engine: the running version differs from the expected version (expected 7eaf570a4ed5, running c5b73b4c3711)"] },
   ], owner_channel_topics: ["owner_attention", "critical_reports", "production_unhandled"] },
-  "/api/kernel/v1/knowledge": { counts: { pending: 1 }, proposals: [{ proposal_id: "knw_00000000-0000-4000-8000-000000000000", proposer_agent_id: "aether-curator", item_id: "k-prophet-trap", item_version: 1, kind: "caution", content_sha256: "0".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null, item: { text: "Its bearish lean was wrong in 11 of 14 such bars.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { bars: 14, wrong: 11 }, provenance: { card_ids: [] } } },
-  { proposal_id: "knw_00000000-0000-4000-8000-000000000001", proposer_agent_id: "aether-calibrator", item_id: "k-param-prophet-r37-statemaxage-16", item_version: 1, kind: "param_candidate", content_sha256: "1".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null, item: { text: "Test the Prophet R37 latch at 16 bars in shadow.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { episodes: 3 }, params: { family: "prophet_r37", values: { stateMaxAge: 16 } }, provenance: { card_ids: [] } } }] },
+  // PF3: latest_verdict per proposal (XAUUSD's shadow verdict) and verdicts.pending_tested, the pending ones whose latest verdict is terminal.
+  "/api/kernel/v1/knowledge": { counts: { pending: 4 }, verdicts: { pending_tested: 1 }, proposals: [{ proposal_id: "knw_00000000-0000-4000-8000-000000000000", proposer_agent_id: "aether-curator", item_id: "k-prophet-trap", item_version: 1, kind: "caution", content_sha256: "0".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null,
+    latest_verdict: { verdict: "not_better", terminal: true, reason: "The treated arm did not beat the control arm over the window.", evidence: { arm: "treat", window_end: "2026-11-23T00:00:00.000Z", rows: 140, scored: 35, treat_hits: 9, control_hits: 26, p_holm: 0.82 }, created_at: "2026-11-23T01:00:00.000Z" }, item: { text: "Its bearish lean was wrong in 11 of 14 such bars.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { bars: 14, wrong: 11 }, provenance: { card_ids: [] } } },
+  { proposal_id: "knw_00000000-0000-4000-8000-000000000001", proposer_agent_id: "aether-calibrator", item_id: "k-param-prophet-r37-statemaxage-16", item_version: 1, kind: "param_candidate", content_sha256: "1".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-07T12:00:00.000Z", decided_at: null, item: { text: "Test the Prophet R37 latch at 16 bars in shadow.", audience: { agents: ["prophet"], charts: ["60"] }, evidence: { episodes: 3 }, params: { family: "prophet_r37", values: { stateMaxAge: 16 } }, provenance: { card_ids: [] } }, latest_verdict: null },
+  { proposal_id: "knw_00000000-0000-4000-8000-000000000002", proposer_agent_id: "aether-curator", item_id: "k-r37-funnel-calibration", item_version: 2, kind: "role_reminder", content_sha256: "2".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-20T12:00:00.000Z", decided_at: null,
+    latest_verdict: { verdict: "collecting", terminal: false, reason: "Still collecting shadow rows for the arm.", evidence: { rows: 120 }, created_at: "2026-11-23T02:00:00.000Z" },
+    item: { text: "The r37 funnel agent spoke of calibration in 13% of its rooms.", audience: { agents: ["r37_funnel"], charts: [] }, evidence: { rooms: 168 }, provenance: { card_ids: [] } } },
+  { proposal_id: "knw_00000000-0000-4000-8000-000000000003", proposer_agent_id: "aether-curator", item_id: "k-gmi-asia-trap", item_version: 1, kind: "caution", content_sha256: "3".repeat(64), status: "pending", decided_by: null, reason: null, created_at: "2026-11-21T12:00:00.000Z", decided_at: null,
+    latest_verdict: { verdict: "not_tested", terminal: false, reason: "The arm does not run on this chart yet.", evidence: {}, created_at: "2026-11-23T03:00:00.000Z" },
+    item: { text: "Its lean was wrong in 10 of 13 such bars.", audience: { agents: ["gmi"], charts: ["15"] }, evidence: { wrong: 10 }, provenance: { card_ids: [] } } }] },
   "/api/orchestrator/v1/deployments": {
     active: {
       requests: [{ request_id: "dep_1", service_id: "cryptophys-platform-api", version: "e0bd92815ac9cbae7481e14e1798238068e4b2a9", status: "running", requested_by: "consensus:cns_1", origin: "consensus", workflow: "deploy-platform-api.yml", proposal_id: "cns_1", run_url: null, note: null, created_at: "2026-11-08T14:02:00.000Z", updated_at: "2026-11-08T14:02:05.000Z" }],
@@ -596,6 +604,14 @@ for (const width of [390, 1440]) {
       for (const gone of ["Manual deploy", "Open manual deploy", "Commit SHA (40 hex)", "Deploy…"]) {
         if (body.includes(gone)) problems.push(`${width}px #/pipelines: still shows "${gone}"`);
       }
+    }
+    if (route === "knowledge") {
+      // PF3: XAUUSD's latest shadow verdict beside the status; a pending proposal with a terminal verdict is not plain pending.
+      const body = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      for (const want of ["tested: not_better (9 vs 26)", "testing: 120 rows", "not tested", "3 pending · 1 tested", "shadow verdict"]) {
+        if (!body.includes(want)) problems.push(`${width}px #/knowledge: does not show "${want}"`);
+      }
+      if (body.includes("4 pending")) problems.push(`${width}px #/knowledge: counts the tested proposal as plain pending`);
     }
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-${route.replace(/[^a-z0-9]+/gi, "_") || "home"}.png`), fullPage: true });
   }

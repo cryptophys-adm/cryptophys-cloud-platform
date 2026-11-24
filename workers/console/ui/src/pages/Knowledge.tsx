@@ -17,6 +17,25 @@ const AUTONOMOUS_KINDS = new Set(["caution", "role_reminder"]);
 const needsOwner = (p: any) => p?.status === "pending" && !AUTONOMOUS_KINDS.has(p?.kind);
 const tone = (s?: string): "green" | "amber" | "red" | "slate" =>
   s === "approved" ? "green" : s === "pending" ? "amber" : s === "rejected" ? "red" : "slate";
+/**
+ * PF3 (owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"): XAUUSD's latest shadow verdict on a proposal
+ * (latest_verdict of GET /v1/knowledge), in a few words: "tested: not_better (9 vs 26)" once the test is over,
+ * "testing: 120 rows" while it collects, "not tested". Every number is read from the verdict's evidence; with none
+ * there is no number, and no verdict at all is a dash.
+ */
+const TERMINAL_VERDICT = (v: any) => v?.terminal === true;
+const pendingTested = (p: any) => p?.status === "pending" && TERMINAL_VERDICT(p?.latest_verdict);
+function verdictText(v: any): string {
+  if (!v || typeof v.verdict !== "string") return "—";
+  const e = v.evidence ?? {};
+  const hits = num(e.treat_hits) !== null && num(e.control_hits) !== null ? ` (${e.treat_hits} vs ${e.control_hits})` : "";
+  if (v.verdict === "not_tested") return "not tested";
+  if (v.verdict === "collecting") return num(e.rows) !== null ? `testing: ${e.rows} rows` : "testing";
+  if (v.verdict === "inconclusive") return `testing: inconclusive${hits}`;
+  return `tested: ${v.verdict}${hits}`;
+}
+const verdictTone = (v: any): "green" | "amber" | "red" | "slate" =>
+  !v ? "slate" : v.verdict === "live" ? "green" : TERMINAL_VERDICT(v) ? (v.verdict === "retired" ? "slate" : "red") : "amber";
 const KIND_TEXT: Record<string, string> = {
   caution: "A measured pattern where an agent has been wrong more often than usual.",
   role_reminder: "An agent keeps breaking its role or the doctrine; a reminder of its role.",
@@ -402,7 +421,10 @@ export default function Knowledge() {
   const { data, loading, error, refresh } = usePoll(() => call("kernel.knowledge", undefined, undefined, { limit: "100" }), 60_000);
   const rows = listOf(data, "proposals");
   const counts: Record<string, number> = data?.counts ?? {};
-  const pending = rows.filter((p: any) => p.status === "pending");
+  // A pending proposal whose latest verdict is terminal has been tested: it is not counted as plain pending.
+  const pending = rows.filter((p: any) => p.status === "pending" && !pendingTested(p));
+  const tested = rows.filter(pendingTested);
+  const testedCount: number | null = num(data?.verdicts?.pending_tested);
   const approvals = rows.filter(needsOwner);
   const reload = () => void refresh();
   const aether = usePoll(() => call("aether.overview"), 300_000);
@@ -412,13 +434,14 @@ export default function Knowledge() {
       <Panel title="Needs you · knowledge loop" icon={<BellRing className="h-3.5 w-3.5 text-amber-300" />} right={<Badge tone={approvals.length ? "amber" : "slate"}>{approvals.length} approval{approvals.length === 1 ? "" : "s"}</Badge>}>
         {loading && !data ? <Skeleton rows={2} /> : <OwnerActions approvals={approvals} o={o} />}
       </Panel>
-      <Panel title="Learned Knowledge · Aether" icon={<Sparkles className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone={pending.length ? "amber" : "slate"}>{pending.length} pending</Badge>}>
+      <Panel title="Learned Knowledge · Aether" icon={<Sparkles className="h-3.5 w-3.5 text-violet-300" />} right={<Badge tone={pending.length ? "amber" : "slate"}>{pending.length} pending{tested.length ? ` · ${tested.length} tested` : ""}</Badge>}>
         <p className="text-[12px] leading-relaxed text-slate-400">
           Aether's curator and calibrator propose what they measured. A text proposal (a caution or a role reminder) runs by itself: XAUUSD tests it in shadow, puts it live for the agent and chart it was tested on when it proves better, and retires it when it stops helping. A parameter proposal still waits for your approval, which lets it run in shadow. Proposals expire after 14 days. Advisory only: no levels, sizes or orders.
         </p>
         <StatusBar className="mt-3" segments={[
           { key: "approved", label: "approved for shadow", value: counts.approved ?? 0, color: STATUS.good },
-          { key: "pending", label: "pending", value: counts.pending ?? 0, color: STATUS.warning },
+          { key: "pending", label: "pending", value: Math.max(0, (counts.pending ?? 0) - (testedCount ?? 0)), color: STATUS.warning },
+          { key: "tested", label: "tested, pending", value: testedCount ?? 0, color: STATUS.info },
           { key: "rejected", label: "rejected", value: counts.rejected ?? 0, color: STATUS.serious },
           { key: "expired", label: "expired", value: counts.expired ?? 0, color: STATUS.neutral },
         ]} />
@@ -453,6 +476,11 @@ export default function Knowledge() {
             footer={approvals.length ? <span className="text-amber-300">open a pending parameter row to review and decide</span> : null}
             empty="No proposals yet. Aether proposes once it has enough decision cards and outcomes." columns={[
               { key: "status", header: "status", sort: (p) => p.status, cell: (p) => <span className="inline-flex items-center gap-1.5"><Dot tone={tone(p.status)} pulse={p.status === "pending"} />{p.status}</span> },
+              { key: "verdict", header: "shadow verdict", sort: (p) => p.latest_verdict?.created_at ?? "", cell: (p) => (
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-300" title={p.latest_verdict ? `${p.latest_verdict.reason ?? ""} · ${p.latest_verdict.created_at ?? ""}` : "no verdict from XAUUSD yet"}>
+                  {p.latest_verdict && <Dot tone={verdictTone(p.latest_verdict)} />}{verdictText(p.latest_verdict)}
+                </span>
+              ) },
               { key: "item", header: "item", sort: (p) => p.item_id, cell: (p) => <span className="mono text-cyan-200">{p.item_id}@{p.item_version}</span> },
               { key: "kind", header: "kind", sort: (p) => p.kind, cell: (p) => <span title={KIND_TEXT[p.kind] ?? ""}><Badge tone="purple">{String(p.kind).replace("_", " ")}</Badge></span> },
               { key: "text", header: "what it says", className: "wrap", cell: (p) => <span className="text-slate-300">{p.item?.text ?? "—"}</span> },
@@ -463,6 +491,11 @@ export default function Knowledge() {
             expand={(p) => (
               <div>
                 <p className="text-[11px] text-slate-400">{KIND_TEXT[p.kind] ?? ""}{p.reason ? ` · ${p.reason}` : ""}</p>
+                {p.latest_verdict && (
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    <Badge tone={verdictTone(p.latest_verdict)}>{verdictText(p.latest_verdict)}</Badge> XAUUSD's shadow verdict {ago(p.latest_verdict.created_at)}: {dash(p.latest_verdict.reason)}
+                  </p>
+                )}
                 <Item p={p} />
                 {p.status === "pending" && AUTONOMOUS_KINDS.has(p.kind) && (
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">

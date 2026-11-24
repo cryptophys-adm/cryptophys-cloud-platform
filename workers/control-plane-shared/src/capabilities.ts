@@ -54,6 +54,11 @@ export const CAPABILITIES: Record<string, Capability> = {
   "doctrine.status": { tier: 0, reversible: true, description: "Read the doctrine amendments Cerebrum executed (the Knowledge Council applies only these)" },
   "knowledge.status": { tier: 0, reversible: true, description: "Read the review status of the calling agent's own learned-knowledge proposals" },
   "knowledge.propose": { tier: 1, reversible: true, description: "Draft a learned-knowledge candidate (Aether); a person approves it for shadow testing or rejects it (learning: no rate limit)" },
+  // PF3 (owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"): the shadow verdict on an autonomous knowledge item
+  // (caution, role_reminder), written back by xauusd and read by Aether's curator through knowledge.status. Learning
+  // (power-mode.ts LEARNING_CAPABILITIES: no rate limit, no power-mode denial, never refused for its content: secrets
+  // redacted, prices masked). Only XAUUSD_CEILING grants it, to SHADOW_KNOWLEDGE_AGENT; EXTERNAL_CEILING is not widened.
+  "knowledge.verdict": { tier: 1, reversible: true, description: "Record one shadow-test verdict on an autonomous learned-knowledge item (caution, role_reminder) for its proposer to read (learning: no rate limit, never refused for its content)" },
   // 8 (was 4; owner 2026-11-22, "naikan konsensus per 1 jam, usulan 4 siklus per jam"): merges and deploys shared four
   // proposals an hour, so a deploy waited a whole hour behind merges (21 Nov: the Console deploy). Eight lets each of the
   // Supervisor's four cycles propose a deploy and a merge; the Supervisor still proposes one deploy per cycle.

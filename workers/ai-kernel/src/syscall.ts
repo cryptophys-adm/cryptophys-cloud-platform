@@ -21,7 +21,7 @@ import { recallMemories, rememberMemory, type VectorizeBinding } from "./memory.
 import { acknowledgementsReadable, publishReport } from "./reports.ts";
 import { propose as consensusPropose } from "./consensus.ts";
 import { consensusStatus } from "./consensus-status.ts";
-import { proposeKnowledge, knowledgeStatus } from "./knowledge.ts";
+import { proposeKnowledge, knowledgeStatus, recordKnowledgeVerdict } from "./knowledge.ts";
 import { DENIAL_BASELINE_DAYS, classifyDenials, type AgentOutcomeRow, type DenialRow } from "./denials.ts";
 import { observeAdr } from "./adr-observe.ts";
 import { readCouncilDecisions } from "./council-decisions.ts";
@@ -918,6 +918,8 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "consensus.propose": return { proposal: await consensusPropose(env, agentId, decisionId, input) };
     case "knowledge.propose": return { proposal: await proposeKnowledge(env.DB, agentId, decisionId, input) };
     case "corrections.record": return await recordCorrectionSyscall(env, agentId, decisionId, input);
+    // PF3: xauusd's shadow verdict on an autonomous knowledge item; knowledge.ts verifies and consumes the decision first.
+    case "knowledge.verdict": return await recordKnowledgeVerdict(env.DB, agentId, decisionId, input);
     // ADR-0014 §11 (EVOLVER.md §6): the Forge verifies and consumes the decision, re-checks everything, writes evo/<id>.
     case "code.propose": {
       if (!env.FORGE_EVOLUTION) throw new Error("forge_evolution_binding_missing");
@@ -939,8 +941,18 @@ function auditJson(value: JsonObject): string {
 /**
  * What agent_actions keeps of a syscall's input. A correction's text and refs stay in the corrections ledger only,
  * redacted and masked (HAIC H3e, docs/design/HAIC-H3.md §4.4–§4.5): the action row keeps its shape, never the raw text.
+ * PF3: a knowledge verdict's reason is kept only in knowledge_verdicts, masked; the action row keeps its shape.
  */
 function recordedInput(capability: string, input: JsonObject): JsonObject {
+  if (capability === "knowledge.verdict") {
+    // Only well-formed tokens are kept: a refused call's raw values never reach the action row.
+    const token = (v: unknown, re: RegExp) => (typeof v === "string" && re.test(v) ? v : null);
+    const e = input.evidence && typeof input.evidence === "object" && !Array.isArray(input.evidence) ? Object.keys(input.evidence as Record<string, unknown>).length : 0;
+    return {
+      item_id: token(input.item_id, /^k-[a-z0-9-]{1,40}$/), item_version: Number.isInteger(input.item_version) && (input.item_version as number) >= 1 && (input.item_version as number) <= 999 ? input.item_version as number : null, verdict: token(input.verdict, /^[a-z_]{1,20}$/),
+      reason_chars: typeof input.reason === "string" ? input.reason.length : 0, evidence_keys: e, omitted: "the reason is kept in knowledge_verdicts only, masked",
+    };
+  }
   if (capability !== "corrections.record") return input;
   const t = input.target && typeof input.target === "object" && !Array.isArray(input.target) ? input.target as Record<string, unknown> : {};
   const short = (v: unknown) => (typeof v === "string" ? v.slice(0, 60) : null);

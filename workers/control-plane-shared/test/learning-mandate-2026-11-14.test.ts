@@ -75,7 +75,7 @@ const knowledgeItem = (itemId: string) => ({
 // ---------------------------------------------------------------- 1. no rate limit
 
 test("LM1. learning capabilities have no max_per_hour, hourlyLimit() ignores one if it came back, and no rate_limit check runs", async () => {
-  assert.deepEqual([...LEARNING_CAPABILITIES], ["memory.remember", "knowledge.propose", "corrections.record"]); // corrections.record: HAIC H3e (LM10)
+  assert.deepEqual([...LEARNING_CAPABILITIES], ["memory.remember", "knowledge.propose", "corrections.record", "knowledge.verdict"]); // corrections.record: HAIC H3e (LM10); knowledge.verdict: PF3 (LM11)
   for (const cap of LEARNING_CAPABILITIES) {
     assert.ok(Object.hasOwn(CAPABILITIES, cap), cap);
     assert.equal(CAPABILITIES[cap]!.max_per_hour, undefined, `${cap} has no max_per_hour`);
@@ -310,4 +310,44 @@ test("LM10. corrections.record: 100 calls in one hour, in survival, all succeed,
   const off = await rpcSyscall(env as never, NEXUS, "nexus-teacher", "corrections.record", correction(100));
   assert.notEqual(off.outcome, "succeeded");
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM corrections WHERE side = 'nexus'").get() as { n: number }).n, 100, "nothing written with the kill switch off");
+});
+
+// ---------------------------------------------------------------- 8. knowledge.verdict (PF3)
+
+test("LM11. knowledge.verdict: 100 calls in one hour, in survival, all succeed, written and metered; no max_per_hour; the kill switch still stops it", async () => {
+  // PF3 (owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"): xauusd's shadow verdict is learning.
+  assert.ok(isLearningCapability("knowledge.verdict"));
+  assert.equal(CAPABILITIES["knowledge.verdict"]!.tier, 1);
+  assert.equal(CAPABILITIES["knowledge.verdict"]!.max_per_hour, undefined, "no max_per_hour");
+  assert.equal(hourlyLimit("knowledge.verdict"), null);
+  const saved = CAPABILITIES["knowledge.verdict"]!;
+  CAPABILITIES["knowledge.verdict"] = { ...saved, max_per_hour: 1 };
+  try { assert.equal(hourlyLimit("knowledge.verdict"), null, "a max_per_hour put back is ignored"); } finally { CAPABILITIES["knowledge.verdict"] = saved; }
+  const { env, db } = kernelEnv();
+  setPowerMode(db, "survival");
+  exhaustAiBudget(db);
+  const proposed = await rpcSyscall(env as never, { host_worker: "cryptophys-aether" }, "aether-curator", "knowledge.propose", { item: knowledgeItem("k-lm11-trap") });
+  assert.equal(proposed.outcome, "succeeded", JSON.stringify(proposed));
+  // The census's routine register_agent, once xauusd's DNA declares it (no migration seeds it).
+  db.raw.prepare(`INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at)
+    VALUES ('shadow-knowledge', 'Shadow Knowledge', 'xauusd-ai-trading-assistant', 'test', 1, '["knowledge.verdict"]', 'enabled', NULL, 'consensus:test', ?, ?)`).run(new Date().toISOString(), new Date().toISOString());
+  const XAU = { host_worker: "xauusd-ai-trading-assistant" };
+  const verdict = (i: number) => ({
+    item_id: "k-lm11-trap", item_version: 1, verdict: "collecting", reason: `Still collecting shadow rows on day ${i}.`,
+    evidence: { rows: i, window_end: new Date(Date.parse("2026-11-01T00:00:00.000Z") + i * 3_600_000).toISOString() },
+  });
+  for (let i = 0; i < 100; i++) {
+    const r = await rpcSyscall(env as never, XAU, "shadow-knowledge", "knowledge.verdict", verdict(i));
+    assert.equal(r.outcome, "succeeded", `#${i + 1}: ${JSON.stringify(r)}`);
+  }
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM knowledge_verdicts WHERE reporter_agent_id = 'shadow-knowledge'").get() as { n: number }).n, 100);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_syscall_consumptions WHERE agent_id = 'shadow-knowledge' AND capability = 'knowledge.verdict'").get() as { n: number }).n, 100, "every call is metered");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM policy_decisions WHERE decision = 'deny'").get() as { n: number }).n, 0, "no denial at all");
+  const checks = await agentSyscallChecks(db as never, "agent:shadow-knowledge", "knowledge.verdict");
+  assert.ok(!checks.some((c) => c.id === "rate_limit"), "no rate_limit check");
+  assert.equal((await verifyAuditChain(db as never)).valid, true, "the audit chain is kept");
+  db.raw.prepare("UPDATE kernel_controls SET value = '0' WHERE control = 'agents_enabled'").run();
+  const off = await rpcSyscall(env as never, XAU, "shadow-knowledge", "knowledge.verdict", verdict(100));
+  assert.notEqual(off.outcome, "succeeded");
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM knowledge_verdicts").get() as { n: number }).n, 100, "nothing written with the kill switch off");
 });

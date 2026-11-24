@@ -4,10 +4,11 @@
  * shows), so the three can never disagree about what a mode blocks.
  *
  *  - The learning mandate (owner 2026-11-14, "learning tidak boleh dibatasi siapa pun, itu adalah mandat tertinggi":
- *    learning must not be limited by anyone; it is the highest mandate). Learning (memory.remember, knowledge.propose
- *    and, since HAIC H3e, corrections.record) is never denied by a power mode, never rate limited (no max_per_hour in
- *    capabilities.ts), never capped per day (knowledge.ts), and the AI calls it needs (the embedding of a memory) are
- *    never refused by an AI request budget, in any mode, survival included. Those calls are still metered in ai_usage.
+ *    learning must not be limited by anyone; it is the highest mandate). Learning (memory.remember, knowledge.propose,
+ *    since HAIC H3e corrections.record and since PF3 knowledge.verdict) is never denied by a power mode, never rate
+ *    limited (no max_per_hour in capabilities.ts), never capped per day (knowledge.ts), and the AI calls it needs (the
+ *    embedding of a memory) are never refused by an AI request budget, in any mode, survival included. Those calls are
+ *    still metered in ai_usage.
  *    From 2026-11-12 to 2026-11-14 survival denied both, and no knowledge proposal was written for three days.
  *  - What still applies to learning, because it is not a limit on learning: the capability grants (which agent may
  *    learn), the owner's kill switch (agents_enabled), identity and Access, the audit chain, the knowledge
@@ -31,9 +32,11 @@ export const LEARNING_MANDATE = "Learning is the highest mandate: no organ, mode
 /**
  * Learning: no power mode denies these, no rate limit or daily cap applies to them. corrections.record (HAIC H3e,
  * docs/design/HAIC-H3.md §1 and §7.2; owner 2026-11-19): an owner's correction or rating relayed from Nexus is learning
- * too, recorded in the corrections ledger, never refused for its content (secrets redacted, prices masked).
+ * too, recorded in the corrections ledger, never refused for its content (secrets redacted, prices masked). knowledge.verdict
+ * (PF3; owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"): xauusd's shadow verdict on an autonomous knowledge
+ * item is the feedback half of the knowledge loop, learning as well, its reason masked and redacted, never refused for it.
  */
-export const LEARNING_CAPABILITIES: readonly string[] = ["memory.remember", "knowledge.propose", "corrections.record"];
+export const LEARNING_CAPABILITIES: readonly string[] = ["memory.remember", "knowledge.propose", "corrections.record", "knowledge.verdict"];
 export const isLearningCapability = (capability: string): boolean => LEARNING_CAPABILITIES.includes(capability);
 
 /**

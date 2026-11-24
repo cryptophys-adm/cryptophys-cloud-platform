@@ -202,8 +202,16 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
  * balik"). Every xauusd agent keeps exactly EXTERNAL_CEILING. Only the council's moderator, which hands owner-accepted
  * council tasks to the platform, may also read their state back (council.decisions.read, tier 0, read only). No seat,
  * no proposal, tier 1, as before. HAIC H3e (docs/design/HAIC-H3.md §7.2; owner 2026-11-19): nexus-teacher, which relays
- * the owner's Nexus corrections, holds corrections.record (tier 1, learning) and only that.
+ * the owner's Nexus corrections, holds corrections.record (tier 1, learning) and only that. PF3 (owner 2026-11-24, "harus
+ * dibuat jalurnya untuk feedback loop"): SHADOW_KNOWLEDGE_AGENT, xauusd's shadow-knowledge arm, holds knowledge.verdict
+ * (tier 1, learning) and only that.
  */
+/**
+ * PF3: the xauusd agent id that writes shadow verdicts back (knowledge.verdict). One constant, so a rename is one line.
+ * No migration seeds it: xauusd's DNA declares it and the census proposes the routine register_agent (tier 1, no
+ * privileged capability). Until then the ceiling entry names an agent that does not exist, which only bounds it.
+ */
+export const SHADOW_KNOWLEDGE_AGENT = "shadow-knowledge";
 export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
   tier_max: EXTERNAL_CEILING.tier_max,
   capabilities: EXTERNAL_CEILING.capabilities,
@@ -212,6 +220,8 @@ export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
     // HAIC H3e (docs/design/HAIC-H3.md §7.2; owner 2026-11-19, "Setuju semua rekomendasi"): the dedicated sender of the
     // owner's Nexus corrections (migration 0086). It holds corrections.record and nothing else, not even EXTERNAL_CEILING.
     "nexus-teacher": Object.freeze(["corrections.record"]),
+    // PF3: the shadow-knowledge arm's verdicts on Aether's autonomous knowledge items. knowledge.verdict and nothing else.
+    [SHADOW_KNOWLEDGE_AGENT]: Object.freeze(["knowledge.verdict"]),
   }),
   proposals: Object.freeze({}),
 });

@@ -1058,3 +1058,52 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER|CREATE)\b", mz_code) a
 assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", mz_sql, re.I), "0087 is not destructive"
 mz_db.close()
 print("PASS: 0087 hud-mizan-oracle (additive: one HUD agent row, external ceiling, tier 1, no seat, rows kept, applies twice)")
+# Migration 0088 (PF3, 2026-11-24; owner: "harus dibuat jalurnya untuk feedback loop"): the knowledge.verdict write-back,
+# the next free number after PF1's 0087. Additive: one new table, knowledge_verdicts, a UNIQUE dedup index on
+# (proposal_id, verdict, COALESCE(window_end, '')) and a plain index on (proposal_id, created_at); no row, and
+# knowledge_proposals is not altered. Every earlier table and row is kept, and applying it again changes nothing.
+kv_db = sqlite3.connect(":memory:")
+kv_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name < "0088_":
+        kv_db.executescript(migration.read_text(encoding="utf-8"))
+kv_db.execute(
+    """INSERT INTO knowledge_proposals (proposal_id, proposer_agent_id, item_id, item_version, kind, item_json, content_sha256, status, decision_id, created_at)
+       VALUES ('knw_00000000-0000-4000-8000-000000000000', 'aether-curator', 'k-trap', 1, 'caution', '{}', ?, 'pending', 'dec_x', 't0')""",
+    ("0" * 64,),
+)
+def kv_snapshot():
+    return {r[0]: kv_db.execute(f"SELECT * FROM \"{r[0]}\" ORDER BY 1").fetchall() for r in kv_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'sqlite_sequence'")}
+kv_schema_before = {r[0] for r in kv_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+kv_proposals_sql = kv_db.execute("SELECT sql FROM sqlite_master WHERE name = 'knowledge_proposals'").fetchone()
+kv_before = kv_snapshot()
+assert "knowledge_verdicts" not in kv_before
+kv_sql = (ROOT / "0088_knowledge_verdicts.sql").read_text(encoding="utf-8")
+kv_db.executescript(kv_sql)
+kv_db.executescript(kv_sql)
+kv_schema_after = {r[0] for r in kv_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert kv_schema_after - kv_schema_before == {"knowledge_verdicts", "sqlite_autoindex_knowledge_verdicts_1", "idx_knowledge_verdicts_dedup", "idx_knowledge_verdicts_proposal"}, sorted(kv_schema_after - kv_schema_before)
+assert kv_db.execute("SELECT sql FROM sqlite_master WHERE name = 'knowledge_proposals'").fetchone() == kv_proposals_sql, "knowledge_proposals is not altered"
+kv_after = kv_snapshot()
+assert {k: v for k, v in kv_after.items() if k != "knowledge_verdicts"} == kv_before and kv_after["knowledge_verdicts"] == [], "0088 keeps every row and seeds none"
+kv_idx = {r[1]: r[2] for r in kv_db.execute("SELECT * FROM pragma_index_list('knowledge_verdicts')")}
+assert kv_idx.get("idx_knowledge_verdicts_dedup") == 1 and kv_idx.get("idx_knowledge_verdicts_proposal") == 0, kv_idx
+kv_insert = "INSERT INTO knowledge_verdicts (verdict_id, proposal_id, item_id, item_version, verdict, terminal, reason, evidence_json, reporter_agent_id, window_end, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+kv_ok = ("kvd_1", "knw_00000000-0000-4000-8000-000000000000", "k-trap", 1, "not_better", 1, "Treat 9 against control 26.", '{"treat_hits":9}', "aether-curator", None, "t0")
+kv_db.execute(kv_insert, kv_ok)
+for verdict, terminal in (("live", 1), ("retired", 1), ("worse", 1), ("holdout_failed", 1), ("collecting", 0), ("inconclusive", 0), ("not_tested", 0)):
+    kv_db.execute(kv_insert, (f"kvd_{verdict}", kv_ok[1], kv_ok[2], kv_ok[3], verdict, terminal) + kv_ok[6:])
+for i, bad in ((0, "xyz_1"), (0, None), (1, "knw_missing"), (3, 0), (3, 1000), (4, "promoted"), (5, 0), (5, 2), (6, "too short"), (6, "r" * 301), (7, "not json"), (7, "[1]"), (8, "ghost-agent")):
+    row = list(kv_ok); row[0] = f"kvd_bad_{i}_{len(str(bad))}"; row[i] = bad
+    if i == 4: row[5] = 0
+    expect_integrity_error(f"0088 column {i} {str(bad)[:12]!r}", lambda r=tuple(row): kv_db.execute(kv_insert, r))
+expect_integrity_error("0088 one row per (proposal, verdict, no window)", lambda: kv_db.execute(kv_insert, ("kvd_2",) + kv_ok[1:]))
+kv_db.execute(kv_insert, ("kvd_3",) + kv_ok[1:9] + ("2026-11-23T00:00:00.000Z", "t0"))
+expect_integrity_error("0088 one row per (proposal, verdict, window_end)", lambda: kv_db.execute(kv_insert, ("kvd_4",) + kv_ok[1:9] + ("2026-11-23T00:00:00.000Z", "t0")))
+kv_code = "\n".join(line.split("--", 1)[0] for line in kv_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER)\b", kv_code), "0088 only creates the table and its indexes"
+assert kv_code.count("CREATE TABLE IF NOT EXISTS") == 1 and kv_code.count("CREATE UNIQUE INDEX IF NOT EXISTS") == 1 and kv_code.count("CREATE INDEX IF NOT EXISTS") == 1
+assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+(RENAME|DROP))\b", kv_sql, re.I), "0088 is not destructive"
+assert "'shadow-knowledge'" not in kv_sql, "no migration seeds the shadow-knowledge agent (the census registers it)"
+kv_db.close()
+print("PASS: 0088 knowledge_verdicts (additive: one table, a unique dedup index and a plain index, CHECKs hold, no row, knowledge_proposals unaltered, applies twice)")

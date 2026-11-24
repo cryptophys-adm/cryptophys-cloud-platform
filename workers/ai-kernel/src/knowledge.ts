@@ -16,6 +16,12 @@
  * agent may propose as many candidates as it learns. There is no daily cap (KNOWLEDGE_MAX_PER_DAY = 20 and the
  * knowledge_daily_limit error were removed) and no hourly rate limit (capabilities.ts). The validator and the size
  * bound below are content safety, not limits on learning, and stay.
+ *
+ * PF3 (owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"): the feedback half of the loop. xauusd's shadow-
+ * knowledge arm (SHADOW_KNOWLEDGE_AGENT, the one agent XAUUSD_CEILING grants knowledge.verdict) writes its verdict on an
+ * autonomous item (caution, role_reminder) back with knowledge.verdict (tier 1, learning); knowledge.status returns each
+ * of the proposer's proposals with its latest verdict, so Aether's curator learns that an item failed, and the Console
+ * shows it. A verdict is a reading beside the proposal, never a review: knowledge_proposals.status is not changed.
  */
 import { verifySyscallDecision } from "../../control-plane-shared/src/capabilities.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
@@ -23,6 +29,8 @@ import { newId, type JsonObject } from "../../control-plane-shared/src/http.ts";
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { knowledgeDedupHash, missingDedupColumn } from "./learning-dedup.ts";
 import { knowledgeRef, recordRejectReason } from "./corrections.ts";
+import { normalizeText, safeText, type CorrectionRedaction } from "../../control-plane-shared/src/correction.ts";
+import { isForbiddenSelfModelKey } from "../../control-plane-shared/src/self-model.ts";
 
 export const KNOWLEDGE_ITEM_VERSION = "cryptophys.knowledge-item.v1";
 export const KNOWLEDGE_KINDS = ["caution", "role_reminder", "param_candidate"] as const;
@@ -307,11 +315,12 @@ interface ProposalRow {
   decision_id: string; created_at: string; decided_at: string | null;
 }
 
-function present(r: ProposalRow, withItem = true): JsonObject {
+function present(r: ProposalRow, withItem = true, latest: LatestVerdicts = new Map()): JsonObject {
   return {
     proposal_id: r.proposal_id, proposer_agent_id: r.proposer_agent_id, item_id: r.item_id, item_version: r.item_version,
     kind: r.kind, content_sha256: r.content_sha256, status: r.status, decided_by: r.decided_by, reason: r.reason,
     created_at: r.created_at, decided_at: r.decided_at,
+    latest_verdict: latest.get(r.proposal_id) ?? null,
     ...(withItem ? { item: JSON.parse(r.item_json) as JsonObject } : {}),
   };
 }
@@ -371,17 +380,34 @@ function deduplicated(r: ProposalRow): JsonObject {
   return { proposal_id: r.proposal_id, item_id: r.item_id, item_version: r.item_version, status: r.status, content_sha256: r.content_sha256, created_at: r.created_at, deduplicated: true };
 }
 
-/** knowledge.status (tier 0): the calling agent's own proposals, newest first, without item bodies. */
+/**
+ * knowledge.status (tier 0): the calling agent's own proposals, newest first, without item bodies, each with its latest
+ * verdict (PF3; null when none). A proposal older than the window still comes back while a verdict on it is recent.
+ */
 export async function knowledgeStatus(db: D1Database, agentId: string, input: JsonObject, now = Date.now()): Promise<JsonObject> {
   await expireStale(db, now);
   const since = typeof input.since === "string" && !Number.isNaN(Date.parse(input.since)) ? input.since : new Date(now - 30 * 86_400_000).toISOString();
-  const rows = (await db.prepare(
-    "SELECT * FROM knowledge_proposals WHERE proposer_agent_id = ? AND (created_at >= ? OR decided_at >= ?) ORDER BY created_at DESC LIMIT 100",
-  ).bind(agentId, since, since).all<ProposalRow>()).results ?? [];
-  return { agent_id: agentId, proposals: rows.map((r) => present(r, false)) };
+  let rows: ProposalRow[];
+  try {
+    rows = (await db.prepare(
+      `SELECT * FROM knowledge_proposals p WHERE p.proposer_agent_id = ? AND (p.created_at >= ? OR p.decided_at >= ?
+         OR EXISTS (SELECT 1 FROM knowledge_verdicts v WHERE v.proposal_id = p.proposal_id AND v.created_at >= ?))
+       ORDER BY p.created_at DESC LIMIT 100`,
+    ).bind(agentId, since, since, since).all<ProposalRow>()).results ?? [];
+  } catch (err) {
+    if (!missingVerdictsTable(err)) throw err;
+    rows = (await db.prepare(
+      "SELECT * FROM knowledge_proposals WHERE proposer_agent_id = ? AND (created_at >= ? OR decided_at >= ?) ORDER BY created_at DESC LIMIT 100",
+    ).bind(agentId, since, since).all<ProposalRow>()).results ?? [];
+  }
+  const latest = await latestVerdicts(db, rows.map((r) => r.proposal_id));
+  return { agent_id: agentId, proposals: rows.map((r) => present(r, false, latest)) };
 }
 
-/** GET /v1/knowledge for the Console: proposals of every agent, newest first. */
+/**
+ * GET /v1/knowledge for the Console: proposals of every agent, newest first, each with its latest verdict (PF3).
+ * `verdicts.pending_tested` counts the pending proposals whose latest verdict is terminal (tested, not plain pending).
+ */
 export async function listKnowledge(db: D1Database, { limit = 50, status = null as string | null } = {}, now = Date.now()): Promise<JsonObject> {
   await expireStale(db, now);
   const n = Math.max(1, Math.min(200, Math.trunc(limit) || 50));
@@ -389,13 +415,197 @@ export async function listKnowledge(db: D1Database, { limit = 50, status = null 
     ? (await db.prepare("SELECT * FROM knowledge_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?").bind(status, n).all<ProposalRow>()).results ?? []
     : (await db.prepare("SELECT * FROM knowledge_proposals ORDER BY created_at DESC LIMIT ?").bind(n).all<ProposalRow>()).results ?? [];
   const counts = (await db.prepare("SELECT status, COUNT(*) AS n FROM knowledge_proposals GROUP BY status").all<{ status: string; n: number }>()).results ?? [];
-  return { proposals: rows.map((r) => present(r)), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) };
+  const latest = await latestVerdicts(db, rows.map((r) => r.proposal_id));
+  let pendingTested: number | null = null;
+  try {
+    pendingTested = Number((await db.prepare(
+      `SELECT COUNT(*) AS n FROM knowledge_proposals p WHERE p.status = 'pending'
+         AND (SELECT v.terminal FROM knowledge_verdicts v WHERE v.proposal_id = p.proposal_id ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1) = 1`,
+    ).first<{ n: number }>())?.n ?? 0);
+  } catch (err) {
+    if (!missingVerdictsTable(err)) throw err;
+  }
+  return {
+    proposals: rows.map((r) => present(r, true, latest)),
+    counts: Object.fromEntries(counts.map((c) => [c.status, c.n])),
+    verdicts: { pending_tested: pendingTested },
+  };
 }
 
 export async function getKnowledge(db: D1Database, proposalId: string): Promise<JsonObject | null> {
   if (!PROPOSAL_ID.test(proposalId)) return null;
   const r = await db.prepare("SELECT * FROM knowledge_proposals WHERE proposal_id = ?").bind(proposalId).first<ProposalRow>();
-  return r ? present(r) : null;
+  return r ? present(r, true, await latestVerdicts(db, [r.proposal_id])) : null;
+}
+
+// ---------------------------------------------------------------- PF3: knowledge.verdict
+
+/** Every verdict xauusd's shadow arm may report. */
+export const KNOWLEDGE_VERDICTS = ["live", "retired", "not_better", "worse", "holdout_failed", "collecting", "inconclusive", "not_tested"] as const;
+export type KnowledgeVerdict = (typeof KNOWLEDGE_VERDICTS)[number];
+/** The test is over: the item went live, was retired, or failed. The other three say testing goes on or never began. */
+export const TERMINAL_VERDICTS: readonly KnowledgeVerdict[] = ["live", "retired", "not_better", "worse", "holdout_failed"];
+/** Only the autonomous kinds are shadow-tested by xauusd on its own; a param_candidate waits for the owner. */
+export const VERDICT_KINDS: readonly string[] = ["caution", "role_reminder"];
+export const VERDICT_REASON_MIN = 10;
+export const VERDICT_REASON_MAX = 300;
+const VERDICT_INPUT_KEYS = ["item_id", "item_version", "verdict", "reason", "evidence"];
+const EVIDENCE_COUNT_KEYS = ["rows", "scored", "treat_hits", "control_hits", "aa_changed", "aa_total"];
+const EVIDENCE_P_KEYS = ["p_value", "p_holm"];
+/** The closed list of evidence keys (all optional). */
+export const VERDICT_EVIDENCE_KEYS: readonly string[] = ["arm", "window_start", "window_end", ...EVIDENCE_COUNT_KEYS, ...EVIDENCE_P_KEYS, "charts", "rule"];
+const VERDICT_ARM = /^[a-z0-9_.-]{1,32}$/;
+const VERDICT_RULE = /^[a-z0-9_.+-]{1,40}$/;
+const VERDICT_CHART = /^[0-9]{1,4}$|^[a-z0-9_]{1,16}$/;
+const VERDICT_CHARTS_MAX = 8;
+/** A token (arm, rule) never carries a price-like run of digits (the platform's PRICE rule: 3 or more). */
+const DIGIT_RUN = /\d{3,}/;
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/;
+
+export interface VerdictEvidence {
+  arm?: string; window_start?: string; window_end?: string;
+  rows?: number; scored?: number; treat_hits?: number; control_hits?: number; aa_changed?: number; aa_total?: number;
+  p_value?: number; p_holm?: number; charts?: string[]; rule?: string;
+}
+export interface VerdictInput { item_id: string; item_version: number; verdict: KnowledgeVerdict; reason: string; evidence: VerdictEvidence }
+export type VerdictCheck = { ok: true; value: VerdictInput } | { ok: false; errors: string[] };
+
+const isoUtc = (v: unknown): string | null => {
+  if (typeof v !== "string" || !ISO_UTC.test(v)) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+};
+
+/**
+ * Pure: the knowledge.verdict input as stored, or why it is refused. Format bounds only (the learning mandate): the
+ * verdict list, a reason of 10 to 300 characters (secrets redacted and prices masked, never refused for them), and the
+ * closed evidence list: integers non-negative, p-values in 0..1 rounded to 4 decimals, times ISO UTC (normalized),
+ * tokens short and without a price-like run of digits, no other key and no forbidden key (self-model.ts) at any depth.
+ */
+export function validateVerdictInput(input: unknown): VerdictCheck {
+  if (!isObject(input)) return { ok: false, errors: ["not_an_object"] };
+  const errors: string[] = [];
+  for (const k of Object.keys(input)) {
+    if (isForbiddenSelfModelKey(k)) errors.push(`forbidden_key:${k}`);
+    else if (!VERDICT_INPUT_KEYS.includes(k)) errors.push(`unknown_key:${k}`);
+  }
+  if (typeof input.item_id !== "string" || !ITEM_ID.test(input.item_id)) errors.push("item_id_invalid");
+  if (!Number.isInteger(input.item_version) || (input.item_version as number) < 1 || (input.item_version as number) > 999) errors.push("item_version_invalid");
+  if (!(KNOWLEDGE_VERDICTS as readonly unknown[]).includes(input.verdict)) errors.push("verdict_invalid");
+  const plain = typeof input.reason === "string" ? normalizeText(input.reason) : "";
+  if (plain.length < VERDICT_REASON_MIN || plain.length > VERDICT_REASON_MAX) errors.push("reason_length");
+  const raw = input.evidence === undefined ? {} : input.evidence;
+  const evidence: VerdictEvidence = {};
+  if (!isObject(raw)) errors.push("evidence_not_object");
+  else {
+    for (const [k, v] of Object.entries(raw)) {
+      if (isForbiddenSelfModelKey(k)) { errors.push(`evidence_forbidden_key:${k}`); continue; }
+      if (!VERDICT_EVIDENCE_KEYS.includes(k)) { errors.push(`evidence_unknown_key:${k}`); continue; }
+      if (k === "arm" || k === "rule") {
+        if (typeof v !== "string" || !(k === "arm" ? VERDICT_ARM : VERDICT_RULE).test(v) || DIGIT_RUN.test(v)) errors.push(`evidence_${k}_invalid`);
+        else evidence[k] = v;
+      } else if (k === "window_start" || k === "window_end") {
+        const t = isoUtc(v);
+        if (t === null) errors.push(`evidence_${k}_invalid`); else evidence[k] = t;
+      } else if (EVIDENCE_COUNT_KEYS.includes(k)) {
+        if (!Number.isSafeInteger(v) || (v as number) < 0) errors.push(`evidence_${k}_invalid`);
+        else (evidence as Record<string, number>)[k] = v as number;
+      } else if (EVIDENCE_P_KEYS.includes(k)) {
+        if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) errors.push(`evidence_${k}_invalid`);
+        else (evidence as Record<string, number>)[k] = Math.round(v * 10_000) / 10_000;
+      } else if (k === "charts") {
+        if (!Array.isArray(v) || v.length > VERDICT_CHARTS_MAX || !v.every((c) => typeof c === "string" && VERDICT_CHART.test(c))) errors.push("evidence_charts_invalid");
+        else evidence.charts = [...v] as string[];
+      }
+    }
+    if (evidence.window_start && evidence.window_end && evidence.window_start > evidence.window_end) errors.push("evidence_window_order");
+  }
+  if (errors.length) return { ok: false, errors };
+  // Secrets redacted and prices masked as correction.v1 does (correction.ts safeText); masking can lengthen the text.
+  const reason = (safeText(input.reason, new Set<CorrectionRedaction>()) ?? "").slice(0, VERDICT_REASON_MAX);
+  return { ok: true, value: { item_id: input.item_id as string, item_version: input.item_version as number, verdict: input.verdict as KnowledgeVerdict, reason, evidence } };
+}
+
+interface VerdictRow {
+  verdict_id: string; proposal_id: string; item_id: string; item_version: number; verdict: string; terminal: number;
+  reason: string; evidence_json: string; reporter_agent_id: string; window_end: string | null; created_at: string;
+}
+type LatestVerdicts = Map<string, JsonObject>;
+
+const missingVerdictsTable = (err: unknown) => /no such table:?\s*knowledge_verdicts/i.test(String((err as Error)?.message ?? err));
+
+/** The latest verdict as the proposer and the Console read it. */
+function presentLatest(v: VerdictRow): JsonObject {
+  return { verdict: v.verdict, terminal: v.terminal === 1, reason: v.reason, evidence: JSON.parse(v.evidence_json) as JsonObject, created_at: v.created_at };
+}
+
+/** The newest verdict of each proposal (empty before migration 0088). One statement, the ids as one JSON parameter. */
+async function latestVerdicts(db: D1Database, proposalIds: string[]): Promise<LatestVerdicts> {
+  const out: LatestVerdicts = new Map();
+  if (!proposalIds.length) return out;
+  try {
+    const rows = (await db.prepare(
+      `SELECT v.* FROM knowledge_verdicts v WHERE v.proposal_id IN (SELECT value FROM json_each(?))
+         AND v.rowid = (SELECT w.rowid FROM knowledge_verdicts w WHERE w.proposal_id = v.proposal_id ORDER BY w.created_at DESC, w.rowid DESC LIMIT 1)`,
+    ).bind(JSON.stringify(proposalIds)).all<VerdictRow>()).results ?? [];
+    for (const v of rows) out.set(v.proposal_id, presentLatest(v));
+  } catch (err) {
+    if (!missingVerdictsTable(err)) throw err;
+  }
+  return out;
+}
+
+function presentVerdict(v: VerdictRow, deduplicated: boolean): JsonObject {
+  return {
+    verdict_id: v.verdict_id, proposal_id: v.proposal_id, item_id: v.item_id, item_version: v.item_version, verdict: v.verdict,
+    terminal: v.terminal === 1, reason: v.reason, evidence: JSON.parse(v.evidence_json) as JsonObject, window_end: v.window_end,
+    created_at: v.created_at, deduplicated,
+  };
+}
+
+/**
+ * knowledge.verdict (tier 1, learning): one shadow verdict on an autonomous knowledge item. The proposal is found by
+ * (item_id, item_version) in any status and from any proposer, the newest when several match; an unknown one is a
+ * 404-style error and a param_candidate is refused. Idempotent on (proposal, verdict, window_end): a repeat returns the
+ * stored row with deduplicated: true and writes nothing. The proposal's status is never changed.
+ */
+export async function recordKnowledgeVerdict(db: D1Database, agentId: string, decisionId: string, input: JsonObject, now = Date.now()): Promise<JsonObject> {
+  await verifySyscallDecision(db, decisionId, agentId, "knowledge.verdict", now);
+  const checked = validateVerdictInput(input);
+  if (!checked.ok) throw new KnowledgeDecisionError(400, "invalid_knowledge_verdict", `invalid_knowledge_verdict: ${checked.errors.slice(0, 8).join("; ")}`);
+  const v = checked.value;
+  const proposal = await db.prepare(
+    "SELECT * FROM knowledge_proposals WHERE item_id = ? AND item_version = ? ORDER BY created_at DESC, proposal_id DESC LIMIT 1",
+  ).bind(v.item_id, v.item_version).first<ProposalRow>();
+  if (!proposal) throw new KnowledgeDecisionError(404, "knowledge_proposal_not_found", `knowledge_proposal_not_found: ${v.item_id}@${v.item_version}`);
+  if (!VERDICT_KINDS.includes(proposal.kind)) throw new KnowledgeDecisionError(409, "knowledge_verdict_kind_refused", `knowledge_verdict_kind_refused: ${proposal.kind} is not shadow-tested on its own`);
+  const windowEnd = v.evidence.window_end ?? null;
+  const existing = () => db.prepare(
+    "SELECT * FROM knowledge_verdicts WHERE proposal_id = ? AND verdict = ? AND COALESCE(window_end, '') = ? LIMIT 1",
+  ).bind(proposal.proposal_id, v.verdict, windowEnd ?? "").first<VerdictRow>();
+  const prior = await existing();
+  if (prior) return presentVerdict(prior, true);
+  const row: VerdictRow = {
+    verdict_id: newId("kvd"), proposal_id: proposal.proposal_id, item_id: proposal.item_id, item_version: proposal.item_version,
+    verdict: v.verdict, terminal: TERMINAL_VERDICTS.includes(v.verdict) ? 1 : 0, reason: v.reason, evidence_json: JSON.stringify(v.evidence),
+    reporter_agent_id: agentId, window_end: windowEnd, created_at: new Date(now).toISOString(),
+  };
+  try {
+    await db.prepare(
+      `INSERT INTO knowledge_verdicts (verdict_id, proposal_id, item_id, item_version, verdict, terminal, reason, evidence_json, reporter_agent_id, window_end, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(row.verdict_id, row.proposal_id, row.item_id, row.item_version, row.verdict, row.terminal, row.reason, row.evidence_json, row.reporter_agent_id, row.window_end, row.created_at).run();
+  } catch (err) {
+    // A concurrent identical verdict won the unique index: answer with it, refuse nothing.
+    const raced = await existing();
+    if (raced) return presentVerdict(raced, true);
+    throw err;
+  }
+  await appendAuditEvent(db, {
+    event_type: "knowledge.verdict", actor: `agent:${agentId}`, subject: `${row.item_id}@${row.item_version}`, outcome: row.verdict,
+    payload: { verdict_id: row.verdict_id, proposal_id: row.proposal_id, proposer: `agent:${proposal.proposer_agent_id}`, terminal: row.terminal === 1, window_end: row.window_end },
+  });
+  return presentVerdict(row, false);
 }
 
 /**
