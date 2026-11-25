@@ -153,13 +153,17 @@ test("AC3. xauusd's ceiling is EXTERNAL_CEILING for every agent but the moderato
   assert.deepEqual(EXTERNAL_CEILING, { tier_max: 1, capabilities: ["signals.observe", "reports.publish", "memory.recall", "memory.remember"] });
   // ADR-0014 §11 (docs/design/EVOLVER.md §8): the return path is the one addition, to one named agent, tier 0 read only.
   assert.deepEqual(XAUUSD.ceiling!.capabilities, EXTERNAL_CEILING.capabilities);
-  assert.deepEqual(Object.keys(XAUUSD.ceiling!.agents), ["xauusd-moderator", "nexus-teacher", "shadow-knowledge"]);
+  assert.deepEqual(Object.keys(XAUUSD.ceiling!.agents), ["xauusd-moderator", "nexus-teacher", "shadow-knowledge", "xauusd-model-router"]);
   // HAIC H3e (docs/design/HAIC-H3.md §7.2): nexus-teacher holds corrections.record and nothing else.
   assert.deepEqual(externalCeilingFor(XAUUSD, "nexus-teacher"), { tier_max: 1, capabilities: ["corrections.record"], proposals: [] });
   assert.ok(!EXTERNAL_CEILING.capabilities.includes("corrections.record") && !EXTERNAL_CEILING.capabilities.includes("corrections.read"));
   // PF3 (2026-11-24): shadow-knowledge holds knowledge.verdict and nothing else (knowledge-verdict-pf3.test.ts).
   assert.deepEqual(externalCeilingFor(XAUUSD, "shadow-knowledge"), { tier_max: 1, capabilities: ["knowledge.verdict"], proposals: [] });
   assert.ok(!EXTERNAL_CEILING.capabilities.includes("knowledge.verdict"));
+  // AIR1 (2026-11-25, owner: "news_compare saja"): xauusd-model-router holds the model router's two capabilities and
+  // nothing else (model-router-air1-2026-11-25.test.ts AIR1-16).
+  assert.deepEqual(externalCeilingFor(XAUUSD, "xauusd-model-router"), { tier_max: 1, capabilities: ["model_router.status", "model_router.report_paid"], proposals: [] });
+  assert.ok(!EXTERNAL_CEILING.capabilities.some((c) => c.startsWith("model_router.")));
   assert.deepEqual(Object.keys(XAUUSD.ceiling!.proposals), []);
   assert.deepEqual(externalCeilingFor(XAUUSD, "xauusd-moderator"), { tier_max: 1, capabilities: [...EXTERNAL_CEILING.capabilities, "council.decisions.read"], proposals: [] });
   for (const id of [undefined, "hud-prophet", "xauusd-reasoner", "knowledge-council", "aether-curator"]) {

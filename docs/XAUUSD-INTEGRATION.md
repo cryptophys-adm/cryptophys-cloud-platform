@@ -37,13 +37,14 @@ Migration 0016 registered **21 agents**. Every one has these properties:
 | `memory.recall` | 0 | — | `{ query ≤ 1000, top_k ≤ 5 }`; only the agent's own memories |
 | `signals.observe` | 0 | — | Not needed. It reads the xauusd API itself. |
 
-**Per-agent grants** (`XAUUSD_CEILING` in `control-plane-shared/src/organism.ts`, a guard path). Three xauusd agents differ from the table above:
+**Per-agent grants** (`XAUUSD_CEILING` in `control-plane-shared/src/organism.ts`, a guard path). Four xauusd agents differ from the table above:
 
 | agent_id | Capabilities | Registered by |
 |---|---|---|
 | `xauusd-moderator` | the four above, plus `council.decisions.read` (tier 0, the council return path) | migration 0016; the grant by the census (ADR-0014 §11) |
 | `nexus-teacher` | `corrections.record` only (tier 1, learning) | migration 0086 (HAIC H3e) |
 | `shadow-knowledge` | `knowledge.verdict` only (tier 1, learning: no rate limit) | not seeded: the xauusd DNA declares it, then the census's routine `register_agent` (PF3, 2026-11-24) |
+| `xauusd-model-router` | `model_router.status` (tier 0) and `model_router.report_paid` (tier 1, at most 4 an hour) only: the client of xauusd's own Beam router for its one Beam caller, `shadow:news_compare` (ADR-0007 amendment 2026-11-25; owner: "news_compare saja") | not seeded: the xauusd DNA declares it, then the census's routine `register_agent` (AIR1, 2026-11-25) |
 
 **`knowledge.verdict`** (PF3; owner 2026-11-24, "harus dibuat jalurnya untuk feedback loop"). The shadow-knowledge arm writes its verdict on one of Aether's autonomous knowledge items (kinds `caution` and `role_reminder`) back to the platform; Aether's curator reads it with `knowledge.status` (`latest_verdict`). Declare the agent in xauusd's `organism.json` with exactly `capabilities: ["knowledge.verdict"]`, `tier_max: 1` and no seat; any other capability is above the ceiling and the census refuses the gene. The agent id is the one constant `SHADOW_KNOWLEDGE_AGENT`; renaming it is a one-line platform change.
 

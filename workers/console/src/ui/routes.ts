@@ -99,6 +99,9 @@ export const UI_ROUTES: readonly UiRoute[] = [
   r("kernel.model_router", "kernel", "GET", "/v1/model-router", false, null),
   r("kernel.model_router_on", "kernel", "POST", "/v1/model-router/state", true, "BEAM ON"),
   r("kernel.model_router_off", "kernel", "POST", "/v1/model-router/state", true, "BEAM OFF"),
+  // Coordinator review 2026-11-25: after a paid sign the owner may turn free_only back on, confirming it was not a charge
+  // (body confirm_free: true; its own phrase, so the plain turn-on can never send it).
+  r("kernel.model_router_on_free", "kernel", "POST", "/v1/model-router/state", true, "BEAM ON FREE"),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

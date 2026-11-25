@@ -305,7 +305,8 @@ function reasonsOf(evidenceJson: unknown): string[] {
  * 13. model_router_stopped (AIR1, ADR-0007 amendment 2026-11-25; owner: "tetap siapkan callback jika beam tidak bisa
  *     dijangkau atau menjadi berbayar"): the model router turned Beam off by itself, after a paid sign (off_paid) or a
  *     contributor retention header (off_retention). Cerebrum keeps answering on Workers AI; only the owner can turn Beam
- *     on again. One item (subject model_router:<state>), so the owner hears of it once; it closes when the state changes.
+ *     on again (after a paid sign: free_only with confirm_free, or paid_capped with a cap). The state is org-wide:
+ *     xauusd's news_compare reads it (model_router.status) and stops with Cerebrum. One item (subject model_router:<state>), so the owner hears of it once; it closes when the state changes.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -520,7 +521,7 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     router = [{
       code: "model_router_stopped", subject: `model_router:${rs.state}`,
       detail: (rs.state === "off_paid"
-        ? `The model router turned Beam off for Cerebrum after a paid sign (${rs.reason ?? "unknown"}); the chat, directives and councils answer on Workers AI. Beam stays off until you turn it on with a paid cap, or leave it off`
+        ? `The model router turned Beam off for Cerebrum and xauusd's news_compare after a paid sign (${rs.reason ?? "unknown"}); the chat, directives and councils answer on Workers AI. Beam stays off until you turn it on again (free only, confirming it was not a charge, or with a paid cap), or leave it off`
         : "The model router turned Beam off for Cerebrum: Reflection answered with a contributor data retention header; the chat, directives and councils answer on Workers AI. Beam stays off until you turn it on again").slice(0, 600),
       since: rs.updated_at, link: "#/organism/telemetry",
     }];

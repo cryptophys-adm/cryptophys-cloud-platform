@@ -57,8 +57,10 @@ export interface Dna {
 const ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const SERVICE = /^(cryptophys|xauusd)-[a-z0-9-]{2,60}$/;
 const BINDING = /^[A-Z][A-Z0-9_]{1,62}$/;
-// A capability id: two or three dot-separated segments (council.decisions.read, ADR-0014 §11, has three).
-const CAPABILITY = /^[a-z]+\.[a-z_]+(\.[a-z_]+)?$/;
+// A capability id: two or three dot-separated segments (council.decisions.read, ADR-0014 §11, has three). AIR1
+// (2026-11-25): the first segment may hold an underscore after its first letter (model_router.status), so a DNA can
+// declare the model router's capabilities; what an agent may hold is still its origin's ceiling.
+const CAPABILITY = /^[a-z][a-z_]*\.[a-z_]+(\.[a-z_]+)?$/;
 const TASK = /^[a-z][a-z0-9_]{2,62}$/;
 
 /**
@@ -204,7 +206,9 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
  * no proposal, tier 1, as before. HAIC H3e (docs/design/HAIC-H3.md §7.2; owner 2026-11-19): nexus-teacher, which relays
  * the owner's Nexus corrections, holds corrections.record (tier 1, learning) and only that. PF3 (owner 2026-11-24, "harus
  * dibuat jalurnya untuk feedback loop"): SHADOW_KNOWLEDGE_AGENT, xauusd's shadow-knowledge arm, holds knowledge.verdict
- * (tier 1, learning) and only that.
+ * (tier 1, learning) and only that. AIR1 (ADR-0007 amendment 2026-11-25; owner: "news_compare saja"):
+ * XAUUSD_MODEL_ROUTER_AGENT, the client of xauusd's own router copy for shadow:news_compare, holds model_router.status
+ * (tier 0, read only) and model_router.report_paid (tier 1, can only turn Beam off) and only those.
  */
 /**
  * PF3: the xauusd agent id that writes shadow verdicts back (knowledge.verdict). One constant, so a rename is one line.
@@ -212,6 +216,14 @@ export const AETHER_CEILING: ExternalCeilingSpec = Object.freeze({
  * privileged capability). Until then the ceiling entry names an agent that does not exist, which only bounds it.
  */
 export const SHADOW_KNOWLEDGE_AGENT = "shadow-knowledge";
+/**
+ * AIR1 (ADR-0007 amendment 2026-11-25; owner: "news_compare saja"): the xauusd agent id of its model router client.
+ * xauusd's router copy (its runModel, the meter source shadow:news_compare only) reads the kernel's model_router.status and calls
+ * model_router.report_paid on its own paid sign, through its kernel syscall path, as this agent. One constant, as PF3.
+ * No migration seeds it: xauusd's DNA declares it and the census proposes the routine register_agent (tier 1, no
+ * privileged capability). Until then the ceiling entry names an agent that does not exist, which only bounds it.
+ */
+export const XAUUSD_MODEL_ROUTER_AGENT = "xauusd-model-router";
 export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
   tier_max: EXTERNAL_CEILING.tier_max,
   capabilities: EXTERNAL_CEILING.capabilities,
@@ -222,6 +234,8 @@ export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
     "nexus-teacher": Object.freeze(["corrections.record"]),
     // PF3: the shadow-knowledge arm's verdicts on Aether's autonomous knowledge items. knowledge.verdict and nothing else.
     [SHADOW_KNOWLEDGE_AGENT]: Object.freeze(["knowledge.verdict"]),
+    // AIR1: the router client of xauusd's news_compare. The router's global state and its paid sign, and nothing else.
+    [XAUUSD_MODEL_ROUTER_AGENT]: Object.freeze(["model_router.status", "model_router.report_paid"]),
   }),
   proposals: Object.freeze({}),
 });

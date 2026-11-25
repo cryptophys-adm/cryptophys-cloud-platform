@@ -31,8 +31,12 @@ export const ROUTER_STATES = ["on", "off", "off_paid", "off_owner", "off_retenti
 export type RouterState = (typeof ROUTER_STATES)[number];
 export const ROUTER_MODES = ["free_only", "paid_capped"] as const;
 export type RouterMode = (typeof ROUTER_MODES)[number];
-/** Why Beam did not answer a call that Workers AI then answered. */
-export const FALLBACK_REASONS = ["unreachable", "rate", "budget", "paid", "retention", "breaker", "off", "disabled"] as const;
+/**
+ * Why Beam did not answer a call that Workers AI then answered. output_budget (coordinator review, 2026-11-25): Beam stopped
+ * at its output limit (finish_reason "length") before a usable answer; it is not a failure of Beam and does not count
+ * toward the breaker.
+ */
+export const FALLBACK_REASONS = ["unreachable", "rate", "budget", "paid", "retention", "breaker", "off", "disabled", "output_budget"] as const;
 export type FallbackReason = (typeof FALLBACK_REASONS)[number];
 export const PAID_SIGNALS = ["http_402", "billing_error", "cost_field", "plan_change", "paid_cap_reached", "reported"] as const;
 export type PaidSignal = (typeof PAID_SIGNALS)[number];
@@ -50,6 +54,16 @@ export const MAX_RATE_BACKOFF_MS = 24 * 3_600_000;
 export const STATE_CACHE_MS = 60_000;
 /** The owner's paid cap, when the owner turns Beam on as paid_capped, in USD: (0, 100]. */
 export const MAX_PAID_CAP_USD = 100;
+/**
+ * Beam's output margin (coordinator review, 2026-11-25): Beam's reasoning counts as output, so a Beam call may use up to
+ * twice the task's maxOutputTokens, at most BEAM_MAX_OUTPUT_TOKENS, never less than the task's own. Beam calls only; the
+ * Workers AI path keeps the task's maxOutputTokens.
+ */
+export const BEAM_MAX_OUTPUT_TOKENS = 8_000;
+export const beamOutputTokens = (maxTokens: number): number => {
+  const base = Math.max(1, Math.floor(Number.isFinite(maxTokens) ? maxTokens : 1));
+  return Math.max(base, Math.min(base * 2, BEAM_MAX_OUTPUT_TOKENS));
+};
 
 /** Cerebrum's share of Beam, stopped before the limits (configurable vars). */
 export const DEFAULT_LIMITS = Object.freeze({ rpm: 10, requests_day: 500, input_tokens_day: 1_000_000, output_tokens_day: 150_000 });
@@ -70,7 +84,8 @@ export interface ChatMessage { role: "system" | "user"; content: string }
 /** One call's meter: what answered, its tokens and latency, and why Beam did not answer (null when it did). */
 export interface RouteMeter { provider: typeof BEAM_PROVIDER | typeof WORKERS_AI_PROVIDER; model: string; in_tokens: number; out_tokens: number; latency_ms: number; fallback: FallbackReason | null }
 /** Beam's answer, for AiEngine to interpret; settle(true) when it was usable, settle(false) when it was not. */
-export interface BeamAnswer { kind: "answer"; completion: unknown; latency_ms: number; settle(usable: boolean): Promise<void> }
+/** settle("output_budget"): the answer stopped at its output limit; the call falls back, the breaker neither counts it nor stays half-open for it. */
+export interface BeamAnswer { kind: "answer"; completion: unknown; latency_ms: number; settle(usable: boolean | "output_budget"): Promise<void> }
 export type BeamAttempt = BeamAnswer | { kind: "skip"; reason: FallbackReason };
 
 export interface RouterStateRow { state: RouterState; mode: RouterMode; paid_cap_usd: number | null; spent_usd: number; updated_by: string; updated_at: string; reason: string | null }
@@ -240,13 +255,17 @@ export class ModelRouterError extends Error {
 
 /**
  * The owner's switch (POST /v1/model-router/state; the kernel checks the owner). Body: {state: "on" | "off", mode?,
- * paid_cap_usd?, reason?}. "on" needs free_only, or paid_capped with an explicit cap in (0, MAX_PAID_CAP_USD]; after a
- * paid sign (off_paid), only paid_capped with a cap. Each change is audited (model_router.state_changed); turning it on
- * closes the breaker and starts the paid spend from 0.
+ * paid_cap_usd?, confirm_free?, reason?}. "on" needs free_only, or paid_capped with an explicit cap in (0,
+ * MAX_PAID_CAP_USD]. After a paid sign (off_paid), free_only needs the owner's explicit confirm_free: true (coordinator
+ * review, 2026-11-25: the owner may judge the sign was not a charge); free_only then still goes off again at the next
+ * paid sign. Each change is audited (model_router.state_changed, with its from state); turning it on closes the breaker
+ * and starts the paid spend from 0.
  */
 export async function setRouterState(db: D1Database, actor: string, body: Record<string, unknown>, now = Date.now()): Promise<{ changed: boolean; state: RouterStateRow | null }> {
-  const extra = Object.keys(body).filter((k) => !["state", "mode", "paid_cap_usd", "reason"].includes(k));
-  if (extra.length) throw new ModelRouterError(400, "unknown_field", `the body carries only state, mode, paid_cap_usd and reason, not ${extra.slice(0, 3).join(", ")}`);
+  const extra = Object.keys(body).filter((k) => !["state", "mode", "paid_cap_usd", "confirm_free", "reason"].includes(k));
+  if (extra.length) throw new ModelRouterError(400, "unknown_field", `the body carries only state, mode, paid_cap_usd, confirm_free and reason, not ${extra.slice(0, 3).join(", ")}`);
+  if (body.confirm_free !== undefined && body.confirm_free !== true) throw new ModelRouterError(400, "invalid_confirm_free", "confirm_free is true or absent");
+  const confirmFree = body.confirm_free === true;
   if (body.state !== "on" && body.state !== "off") throw new ModelRouterError(400, "invalid_state", "state is on or off");
   const reason = body.reason === undefined || body.reason === null ? null : typeof body.reason === "string" && body.reason.trim().length <= 300 ? body.reason.trim() || null : undefined;
   if (reason === undefined) throw new ModelRouterError(400, "invalid_reason", "the reason is text of at most 300 characters");
@@ -255,17 +274,18 @@ export async function setRouterState(db: D1Database, actor: string, body: Record
   if (!before) throw new ModelRouterError(503, "model_router_unavailable", "migration 0090 is not applied");
   let next: { state: RouterState; mode: RouterMode; cap: number | null };
   if (body.state === "off") {
-    if (body.mode !== undefined || body.paid_cap_usd !== undefined) throw new ModelRouterError(400, "invalid_request", "turning Beam off takes no mode or cap");
+    if (body.mode !== undefined || body.paid_cap_usd !== undefined || confirmFree) throw new ModelRouterError(400, "invalid_request", "turning Beam off takes no mode, cap or confirm_free");
     next = { state: "off_owner", mode: before.mode, cap: before.paid_cap_usd };
   } else {
     const mode = body.mode === undefined ? "free_only" : body.mode;
     if (mode !== "free_only" && mode !== "paid_capped") throw new ModelRouterError(400, "invalid_mode", "mode is free_only or paid_capped");
     if (mode === "free_only") {
       if (body.paid_cap_usd !== undefined) throw new ModelRouterError(400, "invalid_request", "a paid cap goes only with mode paid_capped");
-      if (before.state === "off_paid") throw new ModelRouterError(409, "paid_sign_recorded", "Beam showed a paid sign; turn it on only as paid_capped with an explicit cap, or leave it off");
+      if (before.state === "off_paid" && !confirmFree) throw new ModelRouterError(409, "paid_sign_recorded", "Beam showed a paid sign; turn it on as free_only only with confirm_free: true, or as paid_capped with an explicit cap, or leave it off");
       next = { state: "on", mode, cap: null };
     } else {
       const cap = body.paid_cap_usd;
+      if (confirmFree) throw new ModelRouterError(400, "invalid_request", "confirm_free goes only with mode free_only");
       if (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0 || cap > MAX_PAID_CAP_USD) throw new ModelRouterError(400, "invalid_paid_cap", `paid_capped needs paid_cap_usd, a number above 0 and at most ${MAX_PAID_CAP_USD}`);
       next = { state: "on", mode, cap: Math.round(cap * 100) / 100 };
     }
@@ -280,7 +300,7 @@ export async function setRouterState(db: D1Database, actor: string, body: Record
   }
   forgetRouterState(db);
   await appendAuditEvent(db, { event_type: "model_router.state_changed", actor, subject: "model_router", outcome: next.state,
-    payload: { from: before.state, to: next.state, mode: next.mode, paid_cap_usd: next.cap, reason } });
+    payload: { from: before.state, to: next.state, mode: next.mode, paid_cap_usd: next.cap, reason, ...(confirmFree && before.state === "off_paid" ? { confirm_free: true } : {}) } });
   return { changed: true, state: await readRouterState(db) };
 }
 
@@ -392,18 +412,32 @@ export class ModelRouter {
     } catch { /* best effort */ }
   }
 
+  /** An answer cut at its output limit: neither a failure nor a success; a half-open probe's lease is freed for the next call. */
+  private async releaseProbe(now: number): Promise<void> {
+    try {
+      await this.db.prepare("UPDATE model_router_health SET probe_until = NULL, updated_at = ? WHERE id = 'beam' AND probe_until IS NOT NULL").bind(iso(now)).run();
+    } catch { /* best effort */ }
+  }
+
   private async rateLimited(now: number, ms: number): Promise<void> {
     try {
       await this.db.prepare("UPDATE model_router_health SET rate_limited_until = ?, probe_until = NULL, updated_at = ? WHERE id = 'beam'").bind(iso(now + ms), iso(now)).run();
     } catch { /* best effort */ }
   }
 
-  private async addSpend(now: number, usd: number, state: RouterStateRow): Promise<"ok" | "cap"> {
+  /**
+   * Add a cost to the paid spend and compare the stored total (UPDATE ... RETURNING, one statement) with the cap, so calls
+   * that run at once cannot overshoot it on a stale cached total (coordinator review, 2026-11-25). The cap is read in the
+   * same statement. Fails closed.
+   */
+  private async addSpend(now: number, usd: number): Promise<"ok" | "cap"> {
     try {
-      await this.db.prepare("UPDATE model_router_state SET spent_usd = spent_usd + ? WHERE id = 'global'").bind(usd).run();
+      const row = await this.db.prepare("UPDATE model_router_state SET spent_usd = spent_usd + ? WHERE id = 'global' RETURNING spent_usd, paid_cap_usd")
+        .bind(usd).first<{ spent_usd: number; paid_cap_usd: number | null }>();
       forgetRouterState(this.db);
-      const spent = (state.spent_usd ?? 0) + usd;
-      if (state.paid_cap_usd !== null && spent >= state.paid_cap_usd) { await reportPaid(this.db, this.actor, "paid_cap_reached", now); return "cap"; }
+      if (!row) return "cap";
+      const spent = Number(row.spent_usd), cap = typeof row.paid_cap_usd === "number" ? row.paid_cap_usd : null;
+      if (!Number.isFinite(spent) || cap === null || spent >= cap) { await reportPaid(this.db, this.actor, "paid_cap_reached", now); return "cap"; }
     } catch { /* fail closed below */ return "cap"; }
     return "ok";
   }
@@ -437,7 +471,8 @@ export class ModelRouter {
     const probeHeld = at(h.probe_until);
     if (openUntil !== null && probeHeld !== null && probeHeld > now) return { kind: "skip", reason: "breaker" };
 
-    const inBound = tokenBound(messages), outBound = Math.max(1, Math.floor(maxTokens));
+    // Beam's output margin: its reasoning counts as output (beamOutputTokens; the Workers AI path keeps maxTokens).
+    const inBound = tokenBound(messages), outBound = beamOutputTokens(maxTokens);
     if (!(await this.reserve(now, inBound, outBound))) return { kind: "skip", reason: "budget" };
     if (openUntil !== null) {
       // Half-open: exactly one probe may run; another call meanwhile stays on Workers AI.
@@ -486,22 +521,29 @@ export class ModelRouter {
       return { kind: "skip", reason: "retention" };
     }
     const text = res.ok ? "" : errorText(body ?? raw.slice(0, 600));
-    // A paid sign: HTTP 402, a billing, credit or payment error, a plan that is not free, or a non-zero cost.
+    // HTTP 429 is always a rate or quota answer, whatever its text says (coordinator review, 2026-11-25: a free daily quota
+    // says "daily limit exceeded ... upgrade your plan for higher limits", which is not a charge). It backs off until the
+    // reset (Retry-After, a rate-limit header, a daily quota to 00:00 UTC) and never turns Beam off.
+    if (res.status === 429) {
+      await this.rateLimited(now, rateBackoffMs(res.headers, now, text));
+      return { kind: "skip", reason: "rate" };
+    }
+    // A paid sign: HTTP 402, a billing, credit or payment error on another 4xx, a plan that is not free, or a non-zero cost.
     const signal: PaidSignal | null = res.status === 402 ? "http_402"
-      : !res.ok && BILLING.test(text) ? "billing_error"
+      : res.status >= 400 && res.status < 500 && BILLING.test(text) ? "billing_error"
       : planChanged(res.headers) ? "plan_change"
       : res.ok && costOf(body) > 0 ? "cost_field" : null;
     if (signal) {
       // paid_capped (the owner's explicit cap): a cost is spent against the cap, a plan header is expected; a 402 or a
       // billing error still means Beam cannot be paid, so it is off. free_only: every paid sign turns Beam off.
       if (state.mode === "paid_capped" && signal === "cost_field") {
-        if ((await this.addSpend(now, costOf(body), state)) === "cap") return { kind: "skip", reason: "paid" };
+        if ((await this.addSpend(now, costOf(body))) === "cap") return { kind: "skip", reason: "paid" };
       } else if (!(state.mode === "paid_capped" && signal === "plan_change")) {
         await reportPaid(this.db, this.actor, signal, now);
         return { kind: "skip", reason: "paid" };
       }
     }
-    if (res.status === 429 || (!res.ok && res.status < 500 && RATE.test(text))) {
+    if (!res.ok && res.status < 500 && RATE.test(text)) {
       await this.rateLimited(now, rateBackoffMs(res.headers, now, text));
       return { kind: "skip", reason: "rate" };
     }
@@ -511,7 +553,11 @@ export class ModelRouter {
     }
     return {
       kind: "answer", completion: body, latency_ms: latency,
-      settle: async (usable: boolean) => { if (usable) await this.success(this.clock()); else await this.failure(this.clock()); },
+      settle: async (usable: boolean | "output_budget") => {
+        if (usable === "output_budget") await this.releaseProbe(this.clock());
+        else if (usable) await this.success(this.clock());
+        else await this.failure(this.clock());
+      },
     };
   }
 

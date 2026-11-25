@@ -885,7 +885,7 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
 
 /**
  * AIR1: model_router.report_paid. The decision is verified and consumed, then the paid sign is recorded: Beam is off_paid
- * for Cerebrum until the owner turns it on with a paid cap. Idempotent (a repeat returns changed: false). The input is
+ * for every caller until the owner turns it on again (a paid cap, or free_only with confirm_free). Idempotent (a repeat returns changed: false). The input is
  * {signal}, one of PAID_SIGNALS but paid_cap_reached; nothing else is read or stored.
  */
 async function reportModelRouterPaid(env: SyscallEnv, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
@@ -937,7 +937,7 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "corrections.record": return await recordCorrectionSyscall(env, agentId, decisionId, input);
     // PF3: xauusd's shadow verdict on an autonomous knowledge item; knowledge.ts verifies and consumes the decision first.
     case "knowledge.verdict": return await recordKnowledgeVerdict(env.DB, agentId, decisionId, input);
-    // AIR1: a paid sign of Beam, reported by the one cta agent the ceiling names; it can only turn Beam off.
+    // AIR1: a paid sign of Beam, reported by the one agent a ceiling names (xauusd-model-router); it can only turn Beam off.
     case "model_router.report_paid": return await reportModelRouterPaid(env, agentId, decisionId, input);
     // ADR-0014 §11 (EVOLVER.md §6): the Forge verifies and consumes the decision, re-checks everything, writes evo/<id>.
     case "code.propose": {

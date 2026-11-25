@@ -12,8 +12,9 @@ import { ago } from "../lib/format";
  * Telemetry tab. One read of GET /v1/model-router (kernel.model_router): the router's global state, today's Beam and
  * Workers AI calls and tokens per purpose (D1 model_calls_daily), why Beam did not answer (fallbacks by reason), and the
  * router's own counters against Cerebrum's share. Every value comes from that answer; a missing one is "—". Only the owner
- * sees the switch: on is free_only, or paid_capped with an explicit cap (after a paid sign only the latter); off is a
- * plain owner click. The kernel checks the owner and the body again.
+ * sees the switch: on is free_only, or paid_capped with an explicit cap; after a paid sign, free_only only with the owner's
+ * confirmation that it was not a charge (confirm_free, its own phrase BEAM ON FREE), or paid_capped; off is a plain owner
+ * click. The kernel checks the owner and the body again.
  */
 
 const MISSING = "—";
@@ -24,7 +25,7 @@ const STATE_LABEL: Record<string, string> = {
 const PROVIDER_LABEL: Record<string, string> = { reflection: "Beam", workers_ai: "Workers AI" };
 const REASON_LABEL: Record<string, string> = {
   unreachable: "unreachable or unusable answer", rate: "provider rate limit", budget: "Cerebrum's share used", paid: "paid sign", retention: "data retention",
-  breaker: "breaker open", off: "router off", disabled: "not configured",
+  breaker: "breaker open", off: "router off", disabled: "not configured", output_budget: "cut at its output limit",
 };
 
 export default function ModelRouterPanel() {
@@ -102,7 +103,12 @@ export default function ModelRouterPanel() {
                 <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.model_router_off", body: { state: "off" }, title: "Turn Beam off",
                   lines: ["Cerebrum then answers on Workers AI only."], done: "Beam is off.", after: refresh })}><PowerOff className="h-3.5 w-3.5" />Turn off…</button>
               )}
-              {paidOnly && <span className="text-[11px] text-slate-500">After a paid sign Beam turns on only with a paid cap.</span>}
+              {paidOnly && (
+                <button type="button" className="btn py-1!" onClick={() => act({ route: "kernel.model_router_on_free", body: { state: "on", mode: "free_only", confirm_free: true }, title: "Turn Beam on again (free only)",
+                  lines: ["Only if you are sure the paid sign was not a charge: Beam then answers Cerebrum's chat, directive drafts and councils first again.", "Any later paid sign turns it off again at once, and you hear of it once."],
+                  done: "Beam is on (free only).", after: refresh })}><Power className="h-3.5 w-3.5" />Turn on free (not a charge)…</button>
+              )}
+              {paidOnly && <span className="text-[11px] text-slate-500">After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge.</span>}
             </div>
           ) : <div className="text-[11px] text-slate-500">Only the owner turns Beam on or off.</div>}
         </div>

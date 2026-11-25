@@ -405,9 +405,16 @@ export class AiEngine {
           }
           return { status: "ok", data: verdict.data, model: BEAM_MODEL_ID, correlation_id: correlationId, provider: "reflection", ...(usage ? { usage } : {}) };
         }
-        // Empty, invalid JSON or a schema mismatch: this call falls back, and it counts as a failure for the breaker.
-        await beam.settle(false);
-        fallback = "unreachable";
+        // Cut at its output limit (finish_reason "length"): the call falls back as output_budget, which is not a failure
+        // of Beam and does not count toward the breaker (coordinator review, 2026-11-25).
+        if (verdict.category === "output_budget_exhausted") {
+          await beam.settle("output_budget");
+          fallback = "output_budget";
+        } else {
+          // Empty, invalid JSON or a schema mismatch: this call falls back, and it counts as a failure for the breaker.
+          await beam.settle(false);
+          fallback = "unreachable";
+        }
       } else {
         fallback = beam.reason;
       }

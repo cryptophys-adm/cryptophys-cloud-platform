@@ -440,7 +440,8 @@ MOCK["/api/kernel/v1/evolution"] = { available: true, control: { mode: "on", upd
     { intent_id: "int_00000000000a", source: "inventory", source_ref: "undeclared_worker:x", target_repo: "platform", title: "undeclared worker: x", spec: "x", state: "queued", state_reason: null, evolution_id: null, created_at: at(90), updated_at: at(90), origin: {}, evidence_refs: [] },
   ], evolutions: [] };
 // AIR1 (2026-11-25): the model router panel on #/organism/telemetry: Beam on for Cerebrum, today's calls per purpose and
-// provider, fallbacks by reason; a second fixture after a paid sign (off_paid), where only a capped turn-on is offered.
+// provider, fallbacks by reason; a second fixture after a paid sign (off_paid), where a capped turn-on and the owner's
+// confirmed free turn-on (BEAM ON FREE, confirm_free) are offered.
 const routerFixture = (state, extra = {}) => ({ schema: "model_router.status.v1", available: true, system: "cerebrum", provider: "reflection", model: "Beam-1.0-501B-A23B",
   tasks: ["chat_plan", "chat_answer", "directive_draft", "council_position", "council_rebuttal", "council_synthesis"],
   configured: { var_on: true, key_present: true, base_url_valid: true },
@@ -1105,7 +1106,7 @@ OVERRIDE = {};
 const ROUTER_CHECKS = [
   { name: "owner on", override: {}, want: ["Model router · Beam for Cerebrum", "on", "chat_answer", "council_position", "Beam", "Workers AI", "unreachable or unusable answer: 2", "breaker open: 4", "Cerebrum's share used: 1", "37 / 500", "Turn off…", "21 calls"], not: ["Only the owner turns Beam on or off.", "Turn on (free only)…"] },
   { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Model router · Beam for Cerebrum", "Only the owner turns Beam on or off."], not: ["Turn off…", "Turn on (free only)…", "Turn on (paid, capped)…"] },
-  { name: "off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "After a paid sign Beam turns on only with a paid cap."], not: ["Turn on (free only)…", "Turn off…"] },
+  { name: "off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "Turn on free (not a charge)…", "After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge."], not: ["Turn on (free only)…", "Turn off…"] },
   { name: "read fails", override: { "/api/kernel/v1/model-router": { __status: 502, error: "model_router_unavailable" } }, want: ["model_router_unavailable", "Retry"], not: ["Turn off…"] },
 ];
 for (const width of [390, 1440]) {
@@ -1139,6 +1140,20 @@ for (const width of [390, 1440]) {
     if (check.name === "off_paid") {
       const disabled = await page.evaluate(() => [...document.querySelectorAll("main button")].find((b) => b.textContent === "Turn on (paid, capped)…")?.hasAttribute("disabled"));
       if (disabled !== true) problems.push(`${width}px model router (off_paid): the capped turn-on is enabled without a cap`);
+      // Coordinator review 2026-11-25: the free turn-on after a paid sign asks for BEAM ON FREE and sends confirm_free: true.
+      const posts = [];
+      await page.route("**/console/api/kernel/v1/model-router/state", async (route) => {
+        posts.push({ method: route.request().method(), body: route.request().postData() });
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ changed: true, status: routerFixture("on") }) });
+      });
+      await page.click('main button:text-is("Turn on free (not a charge)…")');
+      await page.waitForTimeout(300);
+      const dialog = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? "");
+      if (!dialog.includes("BEAM ON FREE")) problems.push(`${width}px model router (off_paid): the free turn-on asks for no BEAM ON FREE phrase (${dialog.slice(0, 120)})`);
+      await page.fill('[role="dialog"] input', "BEAM ON FREE");
+      await page.click('[role="dialog"] button:text-is("Confirm")');
+      await page.waitForTimeout(500);
+      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify({ state: "on", mode: "free_only", confirm_free: true })) problems.push(`${width}px model router (off_paid): free turn-on requests were ${JSON.stringify(posts)}`);
     }
     await page.close();
   }

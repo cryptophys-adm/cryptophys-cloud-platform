@@ -3,16 +3,22 @@
 // directive drafts and councils first, free_only; every other case returns the Workers AI answer with its reason metered.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeAi, migratedDb, req } from "./harness.ts";
 import { AiEngine, BEAM_MODEL_ID, type AiTask } from "../src/ai-engine.ts";
 import { CHAT_MODEL, CHAT_MODELS, CHAT_SERVICE } from "../src/conversation.ts";
 import {
-  BEAM_MODEL, BREAKER_OPEN_MS, DEFAULT_LIMITS, DEFAULT_MODEL_BASE_URL, FALLBACK_REASONS, ModelRouter, ModelRouterError, NEVER_ROUTED_TASKS, ROUTER_TASKS, forgetRouterState,
+  BEAM_MAX_OUTPUT_TOKENS, BEAM_MODEL, BREAKER_OPEN_MS, beamOutputTokens, DEFAULT_LIMITS, DEFAULT_MODEL_BASE_URL, FALLBACK_REASONS, ModelRouter, ModelRouterError, NEVER_ROUTED_TASKS, ROUTER_TASKS, forgetRouterState,
   modelRouterStatus, rateBackoffMs, readRouterState, reportPaid, setRouterState, type ModelRouterEnv,
 } from "../src/model-router.ts";
 import { CAPABILITIES, hourlyLimit } from "../src/capabilities.ts";
-import { EXTERNAL_CEILING, EXTERNAL_ORIGINS, externalCeilingFor } from "../src/organism.ts";
+import {
+  AETHER_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, XAUUSD_CEILING, XAUUSD_MODEL_ROUTER_AGENT, externalCeilingFor, externalCeilingViolations, externalOrgans, type Genome,
+} from "../src/organism.ts";
+import { castVote, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
+import { rpcSyscall } from "../../ai-kernel/src/agent-rpc.ts";
+import { compare } from "../../forge/src/census.ts";
+import { proposalFor, type CensusRow } from "../../ai-kernel/src/organism.ts";
 import { PROBLEM_KINDS } from "../src/owner-inbox-rank.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import { decide, parsePolicyRequest } from "../../policy-engine/src/index.ts";
@@ -89,7 +95,8 @@ test("AIR1-1. on and free: Beam answers an allow-listed task with the CTA contra
   assert.equal(f.init.method, "POST");
   assert.equal((f.init.headers as Record<string, string>).authorization, `Bearer ${KEY}`);
   assert.deepEqual(Object.keys(f.body).sort(), ["max_completion_tokens", "messages", "model", "reasoning_effort"]);
-  assert.deepEqual([f.body.model, f.body.max_completion_tokens, f.body.reasoning_effort, f.body.messages.map((m: any) => m.role)], [BEAM_MODEL, 600, "low", ["system", "user"]]);
+  // Beam's output margin (coordinator review): twice the task's 600, as Beam's reasoning counts as output.
+  assert.deepEqual([f.body.model, f.body.max_completion_tokens, f.body.reasoning_effort, f.body.messages.map((m: any) => m.role)], [BEAM_MODEL, 1200, "low", ["system", "user"]]);
   assert.equal(BEAM_MODEL_ID, BEAM_MODEL, "ai-engine.ts and model-router.ts name the same model");
   assert.equal(DEFAULT_MODEL_BASE_URL, "https://api.reflection.ai/openai/v1");
   const row = beam(w)!;
@@ -107,8 +114,9 @@ test("AIR1-2. unreachable: a timeout, a network error, a 5xx, an empty answer, i
   });
   const cases: [string, Reply][] = [
     ["timeout", hang], ["network error", new TypeError("fetch failed")], ["503", status(503)], ["empty", ok("")], ["invalid JSON", ok("no json here")],
-    ["schema mismatch", ok('{"wrong":1}')], ["not JSON", new Response("<html>bad gateway</html>", { status: 200 })], ["cut off at the limit", () => new Response(beamBody('{"answer":"cut', undefined, "length"), { status: 200 })],
+    ["schema mismatch", ok('{"wrong":1}')], ["not JSON", new Response("<html>bad gateway</html>", { status: 200 })],
   ];
+  // An answer cut at its output limit is output_budget, not unreachable, and does not count for the breaker (AIR1-20).
   for (const [name, reply] of cases) {
     w.resetHealth();
     w.script.push(reply);
@@ -386,12 +394,15 @@ test("AIR1-13. the kernel: operators read GET /v1/model-router; only the owner t
   assert.equal((await call(kernel, env, req("GET", "/v1/model-router/state", undefined, APPROVER_JWT))).status, 405);
 });
 
-test("AIR1-14. capabilities: model_router.status (tier 0) and model_router.report_paid (tier 1, rate limited); a granted agent reads and reports, an ungranted one is denied; no ceiling or migration grants them yet", async () => {
+test("AIR1-14. capabilities: model_router.status (tier 0) and model_router.report_paid (tier 1, rate limited); a granted agent reads and reports, an ungranted one is denied; only xauusd-model-router's ceiling and no migration grants them", async () => {
   assert.deepEqual([CAPABILITIES["model_router.status"].tier, CAPABILITIES["model_router.report_paid"].tier, hourlyLimit("model_router.report_paid"), hourlyLimit("model_router.status")], [0, 1, 4, null]);
-  for (const o of EXTERNAL_ORIGINS) for (const id of ["x", ...Object.keys(o.ceiling?.agents ?? {})]) {
+  // Since 2026-11-25 (owner: "news_compare saja") exactly one ceiling entry holds them: xauusd's router client (AIR1-16).
+  const holders: string[] = [];
+  for (const o of EXTERNAL_ORIGINS) for (const id of ["x", "cta-model-router", ...Object.keys(o.ceiling?.agents ?? {})]) {
     const c = externalCeilingFor(o, id).capabilities;
-    assert.ok(!c.includes("model_router.status") && !c.includes("model_router.report_paid"), `${o.origin}:${id}`);
+    if (c.includes("model_router.status") || c.includes("model_router.report_paid")) holders.push(`${o.origin}:${id}`);
   }
+  assert.deepEqual(holders, [`xauusd:${XAUUSD_MODEL_ROUTER_AGENT}`]);
   assert.ok(!EXTERNAL_CEILING.capabilities.some((c) => c.startsWith("model_router.")));
   for (const f of ["0001_initial.sql", "0090_model_router.sql"]) assert.doesNotMatch(read(`workers/control-plane-migrations/${f}`), /model_router\.(status|report_paid)/);
   const db = migratedDb();
@@ -422,7 +433,7 @@ test("AIR1-15. configuration and records: off by default in wrangler, no require
   assert.match(toml, /\nMODEL_BASE_URL = "https:\/\/api\.reflection\.ai\/openai\/v1"\n/);
   assert.match(toml, /\nMODEL_ROUTER_RPM = "10"\nMODEL_ROUTER_REQUESTS_DAY = "500"\nMODEL_ROUTER_INPUT_TOKENS_DAY = "1000000"\nMODEL_ROUTER_OUTPUT_TOKENS_DAY = "150000"\n/);
   assert.doesNotMatch(toml, /\[secrets\]|^REFLECTION_API_KEY\s*=/m, "the key is never in the config and is not a required secret");
-  assert.deepEqual(FALLBACK_REASONS, ["unreachable", "rate", "budget", "paid", "retention", "breaker", "off", "disabled"]);
+  assert.deepEqual(FALLBACK_REASONS, ["unreachable", "rate", "budget", "paid", "retention", "breaker", "off", "disabled", "output_budget"]);
   const sql = read("workers/control-plane-migrations/0090_model_router.sql");
   assert.match(sql, /PRIMARY KEY \(day, system, purpose, provider, model\)/);
   assert.match(read("workers/control-plane-migrations/test_migrations.py"), /PASS: 0090 model_router/);
@@ -445,4 +456,269 @@ test("AIR1-15. configuration and records: off by default in wrangler, no require
 test("AIR1-G: the model router is a guard path (its free_only safeguard is the owner's)", () => {
   assert.equal(criticalPathReason("workers/control-plane-shared/src/model-router.ts"), "paid_model_guard");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/ai-engine.ts"), null);
+});
+
+// ------------------------------------------------------- xauusd's news_compare (owner: "semua shadow pakai beam", then "news_compare saja")
+
+const XAU_AI = "xauusd-ai-trading-assistant";
+const XAU_ORIGIN = EXTERNAL_ORIGINS.find((o) => o.origin === "xauusd")!;
+const ROUTER_CAPS = ["model_router.status", "model_router.report_paid"];
+
+test("AIR1-16. the xauusd router grant: XAUUSD_CEILING names xauusd-model-router with exactly the two model router capabilities; no other agent or ceiling holds them; CTA keeps the general ceiling", () => {
+  assert.equal(XAUUSD_MODEL_ROUTER_AGENT, "xauusd-model-router");
+  assert.deepEqual([...XAUUSD_CEILING.agents[XAUUSD_MODEL_ROUTER_AGENT]], ROUTER_CAPS);
+  assert.deepEqual(externalCeilingFor(XAU_ORIGIN, XAUUSD_MODEL_ROUTER_AGENT), { tier_max: 1, capabilities: ROUTER_CAPS, proposals: [] });
+  assert.deepEqual(privilegedCapabilities(ROUTER_CAPS), [], "a routine registration, no owner click for the agent");
+  // Nobody else: no other xauusd agent, no xauusd default, no Aether agent, no CTA agent, not EXTERNAL_CEILING.
+  for (const cap of ROUTER_CAPS) {
+    assert.deepEqual(Object.entries(XAUUSD_CEILING.agents).filter(([, caps]) => caps.includes(cap)).map(([id]) => id), [XAUUSD_MODEL_ROUTER_AGENT], cap);
+    assert.ok(!XAUUSD_CEILING.capabilities.includes(cap), cap);
+    assert.ok(!AETHER_CEILING.capabilities.includes(cap) && !Object.values(AETHER_CEILING.agents).some((caps) => caps.includes(cap)), cap);
+    assert.ok(!EXTERNAL_CEILING.capabilities.includes(cap), cap);
+  }
+  for (const o of EXTERNAL_ORIGINS) for (const id of [undefined, "x", "hud-prophet", "xauusd-moderator", "nexus-teacher", "shadow-knowledge", "xauusd-reasoner", "aether-curator", "knowledge-council", "cta-editor", "cta-model-router", ...Object.keys(o.ceiling?.agents ?? {})]) {
+    if (o.origin === "xauusd" && id === XAUUSD_MODEL_ROUTER_AGENT) continue;
+    const c = externalCeilingFor(o, id).capabilities;
+    assert.ok(!ROUTER_CAPS.some((cap) => c.includes(cap)), `${o.origin}/${id}`);
+  }
+  // AC-CTA holds: CTA has no ceiling of its own, so every cta agent, a cta router client included, has the general ceiling.
+  const CTA = EXTERNAL_ORIGINS.find((o) => o.origin === "cta")!;
+  assert.equal(CTA.ceiling, undefined);
+  for (const id of ["cta-editor", "cta-model-router"]) {
+    assert.deepEqual(externalCeilingFor(CTA, id), { tier_max: EXTERNAL_CEILING.tier_max, capabilities: EXTERNAL_CEILING.capabilities, proposals: [] }, id);
+  }
+  assert.deepEqual(externalCeilingViolations({ id: "cta-model-router", tier_max: 1, capabilities: ["model_router.status"] }, CTA), ["capability model_router.status"]);
+  // A census gene that puts them on another agent, or anything else on the router client, is refused.
+  const xau = (id: string, capabilities: string[]) => externalCeilingViolations({ id, tier_max: 1, voter: false, capabilities }, XAU_ORIGIN);
+  assert.deepEqual(xau(XAUUSD_MODEL_ROUTER_AGENT, ROUTER_CAPS), []);
+  assert.deepEqual(xau(XAUUSD_MODEL_ROUTER_AGENT, ["model_router.status"]), []);
+  assert.deepEqual(xau(XAUUSD_MODEL_ROUTER_AGENT, [...ROUTER_CAPS, "reports.publish"]), ["capability reports.publish"]);
+  assert.deepEqual(xau(XAUUSD_MODEL_ROUTER_AGENT, [...ROUTER_CAPS, "knowledge.verdict"]), ["capability knowledge.verdict"]);
+  assert.deepEqual(externalCeilingViolations({ id: XAUUSD_MODEL_ROUTER_AGENT, tier_max: 2, voter: true, capabilities: ROUTER_CAPS }, XAU_ORIGIN), ["tier_max 2", "council seat"]);
+  for (const id of ["shadow-knowledge", "hud-prophet", "xauusd-moderator"]) assert.deepEqual(xau(id, ["model_router.report_paid"]), ["capability model_router.report_paid"], id);
+  // The earlier grants are unchanged (PF3, H3e, the return path).
+  assert.deepEqual([...XAUUSD_CEILING.agents["shadow-knowledge"]], ["knowledge.verdict"]);
+  assert.deepEqual([...XAUUSD_CEILING.agents["nexus-teacher"]], ["corrections.record"]);
+  assert.deepEqual([...XAUUSD_CEILING.agents["xauusd-moderator"]], [...EXTERNAL_CEILING.capabilities, "council.decisions.read"]);
+  assert.deepEqual([...XAUUSD_CEILING.capabilities], [...EXTERNAL_CEILING.capabilities]);
+  // One constant names the agent, as PF3's.
+  const src = read("workers/control-plane-shared/src/organism.ts");
+  assert.equal(src.match(/"xauusd-model-router"/g)?.length, 1, "the id is written once");
+  assert.match(src, /\[XAUUSD_MODEL_ROUTER_AGENT\]: Object\.freeze\(\["model_router\.status", "model_router\.report_paid"\]\)/);
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
+});
+
+test("AIR1-17. no migration seeds xauusd-model-router; the ceiling entry alone breaks nothing; once xauusd's DNA declares it the census proposes the routine register_agent", async () => {
+  for (const f of readdirSync(new URL("workers/control-plane-migrations/", ROOT)).filter((n) => n.endsWith(".sql"))) {
+    assert.doesNotMatch(read(`workers/control-plane-migrations/${f}`), /xauusd-model-router|model_router\.(status|report_paid)/, f);
+  }
+  const db = migratedDb();
+  assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM agents WHERE agent_id = ?").get(XAUUSD_MODEL_ROUTER_AGENT) as any).n, 0);
+  const live = (db.raw.prepare("SELECT agent_id, capabilities_json FROM agents WHERE host_worker = ? ORDER BY agent_id").all(XAU_AI) as Array<{ agent_id: string; capabilities_json: string }>)
+    .map((r) => ({ id: r.agent_id, display_name: r.agent_id, capabilities: JSON.parse(r.capabilities_json), tier_max: 1, voter: false }));
+  const organ = (agents: unknown[]) => ({ $schema_version: 1, service: XAU_AI, display_name: XAU_AI, kind: "service", deploy_unit: null, access: false, rollback: false, drift: { via: "rpc", binding: "EXT_XAUUSD_AI" }, agents, engines: [] });
+  const genomeOf = (agents: unknown[]) => {
+    const { organs, refused } = externalOrgans(XAU_ORIGIN, { schema: XAU_ORIGIN.schema, organs: [organ(agents)] });
+    return { g: new Map(organs.map((o) => [o.service, o])) as Genome, refused };
+  };
+  const before = genomeOf(live);
+  assert.deepEqual(before.refused, []);
+  const quiet = await compare(db as never, before.g);
+  assert.ok(!quiet.some((f) => f.subject === XAUUSD_MODEL_ROUTER_AGENT), JSON.stringify(quiet));
+  const declared = genomeOf([...live, { id: XAUUSD_MODEL_ROUTER_AGENT, display_name: "Model router client", capabilities: ROUTER_CAPS, tier_max: 1, voter: false }]);
+  assert.deepEqual(declared.refused, []);
+  const findings = await compare(db as never, declared.g);
+  assert.deepEqual(findings.filter((f) => f.subject === XAUUSD_MODEL_ROUTER_AGENT).map((f) => f.kind), ["unregistered_agent"]);
+  const census: CensusRow = { main_sha: "a".repeat(40), status: "changes", findings, genome: [...declared.g.values()].map((d) => ({ service: d.service, kind: d.kind, agents: d.agents, engines: [], origin: "xauusd" })) };
+  const p = proposalFor(census, { kind: "unregistered_agent", subject: XAUUSD_MODEL_ROUTER_AGENT })!;
+  assert.deepEqual([p.action, p.target, p.params.capabilities, p.params.tier_max, p.params.service], ["register_agent", XAUUSD_MODEL_ROUTER_AGENT, ROUTER_CAPS, 1, XAU_AI]);
+  const e = { agents_enabled: true, audit_valid: true, critical_reports_24h: 0, services: [], recovery_plans: [], deploys: [], proposals_last_hour: 0, agents: {}, registry: { [XAU_AI]: { status: "healthy" } } } as unknown as Evidence;
+  const proposal = (caps: string[]) => ({ proposal_id: "cns_t", action: "register_agent", target: XAUUSD_MODEL_ROUTER_AGENT, class: "routine", params: { service: XAU_AI, capabilities: caps, tier_max: 1, main_sha: "a".repeat(40) } }) as unknown as Proposal;
+  assert.equal(castVote("platform-api", proposal(ROUTER_CAPS), e).vote, "approve");
+  assert.match(castVote("platform-api", proposal([...ROUTER_CAPS, "memory.remember"]), e).reason, /above the external-organ ceiling: capability memory\.remember/);
+  const over = genomeOf([...live, { id: XAUUSD_MODEL_ROUTER_AGENT, display_name: "Model router client", capabilities: [...ROUTER_CAPS, "signals.observe"], tier_max: 1, voter: false }]);
+  assert.deepEqual(over.refused.map((r) => [r.kind, r.subject]), [["external_agent_refused", XAUUSD_MODEL_ROUTER_AGENT]]);
+});
+
+test("AIR1-18. over AgentRpc, xauusd-model-router (hosted by xauusd-ai-trading-assistant) reads the state and reports a paid sign; hosted elsewhere or another agent is denied; it holds nothing else", async () => {
+  const db = migratedDb();
+  forgetRouterState(db);
+  const policyEnv = baseEnv("cryptophys-policy-engine", db);
+  const env = { ...baseEnv("cryptophys-ai-kernel", db, { ...ON }), POLICY: { evaluate: async (input: Record<string, unknown>) => { const p = parsePolicyRequest(input); if (p instanceof Error) throw p; return decide(policyEnv as never, p); } },
+    RECOVERY: { propose: async () => { throw new Error("unused"); } } };
+  const XAU = { host_worker: XAU_AI };
+  assert.equal((await rpcSyscall(env as never, XAU, XAUUSD_MODEL_ROUTER_AGENT, "model_router.status", {}) as any).outcome, "denied", "unregistered");
+  const at = new Date().toISOString();
+  db.raw.prepare(`INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at)
+    VALUES (?, 'Model router client', ?, 'test', 1, ?, 'enabled', NULL, 'consensus:test', ?, ?)`).run(XAUUSD_MODEL_ROUTER_AGENT, XAU_AI, JSON.stringify(ROUTER_CAPS), at, at);
+  await setRouterState(db, APPROVER_EMAIL, { state: "on" });
+  const st = await rpcSyscall(env as never, XAU, XAUUSD_MODEL_ROUTER_AGENT, "model_router.status", {}) as any;
+  assert.equal(st.outcome, "succeeded", JSON.stringify(st));
+  assert.deepEqual([st.result.schema, st.result.state.state, st.result.state.mode], ["model_router.status.v1", "on", "free_only"]);
+  assert.ok(!JSON.stringify(st).includes(KEY));
+  assert.equal((await rpcSyscall(env as never, { host_worker: "cryptophys-aether" }, XAUUSD_MODEL_ROUTER_AGENT, "model_router.status", {}) as any).reason, "agent_not_hosted_by_caller");
+  for (const id of ["shadow-knowledge", "nexus-teacher", "xauusd-moderator", "hud-prophet"]) {
+    const r = await rpcSyscall(env as never, XAU, id, "model_router.report_paid", { signal: "http_402" }) as any;
+    assert.equal(r.outcome, "denied", id);
+  }
+  for (const cap of ["reports.publish", "memory.remember", "knowledge.verdict", "signals.observe"]) {
+    assert.equal((await rpcSyscall(env as never, XAU, XAUUSD_MODEL_ROUTER_AGENT, cap, {}) as any).outcome, "denied", cap);
+  }
+  const rep = await rpcSyscall(env as never, XAU, XAUUSD_MODEL_ROUTER_AGENT, "model_router.report_paid", { signal: "http_402" }) as any;
+  assert.equal(rep.outcome, "succeeded", JSON.stringify(rep));
+  assert.deepEqual(rep.result, { state: "off_paid", changed: true });
+  const ev = db.raw.prepare("SELECT actor, payload_json FROM audit_events WHERE event_type = 'model_router.paid_detected'").all() as any[];
+  assert.deepEqual(ev.map((x) => [x.actor, JSON.parse(x.payload_json).signal]), [[`agent:${XAUUSD_MODEL_ROUTER_AGENT}`, "http_402"]]);
+  // The org-wide state: Cerebrum's own router is off_paid too, and the owner hears of it once.
+  assert.deepEqual((await unhandledProblems(db as never)).filter((p) => p.code === "model_router_stopped").map((p) => p.subject), ["model_router:off_paid"]);
+});
+
+test("AIR1-19. a 429 is always a rate answer, whatever its text: a free daily quota that says 'upgrade your plan', 'credits' or 'subscription' backs off, stays on and opens no owner notice; billing text counts only on another 4xx", async () => {
+  const bodies = [
+    { error: { code: "rate_limit_exceeded", message: "Daily limit exceeded for the free tier; upgrade your plan for higher limits" } },
+    { error: { message: "You have used today's free credits; the daily limit resets at 00:00 UTC" } },
+    { error: { type: "requests", message: "Too many requests today on your subscription" } },
+  ];
+  for (const body of bodies) {
+    const w = world();
+    await on(w.db);
+    w.script.push(status(429, body));
+    const r = await w.run();
+    assert.deepEqual(r.status === "ok" && r.provider, "workers_ai", body.error.message);
+    const s = (await readRouterState(w.db))!;
+    assert.deepEqual([s.state, s.mode], ["on", "free_only"], body.error.message);
+    assert.deepEqual(wai(w)!.fallbacks, { rate: 1 }, body.error.message);
+    assert.equal(w.events("model_router.paid_detected").length, 0, body.error.message);
+    assert.deepEqual((await unhandledProblems(w.db as never)).filter((p) => p.code === "model_router_stopped"), [], body.error.message);
+    assert.equal(w.health().consecutive_failures, 0);
+  }
+  // The daily one backs off until 00:00 UTC; a Retry-After wins.
+  const d = world();
+  await on(d.db);
+  d.script.push(status(429, bodies[0]));
+  await d.run();
+  assert.equal(d.health().rate_limited_until, "2026-11-26T00:00:00.000Z");
+  d.clock.now = Date.parse("2026-11-25T23:59:00.000Z");
+  await d.run();
+  assert.equal(d.fetches.length, 1, "Workers AI until 00:00 UTC");
+  d.clock.now = Date.parse("2026-11-26T00:00:01.000Z");
+  const next = await d.run();
+  assert.deepEqual(next.status === "ok" && next.provider, "reflection");
+  const ra = world();
+  await on(ra.db);
+  ra.script.push(status(429, bodies[0], { "retry-after": "30" }));
+  await ra.run();
+  assert.equal(Date.parse(ra.health().rate_limited_until), T0 + 30_000);
+  // A 5xx with billing words is unreachable, not paid; a 403 billing error is still a paid sign.
+  const u = world();
+  await on(u.db);
+  u.script.push(status(503, { error: { message: "billing service unavailable" } }));
+  await u.run();
+  assert.deepEqual([(await readRouterState(u.db))!.state, wai(u)!.fallbacks], ["on", { unreachable: 1 }]);
+  const b = world();
+  await on(b.db);
+  b.script.push(status(403, { error: { message: "Your credits are exhausted; add a payment method" } }));
+  await b.run();
+  assert.equal((await readRouterState(b.db))!.state, "off_paid");
+  assert.equal(JSON.parse(b.events("model_router.paid_detected")[0].payload_json).signal, "billing_error");
+});
+
+test("AIR1-20. Beam's output margin: max_completion_tokens is twice the task's (at most 8,000, never below the task's); an answer cut at its limit falls back as output_budget, never counts for the breaker and frees a half-open probe", async () => {
+  assert.equal(BEAM_MAX_OUTPUT_TOKENS, 8_000);
+  assert.deepEqual([beamOutputTokens(600), beamOutputTokens(1), beamOutputTokens(4_000), beamOutputTokens(5_000), beamOutputTokens(9_000), beamOutputTokens(0)], [1_200, 2, 8_000, 8_000, 9_000, 2]);
+  const w = world();
+  await on(w.db);
+  const cut = () => new Response(beamBody('{"answer":"cut', { prompt_tokens: 100, completion_tokens: 1200 }, "length"), { status: 200, headers: { "reflection-data-retention": "none" } });
+  for (let i = 0; i < 5; i++) {
+    w.script.push(cut);
+    const r = await w.run();
+    assert.deepEqual(r.status === "ok" && [r.provider, r.data.answer], ["workers_ai", "from workers ai"], `cut ${i}`);
+  }
+  assert.equal(w.fetches.length, 5, "the breaker never opened");
+  assert.ok(w.fetches.every((f) => f.body.max_completion_tokens === 1200));
+  assert.ok(w.ai.calls.every((c: any) => c.input.max_tokens === 600), "the Workers AI path keeps the task's own limit");
+  assert.deepEqual([w.health().consecutive_failures, w.health().breaker_open_until], [0, null]);
+  assert.deepEqual(wai(w)!.fallbacks, { output_budget: 5 });
+  // A half-open probe cut at its limit: the breaker stays as it was, the lease is freed, the next call probes again.
+  for (let i = 0; i < 3; i++) { w.script.push(status(502)); await w.run(); }
+  w.clock.now = T0 + BREAKER_OPEN_MS + 1_000;
+  w.script.push(cut);
+  await w.run();
+  assert.deepEqual([w.health().consecutive_failures, w.health().probe_until], [3, null]);
+  w.script.push(ok());
+  const probe = await w.run();
+  assert.deepEqual(probe.status === "ok" && probe.provider, "reflection");
+  assert.deepEqual([w.health().consecutive_failures, w.health().breaker_open_until], [0, null]);
+  assert.deepEqual(wai(w)!.fallbacks, { output_budget: 6, unreachable: 3 });
+});
+
+test("AIR1-21. paid_capped: the spend is added and compared in one statement (UPDATE ... RETURNING), so concurrent calls cannot overshoot the cap", async () => {
+  const w = world();
+  await setRouterState(w.db, APPROVER_EMAIL, { state: "on", mode: "paid_capped", paid_cap_usd: 0.01 });
+  forgetRouterState(w.db);
+  for (let i = 0; i < 5; i++) w.script.push(ok('{"answer":"paid beam"}', {}, { prompt_tokens: 10, completion_tokens: 5, cost: 0.004 }));
+  const out = await Promise.all(Array.from({ length: 5 }, () => w.run()));
+  assert.equal(w.fetches.length, 5);
+  assert.equal(out.filter((r) => r.status === "ok" && r.provider === "reflection").length, 2, "0.004 + 0.004 < 0.01; the third reaches the cap");
+  assert.equal(out.filter((r) => r.status === "ok" && r.provider === "workers_ai").length, 3);
+  const s = (await readRouterState(w.db))!;
+  assert.deepEqual([s.state, s.reason], ["off_paid", "paid sign: paid_cap_reached"]);
+  assert.equal(w.events("model_router.paid_detected").length, 1, "the cap is reported once");
+  assert.match(read("workers/control-plane-shared/src/model-router.ts"), /UPDATE model_router_state SET spent_usd = spent_usd \+ \? WHERE id = 'global' RETURNING spent_usd, paid_cap_usd/);
+});
+
+test("AIR1-22. after a paid sign the owner may turn free_only back on only with confirm_free: true (audited from off_paid); the next paid sign turns it off again", async () => {
+  const w = world();
+  await on(w.db);
+  w.script.push(status(402));
+  await w.run();
+  assert.equal((await readRouterState(w.db))!.state, "off_paid");
+  await assert.rejects(setRouterState(w.db, APPROVER_EMAIL, { state: "on" }), (e: unknown) => e instanceof ModelRouterError && e.status === 409 && e.code === "paid_sign_recorded");
+  await assert.rejects(setRouterState(w.db, APPROVER_EMAIL, { state: "on", mode: "free_only", confirm_free: false }), (e: unknown) => e instanceof ModelRouterError && e.status === 400 && e.code === "invalid_confirm_free");
+  await assert.rejects(setRouterState(w.db, APPROVER_EMAIL, { state: "on", confirm_free: "yes" }), (e: unknown) => e instanceof ModelRouterError && e.code === "invalid_confirm_free");
+  await assert.rejects(setRouterState(w.db, APPROVER_EMAIL, { state: "off", confirm_free: true }), (e: unknown) => e instanceof ModelRouterError && e.status === 400);
+  await assert.rejects(setRouterState(w.db, APPROVER_EMAIL, { state: "on", mode: "paid_capped", paid_cap_usd: 5, confirm_free: true }), (e: unknown) => e instanceof ModelRouterError && e.status === 400);
+  assert.equal((await readRouterState(w.db))!.state, "off_paid", "nothing changed");
+  const r = await on(w.db, { state: "on", mode: "free_only", confirm_free: true, reason: "the 402 was a provider outage, not a charge" });
+  assert.deepEqual([r.changed, r.state!.state, r.state!.mode, r.state!.paid_cap_usd], [true, "on", "free_only", null]);
+  const ch = w.events("model_router.state_changed").map((e) => JSON.parse(e.payload_json));
+  assert.deepEqual(ch.at(-1), { from: "off_paid", to: "on", mode: "free_only", paid_cap_usd: null, reason: "the 402 was a provider outage, not a charge", confirm_free: true });
+  assert.deepEqual((await unhandledProblems(w.db as never)).filter((p) => p.code === "model_router_stopped"), [], "the owner item closes");
+  const back = await w.run();
+  assert.deepEqual(back.status === "ok" && back.provider, "reflection");
+  // free_only still goes off at the next paid sign.
+  w.script.push(ok('{"answer":"from beam"}', {}, { prompt_tokens: 10, completion_tokens: 5, cost: 0.001 }));
+  await w.run();
+  assert.equal((await readRouterState(w.db))!.state, "off_paid");
+  assert.equal(w.events("model_router.paid_detected").length, 2);
+  // Over the kernel route: the owner's POST with confirm_free.
+  const env = baseEnv("cryptophys-ai-kernel", w.db, { OPERATOR_IDENTITIES: `${CI_CLIENT_ID},${OPERATOR_EMAIL},${APPROVER_EMAIL}`, APPROVER_IDENTITIES: APPROVER_EMAIL, ...ON });
+  const post = (body: unknown, jwt = APPROVER_JWT) => call(kernel, env, req("POST", "/v1/model-router/state", body, jwt));
+  assert.deepEqual([(await post({ state: "on" })).status, (await post({ state: "on", confirm_free: true }, OPERATOR_JWT)).status], [409, 403]);
+  const ok2 = await post({ state: "on", mode: "free_only", confirm_free: true });
+  assert.deepEqual([ok2.status, ok2.body.changed, ok2.body.status.state.state, ok2.body.status.state.mode], [200, true, "on", "free_only"]);
+});
+
+test("AIR1-23. the records: the amendment quotes the owner's three answers in order and limits xauusd to shadow:news_compare, with the share table and the org-wide guard; the requirement's exception, the SSOT and the K3 note say so", () => {
+  const adr = read("architecture/adr/0007-ai-worker-os.md");
+  const section = adr.slice(adr.indexOf("### xauusd's news_compare on Beam (owner 2026-11-25)"));
+  assert.ok(section.length > 100, "the section exists");
+  const order = ['"Approve, but Cerebrum only"', '"semua shadow pakai beam"', '"news_compare saja"'].map((q) => section.indexOf(q));
+  assert.ok(order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2], `the owner's answers in order: ${order}`);
+  for (const want of [
+    "2026-11-25", "`shadow:news_compare`", "FS1", "ai_usage_daily", "`xauusd-model-router`", "`XAUUSD_MODEL_ROUTER_AGENT`", "every other `shadow:*` source included",
+  ]) assert.ok(section.includes(want), want);
+  for (const want of [
+    "| Cerebrum | 1M | 150k | 10 | 500 |", "| xauusd news_compare | 100k | 20k | 2 | 20 |", "| CTA | 1M | 200k | 20 | — |", "| Total | about 2.1M | about 370k | 32 | |",
+    "`confirm_free`", "`output_budget`", "UPDATE ... RETURNING",
+  ]) assert.ok(adr.includes(want), want);
+  assert.doesNotMatch(adr, /xauusd shadow \| 3M/, "the earlier all-shadow share is gone");
+  assert.match(adr, /9M input[^\n]*900k output[^\n]*50 requests a minute/);
+  assert.match(adr, /Platform shadow callers: none/);
+  const reqDoc = read("architecture/AI-ENGINE-REQUIREMENT.md");
+  assert.match(reqDoc, /"news_compare saja"[^\n]*`shadow:news_compare` only/);
+  const ssot = read("docs/SSOT.md");
+  assert.match(ssot, /\*\*Model router \(AIR1[^\n]*"news_compare saja"[^\n]*`shadow:news_compare` only[^\n]*`xauusd-model-router`/);
+  const k3 = JSON.parse(read("architecture/adr/progress/0007.json")).phases.find((p: any) => p.id === "K3");
+  assert.ok(k3 && JSON.stringify(k3).includes("shadow:news_compare"), "the K3 note names xauusd's news_compare");
 });
