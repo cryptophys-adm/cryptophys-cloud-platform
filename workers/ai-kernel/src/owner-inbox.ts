@@ -28,6 +28,7 @@ import { serviceName } from "../../control-plane-shared/src/plain.ts";
 import { AUTONOMOUS_KNOWLEDGE_KINDS } from "../../control-plane-shared/src/knowledge-kinds.ts";
 import { failedPlanResolution } from "../../control-plane-shared/src/recovery-resolution.ts";
 import { LAST_TWO_OBSERVATIONS_SQL, isPersistentDrift, persistentDriftSince } from "../../control-plane-shared/src/drift-state.ts";
+import { readRouterState } from "../../control-plane-shared/src/model-router.ts";
 import { resolvedLaterSql } from "./syscall.ts";
 import { stallDetail, stallState } from "../../control-plane-shared/src/deploy-stall.ts";
 import { latestGitBackupVerify } from "../../control-plane-shared/src/git-backup.ts";
@@ -72,7 +73,7 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "out_of_band_deploy" | "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path";
+export type ProblemCode = "out_of_band_deploy" | "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path" | "model_router_stopped";
 /** out_of_band_deploy: a code upload outside the platform is looked for this far back (it stays listed while it is the Worker's newest provenance event). */
 export const OUT_OF_BAND_WINDOW_MS = 30 * 24 * 3_600_000;
 /** The Orchestrator's own failed native deploy of its unit is listed this long, unless a later deploy of it succeeded. */
@@ -301,6 +302,10 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     NO_PATH_WINDOW_MS, and none of its Workers has had a desired version recorded since. The Supervisor's retries fail
  *     the same way, and the stall alarm waits 2 hours, so the owner hears of it at once, with both reasons and the way
  *     out (docs/OPERATIONS.md "Deploy with no path"). One item per unit and commit (subject no_path:<unit>:<sha12>).
+ * 13. model_router_stopped (AIR1, ADR-0007 amendment 2026-11-25; owner: "tetap siapkan callback jika beam tidak bisa
+ *     dijangkau atau menjadi berbayar"): the model router turned Beam off by itself, after a paid sign (off_paid) or a
+ *     contributor retention header (off_retention). Cerebrum keeps answering on Workers AI; only the owner can turn Beam
+ *     on again. One item (subject model_router:<state>), so the owner hears of it once; it closes when the state changes.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
   const self: ProductionProblem[] = [], stale: ProductionProblem[] = [], drift: ProductionProblem[] = [];
@@ -509,5 +514,17 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }];
   }
 
-  return [...outOfBand, ...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities];
+  let router: ProductionProblem[] = [];
+  const rs = await readRouterState(db);
+  if (rs && (rs.state === "off_paid" || rs.state === "off_retention")) {
+    router = [{
+      code: "model_router_stopped", subject: `model_router:${rs.state}`,
+      detail: (rs.state === "off_paid"
+        ? `The model router turned Beam off for Cerebrum after a paid sign (${rs.reason ?? "unknown"}); the chat, directives and councils answer on Workers AI. Beam stays off until you turn it on with a paid cap, or leave it off`
+        : "The model router turned Beam off for Cerebrum: Reflection answered with a contributor data retention header; the chat, directives and councils answer on Workers AI. Beam stays off until you turn it on again").slice(0, 600),
+      since: rs.updated_at, link: "#/organism/telemetry",
+    }];
+  }
+
+  return [...outOfBand, ...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities, ...router];
 }

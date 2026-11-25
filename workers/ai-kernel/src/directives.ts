@@ -7,6 +7,7 @@
 import { AiEngine, type AiTask } from "../../control-plane-shared/src/ai-engine.ts";
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import { CHAT_MODEL, CHAT_MODELS, CHAT_SERVICE, secretInText } from "../../control-plane-shared/src/conversation.ts";
+import { modelRouterFor, type ModelRouterEnv } from "../../control-plane-shared/src/model-router.ts";
 import { POLICY_PARAMETERS } from "../../control-plane-shared/src/policy-params.ts";
 import { TP_KINDS, TP_LIMITS, TP_SCHEMA, newProposalId, type TpKind, type TypedProposal } from "../../control-plane-shared/src/typed-proposal.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
@@ -57,7 +58,7 @@ const task: AiTask<Candidate> = {
   },
 };
 
-export interface DirectiveEnv { DB: D1Database; AI?: AiBinding; CHAT_DAILY_TURN_LIMIT?: string }
+export interface DirectiveEnv extends ModelRouterEnv { DB: D1Database; AI?: AiBinding; CHAT_DAILY_TURN_LIMIT?: string }
 
 /** POST /v1/proposals: the owner's directive into a draft. Returns the stored draft's id, or throws why not. */
 export async function draftFromDirective(env: DirectiveEnv, actor: string, directiveRaw: unknown, conversationId: unknown, now = Date.now()): Promise<{ proposal_id: string; kind: TpKind }> {
@@ -70,7 +71,9 @@ export async function draftFromDirective(env: DirectiveEnv, actor: string, direc
   if (!(await reserveTurn(db, new Date(now).toISOString().slice(0, 10), turnLimit(env)))) throw new DirectiveError(429, "daily_budget_used", "the chat's daily budget is used up; it starts again at 00:00 UTC");
   const textHash = await sha256Hex(directive);
   let calls = 0;
-  const engine = new AiEngine({ service: CHAT_SERVICE, ai: env.AI, db, allowedModels: CHAT_MODELS, allowedTasks: DIRECTIVE_TASKS, model: CHAT_MODEL, timeoutMs: 30_000, ownBudget: async () => ++calls <= 1 });
+  const engine = new AiEngine({ service: CHAT_SERVICE, ai: env.AI, db, allowedModels: CHAT_MODELS, allowedTasks: DIRECTIVE_TASKS, model: CHAT_MODEL, timeoutMs: 30_000, ownBudget: async () => ++calls <= 1,
+    // AIR1 (ADR-0007 amendment 2026-11-25): Beam first for directive_draft, Workers AI always the fallback.
+    router: modelRouterFor(env, db) });
   const parameters = Object.entries(POLICY_PARAMETERS).map(([name, p]) => ({ name, min: p.min, max: p.max, description: p.description }));
   const r = await engine.run(task, { directive, policy_parameters: parameters, kpi_ids: KPI_IDS }, `directive:${textHash.slice(0, 12)}`);
   if (r.status !== "ok") {

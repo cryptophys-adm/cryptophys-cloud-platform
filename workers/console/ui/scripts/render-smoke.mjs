@@ -439,6 +439,22 @@ MOCK["/api/kernel/v1/evolution"] = { available: true, control: { mode: "on", upd
       spec: "Before a zone_pullback entry is sent, compute the ATR.", state: "waiting_external", state_reason: "adr_0018_x1_x2", evolution_id: null, created_at: at(60 * 30), updated_at: at(60 * 30), origin: { origin: "xauusd" }, evidence_refs: [] },
     { intent_id: "int_00000000000a", source: "inventory", source_ref: "undeclared_worker:x", target_repo: "platform", title: "undeclared worker: x", spec: "x", state: "queued", state_reason: null, evolution_id: null, created_at: at(90), updated_at: at(90), origin: {}, evidence_refs: [] },
   ], evolutions: [] };
+// AIR1 (2026-11-25): the model router panel on #/organism/telemetry: Beam on for Cerebrum, today's calls per purpose and
+// provider, fallbacks by reason; a second fixture after a paid sign (off_paid), where only a capped turn-on is offered.
+const routerFixture = (state, extra = {}) => ({ schema: "model_router.status.v1", available: true, system: "cerebrum", provider: "reflection", model: "Beam-1.0-501B-A23B",
+  tasks: ["chat_plan", "chat_answer", "directive_draft", "council_position", "council_rebuttal", "council_synthesis"],
+  configured: { var_on: true, key_present: true, base_url_valid: true },
+  state: { state, mode: "free_only", paid_cap_usd: null, spent_usd: 0, updated_by: state === "off_paid" ? "system:model-router" : "owner@example.com", updated_at: at(30), reason: state === "off_paid" ? "paid sign: http_402" : "turned on (free_only)" },
+  effective: state, health: { breaker: "closed", consecutive_failures: 0, breaker_open_until: null, rate_limited_until: null },
+  limits: { rpm: 10, requests_day: 500, input_tokens_day: 1000000, output_tokens_day: 150000 },
+  today: { day: at(0).slice(0, 10), requests: 37, in_tokens: 81234, out_tokens: 12345, this_minute: 2 },
+  ledger: [
+    { purpose: "chat_answer", provider: "reflection", model: "Beam-1.0-501B-A23B", calls: 21, in_tokens: 60111, out_tokens: 9001, latency_ms: 42000, fallbacks: {} },
+    { purpose: "chat_answer", provider: "workers_ai", model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", calls: 3, in_tokens: 7000, out_tokens: 800, latency_ms: 9000, fallbacks: { unreachable: 2, budget: 1 } },
+    { purpose: "council_position", provider: "workers_ai", model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", calls: 4, in_tokens: 9000, out_tokens: 1200, latency_ms: 12000, fallbacks: { breaker: 4 } },
+  ],
+  fallbacks: { unreachable: 2, budget: 1, breaker: 4 }, generated_at: at(0), ...extra });
+MOCK["/api/kernel/v1/model-router"] = routerFixture("on");
 // HAIC H4: the autonomy dial: deploys lowered after a regression, merges ready to rise, the rest at their ADR class.
 const grp = (group, label, level, ceiling, actions, extra = {}) => ({ group, label, level, level_label: level, ceiling, source: "adr", set_by: null, set_at: null, reason: null,
   actions: actions.map(([action, cls, effective]) => ({ action, class: cls, ceiling: cls === "routine" ? "consensus" : "owner_click", effective })),
@@ -1083,10 +1099,55 @@ for (const width of [390, 1440]) {
   }
 }
 OVERRIDE = {};
+// AIR1 (2026-11-25): the model router panel. The owner sees Beam on with today's rows and the fallbacks by reason and can
+// turn it off (typed phrase BEAM OFF, body {state: "off"}); an operator sees no switch; after a paid sign the owner is
+// offered only a capped turn-on; a failed read shows the kernel's error with Retry.
+const ROUTER_CHECKS = [
+  { name: "owner on", override: {}, want: ["Model router · Beam for Cerebrum", "on", "chat_answer", "council_position", "Beam", "Workers AI", "unreachable or unusable answer: 2", "breaker open: 4", "Cerebrum's share used: 1", "37 / 500", "Turn off…", "21 calls"], not: ["Only the owner turns Beam on or off.", "Turn on (free only)…"] },
+  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Model router · Beam for Cerebrum", "Only the owner turns Beam on or off."], not: ["Turn off…", "Turn on (free only)…", "Turn on (paid, capped)…"] },
+  { name: "off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "After a paid sign Beam turns on only with a paid cap."], not: ["Turn on (free only)…", "Turn off…"] },
+  { name: "read fails", override: { "/api/kernel/v1/model-router": { __status: 502, error: "model_router_unavailable" } }, want: ["model_router_unavailable", "Retry"], not: ["Turn off…"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of ROUTER_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px model-router/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}#/organism/telemetry`);
+    await page.waitForTimeout(900);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px model router (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (main.includes(w)) problems.push(`${width}px model router (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/organism/telemetry (model router ${check.name}): horizontal scroll of ${overflow}px`);
+    if (check.name === "owner on") {
+      const posts = [];
+      await page.route("**/console/api/kernel/v1/model-router/state", async (route) => {
+        posts.push({ method: route.request().method(), body: route.request().postData() });
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ changed: true, status: routerFixture("off_owner") }) });
+      });
+      await page.click('main button:text-is("Turn off…")');
+      await page.waitForTimeout(300);
+      const dialog = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? "");
+      if (!dialog.includes("BEAM OFF")) problems.push(`${width}px model router: the off dialog asks for no BEAM OFF phrase (${dialog.slice(0, 120)})`);
+      await page.fill('[role="dialog"] input', "BEAM OFF");
+      await page.click('[role="dialog"] button:text-is("Confirm")');
+      await page.waitForTimeout(500);
+      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify({ state: "off" })) problems.push(`${width}px model router: off requests were ${JSON.stringify(posts)}`);
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-model-router.png`), fullPage: true });
+    }
+    if (check.name === "off_paid") {
+      const disabled = await page.evaluate(() => [...document.querySelectorAll("main button")].find((b) => b.textContent === "Turn on (paid, capped)…")?.hasAttribute("disabled"));
+      if (disabled !== true) problems.push(`${width}px model router (off_paid): the capped turn-on is enabled without a cap`);
+    }
+    await page.close();
+  }
+}
+OVERRIDE = {};
 await browser.close();
 server.close();
 if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), and the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases), and the model router panel (${ROUTER_CHECKS.length} cases: owner, operator, off_paid, read fails) at both widths.`);

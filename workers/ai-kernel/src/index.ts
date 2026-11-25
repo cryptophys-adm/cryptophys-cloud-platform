@@ -54,6 +54,7 @@ import { listIncidents } from "./incidents.ts";
 import { TelemetryReadError, TelemetryRequestError, telemetryView } from "./telemetry-view.ts";
 import { startInvocation, trackJob } from "./analytics/index.ts";
 import { reputationView } from "./corrections-read.ts";
+import { ModelRouterError, modelRouterStatus, setRouterState } from "../../control-plane-shared/src/model-router.ts";
 import { CorrectionError, backfillChatRatingsOnce, correctionInputFromBody, listCorrections, recordCorrection, recordCouncilCorrection, recordProposalCorrection, type Recorded } from "./corrections.ts";
 
 export type Env = KernelHttpEnv;
@@ -98,7 +99,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "POST /v1/evolution/intents/{id}/close (a waiting_external intent, with a reason; the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/model-router", "POST /v1/model-router/state (the owner)", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "POST /v1/evolution/intents/{id}/close (a waiting_external intent, with a reason; the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -168,6 +169,22 @@ export default {
         } catch (err) {
           if (err instanceof TelemetryRequestError) return errorResponse(400, err.message);
           if (err instanceof TelemetryReadError) return errorResponse(502, err.message);
+          throw err;
+        }
+      }
+      // AIR1 (ADR-0007 amendment 2026-11-25; owner: "Approve, but Cerebrum only"): the model router. Reading is open to
+      // operators (the Console's Telemetry tab); turning Beam on or off is the owner's alone. Never a key or a prompt.
+      if (path === "/v1/model-router" && request.method === "GET") return json(await modelRouterStatus(env.DB, env));
+      if (path === "/v1/model-router/state") {
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner turns the model router on or off");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        try {
+          const out = await setRouterState(env.DB, operator.actor, body.value);
+          return json({ changed: out.changed, status: await modelRouterStatus(env.DB, env) });
+        } catch (err) {
+          if (err instanceof ModelRouterError) return errorResponse(err.status, err.code, err.message);
           throw err;
         }
       }

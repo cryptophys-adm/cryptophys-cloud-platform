@@ -63,6 +63,7 @@ const PROBLEM_LABEL: Record<string, string> = {
   deploy_no_path: "deploy has no path",
   out_of_band_deploy: "code not deployed by the platform",
   identity_source_invalid: "identity list invalid",
+  model_router_stopped: "Beam turned off",
 };
 
 /** One production problem no agent is handling: what, since when, and the page with the evidence. */

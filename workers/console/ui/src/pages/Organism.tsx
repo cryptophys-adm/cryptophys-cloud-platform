@@ -14,6 +14,7 @@ import { useOverview } from "../lib/overview";
 import CloudflareUsage from "../components/CloudflareUsage";
 import ObserverVitals from "../components/ObserverVitals";
 import TelemetryPanels from "../components/MetabolismPanels";
+import ModelRouterPanel from "../components/ModelRouterPanel";
 import { usePoll } from "../lib/usePoll";
 import { call } from "../lib/api";
 import { ago, listOf } from "../lib/format";
@@ -56,6 +57,8 @@ export default function Organism({ section }: { section?: string }) {
         ))}
       </nav>
       {tab === "telemetry" ? <TelemetryPanels /> : <Metabolism />}
+      {/* AIR1 (2026-11-25): Cerebrum's Beam and Workers AI use today and the owner's switch, below the syscall telemetry. */}
+      {tab === "telemetry" && <ModelRouterPanel />}
     </div>
   );
 }

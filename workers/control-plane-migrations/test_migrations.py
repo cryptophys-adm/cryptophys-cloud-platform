@@ -1140,3 +1140,44 @@ assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER)\b", ft_code), 
 assert ft_code.count("CREATE TABLE IF NOT EXISTS") == 2 and ft_code.count("CREATE INDEX IF NOT EXISTS") == 1
 ft_db.close()
 print("PASS: 0089 forge_test_reports (additive: two tables and an index, CHECKs hold, one row per commit, forge_check_runs unaltered, applies twice)")
+
+# 0090 (AIR1, 2026-11-25; owner: "Approve, but Cerebrum only"): the model router's ledger, counters, global state and
+# breaker. Additive: four tables and two seed rows (the state off, the breaker closed); ai_usage and ai_failures unaltered.
+mr_db = sqlite3.connect(":memory:")
+mr_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name >= "0090":
+        break
+    mr_db.executescript(migration.read_text(encoding="utf-8"))
+mr_schema_before = {r[0] for r in mr_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+mr_usage_sql = [mr_db.execute("SELECT sql FROM sqlite_master WHERE name = ?", (t,)).fetchone() for t in ("ai_usage", "ai_failures")]
+mr_sql = (ROOT / "0090_model_router.sql").read_text(encoding="utf-8")
+mr_db.executescript(mr_sql)
+mr_db.executescript(mr_sql)
+mr_schema_after = {r[0] for r in mr_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert mr_schema_after - mr_schema_before == {
+    "model_calls_daily", "sqlite_autoindex_model_calls_daily_1", "model_router_counters", "sqlite_autoindex_model_router_counters_1",
+    "model_router_state", "sqlite_autoindex_model_router_state_1", "model_router_health", "sqlite_autoindex_model_router_health_1",
+}, sorted(mr_schema_after - mr_schema_before)
+assert [mr_db.execute("SELECT sql FROM sqlite_master WHERE name = ?", (t,)).fetchone() for t in ("ai_usage", "ai_failures")] == mr_usage_sql, "ai_usage and ai_failures are not altered"
+assert mr_db.execute("SELECT state, mode, paid_cap_usd, spent_usd FROM model_router_state").fetchall() == [("off", "free_only", None, 0)], "off by default, one row"
+assert mr_db.execute("SELECT consecutive_failures, breaker_open_until, rate_limited_until FROM model_router_health").fetchall() == [(0, None, None)]
+mr_insert = "INSERT INTO model_calls_daily (day, system, purpose, provider, model, calls, in_tokens, out_tokens, latency_ms, fallbacks_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+mr_ok = ("2026-11-25", "cerebrum", "chat_answer", "reflection", "Beam-1.0-501B-A23B", 1, 10, 5, 900, "{}")
+mr_db.execute(mr_insert, mr_ok)
+for i, bad in ((0, "2026-11"), (1, "xauusd"), (2, ""), (3, "openai"), (4, ""), (5, -1), (6, -1), (7, -1), (8, -1), (9, "[]"), (9, "not json")):
+    row = list(mr_ok); row[2] = f"p{i}"; row[i] = bad
+    expect_integrity_error(f"0090 column {i} {str(bad)[:12]!r}", lambda r=tuple(row): mr_db.execute(mr_insert, r))
+expect_integrity_error("0090 one ledger row per day, system, purpose, provider and model", lambda: mr_db.execute(mr_insert, mr_ok))
+mr_db.execute("UPDATE model_calls_daily SET fallbacks_json = json_set(fallbacks_json, '$.' || 'off', COALESCE(json_extract(fallbacks_json, '$.' || 'off'), 0) + 1)")
+assert mr_db.execute("SELECT fallbacks_json FROM model_calls_daily").fetchone()[0] == '{"off":1}'
+expect_integrity_error("0090 state", lambda: mr_db.execute("UPDATE model_router_state SET state = 'maybe'"))
+expect_integrity_error("0090 paid_capped needs a cap", lambda: mr_db.execute("UPDATE model_router_state SET mode = 'paid_capped'"))
+expect_integrity_error("0090 a second state row", lambda: mr_db.execute("INSERT INTO model_router_state (id, state, mode, updated_by, updated_at) VALUES ('other', 'off', 'free_only', 'x', 't0')"))
+expect_integrity_error("0090 counter bucket", lambda: mr_db.execute("INSERT INTO model_router_counters (bucket, updated_at) VALUES ('week:1', 't0')"))
+mr_code = "\n".join(line.split("--", 1)[0] for line in mr_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|RENAME|ALTER)\b", mr_code), "0090 only creates its tables and seeds two rows"
+assert mr_code.count("CREATE TABLE IF NOT EXISTS") == 4 and mr_code.count("INSERT OR IGNORE INTO") == 2
+assert "MODEL_ROUTER." not in mr_code, "no migration grants the model router capabilities"
+mr_db.close()
+print("PASS: 0090 model_router (additive: four tables, the state seeded off and the breaker closed, CHECKs hold, ai_usage unaltered, applies twice)")

@@ -28,6 +28,7 @@ import { readCouncilDecisions } from "./council-decisions.ts";
 import { nexusActorEmail, readNexusCorrections, recordNexusCorrection } from "./corrections.ts";
 import { recordSyscall } from "./analytics/telemetry.ts";
 import type { SyscallOutcome } from "./analytics/datasets.ts";
+import { PAID_SIGNALS, modelRouterStatus, reportPaid, type ModelRouterEnv, type PaidSignal } from "../../control-plane-shared/src/model-router.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -56,7 +57,7 @@ export interface DeployRpcBinding {
   identityDrift?(): Promise<IdentityDrift>;
 }
 
-export interface SyscallEnv extends BaseEnv {
+export interface SyscallEnv extends BaseEnv, ModelRouterEnv {
   /** The owners (access.ts isOwner): corrections.record gives weight 3 only to an attested actor in this list (HAIC H3e, Q9). */
   APPROVER_IDENTITIES?: string;
   XAUUSD_AI?: { fetch(input: string, init?: RequestInit): Promise<Response> };
@@ -878,7 +879,23 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "corrections.read": async (env, input, agentId) => await readNexusCorrections(env.DB, agentId, input) as unknown as JsonObject,
   // Owner 2026-11-22: the status, owner decision and decision time of the caller's own consensus proposals, read only.
   "consensus.status": (env, input, agentId) => consensusStatus(env.DB, agentId, input),
+  // AIR1 (ADR-0007 amendment 2026-11-25): the model router's global state, read only (never a key or a prompt).
+  "model_router.status": async (env) => await modelRouterStatus(env.DB, env) as JsonObject,
 };
+
+/**
+ * AIR1: model_router.report_paid. The decision is verified and consumed, then the paid sign is recorded: Beam is off_paid
+ * for Cerebrum until the owner turns it on with a paid cap. Idempotent (a repeat returns changed: false). The input is
+ * {signal}, one of PAID_SIGNALS but paid_cap_reached; nothing else is read or stored.
+ */
+async function reportModelRouterPaid(env: SyscallEnv, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
+  const extra = Object.keys(input).filter((k) => k !== "signal");
+  if (extra.length) throw new Error("model_router_report_invalid: the input carries only signal");
+  const signal = input.signal;
+  if (typeof signal !== "string" || !(PAID_SIGNALS as readonly string[]).includes(signal) || signal === "paid_cap_reached") throw new Error("model_router_report_invalid: signal is http_402, billing_error, cost_field, plan_change or reported");
+  await verifySyscallDecision(env.DB, decisionId, agentId, "model_router.report_paid");
+  return await reportPaid(env.DB, `agent:${agentId}`, signal as PaidSignal) as unknown as JsonObject;
+}
 
 /**
  * HAIC H3e (docs/design/HAIC-H3.md §7.2): corrections.record, learning. The decision is verified and consumed (metered in
@@ -920,6 +937,8 @@ async function dispatch(env: SyscallEnv, capability: string, agentId: string, de
     case "corrections.record": return await recordCorrectionSyscall(env, agentId, decisionId, input);
     // PF3: xauusd's shadow verdict on an autonomous knowledge item; knowledge.ts verifies and consumes the decision first.
     case "knowledge.verdict": return await recordKnowledgeVerdict(env.DB, agentId, decisionId, input);
+    // AIR1: a paid sign of Beam, reported by the one cta agent the ceiling names; it can only turn Beam off.
+    case "model_router.report_paid": return await reportModelRouterPaid(env, agentId, decisionId, input);
     // ADR-0014 §11 (EVOLVER.md §6): the Forge verifies and consumes the decision, re-checks everything, writes evo/<id>.
     case "code.propose": {
       if (!env.FORGE_EVOLUTION) throw new Error("forge_evolution_binding_missing");

@@ -94,6 +94,11 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // checks the owner, the intent's state and that the reason carries no price and no secret).
   r("kernel.evolution", "kernel", "GET", "/v1/evolution", false, null),
   r("kernel.intent_close", "kernel", "POST", "/v1/evolution/intents/{id}/close", true, null),
+  // AIR1 (ADR-0007 amendment 2026-11-25): the Organism Telemetry tab's model router panel reads the router; only the owner
+  // turns Beam on (typed phrase: Beam then answers Cerebrum's chat, directives and councils) or off (the kernel checks).
+  r("kernel.model_router", "kernel", "GET", "/v1/model-router", false, null),
+  r("kernel.model_router_on", "kernel", "POST", "/v1/model-router/state", true, "BEAM ON"),
+  r("kernel.model_router_off", "kernel", "POST", "/v1/model-router/state", true, "BEAM OFF"),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

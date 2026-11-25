@@ -43,6 +43,18 @@ CHAT_DAILY_TURN_LIMIT = "40"
 # ADR-0015 decision 6, phase 3 (owner 2026-11-22, "upgrade kernel agar binding itu menjadi legal ..."): the sample rate of
 # the kernel's Analytics Engine telemetry (1 = every event). Set out of band on 2026-11-21 and adopted here unchanged.
 ANALYTICS_SAMPLE_RATE = "1"
+# AIR1 (ADR-0007 amendment 2026-11-25; owner: "Approve, but Cerebrum only"): the model router lets Beam (Reflection,
+# OpenAI-compatible) answer Cerebrum's chat, directive drafts and councils before Workers AI, free_only; Workers AI is
+# always the fallback (control-plane-shared/src/model-router.ts). Off here, off in D1 (model_router_state) until the owner
+# turns it on, and off while the Worker secret REFLECTION_API_KEY is absent. The secret is set by the owner only; it is
+# not declared as required, so a deploy without it succeeds and the router stays off. The share vars stop Beam before
+# Reflection's limits: requests a minute and a UTC day, input and output tokens a UTC day.
+MODEL_ROUTER = "off"
+MODEL_BASE_URL = "https://api.reflection.ai/openai/v1"
+MODEL_ROUTER_RPM = "10"
+MODEL_ROUTER_REQUESTS_DAY = "500"
+MODEL_ROUTER_INPUT_TOKENS_DAY = "1000000"
+MODEL_ROUTER_OUTPUT_TOKENS_DAY = "150000"
 
 # ADR-0015 decision 6, phase 3 (owner 2026-11-22): Workers Analytics Engine datasets for telemetry only. They were bound
 # out of band by a wrangler upload on 2026-11-21 and are adopted here with the same names (config-diff.ts, `adopted`).

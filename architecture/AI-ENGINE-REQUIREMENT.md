@@ -27,7 +27,7 @@ Platform Registry, Policy Engine, Drift Detector, Audit Ledger, Recovery Manager
 - Cloudflare Workers AI Free allocation is account-wide (currently documented as 10,000 Neurons per day), not six independent allocations. Six engines do not multiply the account's free quota.
 - Confirm the current allocation and model availability against Cloudflare's official plan/pricing documentation and the actual account before deployment.
 - Each engine must have its own per-Worker request/token limits and budget guardrails, while respecting a coordinated account-wide budget policy to avoid one engine consuming the entire daily allocation.
-- No automatic paid upgrade, paid model fallback, or external AI provider fallback is permitted.
+- No automatic paid upgrade, paid model fallback, or external AI provider fallback is permitted, with one scoped exception (ADR-0007 amendment 2026-11-25; owner: "Approve, but Cerebrum only"): the AI Kernel's engine may try Beam (Reflection, external, OpenAI-compatible) first for Cerebrum's chat, directive drafts and councils only, in `free_only` mode, with Workers AI always the fallback and any paid sign turning Beam off until the owner sets an explicit paid cap (`control-plane-shared/src/model-router.ts`). The evolver, embeddings, every other task and every other Worker stay on Workers AI only.
 - When the account quota is exhausted, a model fails, or a request times out, the engine must return a typed unavailable result and follow that capability's safe deterministic behavior.
 - Apply input/output size bounds, timeouts, request limits, safe caching/deduplication where suitable, and usage telemetry.
 - Model output is untrusted and must be schema-validated; it must never be treated as executable instructions.
@@ -73,4 +73,4 @@ Each Worker must:
 
 ## Non-goals
 
-This decision does not authorize production deployment, create Cloudflare resources, set secrets, enable public routes, or permit paid AI usage.
+This decision does not authorize production deployment, create Cloudflare resources, set secrets, enable public routes, or permit paid AI usage (paid Beam use for Cerebrum only under the owner's explicit cap, ADR-0007 amendment 2026-11-25).

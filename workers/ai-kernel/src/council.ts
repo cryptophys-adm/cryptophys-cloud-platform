@@ -24,6 +24,7 @@ import {
 } from "../../control-plane-shared/src/council.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import { runTool, type ToolEnv } from "./conversation-tools.ts";
+import { modelRouterFor, type ModelRouterEnv } from "../../control-plane-shared/src/model-router.ts";
 import { COUNCIL_CORRECTIONS_DAYS, correctionKeysOf } from "./corrections-read.ts";
 import { draftFromCouncil, newProposalId } from "../../control-plane-shared/src/typed-proposal.ts";
 import { insertDraft } from "./proposals.ts";
@@ -48,7 +49,7 @@ const usd = (u: AiUsage) => Math.max(0, u.input - u.cached) * PRICE.input + u.ca
 
 /** The part of the R2 bucket binding TRANSCRIPTS (cryptophys-council-transcripts) a council uses: one put per closed council. */
 export interface TranscriptBucket { put(key: string, value: string, options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }): Promise<unknown> }
-export interface CouncilEnv extends ToolEnv { AI?: AiBinding; TRANSCRIPTS?: TranscriptBucket }
+export interface CouncilEnv extends ToolEnv, ModelRouterEnv { AI?: AiBinding; TRANSCRIPTS?: TranscriptBucket }
 export interface CouncilStore { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> }
 export class CouncilError extends Error {
   readonly status: number;
@@ -274,13 +275,16 @@ export async function stepCouncil(env: CouncilEnv, store: CouncilStore, now = Da
   }
   if (!(await agentsEnabled(db))) { await move(db, store, s, "aborted", now, "kill_switch"); await audit(db, "aborted", "system:council", s.session_id, "aborted", { reason: "kill_switch" }); return s; }
   const engine = new AiEngine({ service: "cryptophys-ai-kernel", ai: env.AI, db, allowedModels: CHAT_MODELS, allowedTasks: COUNCIL_TASKS, model: CHAT_MODEL, timeoutMs: COUNCIL_AI_TIMEOUT_MS,
-    ownBudget: async () => s.spent.calls < s.budget.max_calls && s.spent.usd_est < s.budget.max_usd });
+    ownBudget: async () => s.spent.calls < s.budget.max_calls && s.spent.usd_est < s.budget.max_usd,
+    // AIR1 (ADR-0007 amendment 2026-11-25): Beam first for the seats and the synthesis, Workers AI always the fallback.
+    router: modelRouterFor(env, db) });
   const call = async <T>(task: AiTask<T>, input: unknown, tag: string) => {
     const r = await engine.run(task, input, `council:${s.session_id}:${tag}`);
     if (r.status !== "unavailable" || r.reason !== "daily_budget_exhausted") s.spent.calls += 1;
     if (r.status === "ok" && r.usage) {
       s.spent.tokens_in += r.usage.input; s.spent.tokens_cached += r.usage.cached; s.spent.tokens_out += r.usage.output;
-      s.spent.usd_est = Math.round((s.spent.usd_est + usd(r.usage)) * 1e6) / 1e6;
+      // PRICE is CHAT_MODEL's; a Beam answer (free_only) costs nothing here.
+      if (r.model === CHAT_MODEL) s.spent.usd_est = Math.round((s.spent.usd_est + usd(r.usage)) * 1e6) / 1e6;
     }
     return r;
   };
@@ -350,7 +354,7 @@ export async function stepCouncil(env: CouncilEnv, store: CouncilStore, now = Da
       }
       const claims = await checkClaims(d.claims, author);
       const msg = await post(store, s, { at: iso(now), phase: rebut ? "rebuttal" : "position", role: "participant", author, reply_to: d.reply_to ?? [], stance: d.stance,
-        claims, text: redactText(d.text), options: null, model: r.status === "ok" ? CHAT_MODEL : null,
+        claims, text: redactText(d.text), options: null, model: r.status === "ok" ? r.model : null,
         tokens: r.status === "ok" && r.usage ? { in: r.usage.input, cached: r.usage.cached, out: r.usage.output } : { in: 0, cached: 0, out: 0 } });
       const errors = validateMessage(msg);
       await audit(db, rebut ? "rebuttal_posted" : "position_posted", author, s.session_id, d.stance, { seq: msg.seq, claims: claims.length, verified: claims.filter((c) => c.verified).length, content_sha256: msg.content_sha256, contract_errors: errors });
@@ -397,7 +401,7 @@ export async function stepCouncil(env: CouncilEnv, store: CouncilStore, now = Da
     options.forEach((o, i) => { o.rank = i + 1; o.option_id = `opt-${i + 1}`; });
     const text = r.status === "ok" ? r.data.text : `The moderator could not synthesise (${r.status === "unavailable" ? r.reason : "invalid output"}); only "no change" stands.`;
     const msg = await post(store, s, { at: iso(now), phase: "synthesis", role: "moderator", author: `agent:${MODERATOR}`, reply_to: [], stance: null, claims: [], text: redactText(text), options,
-      model: r.status === "ok" ? CHAT_MODEL : null, tokens: r.status === "ok" && r.usage ? { in: r.usage.input, cached: r.usage.cached, out: r.usage.output } : { in: 0, cached: 0, out: 0 } });
+      model: r.status === "ok" ? r.model : null, tokens: r.status === "ok" && r.usage ? { in: r.usage.input, cached: r.usage.cached, out: r.usage.output } : { in: 0, cached: 0, out: 0 } });
     s.deadline = iso(now + COUNCIL_LIMITS.owner_window_ms);
     s.phase_deadline = null;
     await move(db, store, s, "awaiting_owner", now);

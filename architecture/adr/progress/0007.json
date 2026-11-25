@@ -4,6 +4,7 @@
   "title": "AI Worker Operating System",
   "adr_file": "architecture/adr/0007-ai-worker-os.md",
   "lifecycle": "accepted",
+  "lifecycle_note": "Amended 2026-11-25 (owner: \"Approve, but Cerebrum only\"): Beam may answer Cerebrum's chat, directives and councils first, free_only, with Workers AI always the fallback (K3).",
   "phases": [
     {
       "id": "K1",
@@ -28,6 +29,33 @@
             "agent_id": "signal-analyst"
           }
         ]
+      }
+    },
+    {
+      "id": "K3",
+      "title": "Beam for Cerebrum: the model router, free_only, Workers AI always the fallback (AIR1)",
+      "evidence": {
+        "kind": "all_of",
+        "of": [
+          {
+            "kind": "migration_applied",
+            "name": "0090_model_router.sql"
+          },
+          {
+            "kind": "audit_event",
+            "event_type": "model_router.state_changed"
+          }
+        ]
+      },
+      "built": [
+        "workers/control-plane-shared/src/model-router.ts",
+        "workers/control-plane-shared/src/ai-engine.ts",
+        "workers/control-plane-migrations/0090_model_router.sql"
+      ],
+      "note": "built; off by default: Beam answers only after the owner sets REFLECTION_API_KEY, MODEL_ROUTER on and turns the router on",
+      "owner_action": {
+        "text": "Set the REFLECTION_API_KEY secret and MODEL_ROUTER on, then turn the router on (Organism, Telemetry)",
+        "outside_platform": true
       }
     }
   ]

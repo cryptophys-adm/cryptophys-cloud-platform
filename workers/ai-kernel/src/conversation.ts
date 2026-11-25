@@ -18,8 +18,9 @@ import {
 import { runTool, type ToolEnv, type ToolResult } from "./conversation-tools.ts";
 import { modelSubject, recordCorrection, turnRef } from "./corrections.ts";
 import { correctionKeysOf } from "./corrections-read.ts";
+import { modelRouterFor, type ModelRouterEnv } from "../../control-plane-shared/src/model-router.ts";
 
-export interface ConversationEnv extends ToolEnv { AI?: AiBinding; CHAT_DAILY_TURN_LIMIT?: string }
+export interface ConversationEnv extends ToolEnv, ModelRouterEnv { AI?: AiBinding; CHAT_DAILY_TURN_LIMIT?: string }
 /** The Durable Object's storage, as much of it as a conversation uses. */
 export interface ConversationStore { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> }
 
@@ -140,6 +141,8 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
   const engine = new AiEngine({
     service: CHAT_SERVICE, ai: env.AI, db, allowedModels: CHAT_MODELS, allowedTasks: CHAT_TASKS, model: CHAT_MODEL, timeoutMs: AI_TIMEOUT_MS,
     ownBudget: async () => ++calls <= MAX_CALLS_PER_TURN,
+    // AIR1 (ADR-0007 amendment 2026-11-25): Beam first for chat_plan and chat_answer, Workers AI always the fallback.
+    router: modelRouterFor(env, db),
   });
   const usage: AiUsage = { input: 0, cached: 0, output: 0 };
   const add = (u?: AiUsage) => { if (u) { usage.input += u.input; usage.cached += u.cached; usage.output += u.output; } };
@@ -183,7 +186,7 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
   const checked = checkCitations(ans.data.answer, ans.data.citations, outputs);
   if (checked.stripped) await audit(db, "citation_stripped", actor, id, "stripped", { turn: n, stripped: checked.stripped, kept: checked.kept });
   return record({
-    n, status: "answered", question, answer: redactText(checked.answer), tools, refs, model: CHAT_MODEL, usage,
+    n, status: "answered", question, answer: redactText(checked.answer), tools, refs, model: ans.model, usage,
     citations: { kept: checked.kept, stripped: checked.stripped }, injection: [...injection].sort(), latency_ms: Date.now() - started, created_at: at,
   });
 }
