@@ -75,7 +75,13 @@ export class AuditMutationConflictError extends Error {
   constructor() { super("audit mutation did not match the expected state"); this.name = "AuditMutationConflictError"; }
 }
 
-type AuditMutation = (event: AuditEvent) => D1PreparedStatement;
+/**
+ * The state change an audit event commits with: one statement, or several run in order in the same batch. The event
+ * commits only when the LAST statement changed exactly one row (its changes()); with several, make each later statement
+ * conditional on the one before (INSERT ... SELECT ... WHERE changes() = 1), so a mutation that matched nothing writes
+ * nothing and the whole batch is refused as a conflict.
+ */
+type AuditMutation = (event: AuditEvent) => D1PreparedStatement | readonly D1PreparedStatement[];
 
 async function appendAuditEventInternal(db: D1Database, input: AuditInput, mutation?: AuditMutation): Promise<AuditEvent> {
   let payload = canonicalJson(redact(input.payload ?? {}));
@@ -105,7 +111,7 @@ async function appendAuditEventInternal(db: D1Database, input: AuditInput, mutat
         ).bind(event.event_id, event.event_type, event.actor, event.subject, event.outcome, event.payload_json,
           event.previous_hash, event.event_hash, event.created_at);
       // D1 batch is transactional: a companion state mutation and its audit event either both commit or neither does.
-      await db.batch(mutation ? [mutation(event), insert] : [insert]);
+      await db.batch(mutation ? [...([] as D1PreparedStatement[]).concat(mutation(event)), insert] : [insert]);
       return event;
     } catch (err) {
       if (mutation && /NOT NULL constraint failed: audit_events\.event_hash/i.test(String((err as Error)?.message ?? err))) {

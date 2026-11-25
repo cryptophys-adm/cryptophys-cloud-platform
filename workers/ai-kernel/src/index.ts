@@ -41,6 +41,7 @@ import { visionView } from "./vision-view.ts";
 import { ADR_CACHE_CONTROL, adrDetailView, adrListView, validAdrId } from "./adr-view.ts";
 import { intakeEvolutionIntents } from "./evolution-intake.ts";
 import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-view.ts";
+import { EvolutionCloseError, closeExternalIntent } from "./evolution-close.ts";
 import { listConversations } from "./conversation.ts";
 import { listCouncils } from "./council.ts";
 import { proposeCouncils } from "./council-proposals.ts";
@@ -97,7 +98,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "POST /v1/evolution/intents/{id}/close (a waiting_external intent, with a reason; the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -350,6 +351,26 @@ export default {
           return json(await setEvolverMode(env.DB, body.value.mode, operator.actor, isOwner(operator.identity, env), body.value.confirm, body.value.reason));
         } catch (err) {
           if (err instanceof EvolverModeError) return errorResponse(err.status, err.code, err.message);
+          throw err;
+        }
+      }
+      // Owner via the coordinator, 2026-11-25 (CT1 closed not supported): the owner closes an intent that waits for another
+      // repository, with a reason in words only; the reason reaches the council's origin through council.decisions.read.
+      if (path.startsWith("/v1/evolution/intents/")) {
+        const m = /^\/v1\/evolution\/intents\/(int_[0-9a-f]{12})\/close$/.exec(path);
+        if (!m) return errorResponse(404, "not_found");
+        if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+        if (!isOwner(operator.identity, env)) return errorResponse(403, "owner_required", "only the owner closes an evolution intent");
+        const body = await readJsonObject(request);
+        if (!body.ok) return body.response;
+        const extra = Object.keys(body.value).filter((k) => k !== "reason");
+        if (extra.length) return errorResponse(400, "unknown_field", `the body carries only reason, not ${extra.slice(0, 3).join(", ")}`);
+        try {
+          const out = await closeExternalIntent(env.DB, operator.actor, m[1], body.value.reason);
+          if (out.changed) await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "evolution" } }]);
+          return json(out);
+        } catch (err) {
+          if (err instanceof EvolutionCloseError) return errorResponse(err.status, err.code, err.message);
           throw err;
         }
       }

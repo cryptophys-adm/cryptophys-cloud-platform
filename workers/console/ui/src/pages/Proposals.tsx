@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { ArrowLeft, Check, FileCheck2, X } from "lucide-react";
+import { ArrowLeft, Check, FileCheck2, GitPullRequestClosed, X } from "lucide-react";
 import { Badge, Empty, Panel, Skeleton } from "../components/ui";
 import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
@@ -19,6 +19,11 @@ import { CorrectionBox } from "../components/CorrectionBox";
  * HAIC H3c (docs/design/HAIC-H3.md §11 step 3, Q6): the owner may correct a proposal in any state (kept as the owner's
  * teaching of its origin: the council's moderator or the chat model), and a reject's note is also kept as the owner's
  * decision (weight 1). Neither confirms, rejects or changes anything.
+ *
+ * External intents (owner via the coordinator, 2026-11-25, CT1): the council tasks that wait for another repository
+ * (evolution intents in state waiting_external, GET /v1/evolution). Only the owner closes one, with a reason in words
+ * (at most 300 characters, never a price or a secret: the kernel refuses them); the reason reaches the council's
+ * moderator in xauusd through council.decisions.read.
  */
 
 const ID = /^tp_[0-9a-f]{16}$/;
@@ -109,6 +114,72 @@ function Detail({ id }: { id: string }) {
   );
 }
 
+const CLOSE_MAX = 300;
+
+function CloseIntent({ id, onClosed }: { id: string; onClosed: (id: string) => void }) {
+  const { notify } = useSession();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (!open) return <button type="button" className="btn btn-danger py-1!" onClick={() => setOpen(true)}><X className="h-3.5 w-3.5" />Close…</button>;
+  const text = reason.trim();
+  const submit = () => {
+    if (sending || !text) return;
+    setSending(true);
+    setErr(null);
+    call("kernel.intent_close", id, { reason: text })
+      .then((d) => { notify("ok", d?.changed === false ? "Already closed." : "Intent closed."); setOpen(false); setReason(""); onClosed(id); })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSending(false));
+  };
+  return (
+    <div className="mt-2 w-full basis-full">
+      <label className="block">
+        <span className="label">Reason for closing ({reason.length}/{CLOSE_MAX})</span>
+        <textarea className="field min-h-[56px]" maxLength={CLOSE_MAX} value={reason} onChange={(e) => setReason(e.target.value)} disabled={sending}
+          aria-label={`Reason for closing ${id}`} placeholder="Why this task is closed, for example: not supported by the replay" />
+      </label>
+      <p className="mt-1 text-[10px] text-slate-600">Words only, no prices; the moderator in xauusd reads this reason.</p>
+      {err && <p role="alert" className="mt-1 text-[11px] text-red-300 wrap-break-word">{err}</p>}
+      <div className="mt-2 flex justify-end gap-2">
+        <button type="button" className="btn py-1!" onClick={() => { setOpen(false); setErr(null); }} disabled={sending}>Cancel</button>
+        <button type="button" className="btn btn-danger py-1!" onClick={submit} disabled={sending || !text}><Check className="h-3.5 w-3.5" />Submit</button>
+      </div>
+    </div>
+  );
+}
+
+function ExternalIntents() {
+  const { who } = useSession();
+  const owner = who.owner === true;
+  const { data, loading, error, refresh } = usePoll(() => call("kernel.evolution"), 5 * 60_000);
+  const [closed, setClosed] = useState<string[]>([]);
+  const rows = arr(data?.intents).filter((i: any) => i?.state === "waiting_external" && !closed.includes(i.intent_id));
+  const onClosed = (id: string) => { setClosed((c) => [...c, id]); void refresh(); };
+  return (
+    <Panel title="External intents" icon={<GitPullRequestClosed className="h-3.5 w-3.5 text-cyan-300" />}
+      right={<span className="text-[10px] text-slate-500">council tasks for another repository; they wait until it can be changed from here</span>}>
+      {loading && !data ? <Skeleton rows={2} /> : error && !data ? <Empty>{error}</Empty> : data?.available === false ? (
+        <Empty>Evolution intents are not available yet: their table is not migrated.</Empty>
+      ) : rows.length === 0 ? <Empty>No intent waits for another repository.</Empty> : (
+        <ul className="divide-y divide-white/5">
+          {rows.map((i: any) => (
+            <li key={i.intent_id} className="flex flex-wrap items-center gap-2 px-1 py-2 text-[12px]">
+              <Badge tone="amber">waiting external</Badge>
+              <span className="flex-1 wrap-break-word text-slate-200">{i.title ?? "—"}</span>
+              <span className="mono break-all text-slate-400">{i.target_repo ?? "—"}</span>
+              <span className="text-slate-500" title={i.created_at}>{i.created_at ? ago(i.created_at) : "—"}</span>
+              <span className="w-full basis-full text-[11px] text-slate-500">reason: <span className="mono">{i.state_reason ?? "—"}</span> · <span className="mono">{i.intent_id}</span></span>
+              {owner && <CloseIntent id={i.intent_id} onClosed={onClosed} />}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
 export default function Proposals({ proposal }: { proposal?: string }) {
   const { data, loading, error, refresh } = usePoll(() => call("kernel.proposals"), 5 * 60_000);
   const id = proposal && ID.test(proposal) ? proposal : null;
@@ -139,6 +210,7 @@ export default function Proposals({ proposal }: { proposal?: string }) {
           </ul>
         )}
       </Panel>
+      <ExternalIntents />
     </div>
   );
 }

@@ -430,6 +430,15 @@ MOCK["/api/kernel/v1/proposals"] = { schema: "typed_proposals.v1", available: tr
 ] };
 MOCK[`/api/kernel/v1/proposals/${TP}`] = MOCK["/api/kernel/v1/proposals"].proposals[0];
 MOCK[`/api/kernel/v1/proposals/${TP2}`] = MOCK["/api/kernel/v1/proposals"].proposals[1];
+// CT1 (2026-11-25): the Proposals page's External intents panel: one council task waiting for another repository, and a
+// queued platform intent that the panel does not list.
+const XI = "int_0a1b2c3d4e5f";
+MOCK["/api/kernel/v1/evolution"] = { available: true, control: { mode: "on", updated_by: "owner@example.com", updated_at: at(600) }, counts: { waiting_external: 1, queued: 1 },
+  intents: [
+    { intent_id: XI, source: "council", source_ref: "cp_mwkvn9ec_1en88v", target_repo: "cryptophys-adm/xauusd-ai-trading-assistant", title: "Add a 15-minute ATR volatility filter for zone_pullback entries",
+      spec: "Before a zone_pullback entry is sent, compute the ATR.", state: "waiting_external", state_reason: "adr_0018_x1_x2", evolution_id: null, created_at: at(60 * 30), updated_at: at(60 * 30), origin: { origin: "xauusd" }, evidence_refs: [] },
+    { intent_id: "int_00000000000a", source: "inventory", source_ref: "undeclared_worker:x", target_repo: "platform", title: "undeclared worker: x", spec: "x", state: "queued", state_reason: null, evolution_id: null, created_at: at(90), updated_at: at(90), origin: {}, evidence_refs: [] },
+  ], evolutions: [] };
 // HAIC H4: the autonomy dial: deploys lowered after a regression, merges ready to rise, the rest at their ADR class.
 const grp = (group, label, level, ceiling, actions, extra = {}) => ({ group, label, level, level_label: level, ceiling, source: "adr", set_by: null, set_at: null, reason: null,
   actions: actions.map(([action, cls, effective]) => ({ action, class: cls, ceiling: cls === "routine" ? "consensus" : "owner_click", effective })),
@@ -763,6 +772,60 @@ for (const width of [390, 1440]) {
     await page.close();
   }
 }
+// CT1 (2026-11-25): External intents on #/proposals. The owner sees the waiting intent with Close…, an operator does not;
+// a refused close shows the kernel's error inline (role="alert") and keeps the row; an accepted one posts {reason} only
+// and removes the row.
+const XCLOSE_CHECKS = 3;
+for (const width of [390, 1440]) {
+  OVERRIDE = {};
+  for (const who of ["owner", "operator"]) {
+    OVERRIDE = who === "operator" ? { "/api/whoami": OPERATOR } : {};
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px proposals/external-${who} page error: ${e.message}`));
+    await page.goto(`${base}#/proposals`);
+    await page.waitForTimeout(700);
+    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+    for (const w of ["External intents", "Add a 15-minute ATR volatility filter for zone_pullback entries", "cryptophys-adm/xauusd-ai-trading-assistant", "adr_0018_x1_x2", "waiting external"]) {
+      if (!main.includes(w)) problems.push(`${width}px #/proposals (external-${who}): missing "${w}"`);
+    }
+    if (main.includes("undeclared worker: x")) problems.push(`${width}px #/proposals (external-${who}): lists a queued intent`);
+    if (who === "operator" && main.includes("Close…")) problems.push(`${width}px #/proposals (external-operator): shows Close…`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/proposals (external-${who}): horizontal scroll of ${overflow}px`);
+    if (who === "owner") {
+      const posts = [];
+      let answer = { status: 400, body: { error: "reason_carries_price", message: "the reason carries a price-like number (3 digits or more); words only" } };
+      await page.route(`**/console/api/kernel/v1/evolution/intents/${XI}/close`, async (route) => {
+        posts.push({ method: route.request().method(), body: route.request().postData() });
+        await route.fulfill({ status: answer.status, contentType: "application/json", body: JSON.stringify(answer.body) });
+      });
+      await page.click('main button:text-is("Close…")');
+      await page.waitForTimeout(200);
+      const hint = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      if (!hint.includes("Words only, no prices; the moderator in xauusd reads this reason.")) problems.push(`${width}px #/proposals: the close box has no hint`);
+      const box = page.locator(`textarea[aria-label="Reason for closing ${XI}"]`);
+      if (await box.getAttribute("maxlength") !== "300") problems.push(`${width}px #/proposals: the close reason is not limited to 300`);
+      await box.fill("closed at 4095");
+      if (!(await page.evaluate(() => document.querySelector("main")?.textContent ?? "")).includes("(14/300)")) problems.push(`${width}px #/proposals: no live counter`);
+      await page.click('main button:text-is("Submit")');
+      await page.waitForTimeout(400);
+      const alert = await page.evaluate(() => [...document.querySelectorAll('main [role="alert"]')].map((e) => e.textContent).join(" | "));
+      if (!alert.includes("reason_carries_price")) problems.push(`${width}px #/proposals: a refused close shows no inline alert (${alert})`);
+      answer = { status: 200, body: { intent_id: XI, state: "closed", changed: true, update_id: "evu_1" } };
+      OVERRIDE = { "/api/kernel/v1/evolution": { ...MOCK["/api/kernel/v1/evolution"], intents: MOCK["/api/kernel/v1/evolution"].intents.map((i) => (i.intent_id === XI ? { ...i, state: "closed" } : i)) } };
+      await box.fill("not supported by the replay");
+      await page.click('main button:text-is("Submit")');
+      await page.waitForTimeout(600);
+      const after = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      if (after.includes("Add a 15-minute ATR volatility filter for zone_pullback entries")) problems.push(`${width}px #/proposals: the closed intent is still listed`);
+      if (!after.includes("No intent waits for another repository.")) problems.push(`${width}px #/proposals: no empty state after the close`);
+      if (posts.length !== 2 || posts.some((p) => p.method !== "POST") || posts[1]?.body !== JSON.stringify({ reason: "not supported by the replay" })) problems.push(`${width}px #/proposals: close requests were ${JSON.stringify(posts)}`);
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-proposals-external.png`), fullPage: true });
+    }
+    await page.close();
+  }
+}
+OVERRIDE = {};
 // HAIC push hub: under the Console's CSP, the council page opens one same-origin WebSocket, subscribes to its council,
 // shows "live", and reloads the council when the hub signals a change; the Owner page subscribes to the inbox.
 {
@@ -1026,4 +1089,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), and the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), and the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases) at both widths.`);

@@ -89,6 +89,11 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // HAIC H3d (docs/design/HAIC-H3.md §6.1): the teaching record (the owner-judgement side of reputation), read only and
   // operator-readable; the Agents, agent detail and Ask pages show it, "—" for a subject with no correction.
   r("kernel.reputation", "kernel", "GET", "/v1/reputation", false, null),
+  // Owner via the coordinator, 2026-11-25 (CT1): the Proposals page's External intents panel reads the evolution intents;
+  // the owner closes a waiting_external one with a reason (no typed phrase: the reason is the decision, and the kernel
+  // checks the owner, the intent's state and that the reason carries no price and no secret).
+  r("kernel.evolution", "kernel", "GET", "/v1/evolution", false, null),
+  r("kernel.intent_close", "kernel", "POST", "/v1/evolution/intents/{id}/close", true, null),
   r("kernel.reports", "kernel", "GET", "/v1/reports", false, null),
   // ADR-0009 amendment 2026-11-13: an approver acknowledges a critical report as handled; it then no longer blocks consensus.
   r("kernel.report_acknowledge", "kernel", "POST", "/v1/reports/{id}/acknowledge", true, "ACKNOWLEDGE {id13}"),

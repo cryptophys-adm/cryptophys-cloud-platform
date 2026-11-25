@@ -101,6 +101,8 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 const INVISIBLE = /[\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]/g;
 /** NFKC (full-width ４０９５ becomes 4095), invisible characters dropped, whitespace runs collapsed, case kept. */
 export const normalizeText = (s: string): string => s.normalize("NFKC").replace(INVISIBLE, "").trim().replace(/\s+/g, " ");
+/** Whether a text carries a price-like number under the shared PRICE rule, after normalizeText (the evolution close reason). */
+export const textCarriesPrice = (s: string): boolean => PRICE.test(normalizeText(s));
 
 /** The longest owner-typed category kept beside category "other". */
 export const CATEGORY_RAW_MAX = 60;
