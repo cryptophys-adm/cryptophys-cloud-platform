@@ -4,7 +4,7 @@
   "title": "The Forge deploys external organs natively from their own repositories",
   "adr_file": null,
   "lifecycle": "held",
-  "lifecycle_note": "Accepted on branch adr-0018 (owner 2026-11-15), not merged into main; X3's platform joins are on main.",
+  "lifecycle_note": "Accepted on branch adr-0018 (owner 2026-11-15), not on main; X3's platform joins are on main. Owner 2026-11-25: cta through the Forge cancelled for now (Dynamic Workers budget); X1, X2 and X2b are not built until reopened.",
   "phases": [
     {
       "id": "X0",
