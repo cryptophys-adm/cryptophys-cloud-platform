@@ -438,5 +438,11 @@ test("AIR1-15. configuration and records: off by default in wrangler, no require
   assert.match(ssot, /\*\*Model router \(AIR1/);
   const manifest = JSON.parse(read("architecture/adr/progress/0007.json"));
   assert.ok(manifest.phases.some((p: any) => p.id === "K3" && JSON.stringify(p.evidence).includes("0090_model_router.sql")));
-  assert.equal(criticalPathReason("workers/control-plane-shared/src/model-router.ts"), null);
+  // Coordinator review of 4ffe685: the router holds the free_only safeguard, so it is a guard path (AIR1-G).
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/model-router.ts"), "paid_model_guard");
+});
+
+test("AIR1-G: the model router is a guard path (its free_only safeguard is the owner's)", () => {
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/model-router.ts"), "paid_model_guard");
+  assert.equal(criticalPathReason("workers/control-plane-shared/src/ai-engine.ts"), null);
 });

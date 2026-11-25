@@ -36,6 +36,10 @@ export const CRITICAL_PATHS: ReadonlyArray<readonly [RegExp, string]> = [
   // run (the scripts above run it), so the route that records it and the rules of a valid report decide whether a check
   // runs any test itself; changing them is the owner's.
   [/^workers\/(control-plane-shared\/src\/forge-test-report|forge\/src\/test-report)\.ts$/, "ci_harness"],
+  // AIR1 (owner 2026-11-25, "Approve, but Cerebrum only"): the model router holds the free_only money safeguard (any paid
+  // sign switches Beam off everywhere until the owner sets a paid cap) and Workers AI as the fallback; changing it is the
+  // owner's.
+  [/^workers\/control-plane-shared\/src\/model-router\.ts$/, "paid_model_guard"],
   // ADR-0014 §3: the evolution loop's own guards.
   [/^architecture\/adr\/0014-/, "evolution_guard"],
   [/^architecture\/adr\/progress\/0014\.json$/, "evolution_guard"],
