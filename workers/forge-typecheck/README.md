@@ -19,6 +19,14 @@ repository `cryptophys/platform`. No GitHub, no Container.
    Console UI built, the script first posts the built `dist` to the Forge (`POST /v1/forge/console-dist`,
    the same headers and CI service token; ADR-0012 §5l step 7). The Forge keeps it for the Orchestrator's
    native Console deploy. A failed dist post still reports the checks and fails the build (exit 3).
+   **Tests (CI-WB, owner 2026-11-25).** After the type-check report is posted, the same build runs the control-plane
+   test suite natively: the command of `../control-plane-shared`'s `test` script, over its top-level test files, with
+   `test-reporter.mjs` (each test's file, name and outcome; never a message or any output), and with `CF_ACCESS_CLIENT_ID`,
+   `CF_ACCESS_CLIENT_SECRET` and `FORGE_URL` removed from the tests' environment. It prints one line,
+   `FORGE_TEST_RESULT {...}` (commit, tree, build id, branch, test files, counts, at most 50 failed tests by file and
+   name), and posts it to `POST /v1/forge/test-report` with the same headers. The Forge then runs no test of this commit
+   in Dynamic Workers. A test failure never stops the type-check report (it went first); failed tests fail the build
+   (exit 1) and a failed post exits 3, both after everything was reported. The run takes about 75 s on 4 cores.
 3. The Forge records the report (`forge_typecheck_reports`, migration 0035) and folds it into its
    check of the same commit as the `typecheck` step. A type error or a failed Console build fails that
    check. Until the report arrives the step reads `pending`. A check is **ready** when its tests and

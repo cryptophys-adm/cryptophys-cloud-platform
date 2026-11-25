@@ -29,5 +29,6 @@ test("FT1. a failing change request step is audited and does not stop the deploy
   assert.deepEqual(audit, [{ subject: "change_checks", outcome: "failed", payload_json: JSON.stringify({ error: "artifacts read failed" }) }]);
   // Without Artifacts or a runner nothing runs and nothing fails.
   assert.deepEqual(await forgeTick({ DB: db as never }, "platform", null), { change_checks: { outcome: "not_configured" }, main_checks: { outcome: "not_configured" } });
-  assert.match(readFileSync(new URL("workers/forge/src/worker.ts", ROOT), "utf8"), /await forgeTick\(env, REPO, deps\)/);
+  // CI-WB (2026-11-25): the cron passes the test-report policy (tests from Workers Builds, Dynamic Workers as the fallback).
+  assert.match(readFileSync(new URL("workers/forge/src/worker.ts", ROOT), "utf8"), /await forgeTick\(env, REPO, deps, undefined, \{ reports: \{ waitMs: TEST_REPORT_WAIT_MS \} \}\)/);
 });

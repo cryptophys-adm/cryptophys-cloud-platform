@@ -13,6 +13,8 @@
 //     the CI service token only (forge-ci-report.yml), while GitHub is still the source of truth.
 //   - POST /v1/forge/typecheck-report {confirm: "REPORT"}: the type-check result of a commit from
 //     Workers Builds (workers/forge-typecheck), CI service token only (ADR-0012 §5c).
+//   - POST /v1/forge/test-report {confirm: "REPORT"}: the control-plane test result of a commit from the same Workers
+//     Builds run (CI-WB, 2026-11-25), CI service token only (test-report.ts, a guard path).
 //   - POST /v1/forge/console-dist {confirm: "UPLOAD"}: the built Console UI of a commit, to R2, CI service token only (console-dist.ts, §5l).
 //   - Change requests (phase 4, shadow; changes.ts): POST /v1/forge/changes {confirm: "REGISTER"} and
 //     POST /v1/forge/changes/outcome {confirm: "REPORT"} from the CI service token only;
@@ -46,13 +48,14 @@ import { gitBackup } from "../../control-plane-shared/src/git-backup.ts";
 import { ensureWorkRepo } from "./work-repo.ts";
 import { mergePath } from "../../control-plane-shared/src/merge-path.ts";
 import { handleConsoleDist } from "./console-dist.ts";
+import { handleTestReport } from "./test-report.ts";
 
 export const REPO = "platform";
 export const ARTIFACTS_NAMESPACE = "cryptophys";
 export const SOURCE_URL = "https://github.com/cryptophys-adm/cryptophys-cloud-platform";
 export const MIRROR_TOKEN_TTL_S = 600;
 /** The Forge's own tables (ADR-0012 phase 3): it is not ready before they exist. */
-export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql", "0041_organism_registration.sql", "0052_forge_work_change_requests.sql", "0071_forge_linear_history_guard.sql"] as const;
+export const FORGE_MIGRATIONS = ["0031_forge_check_runs.sql", "0032_forge_ci_reports.sql", "0033_forge_check_steps.sql", "0035_forge_typecheck_reports.sql", "0036_forge_console_build.sql", "0037_forge_change_requests.sql", "0038_forge_deploy_plans.sql", "0039_forge_check_source.sql", "0040_forge_organism_census.sql", "0041_organism_registration.sql", "0052_forge_work_change_requests.sql", "0071_forge_linear_history_guard.sql", "0089_forge_test_reports.sql"] as const;
 
 export type ArtifactsCommit = Record<string, unknown>;
 export interface ArtifactsRepo {
@@ -256,6 +259,7 @@ export default {
     if (!operator.ok) return operator.response;
     try {
       if (request.method === "POST" && url.pathname === "/v1/forge/console-dist") return await handleConsoleDist(request, env as never, operator.identity);
+      if (request.method === "POST" && url.pathname === "/v1/forge/test-report") return await handleTestReport(request, env, operator.identity);
       if (request.method === "GET" && url.pathname === "/v1/forge/status") return json(await status(env));
       if (request.method === "GET" && url.pathname === "/v1/forge/checks") return json(await listChecks(env.DB, Number(url.searchParams.get("limit") ?? "20") || 20));
       if (request.method === "GET" && url.pathname === "/v1/forge/commits") return json(await commits(env, Number(url.searchParams.get("limit") ?? "20") || 20));

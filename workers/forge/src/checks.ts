@@ -1,8 +1,11 @@
-// ADR-0012 phase 3: Forge checks. The control-plane test suite runs on Cloudflare against main's head
-// (each new head, and once per UTC day) in the Artifacts repo, with no GitHub involved:
+// ADR-0012 phase 3: Forge checks. The control-plane test suite is checked against main's head (each new head; since
+// CI-WB, 2026-11-25, no longer again once per UTC day) and change request heads, from the Artifacts repo, with no GitHub:
 //   1. snapshot: the commit's tree read through the Artifacts binding (readCommit/readTree/readBlob);
-//   2. bundle: esbuild-wasm in the Forge isolate (runner/core.ts);
-//   3. run: Dynamic Workers (Worker Loader), with no network access;
+//   2. tests: since CI-WB the result of the native run in the commit's Workers Builds build (test-report.ts), taken only
+//      for its exact commit and only when its test files are the snapshot's; with no report two ticks after the head was
+//      first seen, the suite runs in ONE Dynamic Worker (Worker Loader, no network access; runner/core.ts runSuite
+//      `single`), in groups only when that Worker is over a size limit; esbuild-wasm bundles in the Forge isolate;
+//   3. bundles of every Worker and the secret scan, in the Forge isolate, as before;
 //   4. type-check: reported by Workers Builds (typecheck.ts; the compiler does not fit in an isolate);
 //   5. record: one row per commit in D1 (forge_check_runs), plus an audit event.
 // Results are informational until the Forge and GitHub CI agree on 20 consecutive commits (ADR §5c).
@@ -14,6 +17,8 @@ import { MAX_FILE_BYTES, SKIP_DIRS, bundleAllWorkers, runSuite, runnerFingerprin
 import { coverageAccepted, coverageOfSteps, isReady, treeOfSteps, type Coverage } from "../../control-plane-shared/src/forge-gate.ts";
 import { TEST_DEPS_PREFIX, TEST_DEPS_SCHEMA, affectedTests, planChange, sameCommitTests, type ChangePlan, type DepsReader, type PriorRow } from "./check-plan.ts";
 import { applyTypecheckReportToRun, safeDiagnostics, stepFailures, typecheckStep, type TypecheckLookup, type TypecheckStep } from "./typecheck.ts";
+import { noteTestReportWait, testReportOf, type StoredTestReport } from "./test-report.ts";
+import { TEST_REPORT_RUNNER, sameTestFiles, testReportFailureLine } from "../../control-plane-shared/src/forge-test-report.ts";
 
 /** What one check needs: the test-suite toolchain and the type-check lookup (Workers Builds reports). */
 export interface CheckDeps extends SuiteDeps { typecheck?: TypecheckLookup; /** The runner fingerprint; computed from the toolchain when absent. */ fingerprint?: string }
@@ -118,10 +123,17 @@ export interface CheckSteps {
   cr_id?: string;
   worker_wall_ms?: number;
   tests_reused?: { from: "change"; commit: string; finished_at: string | null };
+  /**
+   * CI-WB (2026-11-25): the tests are the commit's Workers Builds report (test-report.ts), not a run of the Forge; then
+   * `workers` is all zero and the row's runner is TEST_REPORT_RUNNER.
+   */
+  test_report?: { build_uuid: string; source: "workers_builds" };
 }
 export interface CheckRun extends SuiteResult {
   commit: string; status: "passed" | "failed"; guard_status: "clean" | "findings"; steps: CheckSteps;
   duration_ms: number; snapshot_files: number; snapshot_bytes: number;
+  /** forge_check_runs.runner when it is not RUNNER_ID (a run whose tests came from Workers Builds). */
+  runner?: string;
 }
 
 /**
@@ -132,6 +144,10 @@ export interface CheckOptions {
   partial?: { base: string; changed: string[]; deps: Record<string, string[]> };
   reuseTests?: PriorRow;
   tree?: string; fingerprint?: string; crId?: string;
+  /** CI-WB: the commit's Workers Builds test report; the suite is not run (it wins over `partial` and `reuseTests`). */
+  testReport?: StoredTestReport;
+  /** CI-WB: a suite the Forge does run runs in one Dynamic Worker (runner/core.ts runSuite `single`). */
+  singleWorker?: boolean;
 }
 
 const NOT_TEST_FAILURE = /^(bundle |secret |typecheck |console-build )/;
@@ -145,7 +161,8 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
   const fingerprint = opts.fingerprint ?? suite.fingerprint ?? await runnerFingerprint(suite);
   let coverage: Coverage = { mode: "full" };
   let selected = only;
-  if (!selected && opts.partial) {
+  const report = opts.testReport;
+  if (!selected && opts.partial && !report) {
     const all = testFiles(snap.snapshot);
     const affected = affectedTests(all, opts.partial.deps, opts.partial.changed);
     if (affected.length < all.length) {
@@ -154,8 +171,22 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
     }
   }
   let suiteResult: SuiteResult;
-  const reused = opts.reuseTests;
-  if (reused) {
+  const reused = report ? undefined : opts.reuseTests;
+  if (report) {
+    // CI-WB: the build's own run of this commit. Only for this exact commit (and tree), and only when the build ran
+    // exactly the snapshot's test files: a report of fewer, more or other files would pass tests that never ran.
+    if (report.commit !== commit) throw new Error("test_report_commit_mismatch");
+    if (report.tree && opts.tree && report.tree !== opts.tree) throw new Error(`test_report_tree_mismatch: the report is of tree ${report.tree.slice(0, 12)}, the commit's is ${opts.tree.slice(0, 12)}`);
+    const own = testFiles(snap.snapshot);
+    if (!sameTestFiles(report.files, own)) {
+      const theirs = new Set(report.files); const ours = new Set(own);
+      const missing = own.filter((f) => !theirs.has(f)); const extra = report.files.filter((f) => !ours.has(f));
+      throw new Error(`test_report_files_mismatch: the build ran ${report.files.length} test files, the snapshot has ${own.length}`
+        + `${missing.length ? `; not run: ${missing.slice(0, 3).map((f) => f.split("/").pop()).join(", ")}${missing.length > 3 ? ", ..." : ""}` : ""}`
+        + `${extra.length ? `; not in the snapshot: ${extra.slice(0, 3).map((f) => f.split("/").pop()).join(", ")}${extra.length > 3 ? ", ..." : ""}` : ""}`);
+    }
+    suiteResult = { files: report.files.length, pass: report.pass, fail: report.fail, skip: report.skip, failures: report.failures.map(testReportFailureLine), workers: { groups: 0, bundles: 0, loads: 0 } };
+  } else if (reused) {
     // The same commit, the same runner: its full change run's test results (coordinator 2026-11-19, item 5).
     let tests: CheckSteps["tests"] | undefined;
     let priorFailures: string[] = [];
@@ -164,7 +195,7 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
     if (!tests || !Number.isInteger(tests.files) || tests.files <= 0) throw new Error("reused_tests_unreadable");
     suiteResult = { files: tests.files, pass: tests.pass, fail: tests.fail, skip: tests.skip, failures: priorFailures, ...(tests.isolated ? { isolated: tests.isolated } : {}) };
   } else {
-    suiteResult = await runSuite(suite, snap.snapshot, selected, commit);
+    suiteResult = await runSuite(suite, snap.snapshot, selected, commit, opts.singleWorker ? { single: true } : {});
   }
   const { workers, worker_wall_ms: wallMs, ...result } = suiteResult;
   if (result.files === 0 && coverage.mode !== "partial") throw new Error("no_test_files");
@@ -191,8 +222,10 @@ export async function checkCommit(repo: ArtifactsReader, commit: string, deps: (
       coverage, ...(opts.tree ? { tree: opts.tree } : {}), fingerprint, ...(opts.crId ? { cr_id: opts.crId } : {}),
       ...(wallMs !== undefined ? { worker_wall_ms: wallMs } : {}),
       ...(reused ? { tests_reused: { from: "change" as const, commit: reused.commit_sha, finished_at: reused.finished_at } } : {}),
+      ...(report ? { test_report: { build_uuid: report.build_uuid, source: "workers_builds" as const } } : {}),
     },
     duration_ms: now() - started, snapshot_files: Object.keys(snap.snapshot).length, snapshot_bytes: snap.bytes,
+    ...(report ? { runner: TEST_REPORT_RUNNER } : {}),
   };
 }
 
@@ -251,7 +284,7 @@ export function utcDayStart(nowMs: number): number {
 
 /**
  * Pick the commit of main to check: main's head, when it has no run, its run was lost (still "running" after
- * 30 minutes), it was checked only as a change request head, or its last run finished before 00:00 UTC today.
+ * 30 minutes) or ended in error 30 minutes ago or more, or it was checked only as a change request head.
  * Returns null otherwise. Older commits are never checked: a newer head superseded them, and only the head is
  * deployed (forge-gate.ts) or merged onto (owner, 2026-11-14: one run of the suite per head, not per commit).
  *
@@ -259,11 +292,10 @@ export function utcDayStart(nowMs: number): number {
  * passed run with source 'change'. Only a run of main stores the commit's Worker bundles (G2a), so without a
  * second run every merged commit had no bundles and the native deploy refused it (no_bundle; 2026-11-13).
  *
- * The daily run (owner, 2026-11-14): once per UTC day the head runs again, whatever its last result, so tests that
- * depend on the clock (market hours, weekdays, expiries) are exercised on every day the head stays current. While
- * it runs, the head's row is 'running', so forgeReady reports forge_checks_pending for those minutes (the first
- * tick after 00:00 UTC), as for any head whose check is running: a deploy decided in that window is refused as
- * ci_not_green, and nothing is pending on main until the run has finished.
+ * The daily run (owner, 2026-11-14) is dropped (CI-WB, 2026-11-25; owner: "ok jalankan rekomendasimu"): a finished run of
+ * main of the head (passed or failed) is final while the head is unchanged. The same commit is the same tree, and the
+ * runner is in the repository, so the same fingerprint; re-running it every day only re-billed every test Worker. Lost and
+ * errored runs are still retried.
  */
 export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
   const log = await repo.log({ ref: "main", limit: 1 });
@@ -272,9 +304,9 @@ export async function nextCommit(db: D1Database, repo: ArtifactsReader, nowMs: n
   const row = await db.prepare("SELECT status, started_at, finished_at, source FROM forge_check_runs WHERE commit_sha = ?").bind(head)
     .first<Pick<CheckRow, "status" | "started_at" | "finished_at"> & { source: CheckSource | null }>();
   if (!row) return head;
-  if (row.status === "running") return Date.parse(row.started_at) < nowMs - STALE_RUN_MS ? head : null;
+  if (row.status === "running" || row.status === "error") return Date.parse(row.started_at) < nowMs - STALE_RUN_MS ? head : null;
   if (row.source === "change") return head;
-  return Date.parse(row.finished_at ?? row.started_at) < utcDayStart(nowMs) ? head : null;
+  return null;
 }
 
 /** What a check was of (migration 0039): a commit of main, or a change request head. */
@@ -283,21 +315,19 @@ export type CheckSource = "main" | "change";
 /**
  * Claim a commit for this tick. False if another tick holds a live run of it; a run lost or ended in error is taken
  * over once it is STALE_RUN_MS old (2026-11-17). A run of main also takes over a
- * finished run of the same commit as a change request head (nextCommit), so that the commit's bundles are stored,
- * and a finished run of any source that finished before 00:00 UTC today (the daily run of main's head).
+ * finished run of the same commit as a change request head (nextCommit), so that the commit's bundles are stored.
+ * A finished run of main is never taken over (CI-WB, 2026-11-25: no daily run of an unchanged head).
  */
 export async function claim(db: D1Database, commit: string, nowMs: number, source: CheckSource = "main"): Promise<boolean> {
   const startedAt = new Date(nowMs).toISOString();
   const staleBefore = new Date(nowMs - STALE_RUN_MS).toISOString();
-  const today = new Date(utcDayStart(nowMs)).toISOString();
   const r = await db.prepare(
     `INSERT INTO forge_check_runs (commit_sha, status, runner, started_at, source) VALUES (?, 'running', ?, ?, ?)
      ON CONFLICT(commit_sha) DO UPDATE SET status = 'running', runner = excluded.runner, started_at = excluded.started_at, source = excluded.source,
        files = NULL, pass = NULL, fail = NULL, skip = NULL, failures = NULL, finished_at = NULL, duration_ms = NULL, steps = NULL, guard_status = NULL
      WHERE (forge_check_runs.status IN ('running', 'error') AND forge_check_runs.started_at < ?)
-        OR (excluded.source = 'main' AND forge_check_runs.source = 'change' AND forge_check_runs.status <> 'running')
-        OR (excluded.source = 'main' AND forge_check_runs.status <> 'running' AND coalesce(forge_check_runs.finished_at, forge_check_runs.started_at) < ?)`,
-  ).bind(commit, RUNNER_ID, startedAt, source, staleBefore, today).run();
+        OR (excluded.source = 'main' AND forge_check_runs.source = 'change' AND forge_check_runs.status <> 'running')`,
+  ).bind(commit, RUNNER_ID, startedAt, source, staleBefore).run();
   return (r.meta?.changes ?? 0) > 0;
 }
 
@@ -318,21 +348,52 @@ export async function record(db: D1Database, run: CheckRun | { commit: string; s
     await applyStoredTypecheckReport(db, run.commit);
     return;
   }
-  await db.prepare("UPDATE forge_check_runs SET status = ?, files = ?, pass = ?, fail = ?, skip = ?, failures = ?, finished_at = ?, duration_ms = ?, steps = ?, guard_status = ? WHERE commit_sha = ?")
-    .bind(run.status, run.files, run.pass, run.fail, run.skip, storedFailures(run.failures), finishedAt, run.duration_ms, JSON.stringify(run.steps), run.guard_status, run.commit).run();
+  await db.prepare("UPDATE forge_check_runs SET status = ?, runner = ?, files = ?, pass = ?, fail = ?, skip = ?, failures = ?, finished_at = ?, duration_ms = ?, steps = ?, guard_status = ? WHERE commit_sha = ?")
+    .bind(run.status, run.runner ?? RUNNER_ID, run.files, run.pass, run.fail, run.skip, storedFailures(run.failures), finishedAt, run.duration_ms, JSON.stringify(run.steps), run.guard_status, run.commit).run();
   await applyStoredTypecheckReport(db, run.commit);
 }
 
 export interface ScheduledEnv { DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader> }; BUNDLES?: BundleBucket & DepsReader }
-export type TickOutcome = { outcome: "not_configured" | "up_to_date" | "busy" } | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number; coverage?: string };
+export type TickOutcome =
+  | { outcome: "not_configured" | "up_to_date" | "busy" }
+  | { outcome: "checked"; commit: string; status: string; pass?: number; fail?: number; coverage?: string; tests?: "workers_builds" }
+  /** CI-WB: the head has no Workers Builds test report yet and has waited less than the policy's waitMs; nothing was claimed. */
+  | { outcome: "waiting_for_test_report"; commit: string; waited_ms: number };
+
+/**
+ * CI-WB (2026-11-25): where a check's tests come from. With a policy, a head whose tests must run takes its commit's Workers
+ * Builds report (test-report.ts); without one it waits `waitMs` from when the Forge first saw it so (two ticks, ≈30 min:
+ * test-report.ts TEST_REPORT_WAIT_MS), unclaimed, so the rest of the tick goes on; then the suite runs in one Dynamic
+ * Worker. Without a policy (the local harness, and the checks' own older tests) a check runs the suite at once, in groups.
+ */
+export interface TestReportPolicy { waitMs: number }
 
 /** One cron tick: check main's head, when nextCommit says it is due. */
-export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<TickOutcome> {
-  return tickWith(env, repoName, deps, nowMs, (repo) => nextCommit(env.DB, repo, nowMs()));
+export async function checksTick(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now(), reports?: TestReportPolicy): Promise<TickOutcome> {
+  return tickWith(env, repoName, deps, nowMs, (repo) => nextCommit(env.DB, repo, nowMs()), "main", reports);
+}
+
+/** What a check of one commit is decided from, before any test is bundled. */
+interface Prepared { suite: CheckDeps; fingerprint: string; tree?: string; crId?: string; plan: ChangePlan; reuseTests?: PriorRow }
+
+async function prepare(env: ScheduledEnv, repo: ArtifactsReader, commit: string, deps: (commit: string) => Promise<CheckDeps>, source: CheckSource, prior: PriorRow | null): Promise<Prepared> {
+  const suite = await deps(commit);
+  const fingerprint = suite.fingerprint ?? await runnerFingerprint(suite);
+  const meta = await repo.readCommit(commit);
+  const tree = meta && HEX40.test(meta.treeHash) ? meta.treeHash : undefined;
+  const cr = source === "change"
+    ? await env.DB.prepare("SELECT cr_id FROM forge_change_requests WHERE head_sha = ? AND status = 'open' ORDER BY updated_at DESC, rowid DESC LIMIT 1").bind(commit).first<{ cr_id: string }>()
+    : null;
+  // A change request head: reused, docs-only, partial or full (check-plan.ts). A run of main is always full.
+  const plan: ChangePlan = source === "change" && tree ? await planChange(env.DB, repo, env.BUNDLES, commit, tree, fingerprint) : { kind: "full", why: "main" };
+  // A run of main taking over the same commit's change run reuses its full test results; a lost or failed run (not
+  // finished) runs the suite (check-plan.ts sameCommitTests).
+  const reuseTests = source === "main" ? sameCommitTests(prior, commit, fingerprint) ?? undefined : undefined;
+  return { suite, fingerprint, tree, crId: cr?.cr_id, plan, reuseTests };
 }
 
 /** Claim, check, record and audit one commit picked by `pick` (a commit of main, or a change request head). */
-export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs: () => number, pick: (repo: ArtifactsReader) => Promise<string | null>, source: CheckSource = "main"): Promise<TickOutcome> {
+export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs: () => number, pick: (repo: ArtifactsReader) => Promise<string | null>, source: CheckSource = "main", reports?: TestReportPolicy): Promise<TickOutcome> {
   if (!env.ARTIFACTS || !deps) return { outcome: "not_configured" };
   const repo = await env.ARTIFACTS.get(repoName);
   try {
@@ -343,29 +404,40 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
     const prior = source === "main"
       ? await env.DB.prepare("SELECT commit_sha, status, guard_status, files, pass, fail, skip, failures, steps, source, finished_at FROM forge_check_runs WHERE commit_sha = ?").bind(commit).first<PriorRow>()
       : null;
+    // CI-WB: with a report policy the check is decided before the claim, so a head still waiting for its Workers Builds
+    // report is left unclaimed (no row, no 'running' state) and costs this tick nothing more. A failure to decide is
+    // recorded as the run's error after the claim, as before.
+    let prepared: Prepared | undefined;
+    let prepError: unknown;
+    let report: StoredTestReport | null = null;
+    if (reports) {
+      try { prepared = await prepare(env, repo, commit, deps, source, prior); } catch (e) { prepError = e ?? new Error("prepare_failed"); }
+      if (prepared && (prepared.plan.kind === "full" || prepared.plan.kind === "partial")) {
+        report = await testReportOf(env.DB, commit);
+        if (!report && !prepared.reuseTests) {
+          const since = await noteTestReportWait(env.DB, commit, nowMs());
+          const waited = nowMs() - since;
+          if (waited < reports.waitMs) return { outcome: "waiting_for_test_report", commit, waited_ms: waited };
+        }
+      }
+    }
     if (!(await claim(env.DB, commit, nowMs(), source))) return { outcome: "busy" };
     const started = nowMs();
     let status: string;
-    let counts: { pass?: number; fail?: number; coverage?: string } = {};
+    let runner = RUNNER_ID;
+    let counts: { pass?: number; fail?: number; coverage?: string; tests?: "workers_builds" } = {};
     try {
+      if (prepError !== undefined) throw prepError;
       // ADR-0012 G2a: a commit of main keeps the Worker modules its check bundled, for the deploy.
       const built: BuiltModule[] | undefined = source === "main" && env.BUNDLES ? [] : undefined;
-      const suite = await deps(commit);
-      const fingerprint = suite.fingerprint ?? await runnerFingerprint(suite);
-      const meta = await repo.readCommit(commit);
-      const tree = meta && HEX40.test(meta.treeHash) ? meta.treeHash : undefined;
-      const cr = source === "change"
-        ? await env.DB.prepare("SELECT cr_id FROM forge_change_requests WHERE head_sha = ? AND status = 'open' ORDER BY updated_at DESC, rowid DESC LIMIT 1").bind(commit).first<{ cr_id: string }>()
-        : null;
-      const base = { tree, fingerprint, crId: cr?.cr_id };
-      // A change request head: reused, docs-only, partial or full (check-plan.ts). A run of main is always full.
-      const plan: ChangePlan = source === "change" && tree ? await planChange(env.DB, repo, env.BUNDLES, commit, tree, fingerprint) : { kind: "full", why: "main" };
-      // A run of main taking over the same commit's change run reuses its full test results; the daily run (prior is a
-      // run of main) and a lost or failed run (not finished) run the suite (check-plan.ts sameCommitTests).
-      const reuseTests = source === "main" ? sameCommitTests(prior, commit, fingerprint) ?? undefined : undefined;
+      const { suite, fingerprint, tree, crId, plan, reuseTests } = prepared ?? await prepare(env, repo, commit, deps, source, prior);
+      const base = { tree, fingerprint, crId };
       const run = plan.kind === "reused" || plan.kind === "docs_only"
-        ? await checkWithoutTests(repo, commit, suite, plan, { tree: tree!, fingerprint, crId: cr?.cr_id }, nowMs)
-        : await checkCommit(repo, commit, async () => suite, nowMs, undefined, built, { ...base, partial: plan.kind === "partial" ? plan : undefined, reuseTests });
+        ? await checkWithoutTests(repo, commit, suite, plan, { tree: tree!, fingerprint, crId }, nowMs)
+        : await checkCommit(repo, commit, async () => suite, nowMs, undefined, built, {
+          ...base, partial: plan.kind === "partial" ? plan : undefined, reuseTests,
+          ...(report ? { testReport: report } : {}), ...(reports ? { singleWorker: true } : {}),
+        });
       // The full run's per-file dependencies, for the partial runs of change requests based on this commit.
       // Only a passed, clean run is ever a base (check-plan.ts), so a failed one stores nothing.
       if (env.BUNDLES && run.deps && run.status === "passed" && run.guard_status === "clean" && run.steps.coverage?.mode === "full" && !run.steps.tests_reused && tree) {
@@ -374,7 +446,8 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
         } catch { /* only an optimisation: a missing record runs the next change request in full */ }
       }
       status = run.status;
-      counts = { pass: run.pass, fail: run.fail };
+      runner = run.runner ?? RUNNER_ID;
+      counts = { pass: run.pass, fail: run.fail, ...(run.steps.test_report ? { tests: "workers_builds" as const } : {}) };
       // The run is recorded after its bundles are stored (2026-11-16): a passed row of main is the deploy gate
       // (forgeReady), and the deploy of 4001de2 decided between the two writes found no bundle and fell back to
       // the GitHub workflow (no_bundle). Until the row is written it stays 'running': forge_checks_pending.
@@ -398,7 +471,7 @@ export async function tickWith(env: ScheduledEnv, repoName: string, deps: ((comm
       status = "error";
       await record(env.DB, { commit, status: "error", error: String((e as Error)?.message ?? e).slice(0, 300), duration_ms: nowMs() - started }, nowMs());
     }
-    await appendAuditEvent(env.DB, { event_type: "forge.checks_completed", actor: "system:forge-checks", subject: commit, outcome: status, payload: { runner: RUNNER_ID, ...counts } });
+    await appendAuditEvent(env.DB, { event_type: "forge.checks_completed", actor: "system:forge-checks", subject: commit, outcome: status, payload: { runner, ...counts } });
     return { outcome: "checked", commit, status, ...counts };
   } finally {
     repo[Symbol.dispose]?.();

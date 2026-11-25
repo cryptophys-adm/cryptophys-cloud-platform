@@ -225,35 +225,44 @@ test("FC6. each tick checks main's head, once, and audits it; commits a newer he
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'forge.checks_completed'").get() as any).n, 3);
 });
 
-test("FC6b. main's head runs again once per UTC day, whatever its last result; readiness reads pending while it runs (2026-11-14)", async () => {
+test("FC6b. an unchanged head of main is not run again at 00:00 UTC; a new head, an errored run and a lost run still are (CI-WB, 2026-11-25)", async () => {
+  // The daily run of 2026-11-14 is dropped (owner 2026-11-25, "ok jalankan rekomendasimu"): the same commit is the same tree
+  // under the same runner, so its result stands; re-running it only re-billed every test Worker each day.
   assert.equal(utcDayStart(Date.parse("2026-11-09T23:59:59.999Z")), Date.parse("2026-11-09T00:00:00Z"));
   const db = migratedDb();
-  const { repo } = fakeRepo({ commits: [h("1")] });
+  const commits = [h("1")];
+  const { repo } = fakeRepo({ commits });
   const env = { DB: db, ARTIFACTS: { get: async () => repo } };
   const ran: string[] = [];
   const at = (iso: string) => () => Date.parse(iso);
-  const outcome = async (iso: string, fail = 0) => {
-    const r = await checksTick(env, REPO, passingDeps(ran, fail), at(iso)) as { outcome: string; status?: string };
+  const outcome = async (iso: string, deps = passingDeps(ran)) => {
+    const r = await checksTick(env, REPO, deps, at(iso)) as { outcome: string; status?: string };
     return r.outcome === "checked" ? r.status : r.outcome;
   };
   assert.equal(await outcome("2026-11-08T09:04:00Z"), "passed");
   assert.equal(await outcome("2026-11-08T23:49:00Z"), "up_to_date", "not again the same UTC day");
-  assert.equal(await outcome("2026-11-09T00:04:00Z"), "passed", "the first tick of the next UTC day runs it again");
-  assert.equal((db.raw.prepare("SELECT started_at FROM forge_check_runs WHERE commit_sha = ?").get(h("1")) as any).started_at, "2026-11-09T00:04:00.000Z");
-  assert.equal(await outcome("2026-11-09T00:19:00Z"), "up_to_date", "once a day");
-  assert.equal(await outcome("2026-11-09T23:49:00Z"), "up_to_date");
-  assert.equal(await outcome("2026-11-10T00:04:00Z", 1), "failed", "a clock-dependent failure shows on the day it happens");
-  assert.equal(await outcome("2026-11-10T12:04:00Z"), "up_to_date");
-  assert.equal(await outcome("2026-11-11T00:04:00Z"), "passed", "a failed head runs again the next day as well");
-  assert.deepEqual(ran, [h("1"), h("1"), h("1"), h("1")]);
+  assert.equal(await outcome("2026-11-09T00:04:00Z"), "up_to_date", "nor at the first tick of the next UTC day");
+  assert.equal(await outcome("2026-11-12T00:04:00Z"), "up_to_date", "nor days later");
+  assert.deepEqual(ran, [h("1")], "one run of the unchanged head");
+  assert.equal((db.raw.prepare("SELECT started_at FROM forge_check_runs WHERE commit_sha = ?").get(h("1")) as any).started_at, "2026-11-08T09:04:00.000Z");
+  // A failed head is not run again either: its failure is its result until main moves.
+  commits.unshift(h("2"));
+  assert.equal(await outcome("2026-11-12T09:04:00Z", passingDeps(ran, 1)), "failed", "a new head is checked");
+  assert.equal(await outcome("2026-11-13T00:04:00Z"), "up_to_date", "a failed unchanged head is not re-run at 00:00");
+  assert.equal((db.raw.prepare("SELECT status, started_at FROM forge_check_runs WHERE commit_sha = ?").get(h("2")) as any).started_at, "2026-11-12T09:04:00.000Z", "its row stands as it was");
+  assert.equal((await forgeReady(db, h("2"))).reason, "forge_checks_not_ready", "a failed head is not pending a rerun");
+  // An errored run (the runner failed, not the tests) is retried once it is STALE_RUN_MS old.
+  commits.unshift(h("3"));
+  const broken = async () => { throw new Error("toolchain unavailable"); };
+  assert.equal(await outcome("2026-11-13T09:04:00Z", broken as never), "error");
+  assert.equal(await outcome("2026-11-13T09:19:00Z"), "up_to_date", "not before STALE_RUN_MS");
+  assert.equal(await outcome("2026-11-13T09:49:00Z"), "passed", "then retried");
+  assert.deepEqual(ran, [h("1"), h("2"), h("3")]);
   assert.equal((db.raw.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'forge.checks_completed'").get() as any).n, 4);
-  // The claim: only a run of main takes over a run that finished before today; never a live one.
-  assert.equal(await claim(db, h("1"), Date.parse("2026-11-11T12:00:00Z")), false, "finished today");
-  assert.equal(await claim(db, h("1"), Date.parse("2026-11-12T00:04:00Z"), "change"), false, "a change request run never takes over a finished run");
-  assert.equal((await forgeReady(db, h("1"))).reason, "forge_checks_not_ready", "before the daily run (these fake runs have no type-check)");
-  assert.equal(await claim(db, h("1"), Date.parse("2026-11-12T00:04:00Z")), true);
-  assert.deepEqual(await forgeReady(db, h("1")), { ready: false, reason: "forge_checks_pending", status: "running" }, "the documented window: pending while the daily run runs");
-  assert.equal(await claim(db, h("1"), Date.parse("2026-11-12T00:10:00Z")), false, "the live daily run is not taken twice");
+  // The claim: a finished run of main is never taken over, on any later day; a change request run never takes one over.
+  assert.equal(await claim(db, h("1"), Date.parse("2026-11-20T00:04:00Z")), false, "a finished run of main is final");
+  assert.equal(await claim(db, h("1"), Date.parse("2026-11-20T00:04:00Z"), "change"), false, "a change request run never takes over a finished run");
+  assert.equal((await forgeReady(db, h("1"))).reason, "forge_checks_not_ready", "these fake runs have no type-check");
 });
 
 test("FC7. a run in progress is not taken twice; a lost one is retried after 30 minutes", async () => {

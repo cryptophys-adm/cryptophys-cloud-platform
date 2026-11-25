@@ -10,6 +10,7 @@ the checks that run the control-plane test suite against it (phase 3).
 | `GET /v1/forge/commits?limit=` | operators, viewers | History of `main` (newest first) |
 | `GET /v1/forge/checks?limit=` | operators, viewers | Forge checks of recent commits of `main` (newest first), each with GitHub CI's conclusion, plus the parity count |
 | `POST /v1/forge/ci-report` `{confirm:"REPORT", commit, conclusion, workflow_run_id}` | the CI service token only | GitHub CI's conclusion for a commit of `main` (`forge-ci-report.yml`) |
+| `POST /v1/forge/test-report` `{confirm:"REPORT", commit, tree?, build_uuid, branch?, files, pass, fail, skip, failures, duration_ms?, node?}` | the CI service token only | The control-plane test result of a commit from its Workers Builds run (CI-WB, 2026-11-25; `src/test-report.ts`, migration 0089) |
 | `POST /v1/forge/import` `{confirm:"IMPORT"}` | operators | One-time import of the GitHub repository; an existing repo is left alone |
 | `POST /v1/forge/mirror-token` `{confirm:"MIRROR"}` | the CI service token only | 10-minute write token for the mirror workflow |
 
@@ -18,13 +19,31 @@ Artifacts repo after every push, so both hold the same commit SHAs. Deployed by 
 
 ## Forge checks (phase 3)
 
-A cron at `:04/:19/:34/:49` runs the control-plane suite against `main`'s head when it has no run of main yet,
-and once per UTC day again (2026-11-14). Commits a newer head superseded are not checked.
-It needs no GitHub at any step.
+A cron at `:04/:19/:34/:49` checks `main`'s head when it has no run of main yet. There is no daily rerun of an
+unchanged head (CI-WB, 2026-11-25: the daily run of 2026-11-14 is dropped; a lost or errored run is still retried
+after 30 minutes). Commits a newer head superseded are not checked. It needs no GitHub at any step.
+
+**Tests on Workers Builds (CI-WB, owner 2026-11-25: "ok jalankan rekomendasimu").** The suite runs natively in the
+commit's own Workers Builds run, after the type-check (`../forge-typecheck/typecheck-and-report.mjs`: the `test`
+script's command, a reporter that keeps only each test's file, name and outcome, the build secrets removed from the
+tests' environment). A build of `main` posts the result to `POST /v1/forge/test-report`; a change request build has no
+secrets and prints `FORGE_TEST_RESULT {...}`, which `src/cr-builds.ts` reads from the same log read as the type-check
+line (within the 9 requests a tick). Both are validated by `control-plane-shared/src/forge-test-report.ts` and kept in
+`forge_test_reports`, one row per commit. A check takes a report only for its exact commit (and tree), and only when
+the report's test files equal the snapshot's test files; otherwise the run is an `error`
+(`test_report_files_mismatch`), never a pass. Such a row has the usual shape: runner `workers-builds/1`,
+`steps.tests`, `steps.workers` `{groups: 0, bundles: 0, loads: 0}`, coverage `full`, and
+`steps.test_report {build_uuid, source: "workers_builds"}`. Steps 1, 4 and 5 below, the guard, the R2 bundle store
+and the dependency record stay in this isolate. A head with no report waits, unclaimed, until two ticks after the
+Forge first saw it (`forge_test_report_waits`), and the tick goes on with the next head due; then step 3 runs as a
+fallback with **one** Dynamic Worker for the whole run. Its id is the hash of the whole suite's bundle, so an unchanged
+suite keeps it; an isolate crash reruns each file alone; a Loader size limit, or bundles over 8 MB, runs the groups
+of 4 instead (today's 189 test bundles are about 63 MB, so the fallback is grouped). The local harness
+(`tools/forge-runner`) runs the suite as before.
 
 1. **Snapshot.** The commit's text files are read from Artifacts (`src/checks.ts`).
 2. **Bundle.** Each test file is bundled by esbuild-wasm in this isolate (`src/runner/core.ts`). `node:test`, `node:sqlite`, `node:fs`, `node:os` and `node:child_process` are replaced by `src/runner/shims/`.
-3. **Run.** The bundles run in Dynamic Workers (`[[worker_loaders]]`), 4 files per Worker, with no network access and a 60 s CPU limit. A test Worker is loaded with `LOADER.get(id)`, where the id is the SHA-256 of its code; the commit and its snapshot come in the request, so an unchanged group reuses its Worker across commits (billing counts unique Worker IDs and code per day).
+3. **Run** (since CI-WB only the fallback). The bundles run in Dynamic Workers (`[[worker_loaders]]`), 4 files per Worker, with no network access and a 60 s CPU limit. A test Worker is loaded with `LOADER.get(id)`, where the id is the SHA-256 of its code; the commit and its snapshot come in the request, so an unchanged group reuses its Worker across commits (billing counts unique Worker IDs and code per day).
 4. **Bundles.** Every Worker in the commit is bundled, as CI's dry run does. The Worker's `[[rules]]` apply, and `.wasm` and `node_modules` imports stay external.
 5. **Secret scan.** Well-known credential formats are scanned for. A finding records the rule, path and line, never the text.
 6. **Type-check.** `tsc --noEmit -p workers/control-plane-tsconfig.json` runs on Workers Builds from the Artifacts repository (`../forge-typecheck`), because the compiler needs about 190 MB and an isolate has 128 MB (owner, 2026-11-08). The build reports to `POST /v1/forge/typecheck-report` (`src/typecheck.ts`, migration 0035).

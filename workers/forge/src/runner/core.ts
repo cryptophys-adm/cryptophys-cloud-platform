@@ -510,8 +510,12 @@ export async function testWorkerId(code: TestWorkerCode): Promise<string> {
   return TEST_WORKER_ID_PREFIX + Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** The Dynamic Workers of a run: groups run, distinct Worker ids, and Worker requests (Worker Loader `get` calls). */
-export interface WorkerStats { groups: number; bundles: number; loads: number }
+/**
+ * The Dynamic Workers of a run: groups run, distinct Worker ids, and Worker requests (Worker Loader `get` calls).
+ * `mode` (CI-WB, 2026-11-25; absent for a grouped run): `single` when the whole run was one Worker, `grouped_after_size_limit`
+ * when that one Worker was over a Loader size limit and the run fell back to groups of FILES_PER_WORKER.
+ */
+export interface WorkerStats { groups: number; bundles: number; loads: number; mode?: "single" | "grouped_after_size_limit" }
 
 export interface SuiteDeps {
   esbuild: EsbuildLike;
@@ -527,48 +531,81 @@ export interface SuiteDeps {
 }
 
 /**
- * Bundle and run the whole suite (or `only`) against a snapshot. Never throws for a failing test. Every
- * test file is bundled from this snapshot and executed on every run; only the Worker that executes a group
- * is reused when the group's bundles are byte-for-byte the same as an earlier run's.
+ * CI-WB (2026-11-25): the largest one-Worker run tried. Past it the run is grouped without trying (the Workers size limit
+ * is 10 MB compressed on Workers Paid; the bundles also have to fit in the Forge isolate's memory at once).
  */
-export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: string[], commit?: string): Promise<SuiteResult> {
+export const MAX_SINGLE_WORKER_BYTES = 8_000_000;
+
+/** Whether a test Worker's error is a Worker Loader size limit (the code is too large to load), not a crash of the run. */
+export function isLoaderSizeLimitError(message: string | undefined): boolean {
+  return typeof message === "string" && /\b(?:script|worker|code|module|bundle)s?[ _](?:is )?too[ _]large\b|\bsize[ _]limit\b|\bexceeds? (?:the )?(?:maximum |max )?(?:script |worker |code )?size\b/i.test(message);
+}
+
+/**
+ * Bundle and run the whole suite (or `only`) against a snapshot. Never throws for a failing test. Every test file is
+ * bundled from this snapshot and executed on every run; only the Worker that executes a group is reused when the group's
+ * bundles are byte-for-byte the same as an earlier run's.
+ *
+ * `single` (CI-WB, 2026-11-25: the Dynamic Workers fallback when no Workers Builds report came): ONE test Worker runs every
+ * file, so a run is one unique Worker id (the hash of the whole suite's bundle) instead of one per group, and an unchanged
+ * suite keeps it. Its isolate dying reruns each file alone, as for a group; a Worker over a Loader size limit (or over
+ * MAX_SINGLE_WORKER_BYTES before it is tried) runs the suite in groups of FILES_PER_WORKER instead.
+ */
+export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: string[], commit?: string, opts: { single?: boolean } = {}): Promise<SuiteResult> {
   const files = only ?? testFiles(snapshot);
   const body = testWorkerBody(snapshot, commit);
-  const result = emptyResult();
+  let result = emptyResult();
   const workers: WorkerStats = { groups: 0, bundles: 0, loads: 0 };
   const ids = new Set<string>();
   const imports = new Map<string, Set<string>>();
   const reads = new Map<string, string[]>();
   let wallMs = 0;
-  for (const group of groupFiles(files)) {
+  const shared = { sqlJs: deps.sqlJs, sqlWasm: deps.sqlWasm };
+  const env = deps.bundler ? { BUNDLER: deps.bundler } : undefined;
+  const run = async (part: Array<{ file: string; code: string }>): Promise<{ report: { files?: FileReport[] } | null; error?: string }> => {
+    try {
+      const code = testWorkerCode(part, shared, env, deps.limits);
+      const id = await testWorkerId(code);
+      ids.add(id);
+      workers.loads++;
+      const t0 = Date.now();
+      try {
+        const report = await deps.runWorker(code, testWorkerRequest(id, body));
+        for (const f of report?.files ?? []) if (typeof f?.file === "string" && Array.isArray(f.reads)) reads.set(f.file, f.reads.map(String));
+        return { report };
+      } finally { wallMs += Date.now() - t0; }
+    } catch (e) { return { report: null, error: String((e as Error)?.message ?? e).slice(0, 300) }; }
+  };
+  // The bundles a one-Worker attempt already made, taken (and released) by the groups when the run falls back to them.
+  const made = new Map<string, string>();
+  const bundleGroup = async (group: string[], budget = Number.POSITIVE_INFINITY): Promise<{ bundled: Array<{ file: string; code: string }>; over: boolean }> => {
     const bundled: Array<{ file: string; code: string }> = [];
-    const unbundled: string[] = [];
+    let bytes = 0;
     for (const file of group) {
+      const ready = made.get(file);
+      if (ready !== undefined) { made.delete(file); bundled.push({ file, code: ready }); continue; }
       const trace = new Set<string>([file]);
       imports.set(file, trace);
-      try { bundled.push({ file, code: await bundleTest(deps.esbuild, snapshot, deps.shims, file, trace) }); }
-      catch (e) { result.files++; result.fail++; result.failures.push(`${file.split("/").pop()}: BUNDLE ${String((e as Error)?.message ?? e).slice(0, 300)}`); unbundled.push(file); }
-    }
-    if (bundled.length === 0) continue;
-    workers.groups++;
-    const shared = { sqlJs: deps.sqlJs, sqlWasm: deps.sqlWasm };
-    const env = deps.bundler ? { BUNDLER: deps.bundler } : undefined;
-    const run = async (part: Array<{ file: string; code: string }>): Promise<{ report: { files?: FileReport[] } | null; error?: string }> => {
       try {
-        const code = testWorkerCode(part, shared, env, deps.limits);
-        const id = await testWorkerId(code);
-        ids.add(id);
-        workers.loads++;
-        const t0 = Date.now();
-        try {
-          const report = await deps.runWorker(code, testWorkerRequest(id, body));
-          for (const f of report?.files ?? []) if (typeof f?.file === "string" && Array.isArray(f.reads)) reads.set(f.file, f.reads.map(String));
-          return { report };
-        } finally { wallMs += Date.now() - t0; }
-      } catch (e) { return { report: null, error: String((e as Error)?.message ?? e).slice(0, 300) }; }
-    };
+        const code = await bundleTest(deps.esbuild, snapshot, deps.shims, file, trace);
+        bytes += code.length;
+        if (bytes > budget) {
+          // Too large for one Worker: stop bundling here; what is made is kept for the groups.
+          for (const b of bundled) made.set(b.file, b.code);
+          made.set(file, code);
+          return { bundled: [], over: true };
+        }
+        bundled.push({ file, code });
+      } catch (e) { result.files++; result.fail++; result.failures.push(`${file.split("/").pop()}: BUNDLE ${String((e as Error)?.message ?? e).slice(0, 300)}`); }
+    }
+    return { bundled, over: false };
+  };
+  // Runs one group's Worker; when its isolate dies as a whole, each file alone. False: the Worker was over a size limit.
+  const runGroup = async (bundled: Array<{ file: string; code: string }>, sizeLimitFallsBack: boolean): Promise<boolean> => {
+    workers.groups++;
     const whole = await run(bundled);
-    if (whole.error === undefined || bundled.length === 1) { tally(result, bundled.map((b) => b.file), whole.report, whole.error); continue; }
+    if (sizeLimitFallsBack && whole.error !== undefined && isLoaderSizeLimitError(whole.error)) return false;
+    if (whole.error === undefined || bundled.length === 1) { tally(result, bundled.map((b) => b.file), whole.report, whole.error); return true; }
     // 2026-11-12: the group's isolate died (four heavy files in one group exceeded the Worker memory limit
     // when new test files shifted the alphabetical groups). Run each file alone, so every test still runs
     // and a file fails only for its own reasons.
@@ -576,6 +613,27 @@ export async function runSuite(deps: SuiteDeps, snapshot: Snapshot, only?: strin
     for (const one of bundled) {
       const alone = await run([one]);
       tally(result, [one.file], alone.report, alone.error);
+    }
+    return true;
+  };
+  let grouped = true;
+  if (opts.single && files.length > 0) {
+    workers.mode = "single";
+    const { bundled, over } = await bundleGroup(files, MAX_SINGLE_WORKER_BYTES);
+    if (!over && (bundled.length === 0 || await runGroup(bundled, true))) grouped = false;
+    else {
+      // Over a size limit: the run starts again in groups. The bundles already made are reused (and released group by
+      // group); a file that failed to bundle is bundled, and counted, again.
+      if (!over) for (const b of bundled) made.set(b.file, b.code);
+      workers.mode = "grouped_after_size_limit";
+      result = emptyResult();
+      reads.clear();
+    }
+  }
+  if (grouped) {
+    for (const group of groupFiles(files)) {
+      const { bundled } = await bundleGroup(group);
+      if (bundled.length > 0) await runGroup(bundled, false);
     }
   }
   workers.bundles = ids.size;

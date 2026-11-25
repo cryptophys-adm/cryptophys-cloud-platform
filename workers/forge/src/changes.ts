@@ -326,7 +326,7 @@ export async function listChanges(db: D1Database, limit: number, nowMs = Date.no
  * The next open change request head to check: the newest first (owner 2026-11-11). Pull requests are often
  * merged minutes after they open; oldest-first left most of them unchecked at their outcome.
  */
-export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number, repoName: ChangeRepo = "platform"): Promise<string | null> {
+export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowMs: number, repoName: ChangeRepo = "platform", skip?: ReadonlySet<string>): Promise<string | null> {
   // G4: only the requests whose head lives in `repo` (gh-<n> in platform, fg-<slug> in platform-work), and
   // never a head the Forge refused (not based on main, or main not on its first-parent chain).
   // Which request goes first depends on the repository:
@@ -336,9 +336,10 @@ export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowM
   //     nothing there merges before its checks, and newest first let every new push jump the queue: three base
   //     requests updated at 10:20 waited behind five later stacked pushes, and the owner's clicks came about 1.5 h late).
   // Only heads still to check are read (no run yet, or a running or error run that may be stale), so 20 checked
-  // requests can no longer hide an unchecked one behind the LIMIT.
+  // requests can no longer hide an unchecked one behind the LIMIT. `skip` (CI-WB, 2026-11-25): heads this tick already
+  // found waiting for their Workers Builds test report, so the next one due is checked instead (tick.ts).
   const order = repoName === "platform-work" ? "c.updated_at ASC, c.rowid ASC" : "c.updated_at DESC, c.rowid DESC";
-  if (repoName === "platform-work") return nextQueueHead(db, repo, nowMs);
+  if (repoName === "platform-work") return nextQueueHead(db, repo, nowMs, skip);
   const rows = (await db.prepare(
     `SELECT c.head_sha, r.status, r.started_at FROM forge_change_requests c LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
      WHERE c.status = 'open' AND c.repo = ? AND c.blocked_reason IS NULL AND c.history_blocked_reason IS NULL
@@ -350,6 +351,7 @@ export async function nextChangeHead(db: D1Database, repo: ArtifactsReader, nowM
     // is retried once it is STALE_RUN_MS old, like a lost run; otherwise the request could never be checked again.
     const stale = Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS;
     if (r.status && !((r.status === "running" || r.status === "error") && stale)) continue;
+    if (skip?.has(r.head_sha)) continue;
     if (await repo.readCommit(r.head_sha)) return r.head_sha;
   }
   return null;
@@ -371,9 +373,10 @@ export const QUEUE_HOLD_MS = 60 * 60_000;
  *     A request holds it while its current head has a live run, or a passed run that finished in the last
  *     QUEUE_HOLD_MS and is not blocked: it may merge first, and its merge would make the later head stale.
  * A held head has no run, so its verdict stays pending and it is never proposed for merge (no result covers it).
- * Lost and errored runs are retried once STALE_RUN_MS old, as before.
+ * Lost and errored runs are retried once STALE_RUN_MS old, as before. A head in `skip` (CI-WB: waiting for its Workers
+ * Builds test report) is about to run, so it holds the queue as a live run does.
  */
-async function nextQueueHead(db: D1Database, repo: ArtifactsReader, nowMs: number): Promise<string | null> {
+async function nextQueueHead(db: D1Database, repo: ArtifactsReader, nowMs: number, skip?: ReadonlySet<string>): Promise<string | null> {
   const rows = (await db.prepare(
     `SELECT c.cr_id, c.head_sha, c.critical, c.blocked_reason, c.history_blocked_reason, r.status, r.started_at, r.finished_at FROM forge_change_requests c
      LEFT JOIN forge_check_runs r ON r.commit_sha = c.head_sha
@@ -384,6 +387,7 @@ async function nextQueueHead(db: D1Database, repo: ArtifactsReader, nowMs: numbe
   for (const r of rows) {
     const stale = Date.parse(r.started_at ?? "") < nowMs - STALE_RUN_MS;
     const due = !r.status || ((r.status === "running" || r.status === "error") && stale);
+    if (due && skip?.has(r.head_sha)) { held = true; continue; }
     if (due) {
       const firstRun = !(await db.prepare("SELECT 1 AS x FROM forge_check_runs WHERE source = 'change' AND status <> 'running' AND json_extract(steps, '$.cr_id') = ? LIMIT 1").bind(r.cr_id).first());
       if ((firstRun || !held) && await repo.readCommit(r.head_sha)) return r.head_sha;

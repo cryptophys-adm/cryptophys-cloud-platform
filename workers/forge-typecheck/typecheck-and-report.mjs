@@ -7,9 +7,17 @@
 // (WORKERS_CI_COMMIT_SHA, WORKERS_CI_BUILD_UUID, WORKERS_CI_BRANCH) and the build secrets
 // CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (the CI service token) plus FORGE_URL.
 // Nothing here prints a secret. Without FORGE_URL or the token it still type-checks, and says so.
+//
+// CI-WB (2026-11-25; owner: "ok jalankan rekomendasimu"): after the type-check and the Console build have reported, the
+// same build runs the control-plane test suite natively (the command of control-plane-shared's `test` script, with a
+// reporter that records only each test's file, name and outcome: test-reporter.mjs), with the build secrets removed from
+// the tests' environment. It prints the result on one line (FORGE_TEST_RESULT {...}) and, with the token, posts it to
+// POST /v1/forge/test-report; the Forge then runs no test of this commit itself. A test failure, or a test run that
+// could not start, never stops the type-check report (it is posted first); failed tests fail the build after both reports.
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,8 +72,8 @@ function dirBytes(dir) {
   return total;
 }
 
-function run(cmd, args, cwd) {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+function run(cmd, args, cwd, env) {
+  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, ...(env ? { env } : {}) });
   return { status: r.status ?? 1, output: `${r.stdout ?? ""}\n${r.stderr ?? ""}` };
 }
 
@@ -172,6 +180,146 @@ export function resultLine(body) {
   return RESULT_MARKER + JSON.stringify(body);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// CI-WB: the control-plane test suite, run natively in this build.
+
+export const TEST_RESULT_MARKER = "FORGE_TEST_RESULT ";
+export function testResultLine(body) {
+  return TEST_RESULT_MARKER + JSON.stringify(body);
+}
+/** The repository path of the control-plane tests (runner/core.ts TEST_DIR). */
+export const TEST_DIR = "workers/control-plane-shared/test";
+const MAX_FAILURES = 50;
+const MAX_NAME_CHARS = 300;
+/** The build secrets, which the tests never see (as forge-typecheck-cr strips them from its whole build). */
+export const TEST_ENV_STRIPPED = Object.freeze(["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "FORGE_URL"]);
+export function testEnv(env) {
+  const out = { ...env };
+  for (const k of TEST_ENV_STRIPPED) delete out[k];
+  return out;
+}
+
+/**
+ * The node arguments of control-plane-shared's `test` script ("node <flags> test/*.test.ts"): its flags, so this run is
+ * the same command. Anything of another form is refused (the build then reports no test result, and the Forge falls back).
+ */
+export function testFlagsOf(script) {
+  const tokens = String(script ?? "").trim().split(/\s+/);
+  if (tokens[0] !== "node" || tokens[tokens.length - 1] !== "test/*.test.ts" || !tokens.includes("--test")) throw new Error(`test script not of the form "node --test ... test/*.test.ts": ${String(script).slice(0, 200)}`);
+  const flags = tokens.slice(1, -1);
+  if (flags.some((f) => !/^--[a-z][a-z0-9-]*(=[A-Za-z0-9_.,:-]+)?$/.test(f) || /^--test-reporter/.test(f))) throw new Error("test script has an unexpected flag");
+  return flags;
+}
+
+/** The top-level test files of the test directory, as the shell expands test/*.test.ts: sorted, repository paths. */
+export function testFilesIn(names) {
+  return names.filter((n) => /^[A-Za-z0-9._-]+\.test\.ts$/.test(n)).sort().map((n) => `${TEST_DIR}/${n}`);
+}
+
+const cleanName = (name) => String(name ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_NAME_CHARS) || "(unnamed)";
+
+/**
+ * The report of one test run from the reporter's JSON lines (test-reporter.mjs): every test counted once as pass, fail or
+ * skip (todo counts as skip, as in the Forge's runner); a suite counts only when it failed with no failed test in its file
+ * (a hook or the file itself). A run that exited non-zero with no failure counted is one failure of the runner. Null when
+ * the reporter wrote nothing (the run did not start): then no result is reported.
+ */
+export function summarizeTestRun({ lines, status, files, repoRoot, commit, tree, buildUuid, branch, durationMs, node }) {
+  const events = [];
+  for (const line of String(lines ?? "").split("\n")) {
+    if (!line.trim()) continue;
+    try { const e = JSON.parse(line); if (e && typeof e === "object") events.push(e); } catch { /* not a reporter line */ }
+  }
+  if (events.length === 0) return null;
+  const known = new Set(files);
+  const fileOf = (f) => {
+    if (typeof f !== "string" || !f) return null;
+    const rel = path.relative(repoRoot, f.startsWith("file://") ? fileURLToPath(f) : f).split(path.sep).join("/");
+    return known.has(rel) ? rel : null;
+  };
+  let pass = 0, fail = 0, skip = 0;
+  const failures = [];
+  const failedFiles = new Set();
+  const suiteFails = [];
+  for (const e of events) {
+    if (e.kind === "suite") { if (e.event === "fail") suiteFails.push(e); continue; }
+    if (e.skip || e.todo) { skip++; continue; }
+    if (e.event === "pass") { pass++; continue; }
+    fail++;
+    const file = fileOf(e.file);
+    failedFiles.add(file);
+    if (failures.length < MAX_FAILURES) failures.push({ file, name: cleanName(e.name) });
+  }
+  for (const e of suiteFails) {
+    const file = fileOf(e.file);
+    if (failedFiles.has(file)) continue;
+    fail++;
+    failedFiles.add(file);
+    if (failures.length < MAX_FAILURES) failures.push({ file, name: cleanName(e.name) });
+  }
+  if (status !== 0 && fail === 0) { fail = 1; failures.push({ file: null, name: `node --test exited ${status}` }); }
+  return {
+    commit, ...(tree ? { tree } : {}), build_uuid: buildUuid, branch: branch || null, files, pass, fail, skip, failures,
+    duration_ms: Math.max(0, Math.round(durationMs)), ...(node ? { node } : {}),
+  };
+}
+
+/**
+ * Whether this Node can run the suite as CI does (node:sqlite behind --experimental-sqlite needs 22.5 or later). An older
+ * build image reports no test result rather than a false failure; the Forge then runs the suite itself.
+ */
+export function nodeRunsTests(version) {
+  const m = /^v?(\d+)\.(\d+)\./.exec(String(version ?? ""));
+  if (!m) return false;
+  const major = Number(m[1]); const minor = Number(m[2]);
+  return major > 22 || (major === 22 && minor >= 5);
+}
+
+/** Run the suite: the `test` script's command over the listed files, with the reporter, secret-free. Never prints test output. */
+export function runTests(shared, commit, tree, env) {
+  if (!nodeRunsTests(process.version)) throw new Error(`Node ${process.version} cannot run the suite (node:sqlite needs 22.5 or later)`);
+  const flags = testFlagsOf(JSON.parse(readFileSync(path.join(shared, "package.json"), "utf8")).scripts?.test);
+  const files = testFilesIn(readdirSync(path.join(shared, "test")));
+  if (files.length === 0) throw new Error("no test files");
+  const dir = mkdtempSync(path.join(tmpdir(), "forge-tests-"));
+  const out = path.join(dir, "events.jsonl");
+  const reporter = path.join(path.dirname(fileURLToPath(import.meta.url)), "test-reporter.mjs");
+  const t0 = Date.now();
+  try {
+    const r = run(process.execPath, [...flags, `--test-reporter=${reporter}`, `--test-reporter-destination=${out}`, ...files.map((f) => `test/${path.basename(f)}`)], shared, testEnv(env));
+    let lines = "";
+    try { lines = readFileSync(out, "utf8"); } catch { lines = ""; }
+    return summarizeTestRun({
+      lines, status: r.status, files, repoRoot: path.join(shared, "..", ".."), commit, tree,
+      buildUuid: String(env.WORKERS_CI_BUILD_UUID ?? "manual").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "manual",
+      branch: typeof env.WORKERS_CI_BRANCH === "string" && /^[A-Za-z0-9._/-]{1,200}$/.test(env.WORKERS_CI_BRANCH) ? env.WORKERS_CI_BRANCH : null,
+      durationMs: Date.now() - t0, node: process.version,
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** POST the test result, as postReport: no redirect followed; anything but a JSON 200 naming this commit is a failure. */
+export async function postTestReport(fetchImpl, forgeUrl, clientId, clientSecret, body) {
+  const res = await fetchImpl(new URL("/v1/forge/test-report", forgeUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "content-type": "application/json", "CF-Access-Client-Id": clientId, "CF-Access-Client-Secret": clientSecret },
+    body: JSON.stringify({ confirm: "REPORT", ...body }),
+  });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`test-report: Cloudflare Access refused the CI service token (HTTP ${res.status} to sign-in). Check CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the build variables.`);
+  }
+  const text = await res.text();
+  let answer = null;
+  try { answer = JSON.parse(text); } catch { /* not JSON */ }
+  if (!res.ok || !answer || answer.commit !== body.commit) {
+    throw new Error(`test-report: the Forge did not record the test result (HTTP ${res.status}) (invalid JSON or commit mismatch)`);
+  }
+  return answer;
+}
+
 function forgeCredentials(env) {
   const url = cleanCredential(env.FORGE_URL, "");
   const id = cleanCredential(env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Id");
@@ -187,6 +335,16 @@ async function report(body, env) {
   }
   const answer = await postReport(fetch, c.url, c.id, c.secret, body);
   console.log(`typecheck-report: the Forge recorded ${answer.conclusion} for ${answer.commit} (applied to its check: ${answer.applied_to_run})`);
+}
+
+async function reportTests(body, env) {
+  const c = forgeCredentials(env);
+  if (!c) {
+    console.log("test-report: FORGE_URL or the CI service token is not configured in this build; the result is in the FORGE_TEST_RESULT line only.");
+    return;
+  }
+  const answer = await postTestReport(fetch, c.url, c.id, c.secret, body);
+  console.log(`test-report: the Forge recorded ${answer.pass} passed, ${answer.fail} failed, ${answer.skip} skipped in ${answer.files} files for ${answer.commit}`);
 }
 
 /** ADR-0012 §5l step 7: the Console dist of a build of main, posted before the report. */
@@ -246,12 +404,35 @@ if (selfUrl && typeof process !== "undefined" && process.argv?.[1] && path.resol
       distFailed = true;
     }
   }
+  let reportFailed = false;
   try {
     await report(body, env);
   } catch (e) {
     console.error(String(e?.message ?? e));
-    process.exit(3);
+    reportFailed = true;
   }
+  // CI-WB: the tests, after the type-check has reported. Nothing here changes the type-check's report or its exit code.
+  let testsFailed = false;
+  let testPostFailed = false;
+  if (env.FORGE_SKIP_TESTS === "1") {
+    console.log("typecheck-and-report: tests skipped (a production build of main in the change-request project; cryptophys-forge-typecheck reports main's tests).");
+  } else try {
+    const treeOut = run("git", ["rev-parse", "HEAD^{tree}"], here);
+    const tree = treeOut.status === 0 && /^[0-9a-f]{40}$/.test(treeOut.output.trim()) ? treeOut.output.trim() : null;
+    const tests = runTests(shared, commit, tree, env);
+    if (!tests) {
+      console.error("typecheck-and-report: the test run wrote no result; no test result is reported (the Forge falls back to its own run).");
+    } else {
+      testsFailed = tests.fail > 0;
+      console.log(`typecheck-and-report: control-plane tests ${tests.fail === 0 ? "passed" : "failed"} (${tests.pass} passed, ${tests.fail} failed, ${tests.skip} skipped, ${tests.files.length} files, ${tests.duration_ms} ms)`);
+      for (const f of tests.failures) console.log(`failed: ${f.file ?? "(runner)"} :: ${f.name}`);
+      console.log(testResultLine(tests));
+      try { await reportTests(tests, env); } catch (e) { console.error(String(e?.message ?? e)); testPostFailed = true; }
+    }
+  } catch (e) {
+    console.error(`typecheck-and-report: the test run could not start: ${String(e?.message ?? e).slice(0, 300)}`);
+  }
+  if (reportFailed || testPostFailed) process.exit(3);
   if (distFailed) process.exit(3);
-  process.exit(tc.status === 0 && uiBuild.status === 0 ? 0 : 1);
+  process.exit(tc.status === 0 && uiBuild.status === 0 && !testsFailed ? 0 : 1);
 }

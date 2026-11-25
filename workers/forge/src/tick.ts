@@ -14,7 +14,7 @@
 //   (transfer.ts, gate 6); and the G3a merge spike on the scratch repository until it has succeeded once (gate 5).
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
-import { checksTick, tickWith, type ArtifactsReader, type CheckDeps } from "./checks.ts";
+import { checksTick, tickWith, type ArtifactsReader, type CheckDeps, type TestReportPolicy, type TickOutcome } from "./checks.ts";
 import { nextChangeHead } from "./changes.ts";
 import { planTick } from "./deploy-plan.ts";
 import type { BundleTextReader } from "../../control-plane-shared/src/executor-first.ts";
@@ -31,6 +31,8 @@ import { githubMirrorTick } from "./github-mirror.ts";
 import { mergeSpikeUntilProven } from "./merge.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
+/** CI-WB: the most change request heads one tick finds waiting for their test report before it stops looking. */
+export const MAX_WAITING_PICKS = 3;
 export interface TickEnv {
   DB: D1Database; ARTIFACTS?: { get(name: string): Promise<ArtifactsReader>; list?: import("./work-repo.ts").WorkRepoBinding["list"] }; CF_BUILDS_API_TOKEN?: string; CR_TYPECHECK_WORKER?: string;
   /** ADR-0012 G2a: the R2 bucket for the modules of passed main commits (bundles.ts). */
@@ -72,7 +74,21 @@ export function externalReaders(env: TickEnv): ExternalDnaReader[] {
   });
 }
 
-export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now()): Promise<Record<string, unknown>> {
+/**
+ * The change request checks of one repository: the next head due, and when it is waiting for its Workers Builds test
+ * report (CI-WB), the next one after it, up to MAX_WAITING_PICKS, so one head's wait blocks no other (non-blocking).
+ */
+async function changeTick(env: TickEnv, repoName: string, deps: (commit: string) => Promise<CheckDeps>, nowMs: () => number, pickRepo: "platform" | typeof WORK_REPO, reports?: TestReportPolicy): Promise<TickOutcome & { waiting?: string[] }> {
+  const skip = new Set<string>();
+  for (;;) {
+    const r = await tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs(), pickRepo, skip), "change", reports);
+    if (r.outcome !== "waiting_for_test_report") return skip.size ? { ...r, waiting: [...skip] } : r;
+    skip.add(r.commit);
+    if (skip.size >= MAX_WAITING_PICKS) return { outcome: "up_to_date", waiting: [...skip] };
+  }
+}
+
+export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: string) => Promise<CheckDeps>) | null, nowMs = () => Date.now(), opts: { reports?: TestReportPolicy } = {}): Promise<Record<string, unknown>> {
   const steps: Record<string, unknown> = {};
   const step = async (name: string, fn: () => Promise<unknown>) => {
     try { steps[name] = await fn(); } catch (e) {
@@ -133,7 +149,8 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   // (forge-gate forge_main_check_pending), so a steady stream of change requests must not starve it. Change
   // requests are checked after it in the same tick, unless the main check used the tick's budget; then next tick.
   const started = nowMs();
-  await step("main_checks", () => checksTick(env, repoName, deps, nowMs));
+  // CI-WB: a head waiting for its Workers Builds test report returns at once (waiting_for_test_report), unclaimed.
+  await step("main_checks", () => checksTick(env, repoName, deps, nowMs, opts.reports));
   // A plan that waited for main's bundles (executor first) is planned again as soon as the main check stored them.
   if (env.ARTIFACTS && (steps.deploy_plan as { waiting?: boolean } | undefined)?.waiting) await step("deploy_plan_after_checks", deployPlan);
   const main = steps.main_checks as { outcome?: string } | undefined;
@@ -141,12 +158,14 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   await step("change_checks", async () => {
     // GitHub-sourced heads are read from platform (cr/<n>); only when none waits, a forge-sourced head from
     // platform-work (G4). Its type-check has no source yet: recorded as not_configured (ADR-0012 §5j).
-    const github = await tickWith(env, repoName, deps, nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs(), "platform"), "change");
-    if (github.outcome !== "up_to_date" || !deps) return github;
+    if (!deps) return { outcome: "not_configured" };
+    const github = await changeTick(env, repoName, deps, nowMs, "platform", opts.reports);
+    if (github.outcome !== "up_to_date") return github;
     const waiting = await env.DB.prepare("SELECT 1 AS waiting FROM forge_change_requests WHERE status = 'open' AND repo = ? AND blocked_reason IS NULL LIMIT 1").bind(WORK_REPO).first();
     if (!waiting) return github;
-    const work = await tickWith(env, WORK_REPO, workDeps(deps), nowMs, (repo) => nextChangeHead(env.DB, repo, nowMs(), WORK_REPO), "change");
-    return work.outcome === "up_to_date" ? github : { ...work, repo: WORK_REPO };
+    const work = await changeTick(env, WORK_REPO, workDeps(deps), nowMs, WORK_REPO, opts.reports);
+    if (work.outcome === "up_to_date") return github.waiting || work.waiting ? { ...github, waiting: [...(github.waiting ?? []), ...(work.waiting ?? [])] } : github;
+    return { ...work, repo: WORK_REPO };
   });
   return steps;
 }

@@ -11,3 +11,15 @@ export const MAX_DIST_BODY_BYTES: number;
 export function collectConsoleDist(dir: string): Array<{ path: string; content_base64: string; content_type: string }>;
 export function postsConsoleDist(branch: unknown): boolean;
 export function postConsoleDist(fetchImpl: (input: URL, init: RequestInit) => Promise<Response>, forgeUrl: string, clientId: string, clientSecret: string, commit: string, files: Array<{ path: string; content_base64: string; content_type: string }>): Promise<{ commit: string; files: number; total_bytes: number; stored: boolean }>;
+export const TEST_RESULT_MARKER: string;
+export function testResultLine(body: Record<string, unknown>): string;
+export const TEST_DIR: string;
+export const TEST_ENV_STRIPPED: readonly string[];
+export function testEnv(env: Record<string, string | undefined>): Record<string, string | undefined>;
+export function testFlagsOf(script: unknown): string[];
+export function testFilesIn(names: string[]): string[];
+export interface TestRunReport { commit: string; tree?: string; build_uuid: string; branch: string | null; files: string[]; pass: number; fail: number; skip: number; failures: Array<{ file: string | null; name: string }>; duration_ms: number; node?: string }
+export function summarizeTestRun(input: { lines: string; status: number; files: string[]; repoRoot: string; commit: string; tree?: string | null; buildUuid: string; branch?: string | null; durationMs: number; node?: string }): TestRunReport | null;
+export function runTests(shared: string, commit: string, tree: string | null, env: Record<string, string | undefined>): TestRunReport | null;
+export function postTestReport(fetchImpl: (input: URL, init: RequestInit) => Promise<Response>, forgeUrl: string, clientId: string, clientSecret: string, body: { commit: string } & Record<string, unknown>): Promise<{ commit: string; pass: number; fail: number; skip: number; files: number }>;
+export function nodeRunsTests(version: unknown): boolean;

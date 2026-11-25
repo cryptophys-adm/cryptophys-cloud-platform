@@ -10,6 +10,7 @@ import { canonicalMainHead } from "./census.ts";
 import { bundleWorkerDir, type WorkerBundle } from "./runner/core.ts";
 import { suiteDeps, toolchain, type WorkerLoader } from "./runner/runtime.ts";
 import { typecheckStep } from "./typecheck.ts";
+import { TEST_REPORT_WAIT_MS } from "./test-report.ts";
 import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
 import { proposeEvolution, readCode, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
@@ -30,7 +31,9 @@ export default {
     // The bundler carries no commit: a test Worker is reused across commits (runner/core.ts), so the commit
     // comes with each request and the test Worker passes it back with each bundleWorker call.
     const deps = loader && bundler ? async () => ({ ...(await suiteDeps(loader, bundler({ props: {} }))), typecheck: (c: string) => typecheckStep(env.DB, c) }) : null;
-    console.log(JSON.stringify({ event: "forge.tick", ...(await forgeTick(env, REPO, deps)) }));
+    // CI-WB (2026-11-25): the tests come from the commit's Workers Builds report; Dynamic Workers only as a one-per-run
+    // fallback when none came within two ticks (test-report.ts).
+    console.log(JSON.stringify({ event: "forge.tick", ...(await forgeTick(env, REPO, deps, undefined, { reports: { waitMs: TEST_REPORT_WAIT_MS } })) }));
   },
 };
 

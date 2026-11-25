@@ -50,7 +50,7 @@ export const FULL_SUITE_PATHS: readonly RegExp[] = [
   /(^|\/)tsconfig[^/]*\.json$/,
   /^workers\/control-plane-tsconfig\.json$/,
   /^workers\/forge\/src\/runner\//,
-  /^workers\/forge\/src\/(checks|check-plan|changes|tick|worker)\.ts$/,
+  /^workers\/forge\/src\/(checks|check-plan|changes|tick|worker|test-report|cr-builds)\.ts$/,
   /^tools\/forge-runner\//,
   /^workers\/control-plane-migrations\//,
   /(^|\/)wrangler(\.[a-z]+)?\.toml$/,

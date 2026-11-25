@@ -1107,3 +1107,36 @@ assert not re.search(r"\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|DELETE\s+FROM
 assert "'shadow-knowledge'" not in kv_sql, "no migration seeds the shadow-knowledge agent (the census registers it)"
 kv_db.close()
 print("PASS: 0088 knowledge_verdicts (additive: one table, a unique dedup index and a plain index, CHECKs hold, no row, knowledge_proposals unaltered, applies twice)")
+
+# 0089 (CI-WB, 2026-11-25): the Forge's test results from Workers Builds, and the heads waiting for one. Additive.
+ft_db = sqlite3.connect(":memory:")
+ft_db.execute("PRAGMA foreign_keys = ON")
+for migration in sorted(ROOT.glob("*.sql")):
+    if migration.name >= "0089":
+        break
+    ft_db.executescript(migration.read_text(encoding="utf-8"))
+ft_schema_before = {r[0] for r in ft_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+ft_runs_sql = ft_db.execute("SELECT sql FROM sqlite_master WHERE name = 'forge_check_runs'").fetchone()
+ft_sql = (ROOT / "0089_forge_test_reports.sql").read_text(encoding="utf-8")
+ft_db.executescript(ft_sql)
+ft_db.executescript(ft_sql)
+ft_schema_after = {r[0] for r in ft_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+assert ft_schema_after - ft_schema_before == {"forge_test_reports", "sqlite_autoindex_forge_test_reports_1", "forge_test_report_waits", "sqlite_autoindex_forge_test_report_waits_1", "idx_forge_test_report_waits_seen"}, sorted(ft_schema_after - ft_schema_before)
+assert ft_db.execute("SELECT sql FROM sqlite_master WHERE name = 'forge_check_runs'").fetchone() == ft_runs_sql, "forge_check_runs is not altered"
+ft_insert = "INSERT INTO forge_test_reports (commit_sha, tree_sha, build_uuid, branch, origin, files, files_json, pass, fail, skip, failures_json, duration_ms, node_version, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+ft_ok = ("a" * 40, None, "build-1", "main", "ci_report", 2, '["x.test.ts","y.test.ts"]', 10, 0, 1, "[]", 95000, "v22.20.0", "t0")
+ft_db.execute(ft_insert, ft_ok)
+for i, bad in ((0, "short"), (1, "e" * 39), (2, ""), (4, "posted"), (5, 0), (6, "not json"), (6, '{"a":1}'), (6, '["only-one"]'), (7, -1), (8, -1), (9, -1), (10, "[" + ",".join(["{}"] * 51) + "]"), (11, -5)):
+    row = list(ft_ok); row[0] = f"{i:02d}" + "b" * 38; row[i] = bad
+    if i == 0:
+        row[0] = bad
+    expect_integrity_error(f"0089 column {i} {str(bad)[:12]!r}", lambda r=tuple(row): ft_db.execute(ft_insert, r))
+expect_integrity_error("0089 one report per commit", lambda: ft_db.execute(ft_insert, ft_ok))
+ft_db.execute("INSERT INTO forge_test_report_waits (commit_sha, first_seen_at) VALUES (?, ?)", ("a" * 40, "t0"))
+expect_integrity_error("0089 one wait per commit", lambda: ft_db.execute("INSERT INTO forge_test_report_waits (commit_sha, first_seen_at) VALUES (?, ?)", ("a" * 40, "t1")))
+expect_integrity_error("0089 wait commit length", lambda: ft_db.execute("INSERT INTO forge_test_report_waits (commit_sha, first_seen_at) VALUES (?, ?)", ("abc", "t1")))
+ft_code = "\n".join(line.split("--", 1)[0] for line in ft_sql.splitlines()).upper()
+assert not re.search(r"\b(DROP|DELETE|UPDATE|INSERT|RENAME|ALTER)\b", ft_code), "0089 only creates its tables and an index"
+assert ft_code.count("CREATE TABLE IF NOT EXISTS") == 2 and ft_code.count("CREATE INDEX IF NOT EXISTS") == 1
+ft_db.close()
+print("PASS: 0089 forge_test_reports (additive: two tables and an index, CHECKs hold, one row per commit, forge_check_runs unaltered, applies twice)")

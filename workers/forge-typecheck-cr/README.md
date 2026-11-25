@@ -13,6 +13,9 @@ unreviewed code next to the token. This project type-checks them with **no build
    with `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and `FORGE_URL` removed. That script prints one log
    line, `FORGE_TYPECHECK_RESULT {...}` (commit, build id, branch, conclusion, error counts, file:line:code
    diagnostics only, toolchain, Console build), and exits non-zero when a check failed.
+   Since CI-WB (2026-11-25) the same script also runs the control-plane tests and prints a second line,
+   `FORGE_TEST_RESULT {...}` (it posts nothing: no credential). A production build of `main` in this project runs no
+   test (`FORGE_SKIP_TESTS`): `../forge-typecheck` builds `main` and posts its tests.
 3. Each Forge tick (`workers/forge/src/cr-builds.ts`) lists this Worker's builds through the Workers Builds
    API with its own secret `CF_BUILDS_API_TOKEN`, reads the log of the newest finished build of each open
    change request's `cr/<number>` branch, and records the line as that head's type-check report when its

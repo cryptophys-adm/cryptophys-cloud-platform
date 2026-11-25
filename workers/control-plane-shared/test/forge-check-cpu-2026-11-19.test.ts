@@ -491,11 +491,12 @@ test("CPU12. main's run of a merged head takes the same commit's full test resul
   w.tick(15 * 60_000);
   await tickWith(w.env, "platform", depsOf(w.log, { reads: READS, fingerprint: "rf1-new-esbuild" }), w.clock, async () => other, "main");
   assert.deepEqual(w.log.ran.flat().sort(), ALL_TESTS, "a new runner runs the commit again");
-  // The daily run of main always runs the suite (clock-dependent tests, owner 2026-11-14).
+  // CI-WB (2026-11-25): the daily run of main (owner 2026-11-14) is dropped: a day later the unchanged head's finished run
+  // of main is not claimed again, and nothing runs.
   w.log.ran.length = 0;
   w.tick(24 * 3_600_000);
-  await tickWith(w.env, "platform", depsOf(w.log, { reads: READS }), w.clock, async () => head, "main");
-  assert.deepEqual(w.log.ran.flat().sort(), ALL_TESTS);
+  assert.deepEqual(await tickWith(w.env, "platform", depsOf(w.log, { reads: READS }), w.clock, async () => head, "main"), { outcome: "busy" });
+  assert.deepEqual(w.log.ran, [], "a finished run of main is final while its head is unchanged");
   // The fingerprint is a function of the runner: equal toolchains, equal prints; any part changed, a new one.
   const tc = { esbuild: { version: "0.28.2", build: async () => ({ errors: [], warnings: [] }) }, shims: { test: "t" } as never, sqlJs: "glue", limits: { cpuMs: 60_000 } };
   assert.equal(await runnerFingerprint(tc), await runnerFingerprint({ ...tc }));
@@ -528,5 +529,6 @@ test("CPU14. docs/SSOT.md describes the rule; none of the files it lives in is a
   const line = read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!;
   assert.match(line, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Forge check CPU, 2026-11-19 \(owner: "setuju semua", "All 3 as proposed"/);
   assert.match(line, /docs_only[\s\S]*reused[\s\S]*partial[\s\S]*a run of main is always full[\s\S]*CPU1–CPU14/);
-  assert.match(read("docs/SSOT.md"), /\| Forge checks \| Each new `main` commit \(and once a UTC day\): the full suite[^\n]*steps\.coverage/);
+  // CI-WB (2026-11-25): no daily run any more; the row still describes the rule.
+  assert.match(read("docs/SSOT.md"), /\| Forge checks \| Each new `main` commit: the full suite[^\n]*steps\.coverage/);
 });
