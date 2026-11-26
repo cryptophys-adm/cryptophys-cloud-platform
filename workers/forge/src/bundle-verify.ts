@@ -49,8 +49,15 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { GIT_BACKUP_VERIFY_RETRY_MS, type GitBackupRef } from "../../control-plane-shared/src/git-backup.ts";
 import { GitBackupError, verifyPack, type GitBackupBucket } from "./git-backup.ts";
+import { digestOf } from "./digest.ts";
 
-export const MAX_VERIFY_INFLATED_BYTES = 64 * 1024 * 1024;
+/**
+ * The content held at once (2026-11-26: 32 MiB, was 64 MiB). Measured with a 40 MiB bundle (maxRSS in a child
+ * process): with one object near 60 MiB the verify peaked at about 109 MiB (bundle + object + its hashing), above the
+ * 96 MB the review set for a 128 MB Worker; with one near 30 MiB, about 79 MiB. The largest blob main has ever held is
+ * about 0.2 MB (docs/SSOT.md), so 32 MiB leaves more than a hundredfold room.
+ */
+export const MAX_VERIFY_INFLATED_BYTES = 32 * 1024 * 1024;
 /**
  * The largest stored bundle verified in memory (review 2026-11-26). The verify holds the whole bundle and up to
  * MAX_VERIFY_INFLATED_BYTES of content in a 128 MB Worker, so a larger bundle fails as `bundle_too_large_to_verify`
@@ -323,7 +330,7 @@ const OFS_DELTA = 6, REF_DELTA = 7;
 /** The longest delta chain resolved: git's pack-objects clamps --depth to 4095 (its default is 50). */
 export const MAX_DELTA_DEPTH = 4095;
 /** The budget of the cache of resolved contents kept as delta bases; indexPack uses at most a quarter of its bound. */
-export const VERIFY_CACHE_BYTES = 16 * 1024 * 1024;
+export const VERIFY_CACHE_BYTES = 8 * 1024 * 1024;
 /** One link of IndexedObject.links: the type the target must have (1 to 4), then the target's 20-byte id. */
 export const LINK_BYTES = 21;
 const NO_LINKS = new Uint8Array(0);
@@ -514,7 +521,7 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
 
   /** The id, the SHA-1 of `framed` (`<type> <size>\0` then `data`), and the links. */
   const name = async (e: Entry, kind: number, data: Uint8Array, framed: Uint8Array<ArrayBuffer>) => {
-    const id = hex(await crypto.subtle.digest("SHA-1", framed));
+    const id = await digestOf("SHA-1", framed);
     e.id = id;
     e.kind = kind;
     if (kind !== 3) {
@@ -750,7 +757,7 @@ export async function verifyBundle(bytes: Uint8Array<ArrayBuffer>, maxInflated =
     bundle_version: header.version, pack_version: idx.version, objects: idx.objects, deltas: idx.deltas, pack_sha1: idx.sha1,
     refs: header.refs, inflated_bytes: idx.inflated_bytes, reinflated_bytes: idx.reinflated_bytes, peak_held_bytes: idx.peak_held_bytes,
     link_bytes: idx.link_bytes, bundle_bytes: bytes.length,
-    bundle_sha256: hex(await crypto.subtle.digest("SHA-256", bytes)), ...reach,
+    bundle_sha256: await digestOf("SHA-256", bytes), ...reach,
   };
 }
 
@@ -763,7 +770,7 @@ export interface StoredBackup {
 /** verifyBundle, then the bundle against its record (and the object's R2 metadata, when it carries a SHA-256). */
 export async function verifyStoredBundle(bytes: Uint8Array<ArrayBuffer>, row: StoredBackup, metadata: Record<string, string> | undefined, maxInflated = MAX_VERIFY_INFLATED_BYTES): Promise<BundleVerification> {
   // The SHA-256 first: a bundle that is not the one recorded fails as that, before any parsing.
-  const sha256 = hex(await crypto.subtle.digest("SHA-256", bytes));
+  const sha256 = await digestOf("SHA-256", bytes);
   if (sha256 !== row.bundle_sha256) fail("sha256_mismatch");
   if (metadata?.sha256 !== undefined && metadata.sha256 !== sha256) fail("r2_metadata_sha256_mismatch");
   if (bytes.length !== row.bundle_bytes) fail("size_mismatch");
@@ -793,9 +800,11 @@ export const TRANSIENT_VERIFY_FAILURES: ReadonlySet<string> = new Set(["r2_get_f
  * (or with none: every result before version 2) is retried after GIT_BACKUP_VERIFY_RETRY_MS the same day, once by
  * this version, as a transient failure is. Version 2 (2026-11-20): indexPack no longer holds the pack's content, so
  * a pack_too_large_to_verify recorded by version 1 is checked again the day the fix deploys, not the next day.
+ * Version 3 (2026-11-26): the SHA-1 and SHA-256 are fed in views (digest.ts digestOf), not by crypto.subtle.digest,
+ * which copies its whole input (the bundle, twice), and the bound is 32 MiB.
  * Raise it whenever a change to the verifier can turn a failure into a pass.
  */
-export const VERIFIER_VERSION = 2;
+export const VERIFIER_VERSION = 3;
 
 /**
  * Once per UTC day, after git_backup: `git bundle verify` in code of the newest stored bundle (status ok, not

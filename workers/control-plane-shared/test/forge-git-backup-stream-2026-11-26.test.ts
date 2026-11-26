@@ -269,3 +269,38 @@ test("GS-6. the record: SSOT line 5 and the gate 8 bullets; no guard path", asyn
   assert.match(ssot, /fails as `bundle_too_large_to_verify` before it is read/);
   for (const p of ["workers/forge/src/git-backup.ts", "workers/forge/src/digest.ts", "workers/forge/src/bundle-verify.ts", "docs/SSOT.md"]) assert.equal(criticalPathReason(p), null, p);
 });
+
+test("GS-7. a 40 MiB bundle verifies at the production bound with a measured peak below 96 MB; an object past the bound fails, it does not exhaust memory", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { MAX_VERIFY_INFLATED_BYTES, VERIFIER_VERSION } = await import("../../forge/src/bundle-verify.ts");
+  const child = new URL("./fixtures/verify-memory-child.mts", import.meta.url).pathname;
+  const root = new URL("../../../", import.meta.url).pathname.replace(/\/$/, "");
+  const dir = mkdtempSync(join(tmpdir(), "gs7-"));
+  const run = (args: string[], gc = false) => {
+    const r = spawnSync(process.execPath, [...(gc ? ["--expose-gc"] : []), "--disable-warning=ExperimentalWarning", child, ...args], { encoding: "utf8", maxBuffer: 1 << 20 });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split("\n").at(-1)!);
+  };
+  try {
+    const MiB = 1024 * 1024;
+    assert.equal(MAX_VERIFY_INFLATED_BYTES, 32 * MiB);
+    assert.equal(VERIFIER_VERSION, 3);
+    // Near the bound: 40 MiB of bundle, one object inflating to 30 MiB.
+    const file = join(dir, "b.bundle");
+    const built = run(["build", root, file, "40", "30"]);
+    assert.ok(built.bundle_bytes > 38 * MiB && built.bundle_bytes <= MAX_VERIFY_BUNDLE_BYTES, String(built.bundle_bytes));
+    const m = run(["verify", root, file], true);
+    assert.equal(m.objects, built.objects);
+    assert.ok(m.peak_held_bytes >= 30 * MiB, "the large object was held");
+    // What a Worker would hold: the bundle (read before the measure) plus what the verify added at its peak.
+    const peak = m.bundle_bytes + Math.max(0, m.added);
+    assert.ok(peak < 96 * 1000 * 1000, `measured peak ${(peak / MiB).toFixed(1)} MiB (bundle ${(m.bundle_bytes / MiB).toFixed(1)} + verify ${(m.added / MiB).toFixed(1)})`);
+    // Past the bound (60 MiB, which peaked at about 109 MiB under the old 64 MiB bound): refused, not held.
+    run(["build", root, file, "40", "60"]);
+    const over = run(["verify", root, file], true);
+    assert.equal(over.failed, "pack_too_large_to_verify");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
