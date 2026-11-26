@@ -161,7 +161,7 @@ test("CF-7. no guard path is touched; the SSOT and the HAIC design record the ow
   ]) assert.equal(criticalPathReason(p), null, p);
   assert.equal(criticalPathReason("workers/control-plane-shared/src/model-router.ts"), "paid_model_guard", "the router is a guard path, and the chat only reads it");
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \(chat flex, 2026-11-26 \(owner: "Ikuti bahasa pertanyaan"[^()]*\); /);
+  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:[^\n]*\); )?chat flex, 2026-11-26 \(owner: "Ikuti bahasa pertanyaan"[^()]*\); /);
   assert.match(ssot, /  - Since 2026-11-26 \(owner: "Ikuti bahasa pertanyaan"\) one task follows the owner's language: the chat's answer \(`chat_answer`, `OWNER_LANGUAGE_TASKS` in `ai-engine\.ts`\) is in the language of the question/);
   const design = read("docs/design/HAIC-H0-H1.md");
   assert.match(design, /\*\*Amendment 2026-11-26 \(owner, on a stiff answer\)\.\*\*/);
