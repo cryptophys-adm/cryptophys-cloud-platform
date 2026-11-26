@@ -1181,3 +1181,58 @@ assert mr_code.count("CREATE TABLE IF NOT EXISTS") == 4 and mr_code.count("INSER
 assert "MODEL_ROUTER." not in mr_code, "no migration grants the model router capabilities"
 mr_db.close()
 print("PASS: 0090 model_router (additive: four tables, the state seeded off and the breaker closed, CHECKs hold, ai_usage unaltered, applies twice)")
+
+# 0091 (owner 2026-11-26: "tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"): one Beam switch per
+# system (cerebrum, cta, xauusd) and one global paid stop. model_router_state is rebuilt (its key and CHECKs change, as in
+# 0069): the 0090 row becomes Cerebrum's with every value kept; an off_paid row moves its paid sign to model_router_global.
+def mrs_db_before():
+    d = sqlite3.connect(":memory:")
+    d.execute("PRAGMA foreign_keys = ON")
+    for migration in sorted(ROOT.glob("*.sql")):
+        if migration.name >= "0091":
+            break
+        d.executescript(migration.read_text(encoding="utf-8"))
+    return d
+mrs_sql = (ROOT / "0091_model_router_systems.sql").read_text(encoding="utf-8")
+mrs_cols = "state, mode, paid_cap_usd, spent_usd, updated_by, updated_at, reason"
+for label, update in (
+    ("default", None),
+    ("on", "UPDATE model_router_state SET state = 'on', updated_by = 'owner@x', updated_at = 't1', reason = 'turned on (free_only)'"),
+    ("capped", "UPDATE model_router_state SET state = 'on', mode = 'paid_capped', paid_cap_usd = 5, spent_usd = 0.5, updated_by = 'owner@x', updated_at = 't2', reason = 'capped'"),
+    ("off_paid", "UPDATE model_router_state SET state = 'off_paid', updated_by = 'agent:x', updated_at = 't3', reason = 'paid sign: http_402'"),
+    ("off_retention", "UPDATE model_router_state SET state = 'off_retention', updated_by = 'system:model-router', updated_at = 't4', reason = 'retention header: contributor'"),
+):
+    mrs_db = mrs_db_before()
+    if update:
+        mrs_db.execute(update)
+    mrs_db.execute("INSERT INTO audit_events (event_id, event_type, actor, subject, outcome, payload_json, previous_hash, event_hash, created_at) VALUES ('e-mr', 'model_router.state_changed', 'x', 'model_router', 'on', '{}', NULL, 'h', 't0')")
+    old = mrs_db.execute(f"SELECT {mrs_cols} FROM model_router_state WHERE id = 'global'").fetchone()
+    audits = mrs_db.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall()
+    others = {t: mrs_db.execute(f"SELECT sql FROM sqlite_master WHERE name = '{t}'").fetchone() for t in ("model_calls_daily", "model_router_counters", "model_router_health")}
+    schema_before = {r[0] for r in mrs_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+    mrs_db.executescript(mrs_sql)
+    schema_after = {r[0] for r in mrs_db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger', 'view')")}
+    assert schema_after - schema_before == {"model_router_global", "sqlite_autoindex_model_router_global_1"}, (label, sorted(schema_after ^ schema_before))
+    assert "model_router_state_0091" not in schema_after
+    cer = mrs_db.execute(f"SELECT {mrs_cols} FROM model_router_state WHERE system = 'cerebrum'").fetchone()
+    want = (("off",) + old[1:]) if old[0] == "off_paid" else old
+    assert cer == want, (label, cer, old)
+    g = mrs_db.execute("SELECT paid_off, updated_by, updated_at, reason FROM model_router_global").fetchall()
+    assert g == ([(1,) + old[4:]] if old[0] == "off_paid" else [(0, "migration:0091", "2026-11-26T00:00:00.000Z", None)]), (label, g)
+    assert mrs_db.execute("SELECT system, state, mode, paid_cap_usd, spent_usd, last_status_read_at FROM model_router_state WHERE system != 'cerebrum' ORDER BY system").fetchall() == [
+        ("cta", "off", "free_only", None, 0, None), ("xauusd", "off", "free_only", None, 0, None)], label
+    assert mrs_db.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall() == audits, f"{label}: the audit trail is untouched"
+    assert {t: mrs_db.execute(f"SELECT sql FROM sqlite_master WHERE name = '{t}'").fetchone() for t in others} == others, "the ledger, counters and breaker are not altered"
+    expect_integrity_error("0091 system", lambda: mrs_db.execute("INSERT INTO model_router_state (system, state, mode, updated_by, updated_at) VALUES ('aether', 'off', 'free_only', 'x', 't0')"))
+    expect_integrity_error("0091 one row per system", lambda: mrs_db.execute("INSERT INTO model_router_state (system, state, mode, updated_by, updated_at) VALUES ('cta', 'off', 'free_only', 'x', 't0')"))
+    expect_integrity_error("0091 off_paid is not a row state", lambda: mrs_db.execute("UPDATE model_router_state SET state = 'off_paid' WHERE system = 'cta'"))
+    expect_integrity_error("0091 paid_capped needs a cap", lambda: mrs_db.execute("UPDATE model_router_state SET mode = 'paid_capped' WHERE system = 'xauusd'"))
+    expect_integrity_error("0091 one global row", lambda: mrs_db.execute("INSERT INTO model_router_global (id, paid_off, updated_by, updated_at) VALUES ('other', 0, 'x', 't0')"))
+    expect_integrity_error("0091 paid_off is 0 or 1", lambda: mrs_db.execute("UPDATE model_router_global SET paid_off = 2"))
+    mrs_db.close()
+mrs_code = "\n".join(line.split("--", 1)[0] for line in mrs_sql.splitlines()).upper()
+assert re.findall(r"\bDROP\s+TABLE\s+(\w+)", mrs_code) == ["MODEL_ROUTER_STATE"], "0091 drops only the table it rebuilds"
+assert "ALTER TABLE MODEL_ROUTER_STATE_0091 RENAME TO MODEL_ROUTER_STATE" in mrs_code
+assert not re.search(r"\b(DELETE|UPDATE)\b", mrs_code), "0091 copies rows; it deletes and updates none"
+assert "MODEL_ROUTER." not in mrs_code, "no migration grants the model router capabilities"
+print("PASS: 0091 model_router_systems (per-system switches: the 0090 row kept as Cerebrum's, off_paid moved to the global stop, CTA and xauusd seeded off, CHECKs hold, audit trail untouched)")

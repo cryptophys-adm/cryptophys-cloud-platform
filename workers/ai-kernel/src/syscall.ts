@@ -28,7 +28,8 @@ import { readCouncilDecisions } from "./council-decisions.ts";
 import { nexusActorEmail, readNexusCorrections, recordNexusCorrection } from "./corrections.ts";
 import { recordSyscall } from "./analytics/telemetry.ts";
 import type { SyscallOutcome } from "./analytics/datasets.ts";
-import { PAID_SIGNALS, modelRouterStatus, reportPaid, type ModelRouterEnv, type PaidSignal } from "../../control-plane-shared/src/model-router.ts";
+import { PAID_SIGNALS, modelRouterStatusFor, reportPaid, routerSystemOfOrigin, type ModelRouterEnv, type PaidSignal, type RouterSystem } from "../../control-plane-shared/src/model-router.ts";
+import { externalOriginOf } from "../../control-plane-shared/src/organism.ts";
 
 export interface PolicyRpcBinding {
   evaluate(input: { subject: string; action: string; resource: string; context: Record<string, unknown> }):
@@ -879,13 +880,31 @@ const TIER0_HANDLERS: Record<string, (env: SyscallEnv, input: JsonObject, agentI
   "corrections.read": async (env, input, agentId) => await readNexusCorrections(env.DB, agentId, input) as unknown as JsonObject,
   // Owner 2026-11-22: the status, owner decision and decision time of the caller's own consensus proposals, read only.
   "consensus.status": (env, input, agentId) => consensusStatus(env.DB, agentId, input),
-  // AIR1 (ADR-0007 amendment 2026-11-25): the model router's global state, read only (never a key or a prompt).
-  "model_router.status": async (env) => await modelRouterStatus(env.DB, env) as JsonObject,
+  // AIR1 (ADR-0007 amendment 2026-11-25): the model router's state, read only (never a key or a prompt). Since 2026-11-26
+  // (owner: "tambahkan untuk semua beam toggle dari cta dan juga xauusd di command") the caller's own system's row only.
+  "model_router.status": async (env, input, agentId) => {
+    const system = await routerSystemOfAgent(env, agentId);
+    if (input.system !== undefined && input.system !== system) throw new Error("model_router_status_invalid: an agent reads only its own system's state");
+    return await modelRouterStatusFor(env.DB, env, system) as JsonObject;
+  },
 };
 
 /**
+ * Owner 2026-11-26: the router system of a calling agent, from the external origin of the Worker that hosts it
+ * (routerSystemOfOrigin, the one map): a platform agent is Cerebrum's, xauusd-model-router xauusd's, a cta agent CTA's.
+ * An agent of any other origin (Aether) has no Beam switch and is refused.
+ */
+async function routerSystemOfAgent(env: SyscallEnv, agentId: string): Promise<RouterSystem> {
+  const agent = await env.DB.prepare("SELECT host_worker FROM agents WHERE agent_id = ?").bind(agentId).first<{ host_worker: string }>();
+  const system = agent ? routerSystemOfOrigin(externalOriginOf(agent.host_worker)?.origin ?? null) : null;
+  if (!system) throw new Error("model_router_no_system: the caller's origin has no Beam switch");
+  return system;
+}
+
+/**
  * AIR1: model_router.report_paid. The decision is verified and consumed, then the paid sign is recorded: Beam is off_paid
- * for every caller until the owner turns it on again (a paid cap, or free_only with confirm_free). Idempotent (a repeat returns changed: false). The input is
+ * for every system (the global stop, owner 2026-11-26), whichever system reports it, until the owner turns one on again
+ * (a paid cap, or free_only with confirm_free), which clears it for all. Idempotent (a repeat returns changed: false). The input is
  * {signal}, one of PAID_SIGNALS but paid_cap_reached; nothing else is read or stored.
  */
 async function reportModelRouterPaid(env: SyscallEnv, agentId: string, decisionId: string, input: JsonObject): Promise<JsonObject> {
@@ -893,8 +912,9 @@ async function reportModelRouterPaid(env: SyscallEnv, agentId: string, decisionI
   if (extra.length) throw new Error("model_router_report_invalid: the input carries only signal");
   const signal = input.signal;
   if (typeof signal !== "string" || !(PAID_SIGNALS as readonly string[]).includes(signal) || signal === "paid_cap_reached") throw new Error("model_router_report_invalid: signal is http_402, billing_error, cost_field, plan_change or reported");
+  const system = await routerSystemOfAgent(env, agentId);
   await verifySyscallDecision(env.DB, decisionId, agentId, "model_router.report_paid");
-  return await reportPaid(env.DB, `agent:${agentId}`, signal as PaidSignal) as unknown as JsonObject;
+  return await reportPaid(env.DB, `agent:${agentId}`, signal as PaidSignal, Date.now(), system) as unknown as JsonObject;
 }
 
 /**

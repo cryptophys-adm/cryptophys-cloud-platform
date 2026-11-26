@@ -174,6 +174,8 @@ export default {
       }
       // AIR1 (ADR-0007 amendment 2026-11-25; owner: "Approve, but Cerebrum only"): the model router. Reading is open to
       // operators (the Console's Telemetry tab); turning Beam on or off is the owner's alone. Never a key or a prompt.
+      // Owner 2026-11-26 ("tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"): the GET carries every
+      // system's switch (systems) and the global paid stop (global); the POST's body names the system (cerebrum by default).
       if (path === "/v1/model-router" && request.method === "GET") return json(await modelRouterStatus(env.DB, env));
       if (path === "/v1/model-router/state") {
         if (request.method !== "POST") return errorResponse(405, "method_not_allowed");

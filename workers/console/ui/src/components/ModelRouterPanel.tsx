@@ -20,6 +20,13 @@ import { ago } from "../lib/format";
  * wrangler.toml, so this switch is the owner's Beam toggle; Cerebrum → Command shows it compact (the effective state and
  * why, today's Beam and Workers AI calls, the fallbacks, the same owner-only switch), Organism → Telemetry in full.
  * "Disabled" names its cause from the kernel's `configured` block (the var, whether the key is set, never the key).
+ *
+ * Owner 2026-11-26 ("tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"; migration 0091): one switch
+ * per system, Cerebrum, CTA and xauusd (its news_compare), from the GET's `systems` rows, each with its effective state
+ * and why, and the owner's on and off (the same three phrases, the dialog naming the system; the body names it). CTA's
+ * and xauusd's rows say "not connected yet" until their router has read its switch (`last_status_read_at`), then when it
+ * last did. A paid sign from any system is one global stop (`global.paid_off`): every row reads off (a paid sign), and
+ * turning any system on again (free only with BEAM ON FREE, or with a paid cap) clears it for all.
  */
 
 const MISSING = "—";
@@ -32,6 +39,17 @@ const REASON_LABEL: Record<string, string> = {
   unreachable: "unreachable or unusable answer", rate: "provider rate limit", budget: "Cerebrum's share used", paid: "paid sign", retention: "data retention",
   breaker: "breaker open", off: "router off", disabled: "not configured", output_budget: "cut at its output limit",
 };
+
+type System = "cerebrum" | "cta" | "xauusd";
+const SYSTEMS: System[] = ["cerebrum", "cta", "xauusd"];
+const SYSTEM_LABEL: Record<System, string> = { cerebrum: "Cerebrum", cta: "CTA", xauusd: "xauusd (news_compare)" };
+/** What Beam answers for each system once its switch is on (the dialogs' first line). */
+const SYSTEM_SCOPE: Record<System, string> = {
+  cerebrum: "Beam then answers Cerebrum's chat, directive drafts and councils first; Workers AI answers whenever Beam does not.",
+  cta: "CTA's own router may then call Beam within CTA's share; it falls back as it does today whenever Beam does not answer.",
+  xauusd: "xauusd's own router may then call Beam for shadow:news_compare only (behind xauusd's FS1 switch); Workers AI answers whenever Beam does not.",
+};
+const toneOf = (e: string | null) => (e === "on" ? "green" : e === "off_paid" || e === "off_retention" ? "red" : e === "disabled" ? "amber" : "slate");
 
 /** Why the kernel reports Beam disabled on this deploy, from its `configured` block; null when it does not say. */
 function disabledReasons(c: any): string[] | null {
@@ -46,7 +64,7 @@ function disabledReasons(c: any): string[] | null {
 export default function ModelRouterPanel({ compact = false }: { compact?: boolean } = {}) {
   const { data, error, loading, refresh } = usePoll(() => call("kernel.model_router"), 60_000);
   const { who, act } = useSession();
-  const [cap, setCap] = useState("");
+  const [caps, setCaps] = useState<Record<string, string>>({});
   const d: any = data && data.schema === "model_router.status.v1" ? data : null;
   const st: any = d?.state ?? null;
   const effective: string | null = typeof d?.effective === "string" ? d.effective : null;
@@ -54,39 +72,94 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
   const fallbacks: [string, number][] = d?.fallbacks && typeof d.fallbacks === "object" ? Object.entries(d.fallbacks as Record<string, number>).filter(([, v]) => typeof v === "number") : [];
   const totals = (p: string) => rows.filter((r) => r.provider === p).reduce((s, r) => ({ calls: s.calls + (Number(r.calls) || 0), in: s.in + (Number(r.in_tokens) || 0), out: s.out + (Number(r.out_tokens) || 0) }), { calls: 0, in: 0, out: 0 });
   const beam = totals("reflection"), wai = totals("workers_ai");
-  const capValue = Number(cap);
-  const capOk = cap.trim() !== "" && Number.isFinite(capValue) && capValue > 0 && capValue <= 100;
-  const paidOnly = st?.state === "off_paid";
-  const tone = effective === "on" ? "green" : effective === "off_paid" || effective === "off_retention" ? "red" : effective === "disabled" ? "amber" : "slate";
+  const tone = toneOf(effective);
   const reasons = disabledReasons(d?.configured);
   const effectiveLabel = !effective ? null : effective === "disabled" ? (reasons && reasons.length ? `disabled (${reasons.join(", ")})` : STATE_LABEL.disabled) : STATE_LABEL[effective] ?? effective;
   const pendingLine = effective === "disabled" && reasons && reasons.length ? `Beam stays disabled (${reasons.join(", ")}) and Workers AI answers; the owner's switch takes effect once that is fixed.` : null;
-  const controls = who.owner ? (
-            <div className="flex flex-wrap items-end gap-2 border-t border-white/5 pt-2">
-              {st?.state !== "on" && !paidOnly && (
-                <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.model_router_on", body: { state: "on", mode: "free_only" }, title: "Turn Beam on (free only)",
-                  lines: ["Beam then answers Cerebrum's chat, directive drafts and councils first; Workers AI answers whenever Beam does not.", "Any paid sign turns it off again at once, and you hear of it once.", ...(pendingLine ? [pendingLine] : [])],
-                  done: "Beam is on (free only).", after: refresh })}><Power className="h-3.5 w-3.5" />Turn on (free only)…</button>
-              )}
-              {st?.state !== "on" && (
-                <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Paid cap (USD)
-                  <input aria-label="Paid cap in USD" inputMode="decimal" className="field mono w-20! py-1!" maxLength={8} value={cap} onChange={(e) => setCap(e.target.value)} />
-                  <button type="button" className="btn py-1!" disabled={!capOk} onClick={() => act({ route: "kernel.model_router_on", body: { state: "on", mode: "paid_capped", paid_cap_usd: capValue }, title: "Turn Beam on with a paid cap",
-                    lines: [`Beam may cost up to ${cap.trim()} USD before it turns itself off.`, "Workers AI answers whenever Beam does not.", ...(pendingLine ? [pendingLine] : [])], done: "Beam is on (paid, capped).", after: refresh })}>Turn on (paid, capped)…</button>
-                </label>
-              )}
-              {st?.state === "on" && (
-                <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.model_router_off", body: { state: "off" }, title: "Turn Beam off",
-                  lines: ["Cerebrum then answers on Workers AI only."], done: "Beam is off.", after: refresh })}><PowerOff className="h-3.5 w-3.5" />Turn off…</button>
-              )}
-              {paidOnly && (
-                <button type="button" className="btn py-1!" onClick={() => act({ route: "kernel.model_router_on_free", body: { state: "on", mode: "free_only", confirm_free: true }, title: "Turn Beam on again (free only)",
-                  lines: ["Only if you are sure the paid sign was not a charge: Beam then answers Cerebrum's chat, directive drafts and councils first again.", "Any later paid sign turns it off again at once, and you hear of it once.", ...(pendingLine ? [pendingLine] : [])],
-                  done: "Beam is on (free only).", after: refresh })}><Power className="h-3.5 w-3.5" />Turn on free (not a charge)…</button>
-              )}
-              {paidOnly && <span className="text-[11px] text-slate-500">After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge.</span>}
-            </div>
-          ) : <div className="text-[11px] text-slate-500">Only the owner turns Beam on or off.</div>;
+  const global: any = d?.global && typeof d.global === "object" ? d.global : null;
+  // Each system's row from the GET's `systems`; a kernel without them (before migration 0091) gives Cerebrum's alone.
+  const sys: Record<System, any> = { cerebrum: null, cta: null, xauusd: null };
+  if (Array.isArray(d?.systems)) { for (const r of d.systems) if (r && SYSTEMS.includes(r.system)) sys[r.system as System] = r; }
+  else if (d) sys.cerebrum = { system: "cerebrum", state: st, effective, last_status_read_at: null };
+  const paidStop = global?.paid_off === true || st?.state === "off_paid";
+
+  const rowControls = (system: System, r: any) => {
+    const rs: any = r?.state ?? null;
+    const sw: string | null = typeof rs?.switch === "string" ? rs.switch : rs && rs.state !== "off_paid" ? rs.state : null;
+    const name = SYSTEM_LABEL[system];
+    const cap = caps[system] ?? "";
+    const capValue = Number(cap);
+    const capOk = cap.trim() !== "" && Number.isFinite(capValue) && capValue > 0 && capValue <= 100;
+    const notConnected = system !== "cerebrum" && !r?.last_status_read_at ? `${name}'s router is not connected yet: the switch takes effect once it reads it.` : null;
+    const pending = system === "cerebrum" ? pendingLine : notConnected;
+    const clears = paidStop ? [`This clears the paid stop for every system: Cerebrum, CTA and xauusd then follow their own switches again.`] : [];
+    if (!rs) return null;
+    // The switch is the owner's alone (the kernel checks the owner and the body again); operators read the row only.
+    const controls = who.owner ? (
+      <div className="flex flex-wrap items-end gap-2">
+        {!paidStop && sw !== "on" && (
+          <button type="button" className="btn btn-approve py-1!" onClick={() => act({ route: "kernel.model_router_on", body: { system, state: "on", mode: "free_only" }, title: `Turn Beam on (free only) for ${name}`,
+            lines: [SYSTEM_SCOPE[system], "Any paid sign, from any system, turns Beam off for every system at once, and you hear of it once.", ...(pending ? [pending] : [])],
+            done: `Beam is on for ${name} (free only).`, after: refresh })}><Power className="h-3.5 w-3.5" />Turn on (free only)…</button>
+        )}
+        {(paidStop || sw !== "on") && (
+          <label className="flex items-center gap-1.5 text-[11px] text-slate-400">Paid cap (USD)
+            <input aria-label={`Paid cap in USD for ${name}`} inputMode="decimal" className="field mono w-20! py-1!" maxLength={8} value={cap} onChange={(e) => setCaps((c) => ({ ...c, [system]: e.target.value }))} />
+            <button type="button" className="btn py-1!" disabled={!capOk} onClick={() => act({ route: "kernel.model_router_on", body: { system, state: "on", mode: "paid_capped", paid_cap_usd: capValue }, title: `Turn Beam on with a paid cap for ${name}`,
+              lines: [`Beam may cost ${name} up to ${cap.trim()} USD before it turns itself off.`, SYSTEM_SCOPE[system], ...clears, ...(pending ? [pending] : [])], done: `Beam is on for ${name} (paid, capped).`, after: refresh })}>Turn on (paid, capped)…</button>
+          </label>
+        )}
+        {sw === "on" && (
+          <button type="button" className="btn btn-danger py-1!" onClick={() => act({ route: "kernel.model_router_off", body: { system, state: "off" }, title: `Turn Beam off for ${name}`,
+            lines: [system === "cerebrum" ? "Cerebrum then answers on Workers AI only." : `${name}'s router then stops calling Beam at its next read of this switch.`, ...(paidStop ? ["The paid stop stays set; this keeps the system off once it is cleared."] : [])],
+            done: `Beam is off for ${name}.`, after: refresh })}><PowerOff className="h-3.5 w-3.5" />Turn off…</button>
+        )}
+        {paidStop && (
+          <button type="button" className="btn py-1!" onClick={() => act({ route: "kernel.model_router_on_free", body: { system, state: "on", mode: "free_only", confirm_free: true }, title: `Turn Beam on again (free only) for ${name}`,
+            lines: [`Only if you are sure the paid sign was not a charge: ${SYSTEM_SCOPE[system]}`, ...clears, "Any later paid sign turns it off again at once, and you hear of it once.", ...(pending ? [pending] : [])],
+            done: `Beam is on for ${name} (free only).`, after: refresh })}><Power className="h-3.5 w-3.5" />Turn on free (not a charge)…</button>
+        )}
+      </div>
+    ) : null;
+    return controls;
+  };
+
+  /** One system's row: its effective state and why, its router's connection, and (owner only) its switch. */
+  const systemRow = (system: System) => {
+    const r = sys[system];
+    const rs: any = r?.state ?? null;
+    const eff: string | null = system === "cerebrum" ? effective : typeof r?.effective === "string" ? r.effective : null;
+    const label = system === "cerebrum" ? effectiveLabel : eff ? STATE_LABEL[eff] ?? eff : null;
+    const connection = system === "cerebrum" ? "The kernel's own router." : !r ? null : r.last_status_read_at ? `Its router last read this switch ${ago(r.last_status_read_at)}.` : "Its router is not connected yet: it has not read this switch.";
+    return (
+      <div key={system} className="glass-inner flex flex-col gap-1.5 px-3 py-2" data-beam-system={system}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[12px] font-semibold text-slate-200">{SYSTEM_LABEL[system]}</span>
+          {label ? <Badge tone={toneOf(eff)}>{label}</Badge> : <span className="mono text-slate-500">{MISSING}</span>}
+        </div>
+        <div className="text-[11px] text-slate-400" data-beam-effective>
+          Beam is <strong className="mono text-slate-100">{label ?? MISSING}</strong>.{" "}
+          {system === "cerebrum" && d?.configured ? <>MODEL_ROUTER {d.configured.var_on ? "on" : "off"}, key {d.configured.key_present ? "set" : "not set"}. </> : null}
+          {rs ? <>The owner's switch: <span className="mono text-slate-300">{STATE_LABEL[rs.switch ?? rs.state] ?? rs.switch ?? rs.state ?? MISSING}</span>{rs.mode ? <> ({rs.mode}{rs.mode === "paid_capped" ? `, cap ${n(rs.paid_cap_usd)} USD` : ""})</> : null}, set by <span className="mono">{rs.updated_by ?? MISSING}</span> {rs.updated_at ? ago(rs.updated_at) : MISSING}{rs.reason ? <>: {rs.reason}</> : null}. </> : null}
+          {connection ? <span className={system !== "cerebrum" && r && !r.last_status_read_at ? "text-amber-300/90" : "text-slate-500"}>{connection}</span> : null}
+        </div>
+        {system === "cerebrum" && pendingLine ? <p className="text-[11px] text-amber-300/90">{pendingLine}</p> : null}
+        {rowControls(system, r)}
+      </div>
+    );
+  };
+  const paidLine = paidStop ? (
+    <p className="text-[11px] text-rose-300/90" data-beam-paid-stop>
+      A paid sign stopped Beam for every system{global?.reason ? <> ({global.reason}{global.updated_by ? <>, {global.updated_by}</> : null}{global.updated_at ? <> {ago(global.updated_at)}</> : null})</> : null}. After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge. Either clears the stop for every system.
+    </p>
+  ) : null;
+  const switches = (
+    <div className="flex flex-col gap-2" data-beam-switches>
+      {paidLine}
+      {SYSTEMS.map(systemRow)}
+      {!who.owner ? <div className="text-[11px] text-slate-500">Only the owner turns Beam on or off.</div> : null}
+    </div>
+  );
   const fallbackBadges = (
           <div data-router-fallbacks>
             <div className="mb-1 text-[10px] uppercase tracking-widest text-slate-500">Fallbacks to Workers AI by reason, today</div>
@@ -95,46 +168,37 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
             )}
           </div>
   );
-  const switchLine = st ? <> The owner's switch: <span className="mono text-slate-300">{STATE_LABEL[st.state] ?? st.state ?? MISSING}</span>, set by <span className="mono">{st.updated_by ?? MISSING}</span> {st.updated_at ? ago(st.updated_at) : MISSING}{st.reason ? <>: {st.reason}</> : null}.</> : null;
   if (compact) {
     return (
-      <Panel title="Beam · Cerebrum's model" icon={<Cpu className="h-3.5 w-3.5 text-cyan-300" />}
-        right={<div className="flex items-center gap-2">{effectiveLabel ? <Badge tone={tone}>{effectiveLabel}</Badge> : null}<a href="#/organism/telemetry" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Details →</a></div>}>
+      <Panel title="Beam · Cerebrum, CTA and xauusd" icon={<Cpu className="h-3.5 w-3.5 text-cyan-300" />}
+        right={<div className="flex items-center gap-2">{paidStop ? <Badge tone="red">paid stop · all off</Badge> : null}<a href="#/organism/telemetry" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">Details →</a></div>}>
         <ErrorBox error={error} onRetry={refresh} stale={Boolean(data)} />
         {!d ? (loading ? <Skeleton rows={2} /> : <Empty>{MISSING}</Empty>) : d.available !== true ? (
-          <Empty>The model router's table is not in D1 yet (migration 0090). Cerebrum answers on Workers AI.</Empty>
+          <Empty>The model router's table is not in D1 yet (migrations 0090 and 0091). Cerebrum answers on Workers AI.</Empty>
         ) : (
           <div className="flex flex-col gap-3 text-[12px]" data-beam-toggle>
-            <div className="text-[12px] text-slate-300" data-beam-effective>
-              Beam is <strong className="mono text-slate-100">{effectiveLabel ?? MISSING}</strong>.{" "}
-              <span className="text-[11px] text-slate-500">
-                {d.configured ? <>MODEL_ROUTER {d.configured.var_on ? "on" : "off"}, key {d.configured.key_present ? "set" : "not set"}.</> : null}
-                {switchLine}
-              </span>
-            </div>
-            {pendingLine ? <p className="text-[11px] text-amber-300/90">{pendingLine}</p> : null}
+            {switches}
             <div className="grid grid-cols-3 gap-2" data-router-tiles>
-              <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Beam today</div><div className="mono text-slate-200">{n(beam.calls)} calls</div></div>
-              <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Workers AI today</div><div className="mono text-slate-200">{n(wai.calls)} calls</div></div>
-              <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Fallbacks today</div><div className="mono text-slate-200">{n(fallbacks.reduce((s, [, v]) => s + v, 0))}</div></div>
+              <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Cerebrum · Beam today</div><div className="mono text-slate-200">{n(beam.calls)} calls</div></div>
+              <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Cerebrum · Workers AI today</div><div className="mono text-slate-200">{n(wai.calls)} calls</div></div>
+              <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Cerebrum · fallbacks today</div><div className="mono text-slate-200">{n(fallbacks.reduce((s, [, v]) => s + v, 0))}</div></div>
             </div>
             {fallbackBadges}
-            {controls}
           </div>
         )}
       </Panel>
     );
   }
   return (
-    <Panel title="Model router · Beam for Cerebrum" icon={<Cpu className="h-3.5 w-3.5 text-cyan-300" />}
+    <Panel title="Model router · Beam for Cerebrum, CTA and xauusd" icon={<Cpu className="h-3.5 w-3.5 text-cyan-300" />}
       right={effectiveLabel ? <Badge tone={tone}>{effectiveLabel}</Badge> : null}>
       <ErrorBox error={error} onRetry={refresh} stale={Boolean(data)} />
       {!d ? (loading ? <Skeleton rows={3} /> : <Empty>{MISSING}</Empty>) : d.available !== true ? (
-        <Empty>The model router's table is not in D1 yet (migration 0090). Cerebrum answers on Workers AI.</Empty>
+        <Empty>The model router's table is not in D1 yet (migrations 0090 and 0091). Cerebrum answers on Workers AI.</Empty>
       ) : (
         <div className="flex flex-col gap-3 text-[12px]">
           <p className="text-[11px] text-slate-500">
-            Beam ({d.model ?? MISSING}) may answer only Cerebrum's chat, directive drafts and councils, free only; Workers AI answers every call it does not. The evolver, xauusd and Aether never use it.
+            Beam ({d.model ?? MISSING}) may answer Cerebrum's chat, directive drafts and councils, free only; Workers AI answers every call it does not. CTA and xauusd's news_compare call it through their own routers, each with its own switch below; the evolver and Aether never use it.
           </p>
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4" data-router-tiles>
             <div className="glass-inner px-3 py-2"><div className="text-[10px] uppercase tracking-widest text-slate-500">Mode</div><div className="mono text-slate-200">{st?.mode ?? MISSING}{st?.mode === "paid_capped" ? ` · cap ${n(st.paid_cap_usd)} USD` : ""}</div></div>
@@ -147,7 +211,6 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
             <span className="mono text-slate-300">{n(d.today?.in_tokens)} / {n(d.limits?.input_tokens_day)}</span> input and{" "}
             <span className="mono text-slate-300">{n(d.today?.out_tokens)} / {n(d.limits?.output_tokens_day)}</span> output tokens; this minute{" "}
             <span className="mono text-slate-300">{n(d.today?.this_minute)} / {n(d.limits?.rpm)}</span>.
-            {switchLine}
             {d.configured ? <> Deploy: MODEL_ROUTER {d.configured.var_on ? "on" : "off"}, key {d.configured.key_present ? "set" : "not set"}.</> : null}
           </div>
           <DataTable dense rows={rows} rowKey={(r: any) => `${r.purpose}:${r.provider}:${r.model}`} maxHeight={260} empty="No call of Cerebrum's tasks today." columns={[
@@ -162,8 +225,7 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
             } },
           ]} />
           {fallbackBadges}
-          {pendingLine ? <p className="text-[11px] text-amber-300/90">{pendingLine}</p> : null}
-          {controls}
+          {switches}
         </div>
       )}
     </Panel>

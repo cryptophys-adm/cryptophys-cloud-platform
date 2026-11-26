@@ -47,8 +47,8 @@ export const CAPABILITIES: Record<string, Capability> = {
   // once) and can only turn Beam off, never on: on is the owner's route alone. Only XAUUSD_CEILING grants them, to
   // xauusd-model-router (XAUUSD_MODEL_ROUTER_AGENT, organism.ts), the client of xauusd's router for shadow:news_compare
   // (owner 2026-11-25: "news_compare saja"); the CTA side is a design in the amendment.
-  "model_router.status": { tier: 0, reversible: true, description: "Read the model router's global state (on, off, off_paid, off_owner, off_retention), its mode, breaker and today's Beam use (read only; never a key or a prompt)" },
-  "model_router.report_paid": { tier: 1, reversible: true, description: "Record a paid sign of Beam (HTTP 402, a billing error, a cost, a plan change): the router turns Beam off for every caller until the owner turns it on again (idempotent)", max_per_hour: 4 },
+  "model_router.status": { tier: 0, reversible: true, description: "Read the model router's state for the caller's own system (on, off, off_paid, off_owner, off_retention), its mode, the global paid stop and the breaker (read only; never a key, a prompt or another system's switch)" },
+  "model_router.report_paid": { tier: 1, reversible: true, description: "Record a paid sign of Beam (HTTP 402, a billing error, a cost, a plan change): the router turns Beam off for every system until the owner turns one on again (idempotent)", max_per_hour: 4 },
   "corrections.record": { tier: 1, reversible: true, description: "Record one Nexus owner correction or rating (correction.v1) in the corrections ledger (learning: no rate limit, never refused for its content)" },
   // ADR-0014 §2 and §11, docs/design/EVOLVER.md §5-§6: the evolver's two capabilities. code.read reads canonical main
   // (paths in the evolvable scope, bounded); code.propose hands one evolution's edits to the Forge, which re-checks

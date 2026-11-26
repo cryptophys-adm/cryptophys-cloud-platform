@@ -50,9 +50,10 @@
       "built": [
         "workers/control-plane-shared/src/model-router.ts",
         "workers/control-plane-shared/src/ai-engine.ts",
-        "workers/control-plane-migrations/0090_model_router.sql"
+        "workers/control-plane-migrations/0090_model_router.sql",
+        "workers/control-plane-migrations/0091_model_router_systems.sql"
       ],
-      "note": "built; MODEL_ROUTER on (2026-11-26), off until the key and the owner's switch; xauusd's shadow:news_compare: its own router copy, the xauusd-model-router grant",
+      "note": "built; MODEL_ROUTER on, off until the key and the owner's switch; per-system switches (0091), a paid sign stops all; xauusd shadow:news_compare: own router",
       "owner_action": {
         "text": "Set the REFLECTION_API_KEY secret, then turn Beam on (Cerebrum, Command: the Beam toggle)",
         "outside_platform": true

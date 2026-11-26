@@ -562,7 +562,8 @@ test("AIR1-18. over AgentRpc, xauusd-model-router (hosted by xauusd-ai-trading-a
   const at = new Date().toISOString();
   db.raw.prepare(`INSERT INTO agents (agent_id, display_name, host_worker, purpose, tier_max, capabilities_json, status, status_reason, updated_by, created_at, updated_at)
     VALUES (?, 'Model router client', ?, 'test', 1, ?, 'enabled', NULL, 'consensus:test', ?, ?)`).run(XAUUSD_MODEL_ROUTER_AGENT, XAU_AI, JSON.stringify(ROUTER_CAPS), at, at);
-  await setRouterState(db, APPROVER_EMAIL, { state: "on" });
+  // Since 2026-11-26 (owner: per-system Beam switches, migration 0091) xauusd reads its own switch, not Cerebrum's.
+  await setRouterState(db, APPROVER_EMAIL, { system: "xauusd", state: "on" });
   const st = await rpcSyscall(env as never, XAU, XAUUSD_MODEL_ROUTER_AGENT, "model_router.status", {}) as any;
   assert.equal(st.outcome, "succeeded", JSON.stringify(st));
   assert.deepEqual([st.result.schema, st.result.state.state, st.result.state.mode], ["model_router.status.v1", "on", "free_only"]);
@@ -675,7 +676,7 @@ test("AIR1-21. paid_capped: the spend is added and compared in one statement (UP
   const s = (await readRouterState(w.db))!;
   assert.deepEqual([s.state, s.reason], ["off_paid", "paid sign: paid_cap_reached"]);
   assert.equal(w.events("model_router.paid_detected").length, 1, "the cap is reported once");
-  assert.match(read("workers/control-plane-shared/src/model-router.ts"), /UPDATE model_router_state SET spent_usd = spent_usd \+ \? WHERE id = 'global' RETURNING spent_usd, paid_cap_usd/);
+  assert.match(read("workers/control-plane-shared/src/model-router.ts"), /UPDATE model_router_state SET spent_usd = spent_usd \+ \? WHERE system = 'cerebrum' RETURNING spent_usd, paid_cap_usd/);
 });
 
 test("AIR1-22. after a paid sign the owner may turn free_only back on only with confirm_free: true (audited from off_paid); the next paid sign turns it off again", async () => {
@@ -693,7 +694,7 @@ test("AIR1-22. after a paid sign the owner may turn free_only back on only with 
   const r = await on(w.db, { state: "on", mode: "free_only", confirm_free: true, reason: "the 402 was a provider outage, not a charge" });
   assert.deepEqual([r.changed, r.state!.state, r.state!.mode, r.state!.paid_cap_usd], [true, "on", "free_only", null]);
   const ch = w.events("model_router.state_changed").map((e) => JSON.parse(e.payload_json));
-  assert.deepEqual(ch.at(-1), { from: "off_paid", to: "on", mode: "free_only", paid_cap_usd: null, reason: "the 402 was a provider outage, not a charge", confirm_free: true });
+  assert.deepEqual(ch.at(-1), { system: "cerebrum", from: "off_paid", to: "on", mode: "free_only", paid_cap_usd: null, reason: "the 402 was a provider outage, not a charge", confirm_free: true });
   assert.deepEqual((await unhandledProblems(w.db as never)).filter((p) => p.code === "model_router_stopped"), [], "the owner item closes");
   const back = await w.run();
   assert.deepEqual(back.status === "ok" && back.provider, "reflection");

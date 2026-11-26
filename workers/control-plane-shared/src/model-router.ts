@@ -10,6 +10,11 @@
 // What the router never does: send or store the key anywhere but the Authorization header of its own request, log or
 // store a prompt or an answer, route the evolver (evolve_plan, evolve_write; ADR-0014 Q2: gpt-oss on Workers AI only),
 // an embedding or an advisory or agent draft, or run for xauusd or Aether (they do not use this engine's router).
+//
+// Owner 2026-11-26 ("tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"; migration 0091): the owner's
+// switch is per system (cerebrum, cta, xauusd) in model_router_state; this router reads Cerebrum's row only. A paid sign
+// from any system sets the one global stop (model_router_global), which turns Beam off for every system until the owner
+// clears it. CTA's and xauusd's own router copies read their own row through model_router.status (modelRouterStatusFor).
 import type { D1Database } from "./types.ts";
 import { appendAuditEvent } from "./audit.ts";
 
@@ -19,8 +24,26 @@ export const WORKERS_AI_PROVIDER = "workers_ai";
 export const DEFAULT_MODEL_BASE_URL = "https://api.reflection.ai/openai/v1";
 /** The response header that says how Reflection retains the request; "contributor" turns the router off (as CTA does). */
 export const RETENTION_HEADER = "reflection-data-retention";
-/** The one system that uses Beam on the platform (owner: "Approve, but Cerebrum only"). */
+/** The system whose router is this file's (owner: "Approve, but Cerebrum only"): the kernel's chat, directives and councils. */
 export const ROUTER_SYSTEM = "cerebrum";
+/**
+ * Owner 2026-11-26 ("tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"; migration 0091): one Beam
+ * switch per system in D1 model_router_state. CTA and xauusd (its shadow:news_compare) run their own router copies and read
+ * their own row through model_router.status; a paid sign from any system stops all of them (model_router_global).
+ */
+export const ROUTER_SYSTEMS = ["cerebrum", "cta", "xauusd"] as const;
+export type RouterSystem = (typeof ROUTER_SYSTEMS)[number];
+export const isRouterSystem = (v: unknown): v is RouterSystem => typeof v === "string" && (ROUTER_SYSTEMS as readonly string[]).includes(v);
+/**
+ * The one map from a calling agent to its router system, by the external origin of the Worker that hosts it: a platform
+ * agent (no external origin) is Cerebrum's, an agent hosted by xauusd's services (xauusd-model-router) is xauusd's, one
+ * hosted by cryptophys-cta (a future cta-model-router) is CTA's. Aether, or any other origin, has none (null): it never
+ * reads or reports for another system's switch.
+ */
+export function routerSystemOfOrigin(origin: string | null | undefined): RouterSystem | null {
+  if (origin === null || origin === undefined || origin === "") return "cerebrum";
+  return origin === "xauusd" ? "xauusd" : origin === "cta" ? "cta" : null;
+}
 
 /** R1: the only tasks Beam may answer: the chat, directive drafts and the councils' seats and synthesis. */
 export const ROUTER_TASKS = ["chat_plan", "chat_answer", "directive_draft", "council_position", "council_rebuttal", "council_synthesis"] as const;
@@ -88,7 +111,17 @@ export interface RouteMeter { provider: typeof BEAM_PROVIDER | typeof WORKERS_AI
 export interface BeamAnswer { kind: "answer"; completion: unknown; latency_ms: number; settle(usable: boolean | "output_budget"): Promise<void> }
 export type BeamAttempt = BeamAnswer | { kind: "skip"; reason: FallbackReason };
 
-export interface RouterStateRow { state: RouterState; mode: RouterMode; paid_cap_usd: number | null; spent_usd: number; updated_by: string; updated_at: string; reason: string | null }
+/**
+ * A system's state as its router must obey it: state is the effective one (off_paid while the global paid stop is set,
+ * with that stop's updated_by, updated_at and reason; else the system's own switch). switch is the system's own switch
+ * underneath (never off_paid), last_status_read_at when its router agent last read model_router.status.
+ */
+export interface RouterStateRow {
+  state: RouterState; mode: RouterMode; paid_cap_usd: number | null; spent_usd: number; updated_by: string; updated_at: string; reason: string | null;
+  system: RouterSystem; switch: Exclude<RouterState, "off_paid">; last_status_read_at: string | null;
+}
+/** The global paid stop (model_router_global, migration 0091). */
+export interface RouterGlobalRow { paid_off: boolean; updated_by: string; updated_at: string; reason: string | null }
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -191,58 +224,96 @@ export function rateBackoffMs(headers: Headers, now: number, text = ""): number 
 const bytesOf = (s: string) => new TextEncoder().encode(s).byteLength;
 const tokenBound = (messages: readonly ChatMessage[]) => messages.reduce((n, m) => n + bytesOf(m.content) + 16, 16);
 
-// ---------------------------------------------------------------- global state (D1 model_router_state)
+// ---------------------------------------------------------------- per-system state (D1 model_router_state, model_router_global)
 
 const stateCache = new WeakMap<D1Database, { at: number; row: RouterStateRow | null }>();
 /** For tests and for the owner's route in this isolate: forget the cached state of this database. */
 export function forgetRouterState(db: D1Database): void { stateCache.delete(db); }
 
-export async function readRouterState(db: D1Database): Promise<RouterStateRow | null> {
+const SWITCH_STATES = ROUTER_STATES.filter((s) => s !== "off_paid");
+
+/** The global paid stop, or null when it cannot be read (migration 0091 not applied): every reader then fails closed. */
+export async function readRouterGlobal(db: D1Database): Promise<RouterGlobalRow | null> {
   try {
-    const r = await db.prepare("SELECT state, mode, paid_cap_usd, spent_usd, updated_by, updated_at, reason FROM model_router_state WHERE id = 'global'").first<RouterStateRow>();
-    if (!r || !(ROUTER_STATES as readonly string[]).includes(r.state) || !(ROUTER_MODES as readonly string[]).includes(r.mode)) return null;
-    return { ...r, paid_cap_usd: typeof r.paid_cap_usd === "number" ? r.paid_cap_usd : null, spent_usd: Number(r.spent_usd) || 0 };
+    const g = await db.prepare("SELECT paid_off, updated_by, updated_at, reason FROM model_router_global WHERE id = 'global'")
+      .first<{ paid_off: number; updated_by: string; updated_at: string; reason: string | null }>();
+    if (!g || (g.paid_off !== 0 && g.paid_off !== 1)) return null;
+    return { paid_off: g.paid_off === 1, updated_by: g.updated_by, updated_at: g.updated_at, reason: g.reason ?? null };
+  } catch { return null; }
+}
+
+/**
+ * One system's state (Cerebrum's by default, the kernel's router's): its own row and the global paid stop, read in one
+ * statement. null (Beam off) when either is missing or malformed.
+ */
+export async function readRouterState(db: D1Database, system: RouterSystem = ROUTER_SYSTEM): Promise<RouterStateRow | null> {
+  try {
+    const r = await db.prepare(
+      `SELECT s.state, s.mode, s.paid_cap_usd, s.spent_usd, s.updated_by, s.updated_at, s.reason, s.last_status_read_at,
+              g.paid_off AS g_paid_off, g.updated_by AS g_updated_by, g.updated_at AS g_updated_at, g.reason AS g_reason
+         FROM model_router_state s LEFT JOIN model_router_global g ON g.id = 'global' WHERE s.system = ?`,
+    ).bind(system).first<{ state: string; mode: string; paid_cap_usd: number | null; spent_usd: number; updated_by: string; updated_at: string; reason: string | null;
+      last_status_read_at: string | null; g_paid_off: number | null; g_updated_by: string | null; g_updated_at: string | null; g_reason: string | null }>();
+    if (!r || !(SWITCH_STATES as readonly string[]).includes(r.state) || !(ROUTER_MODES as readonly string[]).includes(r.mode)) return null;
+    if (r.g_paid_off !== 0 && r.g_paid_off !== 1) return null;
+    const paid = r.g_paid_off === 1;
+    return {
+      state: paid ? "off_paid" : (r.state as RouterState), mode: r.mode as RouterMode,
+      paid_cap_usd: typeof r.paid_cap_usd === "number" ? r.paid_cap_usd : null, spent_usd: Number(r.spent_usd) || 0,
+      updated_by: paid ? String(r.g_updated_by) : r.updated_by, updated_at: paid ? String(r.g_updated_at) : r.updated_at, reason: paid ? r.g_reason ?? null : r.reason,
+      system, switch: r.state as Exclude<RouterState, "off_paid">, last_status_read_at: r.last_status_read_at ?? null,
+    };
   } catch { return null; }
 }
 
 async function cachedState(db: D1Database, now: number): Promise<RouterStateRow | null> {
   const hit = stateCache.get(db);
   if (hit && now - hit.at < STATE_CACHE_MS && now >= hit.at) return hit.row;
-  const row = await readRouterState(db);
+  const row = await readRouterState(db, ROUTER_SYSTEM);
   stateCache.set(db, { at: now, row });
   return row;
 }
 
+/** A system's router agent read model_router.status: recorded at most once a minute; best effort, never throws. */
+export async function recordStatusRead(db: D1Database, system: RouterSystem, now = Date.now()): Promise<void> {
+  try {
+    await db.prepare("UPDATE model_router_state SET last_status_read_at = ? WHERE system = ? AND (last_status_read_at IS NULL OR last_status_read_at < ?)")
+      .bind(iso(now), system, iso(now - 60_000)).run();
+  } catch { /* telemetry */ }
+}
+
 /**
- * A paid sign (free_only), or a reached paid cap: Beam is off for every call, at once, until the owner turns it on with a
- * paid cap. Idempotent: only the first signal of a state writes; it records one audit event, and the owner hears of it
- * once through the owner channel (owner-inbox.ts production problem model_router_stopped, owner-notices.ts).
+ * A paid sign (free_only), or a reached paid cap, from any system (the kernel's router, or model_router.report_paid from
+ * a system's router agent): Beam is off for every system, at once, until the owner clears it (one system turned on as
+ * paid_capped, or as free_only with confirm_free). Idempotent: only the first signal writes (one conditional UPDATE of
+ * model_router_global); it records one audit event, and the owner hears of it once through the owner channel
+ * (owner-inbox.ts production problem model_router_stopped, owner-notices.ts).
  */
-export async function reportPaid(db: D1Database, by: string, signal: PaidSignal, now = Date.now()): Promise<{ state: RouterState; changed: boolean }> {
-  const before = await readRouterState(db);
+export async function reportPaid(db: D1Database, by: string, signal: PaidSignal, now = Date.now(), system: RouterSystem = ROUTER_SYSTEM): Promise<{ state: RouterState; changed: boolean }> {
+  const before = await readRouterState(db, system);
   const r = await db.prepare(
-    "UPDATE model_router_state SET state = 'off_paid', updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global' AND state != 'off_paid'",
+    "UPDATE model_router_global SET paid_off = 1, updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global' AND paid_off = 0",
   ).bind(by.slice(0, 120), iso(now), `paid sign: ${signal}`).run();
   const changed = (r.meta.changes ?? 0) > 0;
   forgetRouterState(db);
   if (changed) {
     await appendAuditEvent(db, { event_type: "model_router.paid_detected", actor: by.slice(0, 120), subject: "model_router", outcome: "off_paid",
-      payload: { from: before?.state ?? null, to: "off_paid", signal, mode: before?.mode ?? null, model: BEAM_MODEL, provider: BEAM_PROVIDER } });
+      payload: { from: before?.state ?? null, to: "off_paid", signal, mode: before?.mode ?? null, model: BEAM_MODEL, provider: BEAM_PROVIDER, system, scope: "all_systems" } });
   }
   return { state: "off_paid", changed };
 }
 
-/** The contributor retention header: off until the owner turns Beam on again. Idempotent like reportPaid. */
-export async function reportRetention(db: D1Database, by: string, now = Date.now()): Promise<{ changed: boolean }> {
-  const before = await readRouterState(db);
+/** The contributor retention header: this system off until the owner turns it on again. Idempotent like reportPaid. */
+export async function reportRetention(db: D1Database, by: string, now = Date.now(), system: RouterSystem = ROUTER_SYSTEM): Promise<{ changed: boolean }> {
+  const before = await readRouterState(db, system);
   const r = await db.prepare(
-    "UPDATE model_router_state SET state = 'off_retention', updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global' AND state = 'on'",
-  ).bind(by.slice(0, 120), iso(now), "retention header: contributor").run();
+    "UPDATE model_router_state SET state = 'off_retention', updated_by = ?, updated_at = ?, reason = ? WHERE system = ? AND state = 'on'",
+  ).bind(by.slice(0, 120), iso(now), "retention header: contributor", system).run();
   const changed = (r.meta.changes ?? 0) > 0;
   forgetRouterState(db);
   if (changed) {
     await appendAuditEvent(db, { event_type: "model_router.retention_detected", actor: by.slice(0, 120), subject: "model_router", outcome: "off_retention",
-      payload: { from: before?.state ?? null, to: "off_retention", header: RETENTION_HEADER, value: "contributor", model: BEAM_MODEL, provider: BEAM_PROVIDER } });
+      payload: { from: before?.state ?? null, to: "off_retention", header: RETENTION_HEADER, value: "contributor", model: BEAM_MODEL, provider: BEAM_PROVIDER, system } });
   }
   return { changed };
 }
@@ -254,25 +325,31 @@ export class ModelRouterError extends Error {
 }
 
 /**
- * The owner's switch (POST /v1/model-router/state; the kernel checks the owner). Body: {state: "on" | "off", mode?,
- * paid_cap_usd?, confirm_free?, reason?}. "on" needs free_only, or paid_capped with an explicit cap in (0,
- * MAX_PAID_CAP_USD]. After a paid sign (off_paid), free_only needs the owner's explicit confirm_free: true (coordinator
- * review, 2026-11-25: the owner may judge the sign was not a charge); free_only then still goes off again at the next
- * paid sign. Each change is audited (model_router.state_changed, with its from state); turning it on closes the breaker
- * and starts the paid spend from 0.
+ * The owner's switch of one system (POST /v1/model-router/state; the kernel checks the owner). Body: {system?, state: "on"
+ * | "off", mode?, paid_cap_usd?, confirm_free?, reason?}; system is "cerebrum" (the default, as before migration 0091),
+ * "cta" or "xauusd". "on" needs free_only, or paid_capped with an explicit cap in (0, MAX_PAID_CAP_USD]. After a paid sign
+ * (the global stop, every system off_paid), free_only needs the owner's explicit confirm_free: true (coordinator review,
+ * 2026-11-25: the owner may judge the sign was not a charge); free_only then still goes off again at the next paid sign.
+ * Turning any system on after a paid sign (paid_capped, or free_only with confirm_free) clears the stop for every system
+ * (owner 2026-11-26); each other system then follows its own switch again. Turning a system off never clears it. Each
+ * change is audited (model_router.state_changed, with its system and from state; model_router.paid_cleared when the stop
+ * is cleared); turning Cerebrum on closes its router's breaker; turning a system on starts its paid spend from 0.
  */
 export async function setRouterState(db: D1Database, actor: string, body: Record<string, unknown>, now = Date.now()): Promise<{ changed: boolean; state: RouterStateRow | null }> {
-  const extra = Object.keys(body).filter((k) => !["state", "mode", "paid_cap_usd", "confirm_free", "reason"].includes(k));
-  if (extra.length) throw new ModelRouterError(400, "unknown_field", `the body carries only state, mode, paid_cap_usd, confirm_free and reason, not ${extra.slice(0, 3).join(", ")}`);
+  const extra = Object.keys(body).filter((k) => !["system", "state", "mode", "paid_cap_usd", "confirm_free", "reason"].includes(k));
+  if (extra.length) throw new ModelRouterError(400, "unknown_field", `the body carries only system, state, mode, paid_cap_usd, confirm_free and reason, not ${extra.slice(0, 3).join(", ")}`);
+  if (body.system !== undefined && !isRouterSystem(body.system)) throw new ModelRouterError(400, "invalid_system", `system is ${ROUTER_SYSTEMS.join(", ")} (default cerebrum)`);
+  const system: RouterSystem = body.system === undefined ? ROUTER_SYSTEM : (body.system as RouterSystem);
   if (body.confirm_free !== undefined && body.confirm_free !== true) throw new ModelRouterError(400, "invalid_confirm_free", "confirm_free is true or absent");
   const confirmFree = body.confirm_free === true;
   if (body.state !== "on" && body.state !== "off") throw new ModelRouterError(400, "invalid_state", "state is on or off");
   const reason = body.reason === undefined || body.reason === null ? null : typeof body.reason === "string" && body.reason.trim().length <= 300 ? body.reason.trim() || null : undefined;
   if (reason === undefined) throw new ModelRouterError(400, "invalid_reason", "the reason is text of at most 300 characters");
   if (reason !== null && /[A-Za-z0-9_-]{32,}|sk-[A-Za-z0-9]/.test(reason)) throw new ModelRouterError(400, "secret_in_reason", "the reason looks like it carries a key; never paste a key here");
-  const before = await readRouterState(db);
-  if (!before) throw new ModelRouterError(503, "model_router_unavailable", "migration 0090 is not applied");
-  let next: { state: RouterState; mode: RouterMode; cap: number | null };
+  const before = await readRouterState(db, system);
+  if (!before) throw new ModelRouterError(503, "model_router_unavailable", "migrations 0090 and 0091 are not applied");
+  const paid = before.state === "off_paid";
+  let next: { state: Exclude<RouterState, "off_paid">; mode: RouterMode; cap: number | null };
   if (body.state === "off") {
     if (body.mode !== undefined || body.paid_cap_usd !== undefined || confirmFree) throw new ModelRouterError(400, "invalid_request", "turning Beam off takes no mode, cap or confirm_free");
     next = { state: "off_owner", mode: before.mode, cap: before.paid_cap_usd };
@@ -281,7 +358,7 @@ export async function setRouterState(db: D1Database, actor: string, body: Record
     if (mode !== "free_only" && mode !== "paid_capped") throw new ModelRouterError(400, "invalid_mode", "mode is free_only or paid_capped");
     if (mode === "free_only") {
       if (body.paid_cap_usd !== undefined) throw new ModelRouterError(400, "invalid_request", "a paid cap goes only with mode paid_capped");
-      if (before.state === "off_paid" && !confirmFree) throw new ModelRouterError(409, "paid_sign_recorded", "Beam showed a paid sign; turn it on as free_only only with confirm_free: true, or as paid_capped with an explicit cap, or leave it off");
+      if (paid && !confirmFree) throw new ModelRouterError(409, "paid_sign_recorded", "Beam showed a paid sign; turn it on as free_only only with confirm_free: true, or as paid_capped with an explicit cap, or leave it off");
       next = { state: "on", mode, cap: null };
     } else {
       const cap = body.paid_cap_usd;
@@ -290,18 +367,31 @@ export async function setRouterState(db: D1Database, actor: string, body: Record
       next = { state: "on", mode, cap: Math.round(cap * 100) / 100 };
     }
   }
-  const same = before.state === next.state && before.mode === next.mode && before.paid_cap_usd === next.cap;
-  if (same) return { changed: false, state: before };
-  await db.prepare(
-    `UPDATE model_router_state SET state = ?, mode = ?, paid_cap_usd = ?, spent_usd = CASE WHEN ? = 'on' THEN 0 ELSE spent_usd END, updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global'`,
-  ).bind(next.state, next.mode, next.cap, next.state, actor.slice(0, 120), iso(now), reason ?? (next.state === "on" ? `turned on (${next.mode})` : "turned off by the owner")).run();
-  if (next.state === "on") {
-    await db.prepare("UPDATE model_router_health SET consecutive_failures = 0, breaker_open_until = NULL, probe_until = NULL, updated_at = ? WHERE id = 'beam'").bind(iso(now)).run();
+  const clearsPaid = paid && next.state === "on";
+  const same = before.switch === next.state && before.mode === next.mode && before.paid_cap_usd === next.cap;
+  if (same && !clearsPaid) return { changed: false, state: before };
+  const t = iso(now);
+  const writes = [
+    db.prepare(
+      `UPDATE model_router_state SET state = ?, mode = ?, paid_cap_usd = ?, spent_usd = CASE WHEN ? = 'on' THEN 0 ELSE spent_usd END, updated_by = ?, updated_at = ?, reason = ? WHERE system = ?`,
+    ).bind(next.state, next.mode, next.cap, next.state, actor.slice(0, 120), t, reason ?? (next.state === "on" ? `turned on (${next.mode})` : "turned off by the owner"), system),
+  ];
+  if (clearsPaid) {
+    writes.push(db.prepare("UPDATE model_router_global SET paid_off = 0, updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global' AND paid_off = 1")
+      .bind(actor.slice(0, 120), t, `cleared by the owner (${next.mode === "paid_capped" ? "paid_capped" : "confirm_free"}, ${system})`));
   }
+  if (next.state === "on" && system === ROUTER_SYSTEM) {
+    writes.push(db.prepare("UPDATE model_router_health SET consecutive_failures = 0, breaker_open_until = NULL, probe_until = NULL, updated_at = ? WHERE id = 'beam'").bind(t));
+  }
+  await db.batch(writes);
   forgetRouterState(db);
   await appendAuditEvent(db, { event_type: "model_router.state_changed", actor, subject: "model_router", outcome: next.state,
-    payload: { from: before.state, to: next.state, mode: next.mode, paid_cap_usd: next.cap, reason, ...(confirmFree && before.state === "off_paid" ? { confirm_free: true } : {}) } });
-  return { changed: true, state: await readRouterState(db) };
+    payload: { system, from: before.state, to: next.state, mode: next.mode, paid_cap_usd: next.cap, reason, ...(confirmFree && paid ? { confirm_free: true } : {}) } });
+  if (clearsPaid) {
+    await appendAuditEvent(db, { event_type: "model_router.paid_cleared", actor, subject: "model_router", outcome: "cleared",
+      payload: { via_system: system, mode: next.mode, scope: "all_systems", ...(confirmFree ? { confirm_free: true } : { paid_cap_usd: next.cap }) } });
+  }
+  return { changed: true, state: await readRouterState(db, system) };
 }
 
 // ---------------------------------------------------------------- the router
@@ -432,7 +522,7 @@ export class ModelRouter {
    */
   private async addSpend(now: number, usd: number): Promise<"ok" | "cap"> {
     try {
-      const row = await this.db.prepare("UPDATE model_router_state SET spent_usd = spent_usd + ? WHERE id = 'global' RETURNING spent_usd, paid_cap_usd")
+      const row = await this.db.prepare("UPDATE model_router_state SET spent_usd = spent_usd + ? WHERE system = 'cerebrum' RETURNING spent_usd, paid_cap_usd")
         .bind(usd).first<{ spent_usd: number; paid_cap_usd: number | null }>();
       forgetRouterState(this.db);
       if (!row) return "cap";
@@ -594,23 +684,60 @@ export function modelRouterFor(env: ModelRouterEnv, db: D1Database, options: Omi
 
 // ---------------------------------------------------------------- the status read (GET /v1/model-router, model_router.status)
 
+const stateView = (r: RouterStateRow) => ({ state: r.state, mode: r.mode, paid_cap_usd: r.paid_cap_usd, spent_usd: r.spent_usd, updated_by: r.updated_by, updated_at: r.updated_at, reason: r.reason, switch: r.switch });
+const globalView = (g: RouterGlobalRow | null) => (g ? { paid_off: g.paid_off, updated_by: g.updated_by, updated_at: g.updated_at, reason: g.reason } : null);
+const kernelDisabled = (env: ModelRouterEnv) => !routerVarOn(env) || !routerKeyPresent(env) || routerBaseUrl(env) === null;
+/** A system's effective state: off without a row; Cerebrum's is "disabled" while the kernel's deploy cannot call Beam. */
+const effectiveOf = (system: RouterSystem, r: RouterStateRow | null, env: ModelRouterEnv): string => !r ? "off" : system === ROUTER_SYSTEM && kernelDisabled(env) ? "disabled" : r.state;
+
+/**
+ * The status read. GET /v1/model-router (operators; the Console): Cerebrum's view as before (state, effective, health,
+ * limits, today, ledger, fallbacks), the global paid stop (global), and every system's row (systems: state, effective,
+ * last_status_read_at). The schema string and the existing fields never change.
+ */
 export async function modelRouterStatus(db: D1Database, env: ModelRouterEnv, now = Date.now()): Promise<Record<string, unknown>> {
-  const state = await readRouterState(db);
+  const out = await statusOf(db, env, ROUTER_SYSTEM, now);
+  const systems = [];
+  for (const system of ROUTER_SYSTEMS) {
+    const r = await readRouterState(db, system);
+    systems.push({ system, available: r !== null, state: r ? stateView(r) : null, effective: effectiveOf(system, r, env), last_status_read_at: r?.last_status_read_at ?? null });
+  }
+  return { ...out, systems };
+}
+
+/**
+ * model_router.status (tier 0) for the calling agent's system (routerSystemOfOrigin): the same schema and fields, with
+ * system, state and effective that system's own (state.state the effective state: off_paid while the global stop is set).
+ * Cerebrum's own ledger, counters and limits go only to Cerebrum (another system reads tasks [], limits null, today null,
+ * ledger [] and fallbacks {}); the breaker (the provider's health as the kernel's router sees it) and the global stop go
+ * to every caller. Never another system's row. Records the read (last_status_read_at, at most once a minute).
+ */
+export async function modelRouterStatusFor(db: D1Database, env: ModelRouterEnv, system: RouterSystem, now = Date.now()): Promise<Record<string, unknown>> {
+  await recordStatusRead(db, system, now);
+  return await statusOf(db, env, system, now);
+}
+
+async function statusOf(db: D1Database, env: ModelRouterEnv, system: RouterSystem, now: number): Promise<Record<string, unknown>> {
+  const state = await readRouterState(db, system);
+  const global = await readRouterGlobal(db);
+  const own = system === ROUTER_SYSTEM;
   let health: HealthRow | null = null;
   try { health = await db.prepare("SELECT consecutive_failures, breaker_open_until, probe_until, rate_limited_until FROM model_router_health WHERE id = 'beam'").first<HealthRow>(); } catch { health = null; }
   const day = dayOf(now);
   let counters: { bucket: string; requests: number; in_tokens: number; out_tokens: number }[] = [];
   let ledger: Record<string, unknown>[] = [];
-  try {
-    counters = (await db.prepare("SELECT bucket, requests, in_tokens, out_tokens FROM model_router_counters WHERE bucket IN (?, ?)").bind(`day:${day}`, `min:${minuteOf(now)}`)
-      .all<{ bucket: string; requests: number; in_tokens: number; out_tokens: number }>()).results ?? [];
-    ledger = ((await db.prepare("SELECT purpose, provider, model, calls, in_tokens, out_tokens, latency_ms, fallbacks_json FROM model_calls_daily WHERE day = ? AND system = ? ORDER BY purpose, provider, model")
-      .bind(day, ROUTER_SYSTEM).all<Record<string, unknown>>()).results ?? []).map((r) => {
-      let fallbacks: Record<string, number> = {};
-      try { const f = JSON.parse(String(r.fallbacks_json ?? "{}")); if (f && typeof f === "object" && !Array.isArray(f)) fallbacks = f; } catch { fallbacks = {}; }
-      return { purpose: r.purpose, provider: r.provider, model: r.model, calls: r.calls, in_tokens: r.in_tokens, out_tokens: r.out_tokens, latency_ms: r.latency_ms, fallbacks };
-    });
-  } catch { counters = []; ledger = []; }
+  if (own) {
+    try {
+      counters = (await db.prepare("SELECT bucket, requests, in_tokens, out_tokens FROM model_router_counters WHERE bucket IN (?, ?)").bind(`day:${day}`, `min:${minuteOf(now)}`)
+        .all<{ bucket: string; requests: number; in_tokens: number; out_tokens: number }>()).results ?? [];
+      ledger = ((await db.prepare("SELECT purpose, provider, model, calls, in_tokens, out_tokens, latency_ms, fallbacks_json FROM model_calls_daily WHERE day = ? AND system = ? ORDER BY purpose, provider, model")
+        .bind(day, ROUTER_SYSTEM).all<Record<string, unknown>>()).results ?? []).map((r) => {
+        let fallbacks: Record<string, number> = {};
+        try { const f = JSON.parse(String(r.fallbacks_json ?? "{}")); if (f && typeof f === "object" && !Array.isArray(f)) fallbacks = f; } catch { fallbacks = {}; }
+        return { purpose: r.purpose, provider: r.provider, model: r.model, calls: r.calls, in_tokens: r.in_tokens, out_tokens: r.out_tokens, latency_ms: r.latency_ms, fallbacks };
+      });
+    } catch { counters = []; ledger = []; }
+  }
   const dayRow = counters.find((c) => c.bucket.startsWith("day:")) ?? null;
   const minRow = counters.find((c) => c.bucket.startsWith("min:")) ?? null;
   const openUntil = at(health?.breaker_open_until), rateUntil = at(health?.rate_limited_until);
@@ -620,18 +747,20 @@ export async function modelRouterStatus(db: D1Database, env: ModelRouterEnv, now
   return {
     schema: "model_router.status.v1",
     available: state !== null,
-    system: ROUTER_SYSTEM,
+    system,
     provider: BEAM_PROVIDER,
     model: BEAM_MODEL,
-    tasks: [...ROUTER_TASKS],
+    tasks: own ? [...ROUTER_TASKS] : [],
     configured: { var_on: routerVarOn(env), key_present: routerKeyPresent(env), base_url_valid: routerBaseUrl(env) !== null },
-    state: state ? { state: state.state, mode: state.mode, paid_cap_usd: state.paid_cap_usd, spent_usd: state.spent_usd, updated_by: state.updated_by, updated_at: state.updated_at, reason: state.reason } : null,
-    effective: !state ? "off" : !routerVarOn(env) || !routerKeyPresent(env) || routerBaseUrl(env) === null ? "disabled" : state.state,
+    state: state ? stateView(state) : null,
+    effective: effectiveOf(system, state, env),
     health: health ? { breaker, consecutive_failures: health.consecutive_failures, breaker_open_until: health.breaker_open_until, rate_limited_until: rateUntil !== null && rateUntil > now ? health.rate_limited_until : null } : null,
-    limits: routerLimits(env),
-    today: { day, requests: dayRow?.requests ?? 0, in_tokens: dayRow?.in_tokens ?? 0, out_tokens: dayRow?.out_tokens ?? 0, this_minute: minRow?.requests ?? 0 },
+    limits: own ? routerLimits(env) : null,
+    today: own ? { day, requests: dayRow?.requests ?? 0, in_tokens: dayRow?.in_tokens ?? 0, out_tokens: dayRow?.out_tokens ?? 0, this_minute: minRow?.requests ?? 0 } : null,
     ledger,
     fallbacks,
+    global: globalView(global),
+    last_status_read_at: state?.last_status_read_at ?? null,
     generated_at: iso(now),
   };
 }

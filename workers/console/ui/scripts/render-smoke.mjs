@@ -454,7 +454,19 @@ const routerFixture = (state, extra = {}) => ({ schema: "model_router.status.v1"
     { purpose: "chat_answer", provider: "workers_ai", model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", calls: 3, in_tokens: 7000, out_tokens: 800, latency_ms: 9000, fallbacks: { unreachable: 2, budget: 1 } },
     { purpose: "council_position", provider: "workers_ai", model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017", calls: 4, in_tokens: 9000, out_tokens: 1200, latency_ms: 12000, fallbacks: { breaker: 4 } },
   ],
-  fallbacks: { unreachable: 2, budget: 1, breaker: 4 }, generated_at: at(0), ...extra });
+  fallbacks: { unreachable: 2, budget: 1, breaker: 4 }, generated_at: at(0),
+  // Owner 2026-11-26 (migration 0091): every system's switch and the global paid stop. CTA's router has never read its
+  // switch (not connected yet); xauusd's read it two minutes ago. After a paid sign every row reads off_paid; xauusd's own
+  // switch underneath stays on (so its Turn off… is offered), Cerebrum's and CTA's are off.
+  systems: sysRows(state), global: { paid_off: state === "off_paid", updated_by: state === "off_paid" ? "agent:xauusd-model-router" : "migration:0091", updated_at: at(30), reason: state === "off_paid" ? "paid sign: http_402" : null },
+  ...extra });
+function sysRows(cerebrum, o = {}) {
+  const paid = cerebrum === "off_paid";
+  const row = (system, sw, extra = {}) => ({ system, available: true, effective: paid ? "off_paid" : sw, last_status_read_at: null, ...extra,
+    state: { state: paid ? "off_paid" : sw, mode: "free_only", paid_cap_usd: null, spent_usd: 0, updated_by: paid ? "agent:xauusd-model-router" : sw === "off" ? "migration:0091" : "owner@example.com",
+      updated_at: at(30), reason: paid ? "paid sign: http_402" : sw === "off" ? "off by default (owner 2026-11-26)" : `turned on (free_only)`, switch: sw, ...(extra.state ?? {}) } });
+  return [row("cerebrum", paid ? "off" : cerebrum, o.cerebrum), row("cta", o.ctaSwitch ?? "off", o.cta), row("xauusd", o.xauusdSwitch ?? "on", { last_status_read_at: at(2), ...(o.xauusd ?? {}) })];
+}
 MOCK["/api/kernel/v1/model-router"] = routerFixture("on");
 // HAIC H4: the autonomy dial: deploys lowered after a regression, merges ready to rise, the rest at their ADR class.
 const grp = (group, label, level, ceiling, actions, extra = {}) => ({ group, label, level, level_label: level, ceiling, source: "adr", set_by: null, set_at: null, reason: null,
@@ -1101,12 +1113,16 @@ for (const width of [390, 1440]) {
 }
 OVERRIDE = {};
 // AIR1 (2026-11-25): the model router panel. The owner sees Beam on with today's rows and the fallbacks by reason and can
-// turn it off (typed phrase BEAM OFF, body {state: "off"}); an operator sees no switch; after a paid sign the owner is
-// offered only a capped turn-on; a failed read shows the kernel's error with Retry.
+// turn it off (typed phrase BEAM OFF, body {system: "cerebrum", state: "off"}); an operator sees no switch; after a paid
+// sign the owner is offered only a capped or a confirmed free turn-on; a failed read shows the kernel's error with Retry.
+// Owner 2026-11-26: the same panel carries the three systems' switches (rows: what each system's row must and must not say).
+const rowText = (system) => document.querySelector(`main [data-beam-system="${system}"]`)?.textContent ?? "";
 const ROUTER_CHECKS = [
-  { name: "owner on", override: {}, want: ["Model router · Beam for Cerebrum", "on", "chat_answer", "council_position", "Beam", "Workers AI", "unreachable or unusable answer: 2", "breaker open: 4", "Cerebrum's share used: 1", "37 / 500", "Turn off…", "21 calls"], not: ["Only the owner turns Beam on or off.", "Turn on (free only)…"] },
-  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Model router · Beam for Cerebrum", "Only the owner turns Beam on or off."], not: ["Turn off…", "Turn on (free only)…", "Turn on (paid, capped)…"] },
-  { name: "off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "Turn on free (not a charge)…", "After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge."], not: ["Turn on (free only)…", "Turn off…"] },
+  { name: "owner on", override: {}, want: ["Model router · Beam for Cerebrum, CTA and xauusd", "on", "chat_answer", "council_position", "Beam", "Workers AI", "unreachable or unusable answer: 2", "breaker open: 4", "Cerebrum's share used: 1", "37 / 500", "Turn off…", "21 calls"], not: ["Only the owner turns Beam on or off.", "A paid sign stopped Beam"],
+    rows: { cerebrum: { want: ["Beam is on", "Turn off…", "The kernel's own router."], not: ["Turn on (free only)…"] }, cta: { want: ["Beam is off (never turned on)", "not connected yet", "Turn on (free only)…", "Turn on (paid, capped)…"], not: ["Turn off…"] }, xauusd: { want: ["Beam is on", "last read this switch", "Turn off…"], not: ["not connected yet", "Turn on (free only)…"] } } },
+  { name: "operator", override: { "/api/whoami": OPERATOR }, want: ["Model router · Beam for Cerebrum, CTA and xauusd", "Only the owner turns Beam on or off.", "not connected yet"], not: ["Turn off…", "Turn on (free only)…", "Turn on (paid, capped)…", "Turn on free (not a charge)…"] },
+  { name: "off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "Turn on free (not a charge)…", "After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge.", "A paid sign stopped Beam for every system"], not: ["Turn on (free only)…"],
+    rows: { cerebrum: { want: ["Beam is off (a paid sign)", "Turn on free (not a charge)…"], not: ["Turn on (free only)…", "Turn off…"] }, cta: { want: ["Beam is off (a paid sign)", "Turn on free (not a charge)…"], not: ["Turn off…"] }, xauusd: { want: ["Beam is off (a paid sign)", "Turn off…", "Turn on free (not a charge)…"], not: ["Turn on (free only)…"] } } },
   { name: "read fails", override: { "/api/kernel/v1/model-router": { __status: 502, error: "model_router_unavailable" } }, want: ["model_router_unavailable", "Retry"], not: ["Turn off…"] },
 ];
 for (const width of [390, 1440]) {
@@ -1119,6 +1135,12 @@ for (const width of [390, 1440]) {
     const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
     for (const w of check.want) if (!main.includes(w)) problems.push(`${width}px model router (${check.name}): missing "${w}"`);
     for (const w of check.not) if (main.includes(w)) problems.push(`${width}px model router (${check.name}): shows "${w}"`);
+    for (const [system, c] of Object.entries(check.rows ?? {})) {
+      const t = await page.evaluate(rowText, system);
+      if (!t) problems.push(`${width}px model router (${check.name}): no ${system} row`);
+      for (const w of c.want) if (!t.includes(w)) problems.push(`${width}px model router (${check.name}) ${system} row: missing "${w}"`);
+      for (const w of c.not) if (t.includes(w)) problems.push(`${width}px model router (${check.name}) ${system} row: shows "${w}"`);
+    }
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) problems.push(`${width}px #/organism/telemetry (model router ${check.name}): horizontal scroll of ${overflow}px`);
     if (check.name === "owner on") {
@@ -1127,18 +1149,19 @@ for (const width of [390, 1440]) {
         posts.push({ method: route.request().method(), body: route.request().postData() });
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ changed: true, status: routerFixture("off_owner") }) });
       });
-      await page.click('main button:text-is("Turn off…")');
+      await page.click('main [data-beam-system="cerebrum"] button:text-is("Turn off…")');
       await page.waitForTimeout(300);
       const dialog = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? "");
       if (!dialog.includes("BEAM OFF")) problems.push(`${width}px model router: the off dialog asks for no BEAM OFF phrase (${dialog.slice(0, 120)})`);
+      if (!dialog.includes("Turn Beam off for Cerebrum")) problems.push(`${width}px model router: the off dialog does not name Cerebrum (${dialog.slice(0, 120)})`);
       await page.fill('[role="dialog"] input', "BEAM OFF");
       await page.click('[role="dialog"] button:text-is("Confirm")');
       await page.waitForTimeout(500);
-      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify({ state: "off" })) problems.push(`${width}px model router: off requests were ${JSON.stringify(posts)}`);
+      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify({ system: "cerebrum", state: "off" })) problems.push(`${width}px model router: off requests were ${JSON.stringify(posts)}`);
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-model-router.png`), fullPage: true });
     }
     if (check.name === "off_paid") {
-      const disabled = await page.evaluate(() => [...document.querySelectorAll("main button")].find((b) => b.textContent === "Turn on (paid, capped)…")?.hasAttribute("disabled"));
+      const disabled = await page.evaluate(() => [...document.querySelectorAll('main [data-beam-system="cerebrum"] button')].find((b) => b.textContent === "Turn on (paid, capped)…")?.hasAttribute("disabled"));
       if (disabled !== true) problems.push(`${width}px model router (off_paid): the capped turn-on is enabled without a cap`);
       // Coordinator review 2026-11-25: the free turn-on after a paid sign asks for BEAM ON FREE and sends confirm_free: true.
       const posts = [];
@@ -1146,14 +1169,15 @@ for (const width of [390, 1440]) {
         posts.push({ method: route.request().method(), body: route.request().postData() });
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ changed: true, status: routerFixture("on") }) });
       });
-      await page.click('main button:text-is("Turn on free (not a charge)…")');
+      await page.click('main [data-beam-system="cerebrum"] button:text-is("Turn on free (not a charge)…")');
       await page.waitForTimeout(300);
       const dialog = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? "");
       if (!dialog.includes("BEAM ON FREE")) problems.push(`${width}px model router (off_paid): the free turn-on asks for no BEAM ON FREE phrase (${dialog.slice(0, 120)})`);
+      if (!dialog.includes("This clears the paid stop for every system")) problems.push(`${width}px model router (off_paid): the free turn-on does not say it clears the stop for every system`);
       await page.fill('[role="dialog"] input', "BEAM ON FREE");
       await page.click('[role="dialog"] button:text-is("Confirm")');
       await page.waitForTimeout(500);
-      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify({ state: "on", mode: "free_only", confirm_free: true })) problems.push(`${width}px model router (off_paid): free turn-on requests were ${JSON.stringify(posts)}`);
+      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify({ system: "cerebrum", state: "on", mode: "free_only", confirm_free: true })) problems.push(`${width}px model router (off_paid): free turn-on requests were ${JSON.stringify(posts)}`);
     }
     await page.close();
   }
@@ -1164,15 +1188,38 @@ OVERRIDE = {};
 // fallbacks, and turns Beam off (BEAM OFF) or on (BEAM ON, free only); with the key not set the state reads "disabled (key
 // not set)" and the turn-on says the switch waits for it; after a paid sign only the capped or the confirmed free turn-on
 // (BEAM ON FREE) is offered; an operator sees the state read only, no switch.
+// Owner 2026-11-26 ("tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"): the card has three rows,
+// Cerebrum, CTA and xauusd (news_compare), each with its effective state and why and the owner's own switch (the same
+// phrases, the dialog naming the system, the body naming it); CTA's and xauusd's rows say "not connected yet" until their
+// router reads its switch, else when it last did; a paid sign from any system reads off (a paid sign) on every row.
 const keyless = (state, configured) => routerFixture(state, { effective: "disabled", configured: { var_on: true, key_present: false, base_url_valid: true, ...configured },
-  state: { state, mode: "free_only", paid_cap_usd: null, spent_usd: 0, updated_by: "migration:0090", updated_at: at(600), reason: null } });
+  state: { state, mode: "free_only", paid_cap_usd: null, spent_usd: 0, updated_by: "migration:0090", updated_at: at(600), reason: null, switch: state } });
 const OWNER_ONLY = ["Turn off…", "Turn on (free only)…", "Turn on (paid, capped)…", "Turn on free (not a charge)…"];
+const bothRead = (sw) => routerFixture("on", { systems: sysRows("on", { ctaSwitch: sw, xauusdSwitch: sw, cta: { last_status_read_at: at(5) } }) });
+const noneRead = routerFixture("on", { systems: sysRows("on", { xauusd: { last_status_read_at: null } }) });
 const BEAM_CHECKS = [
-  { name: "owner on", override: {}, want: ["Beam · Cerebrum's model", "Beam is on", "MODEL_ROUTER on, key set", "21 calls", "7 calls", "unreachable or unusable answer: 2", "breaker open: 4", "Turn off…", "Details →"], not: ["Only the owner turns Beam on or off.", "Turn on (free only)…", "disabled ("] },
-  { name: "operator on", override: { "/api/whoami": OPERATOR }, want: ["Beam · Cerebrum's model", "Beam is on", "21 calls", "Only the owner turns Beam on or off."], not: OWNER_ONLY },
-  { name: "owner key not set", override: { "/api/kernel/v1/model-router": keyless("off") }, want: ["Beam is disabled (key not set)", "MODEL_ROUTER on, key not set", "Beam stays disabled (key not set) and Workers AI answers; the owner's switch takes effect once that is fixed.", "Turn on (free only)…", "Turn on (paid, capped)…"], not: ["Turn off…", "Only the owner turns Beam on or off."] },
+  { name: "owner on", override: {}, want: ["Beam · Cerebrum, CTA and xauusd", "Cerebrum", "CTA", "xauusd (news_compare)", "MODEL_ROUTER on, key set", "21 calls", "7 calls", "unreachable or unusable answer: 2", "breaker open: 4", "Details →"], not: ["Only the owner turns Beam on or off.", "disabled (", "paid stop · all off"],
+    rows: { cerebrum: { want: ["Beam is on", "Turn off…"], not: ["Turn on (free only)…"] }, cta: { want: ["Beam is off (never turned on)", "not connected yet", "Turn on (free only)…", "Turn on (paid, capped)…"], not: ["Turn off…", "last read"] }, xauusd: { want: ["Beam is on", "last read this switch", "Turn off…"], not: ["not connected yet", "Turn on (free only)…"] } },
+    flow: { system: "cerebrum", button: "Turn off…", phrase: "BEAM OFF", title: "Turn Beam off for Cerebrum", body: { system: "cerebrum", state: "off" }, reply: routerFixture("off_owner") } },
+  { name: "owner cta on", override: {}, want: ["Beam · Cerebrum, CTA and xauusd"], not: [],
+    flow: { system: "cta", button: "Turn on (free only)…", phrase: "BEAM ON", title: "Turn Beam on (free only) for CTA", line: "CTA's router is not connected yet: the switch takes effect once it reads it.", body: { system: "cta", state: "on", mode: "free_only" }, reply: bothRead("on") } },
+  { name: "owner xauusd off", override: {}, want: ["Beam · Cerebrum, CTA and xauusd"], not: [],
+    flow: { system: "xauusd", button: "Turn off…", phrase: "BEAM OFF", title: "Turn Beam off for xauusd (news_compare)", body: { system: "xauusd", state: "off" }, reply: routerFixture("on") } },
+  { name: "operator on", override: { "/api/whoami": OPERATOR }, want: ["Beam · Cerebrum, CTA and xauusd", "21 calls", "Only the owner turns Beam on or off."], not: OWNER_ONLY,
+    rows: { cerebrum: { want: ["Beam is on"], not: OWNER_ONLY }, cta: { want: ["Beam is off (never turned on)", "not connected yet"], not: OWNER_ONLY }, xauusd: { want: ["Beam is on", "last read this switch"], not: OWNER_ONLY } } },
+  { name: "owner both connected", override: { "/api/kernel/v1/model-router": bothRead("on") }, want: [], not: ["not connected yet"],
+    rows: { cta: { want: ["Beam is on", "last read this switch", "Turn off…"], not: ["Turn on (free only)…"] }, xauusd: { want: ["Beam is on", "last read this switch", "Turn off…"], not: [] } } },
+  { name: "operator none connected", override: { "/api/whoami": OPERATOR, "/api/kernel/v1/model-router": noneRead }, want: ["Only the owner turns Beam on or off."], not: [...OWNER_ONLY, "last read"],
+    rows: { cta: { want: ["not connected yet"], not: [] }, xauusd: { want: ["not connected yet"], not: [] } } },
+  { name: "owner key not set", override: { "/api/kernel/v1/model-router": keyless("off") }, want: ["MODEL_ROUTER on, key not set"], not: ["Only the owner turns Beam on or off."],
+    rows: { cerebrum: { want: ["Beam is disabled (key not set)", "Beam stays disabled (key not set) and Workers AI answers; the owner's switch takes effect once that is fixed.", "Turn on (free only)…", "Turn on (paid, capped)…"], not: ["Turn off…"] }, cta: { want: ["Beam is off (never turned on)"], not: ["disabled"] } },
+    flow: { system: "cerebrum", button: "Turn on (free only)…", phrase: "BEAM ON", title: "Turn Beam on (free only) for Cerebrum", body: { system: "cerebrum", state: "on", mode: "free_only" }, reply: keyless("on"), line: "the owner's switch takes effect once that is fixed" } },
   { name: "operator var off", override: { "/api/whoami": OPERATOR, "/api/kernel/v1/model-router": keyless("off", { var_on: false }) }, want: ["Beam is disabled (var off, key not set)", "MODEL_ROUTER off, key not set", "Only the owner turns Beam on or off."], not: OWNER_ONLY },
-  { name: "owner off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["Beam is off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "Turn on free (not a charge)…"], not: ["Turn on (free only)…", "Turn off…"] },
+  { name: "owner off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["paid sign: http_402", "paid stop · all off", "A paid sign stopped Beam for every system (paid sign: http_402, agent:xauusd-model-router"], not: ["Turn on (free only)…"],
+    rows: { cerebrum: { want: ["Beam is off (a paid sign)", "Turn on (paid, capped)…", "Turn on free (not a charge)…"], not: ["Turn on (free only)…", "Turn off…"] }, cta: { want: ["Beam is off (a paid sign)", "Turn on free (not a charge)…"], not: ["Turn off…"] }, xauusd: { want: ["Beam is off (a paid sign)", "Turn off…", "Turn on free (not a charge)…"], not: [] } },
+    flow: { system: "xauusd", button: "Turn on free (not a charge)…", phrase: "BEAM ON FREE", title: "Turn Beam on again (free only) for xauusd (news_compare)", line: "This clears the paid stop for every system", body: { system: "xauusd", state: "on", mode: "free_only", confirm_free: true }, reply: routerFixture("on") } },
+  { name: "operator off_paid", override: { "/api/whoami": OPERATOR, "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["paid stop · all off", "A paid sign stopped Beam for every system", "Only the owner turns Beam on or off."], not: OWNER_ONLY,
+    rows: { cerebrum: { want: ["Beam is off (a paid sign)"], not: [] }, cta: { want: ["Beam is off (a paid sign)"], not: [] }, xauusd: { want: ["Beam is off (a paid sign)"], not: [] } } },
 ];
 for (const width of [390, 1440]) {
   for (const check of BEAM_CHECKS) {
@@ -1185,28 +1232,34 @@ for (const width of [390, 1440]) {
     if (!panel) problems.push(`${width}px #/ (beam toggle ${check.name}): no Beam panel on Command`);
     for (const w of check.want) if (!panel.includes(w)) problems.push(`${width}px beam toggle (${check.name}): missing "${w}"`);
     for (const w of check.not) if (panel.includes(w)) problems.push(`${width}px beam toggle (${check.name}): shows "${w}"`);
+    const systems = await page.evaluate(() => [...document.querySelectorAll("main [data-beam-toggle] [data-beam-system]")].map((e) => e.getAttribute("data-beam-system")));
+    if (JSON.stringify(systems) !== JSON.stringify(["cerebrum", "cta", "xauusd"])) problems.push(`${width}px beam toggle (${check.name}): rows are ${JSON.stringify(systems)}`);
+    for (const [system, c] of Object.entries(check.rows ?? {})) {
+      const t = await page.evaluate(rowText, system);
+      for (const w of c.want) if (!t.includes(w)) problems.push(`${width}px beam toggle (${check.name}) ${system} row: missing "${w}"`);
+      for (const w of c.not) if (t.includes(w)) problems.push(`${width}px beam toggle (${check.name}) ${system} row: shows "${w}"`);
+    }
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) problems.push(`${width}px #/ (beam toggle ${check.name}): horizontal scroll of ${overflow}px`);
-    const flow = check.name === "owner on" ? { button: "Turn off…", phrase: "BEAM OFF", body: { state: "off" }, reply: routerFixture("off_owner") }
-      : check.name === "owner key not set" ? { button: "Turn on (free only)…", phrase: "BEAM ON", body: { state: "on", mode: "free_only" }, reply: keyless("on"), line: "the owner's switch takes effect once that is fixed" }
-      : check.name === "owner off_paid" ? { button: "Turn on free (not a charge)…", phrase: "BEAM ON FREE", body: { state: "on", mode: "free_only", confirm_free: true }, reply: routerFixture("on") } : null;
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-beam-toggle-${check.name.replace(/ /g, "_")}.png`), fullPage: true });
+    const flow = check.flow;
     if (flow) {
       const posts = [];
       await page.route("**/console/api/kernel/v1/model-router/state", async (route) => {
         posts.push({ method: route.request().method(), body: route.request().postData() });
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ changed: true, status: flow.reply }) });
       });
-      await page.click(`main [data-beam-toggle] button:text-is("${flow.button}")`);
+      await page.click(`main [data-beam-toggle] [data-beam-system="${flow.system}"] button:text-is("${flow.button}")`);
       await page.waitForTimeout(300);
       const dialog = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? "");
       if (!dialog.includes(flow.phrase)) problems.push(`${width}px beam toggle (${check.name}): the dialog asks for no ${flow.phrase} phrase (${dialog.slice(0, 120)})`);
+      if (!dialog.includes(flow.title)) problems.push(`${width}px beam toggle (${check.name}): the dialog does not name the system ("${flow.title}"; ${dialog.slice(0, 120)})`);
       if (flow.line && !dialog.includes(flow.line)) problems.push(`${width}px beam toggle (${check.name}): the dialog does not say "${flow.line}"`);
       await page.fill('[role="dialog"] input', flow.phrase);
       await page.click('[role="dialog"] button:text-is("Confirm")');
       await page.waitForTimeout(500);
       if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify(flow.body)) problems.push(`${width}px beam toggle (${check.name}): requests were ${JSON.stringify(posts)}`);
     }
-    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-beam-toggle-${check.name.replace(/ /g, "_")}.png`), fullPage: true });
     await page.close();
   }
 }
@@ -1217,4 +1270,4 @@ if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases), the model router panel (${ROUTER_CHECKS.length} cases: owner, operator, off_paid, read fails), and the Beam toggle on Command (${BEAM_CHECKS.length} cases: owner and operator, on, key not set, var off, off_paid) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases), the model router panel (${ROUTER_CHECKS.length} cases: owner, operator, off_paid, read fails, with the three systems' rows), and the Beam toggle on Command (${BEAM_CHECKS.length} cases: owner and operator, the Cerebrum, CTA and xauusd rows, not connected and connected, key not set, var off, the global off_paid) at both widths.`);
