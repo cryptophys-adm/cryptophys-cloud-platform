@@ -78,6 +78,12 @@ export interface AiTask<T> {
   validate(output: unknown): T | null;
   /** Optional: why validate() rejected this output, as a short slug. Never echoes output content. */
   diagnose?(output: unknown): string;
+  /**
+   * Optional: a smaller input for the Workers AI fallback when Beam was called this run and failed (unreachable, or
+   * cut at its output budget), so the time Beam already spent leaves the fallback a lighter call (2026-11-26: a chat
+   * turn fell back after 14 s and Workers AI then timed out at 30 s). The first attempt always gets the whole input.
+   */
+  fallbackInput?(input: unknown): unknown;
 }
 
 /** Per-call options. `purpose: "learning"` only at a learning call site (power-mode.ts LEARNING_AI_PURPOSE). */
@@ -443,7 +449,10 @@ export class AiEngine {
     }
 
     const started = Date.now();
-    const out = await this.runWorkersAi(task, system, serialized, correlationId, day);
+    // After a Beam failure that cost time, the task may hand the fallback a lighter input (fallbackInput).
+    const lighter = (fallback === "unreachable" || fallback === "output_budget") && task.fallbackInput;
+    const fallbackSerialized = lighter ? JSON.stringify(redactForModel(redact(task.fallbackInput!(input)), this.owners)) : serialized;
+    const out = await this.runWorkersAi(task, system, fallbackSerialized, correlationId, day);
     if (router) {
       const u = out.status === "ok" ? out.usage : undefined;
       await router.meter(task.name, { provider: "workers_ai", model: this.model, in_tokens: u?.input ?? 0, out_tokens: u?.output ?? 0, latency_ms: Date.now() - started, fallback });

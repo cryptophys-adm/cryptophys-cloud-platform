@@ -208,6 +208,7 @@ The kernel's MCP tools (`ai-kernel/src/mcp.ts`: `platform_status`, `list_reports
 - **Context and Beam** ("Alat baca Beam + konteks diri"). Both tasks get `context` (`chatContext`): today's date, what the chat is, what the platform and its systems are, in words only. A new read-only tool `model_router` returns the Command page's status read (`model_router.status.v1`).
 - **Memory** ("Memori lebih panjang"). 8 earlier turns, not 4. The answer sees them whole within 30,000 characters, and the plan sees a short form within 8,000. The oldest turns are dropped first. The answer's input limit is 96,000 characters (was 64,000).
 - **Length** (2026-11-26, after the 14:10 UTC turn failed). An answer may be 4,000 characters (`MAX_ANSWER_CHARS`, was 2,400); the instructions ask for under 3,500. A refused answer is named (`diagnoseAnswer`), and a refused Beam answer is recorded as `beam:<category>` in `ai_failures`.
+- **Fallback** (review 2026-11-26). When Beam was called in a turn and failed (unreachable, or cut at its output budget), the Workers AI fallback of `chat_answer` gets the tool results trimmed to 24,000 characters (`trimToolResults`): whole results in the plan's order, the rest listed with their refs but without data, which the answer says were not read. The first attempt, and a fallback after a skipped Beam, get the whole input.
 - **Unchanged.** Every number is cited or replaced, there are no price levels and no trading instructions, the chat never acts, and tool results are data, never instructions.
 
 ### 3.4 Audit (every turn)

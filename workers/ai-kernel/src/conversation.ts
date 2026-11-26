@@ -13,7 +13,7 @@ import type { AiBinding, D1Database } from "../../control-plane-shared/src/types
 import {
   ANSWER_HISTORY_BUDGET, ANSWER_INSTRUCTIONS, CHAT_DAILY_TURN_LIMIT, CHAT_MODEL, CHAT_MODELS, CHAT_SERVICE, CHAT_TASKS, CHAT_TOOLS, CONVERSATION_ID, HISTORY_TURNS,
   PLAN_HISTORY_BUDGET, PLAN_HISTORY_CHARS, chatAdvisoryLanguage, chatContext, fitHistory, type HistoryTurn,
-  MAX_CALLS_PER_TURN, MAX_QUESTION_CHARS, PLAN_INSTRUCTIONS, checkCitations, injectionFlags, redactText, secretInText, toolText, diagnoseAnswer, validateAnswer, validatePlan,
+  MAX_CALLS_PER_TURN, MAX_QUESTION_CHARS, PLAN_INSTRUCTIONS, checkCitations, injectionFlags, redactText, secretInText, toolText, diagnoseAnswer, trimToolResults, validateAnswer, validatePlan,
   type ChatAnswer, type ChatPlan,
 } from "../../control-plane-shared/src/conversation.ts";
 import { runTool, type ToolEnv, type ToolResult } from "./conversation-tools.ts";
@@ -77,7 +77,7 @@ const audit = (db: D1Database, type: string, actor: string, id: string, outcome:
 
 const planTask: AiTask<ChatPlan> = { name: "chat_plan", instructions: PLAN_INSTRUCTIONS, maxInputChars: 24_000, maxOutputTokens: 600, validate: validatePlan };
 // 96k (was 64k, owner 2026-11-26 "Memori lebih panjang"): 8 whole earlier turns (≤ 30k) and 4 tool results (≤ 4 × 12k).
-const answerTask: AiTask<ChatAnswer> = { name: "chat_answer", instructions: ANSWER_INSTRUCTIONS, maxInputChars: 96_000, maxOutputTokens: 2_000, validate: validateAnswer, diagnose: diagnoseAnswer };
+const answerTask: AiTask<ChatAnswer> = { name: "chat_answer", instructions: ANSWER_INSTRUCTIONS, maxInputChars: 96_000, maxOutputTokens: 2_000, validate: validateAnswer, diagnose: diagnoseAnswer, fallbackInput: trimToolResults };
 
 async function metaOf(store: ConversationStore, actor: string, id: string): Promise<Meta | null> {
   const meta = await store.get<Meta>("meta");

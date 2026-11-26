@@ -93,6 +93,27 @@ export function validatePlan(output: unknown): ChatPlan | null {
   return { tools: out };
 }
 
+/** The tool results' budget of chat_answer's Workers AI fallback after a Beam failure (review 2026-11-26). */
+export const FALLBACK_TOOL_RESULTS_CHARS = 24_000;
+
+/**
+ * chat_answer's input for the fallback after a Beam failure: the tool results kept whole, in the plan's order (the
+ * planner's order of relevance), while they fit FALLBACK_TOOL_RESULTS_CHARS; the rest stay listed with their refs but
+ * without data (data_json null, omitted "budget"), so the answer says they were not read rather than guessing.
+ * Everything else in the input is unchanged.
+ */
+export function trimToolResults(input: unknown, budget = FALLBACK_TOOL_RESULTS_CHARS): unknown {
+  const i = input as { tool_results?: Array<Record<string, unknown>> } | null;
+  if (!i || !Array.isArray(i.tool_results)) return input;
+  let used = 0;
+  const tool_results = i.tool_results.map((r) => {
+    const size = JSON.stringify(r).length;
+    if (used + size <= budget) { used += size; return r; }
+    return { ...r, data_json: null, omitted: "budget" };
+  });
+  return { ...i, tool_results };
+}
+
 /** Why validateAnswer refused an output, as a slug for ai_failures (schema:<slug>); never the content. */
 export function diagnoseAnswer(output: unknown): string {
   const o = output as { answer?: unknown; citations?: unknown };
@@ -238,7 +259,8 @@ export const ANSWER_INSTRUCTIONS =
   "a few short paragraphs. Keep every answer under " + String(MAX_ANSWER_CHARS - 500) + " characters. For a greeting or a follow-up, answer naturally and use the earlier turns. (2) Every number you " +
   "write must appear in a tool result; list each in citations as {\"ref\": a ref given with that result, \"value\": the " +
   "number exactly as written}. A number you cannot cite is not written: write \"—\" instead. (3) Measured facts come from " +
-  "the tool results only: when no tool measured something, say so in words; never guess a value or a default. (4) You may " +
+  "the tool results only: when no tool measured something, say so in words; never guess a value or a default. A tool " +
+  "result marked omitted was not given to you this time: say it was not read; never guess what it holds. (4) You may " +
   "explain how the platform works from the docs tool's results: say it comes from the platform's documents and name the " +
   "document. When it helps, you may add one sentence of general background about a general technical concept (for " +
   "example what a circuit breaker or consensus is), saying it is general background; never about markets, prices, " +
