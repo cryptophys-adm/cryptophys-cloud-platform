@@ -8,6 +8,7 @@ import { call } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import CognitionPanel from "../components/CognitionPanel";
 import OrganHealthChips from "../components/OrganHealthChips";
+import ModelRouterPanel from "../components/ModelRouterPanel";
 import { statusTone } from "./Consensus";
 import { DataTable, STATUS, StatusBar, VoteBar } from "../components/viz";
 
@@ -135,6 +136,10 @@ export default function Command() {
           </div>
         </Panel>
       </div>
+
+      {/* Owner 2026-11-26 ("pandu aktifkan beam", "buatkan togglenya di cerebrum > command"): the Beam toggle, owner-only;
+          operators see the state read only. The full router panel stays on Organism → Telemetry. */}
+      <ModelRouterPanel compact />
 
       <Panel title="Consensus · AI mesh decisions" icon={<Gavel className="h-3.5 w-3.5 text-violet-300" />}
         right={<div className="flex items-center gap-2"><Badge tone={cns.data?.mode === "shadow" ? "amber" : "purple"}>mode · {cns.data?.mode ?? "—"}</Badge><a href="#/consensus" className="text-[10px] uppercase tracking-widest text-slate-500 hover:text-cyan-300">All →</a></div>}>

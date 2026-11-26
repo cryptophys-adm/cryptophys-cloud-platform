@@ -1159,10 +1159,62 @@ for (const width of [390, 1440]) {
   }
 }
 OVERRIDE = {};
+// Owner 2026-11-26 ("pandu aktifkan beam", "buatkan togglenya di cerebrum > command"): the Beam toggle on Command (#/),
+// the compact model router panel. The owner sees the effective state and why, today's Beam and Workers AI calls and the
+// fallbacks, and turns Beam off (BEAM OFF) or on (BEAM ON, free only); with the key not set the state reads "disabled (key
+// not set)" and the turn-on says the switch waits for it; after a paid sign only the capped or the confirmed free turn-on
+// (BEAM ON FREE) is offered; an operator sees the state read only, no switch.
+const keyless = (state, configured) => routerFixture(state, { effective: "disabled", configured: { var_on: true, key_present: false, base_url_valid: true, ...configured },
+  state: { state, mode: "free_only", paid_cap_usd: null, spent_usd: 0, updated_by: "migration:0090", updated_at: at(600), reason: null } });
+const OWNER_ONLY = ["Turn off…", "Turn on (free only)…", "Turn on (paid, capped)…", "Turn on free (not a charge)…"];
+const BEAM_CHECKS = [
+  { name: "owner on", override: {}, want: ["Beam · Cerebrum's model", "Beam is on", "MODEL_ROUTER on, key set", "21 calls", "7 calls", "unreachable or unusable answer: 2", "breaker open: 4", "Turn off…", "Details →"], not: ["Only the owner turns Beam on or off.", "Turn on (free only)…", "disabled ("] },
+  { name: "operator on", override: { "/api/whoami": OPERATOR }, want: ["Beam · Cerebrum's model", "Beam is on", "21 calls", "Only the owner turns Beam on or off."], not: OWNER_ONLY },
+  { name: "owner key not set", override: { "/api/kernel/v1/model-router": keyless("off") }, want: ["Beam is disabled (key not set)", "MODEL_ROUTER on, key not set", "Beam stays disabled (key not set) and Workers AI answers; the owner's switch takes effect once that is fixed.", "Turn on (free only)…", "Turn on (paid, capped)…"], not: ["Turn off…", "Only the owner turns Beam on or off."] },
+  { name: "operator var off", override: { "/api/whoami": OPERATOR, "/api/kernel/v1/model-router": keyless("off", { var_on: false }) }, want: ["Beam is disabled (var off, key not set)", "MODEL_ROUTER off, key not set", "Only the owner turns Beam on or off."], not: OWNER_ONLY },
+  { name: "owner off_paid", override: { "/api/kernel/v1/model-router": routerFixture("off_paid") }, want: ["Beam is off (a paid sign)", "paid sign: http_402", "Turn on (paid, capped)…", "Turn on free (not a charge)…"], not: ["Turn on (free only)…", "Turn off…"] },
+];
+for (const width of [390, 1440]) {
+  for (const check of BEAM_CHECKS) {
+    OVERRIDE = check.override;
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.on("pageerror", (e) => problems.push(`${width}px beam-toggle/${check.name} page error: ${e.message}`));
+    await page.goto(`${base}#/`);
+    await page.waitForTimeout(900);
+    const panel = await page.evaluate(() => document.querySelector("main [data-beam-toggle]")?.closest("section")?.textContent ?? "");
+    if (!panel) problems.push(`${width}px #/ (beam toggle ${check.name}): no Beam panel on Command`);
+    for (const w of check.want) if (!panel.includes(w)) problems.push(`${width}px beam toggle (${check.name}): missing "${w}"`);
+    for (const w of check.not) if (panel.includes(w)) problems.push(`${width}px beam toggle (${check.name}): shows "${w}"`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (overflow > 1) problems.push(`${width}px #/ (beam toggle ${check.name}): horizontal scroll of ${overflow}px`);
+    const flow = check.name === "owner on" ? { button: "Turn off…", phrase: "BEAM OFF", body: { state: "off" }, reply: routerFixture("off_owner") }
+      : check.name === "owner key not set" ? { button: "Turn on (free only)…", phrase: "BEAM ON", body: { state: "on", mode: "free_only" }, reply: keyless("on"), line: "the owner's switch takes effect once that is fixed" }
+      : check.name === "owner off_paid" ? { button: "Turn on free (not a charge)…", phrase: "BEAM ON FREE", body: { state: "on", mode: "free_only", confirm_free: true }, reply: routerFixture("on") } : null;
+    if (flow) {
+      const posts = [];
+      await page.route("**/console/api/kernel/v1/model-router/state", async (route) => {
+        posts.push({ method: route.request().method(), body: route.request().postData() });
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ changed: true, status: flow.reply }) });
+      });
+      await page.click(`main [data-beam-toggle] button:text-is("${flow.button}")`);
+      await page.waitForTimeout(300);
+      const dialog = await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent ?? "");
+      if (!dialog.includes(flow.phrase)) problems.push(`${width}px beam toggle (${check.name}): the dialog asks for no ${flow.phrase} phrase (${dialog.slice(0, 120)})`);
+      if (flow.line && !dialog.includes(flow.line)) problems.push(`${width}px beam toggle (${check.name}): the dialog does not say "${flow.line}"`);
+      await page.fill('[role="dialog"] input', flow.phrase);
+      await page.click('[role="dialog"] button:text-is("Confirm")');
+      await page.waitForTimeout(500);
+      if (posts.length !== 1 || posts[0].method !== "POST" || posts[0].body !== JSON.stringify(flow.body)) problems.push(`${width}px beam toggle (${check.name}): requests were ${JSON.stringify(posts)}`);
+    }
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-beam-toggle-${check.name.replace(/ /g, "_")}.png`), fullPage: true });
+    await page.close();
+  }
+}
+OVERRIDE = {};
 await browser.close();
 server.close();
 if (problems.length) {
   console.error(`Render smoke failed:\n- ${[...new Set(problems)].join("\n- ")}`);
   process.exit(1);
 }
-console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases), and the model router panel (${ROUTER_CHECKS.length} cases: owner, operator, off_paid, read fails) at both widths.`);
+console.log(`Render smoke passed: ${ROUTES.length} screens x 2 widths under /console/, the Owner page as approver, operator and empty, the Ask page (list, conversation, operator, off), the teaching record (${TEACHING_CHECKS.length} cases), the Councils page (${COUNCIL_CHECKS.length} cases), the External intents panel (${XCLOSE_CHECKS} cases: owner, operator, close), the push hub under the Console CSP, the Users page identity lists (owner, operator, invalid), the Vision page's ADR panel (${ADR_CHECKS.length} cases), the Infrastructure detail panel (${DETAIL_CHECKS.length} cases), the Organism Telemetry tab (${TELEMETRY_CHECKS.length} cases), the model router panel (${ROUTER_CHECKS.length} cases: owner, operator, off_paid, read fails), and the Beam toggle on Command (${BEAM_CHECKS.length} cases: owner and operator, on, key not set, var off, off_paid) at both widths.`);

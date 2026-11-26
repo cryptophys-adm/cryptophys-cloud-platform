@@ -45,11 +45,12 @@ CHAT_DAILY_TURN_LIMIT = "40"
 ANALYTICS_SAMPLE_RATE = "1"
 # AIR1 (ADR-0007 amendment 2026-11-25; owner: "Approve, but Cerebrum only"): the model router lets Beam (Reflection,
 # OpenAI-compatible) answer Cerebrum's chat, directive drafts and councils before Workers AI, free_only; Workers AI is
-# always the fallback (control-plane-shared/src/model-router.ts). Off here, off in D1 (model_router_state) until the owner
-# turns it on, and off while the Worker secret REFLECTION_API_KEY is absent. The secret is set by the owner only; it is
-# not declared as required, so a deploy without it succeeds and the router stays off. The share vars stop Beam before
-# Reflection's limits: requests a minute and a UTC day, input and output tokens a UTC day.
-MODEL_ROUTER = "off"
+# always the fallback (control-plane-shared/src/model-router.ts). On here since 2026-11-26 (owner: "pandu aktifkan beam",
+# "buatkan togglenya di cerebrum > command"), so the owner's switch on Cerebrum > Command is the switch: Beam stays off in
+# D1 (model_router_state) until the owner turns it on, and off while the Worker secret REFLECTION_API_KEY is absent. The
+# secret is set by the owner only; it is not declared as required, so a deploy without it succeeds and the router stays
+# off. The share vars stop Beam before Reflection's limits: requests a minute and a UTC day, input and output tokens a UTC day.
+MODEL_ROUTER = "on"
 MODEL_BASE_URL = "https://api.reflection.ai/openai/v1"
 MODEL_ROUTER_RPM = "10"
 MODEL_ROUTER_REQUESTS_DAY = "500"

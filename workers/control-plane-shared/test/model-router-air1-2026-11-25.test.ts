@@ -427,15 +427,26 @@ test("AIR1-14. capabilities: model_router.status (tier 0) and model_router.repor
   assert.deepEqual(ev.map((e) => e.actor), ["agent:router-probe"]);
 });
 
-test("AIR1-15. configuration and records: off by default in wrangler, no required secret; the migration; the ADR amendment, the requirement's exception and the SSOT", () => {
+test("AIR1-15. configuration and records: MODEL_ROUTER on in wrangler (owner, 2026-11-26), no required secret, D1 seeds off; the migration; the ADR amendment, the requirement's exception and the SSOT", () => {
   const toml = read("workers/ai-kernel/wrangler.toml");
-  assert.match(toml, /\nMODEL_ROUTER = "off"\n/);
+  // Owner 2026-11-26 ("pandu aktifkan beam", "buatkan togglenya di cerebrum > command"): the var is on, so the owner's
+  // switch on Command is the toggle; Beam stays off until the owner sets the key (no required secret, below) and turns the
+  // D1 state on (migration 0090 seeds it off, below).
+  assert.match(toml, /\nMODEL_ROUTER = "on"\n/);
+  assert.doesNotMatch(toml, /\nMODEL_ROUTER = "off"\n/);
   assert.match(toml, /\nMODEL_BASE_URL = "https:\/\/api\.reflection\.ai\/openai\/v1"\n/);
   assert.match(toml, /\nMODEL_ROUTER_RPM = "10"\nMODEL_ROUTER_REQUESTS_DAY = "500"\nMODEL_ROUTER_INPUT_TOKENS_DAY = "1000000"\nMODEL_ROUTER_OUTPUT_TOKENS_DAY = "150000"\n/);
   assert.doesNotMatch(toml, /\[secrets\]|^REFLECTION_API_KEY\s*=/m, "the key is never in the config and is not a required secret");
   assert.deepEqual(FALLBACK_REASONS, ["unreachable", "rate", "budget", "paid", "retention", "breaker", "off", "disabled", "output_budget"]);
   const sql = read("workers/control-plane-migrations/0090_model_router.sql");
   assert.match(sql, /PRIMARY KEY \(day, system, purpose, provider, model\)/);
+  assert.match(sql, /INSERT OR IGNORE INTO model_router_state [^;]*VALUES \('global', 'off', 'free_only'/, "D1 seeds the owner's switch off");
+  // The owner's Beam toggle on Cerebrum → Command: the same panel as Organism → Telemetry, compact; the switch is the owner's.
+  const cmd = read("workers/console/ui/src/pages/Command.tsx"), panel = read("workers/console/ui/src/components/ModelRouterPanel.tsx");
+  assert.match(cmd, /<ModelRouterPanel compact \/>/);
+  assert.match(read("workers/console/ui/src/pages/Organism.tsx"), /tab === "telemetry" && <ModelRouterPanel \/>/);
+  assert.match(panel, /const controls = who\.owner \? \(/);
+  assert.doesNotMatch(panel, /REFLECTION_API_KEY/, "the Console never names or shows the key");
   assert.match(read("workers/control-plane-migrations/test_migrations.py"), /PASS: 0090 model_router/);
   const adr = read("architecture/adr/0007-ai-worker-os.md");
   assert.match(adr, /## Amendment 2026-11-25: Beam for Cerebrum \(the model router, AIR1\)/);
