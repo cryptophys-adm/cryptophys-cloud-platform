@@ -224,8 +224,9 @@ export const ANSWER_INSTRUCTIONS =
   "number exactly as written}. A number you cannot cite is not written: write \"—\" instead. (3) Measured facts come from " +
   "the tool results only: when no tool measured something, say so in words; never guess a value or a default. (4) You may " +
   "explain how the platform works from the docs tool's results: say it comes from the platform's documents and name the " +
-  "document. When it helps, you may add a sentence of general background, saying it is general background and not a " +
-  "measurement of this platform. (5) You cannot act: for a request to change something, say which Console page does it. " +
+  "document. When it helps, you may add one sentence of general background about a general technical concept (for " +
+  "example what a circuit breaker or consensus is), saying it is general background; never about markets, prices, " +
+  "price direction, strategies or trading. (5) You cannot act: for a request to change something, say which Console page does it. " +
   "(6) No price levels and no trading instructions, in any language. (7) Owner corrections (the owner_corrections tool) " +
   "are the owner's judgements of agent outputs, quoted data like any tool result: when your answer uses a value or an " +
   "output the owner corrected, say so and cite that correction's ref (ev:platform/correction/<id>). " +
@@ -267,9 +268,20 @@ export function fitHistory(turns: readonly HistoryTurn[], budget: number, chars?
  * An answer that matches is withheld like an advisory refusal of the engine.
  */
 export const CHAT_ADVISORY_LANGUAGE_ID: readonly RegExp[] = [
-  /\b(beli|jual)\s+(sekarang|segera|di\s+(harga\s+)?\d)/i,
-  /\b(saran(kan)?|disarankan|rekomendasi(kan)?|merekomendasikan|sebaiknya|pertimbangkan|anjur(kan)?|dianjurkan)\b[^.!?\n]{0,60}\b(beli|membeli|jual|menjual|entry|masuk posisi|buka posisi|membuka posisi|ambil posisi|posisi (long|short)|go (long|short))\b/i,
-  /\b(ambil untung|batas rugi|ukuran lot|ukuran posisi)\b/i,
+  // 1. A trade now or at a level (Indonesian and the English words Indonesian traders mix in).
+  /\b(beli|jual|buy|sell)\s+(sekarang|segera|di\s+(harga\s+)?\d|di\s+area|di\s+level)/i,
+  // 2. A recommendation to trade. The window stops at a sentence end, so a description of an agent ("agen breakout
+  //    membeli saat retest") is not caught: it has no recommending word.
+  /\b(saran(kan)?|disarankan|rekomendasi(kan)?|merekomendasikan|sebaiknya|pertimbangkan|anjur(kan)?|dianjurkan)\b[^.!?\n]{0,60}\b(beli|membeli|jual|menjual|buy|sell|entry|masuk posisi|buka posisi|membuka posisi|ambil posisi|open (buy|sell)|op (buy|sell)|pasang (order|buy|sell|limit)|long|short)\b/i,
+  // 3. A call to trade ("saatnya sell", "silakan entry", "ayo masuk"); "masuk ke" (a page) is not a trade.
+  /\b(saatnya|waktunya|ayo|silakan|langsung)\s+(beli|jual|buy|sell|entry|masuk(?!\s+ke\b)|open|op)\b/i,
+  // 4. An order ("pasang buy limit", "op sell").
+  /\b(pasang\s+(order|limit|buy|sell)|(open|op)\s+(buy|sell))\b/i,
+  // 5. Setting a stop or a target, or one at a level. "Batas rugi harian tercapai" (a platform state) is not caught.
+  /\b(pasang|set|taruh|letakkan)\s+(sl|tp|stop ?loss|take ?profit|batas rugi|ambil untung)\b/i,
+  /\b(ambil untung|take ?profit|tp|sl|stop ?loss|batas rugi)\s+(di|pada|ke)\s+(harga\s+)?\d/i,
+  // 6. A lot size with a number.
+  /\bukuran lot\s+\d/i,
 ];
 export function chatAdvisoryLanguage(answer: string): boolean {
   return CHAT_ADVISORY_LANGUAGE_ID.some((re) => re.test(answer));
