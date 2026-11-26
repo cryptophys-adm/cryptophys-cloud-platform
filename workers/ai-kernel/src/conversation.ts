@@ -149,6 +149,7 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
     ownBudget: async () => ++calls <= MAX_CALLS_PER_TURN,
     // AIR1 (ADR-0007 amendment 2026-11-25): Beam first for chat_plan and chat_answer, Workers AI always the fallback.
     router: modelRouterFor(env, db),
+    ownerIdentities: (env as { APPROVER_IDENTITIES?: string }).APPROVER_IDENTITIES,
   });
   const usage: AiUsage = { input: 0, cached: 0, output: 0 };
   const add = (u?: AiUsage) => { if (u) { usage.input += u.input; usage.cached += u.cached; usage.output += u.output; } };

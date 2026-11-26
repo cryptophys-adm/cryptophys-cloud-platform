@@ -277,7 +277,7 @@ export async function stepCouncil(env: CouncilEnv, store: CouncilStore, now = Da
   const engine = new AiEngine({ service: "cryptophys-ai-kernel", ai: env.AI, db, allowedModels: CHAT_MODELS, allowedTasks: COUNCIL_TASKS, model: CHAT_MODEL, timeoutMs: COUNCIL_AI_TIMEOUT_MS,
     ownBudget: async () => s.spent.calls < s.budget.max_calls && s.spent.usd_est < s.budget.max_usd,
     // AIR1 (ADR-0007 amendment 2026-11-25): Beam first for the seats and the synthesis, Workers AI always the fallback.
-    router: modelRouterFor(env, db) });
+    router: modelRouterFor(env, db), ownerIdentities: (env as { APPROVER_IDENTITIES?: string }).APPROVER_IDENTITIES });
   const call = async <T>(task: AiTask<T>, input: unknown, tag: string) => {
     const r = await engine.run(task, input, `council:${s.session_id}:${tag}`);
     if (r.status !== "unavailable" || r.reason !== "daily_budget_exhausted") s.spent.calls += 1;
