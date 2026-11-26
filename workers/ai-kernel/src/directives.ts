@@ -73,7 +73,7 @@ export async function draftFromDirective(env: DirectiveEnv, actor: string, direc
   let calls = 0;
   const engine = new AiEngine({ service: CHAT_SERVICE, ai: env.AI, db, allowedModels: CHAT_MODELS, allowedTasks: DIRECTIVE_TASKS, model: CHAT_MODEL, timeoutMs: 30_000, ownBudget: async () => ++calls <= 1,
     // AIR1 (ADR-0007 amendment 2026-11-25): Beam first for directive_draft, Workers AI always the fallback.
-    router: modelRouterFor(env, db) });
+    router: modelRouterFor(env, db), ownerIdentities: (env as { APPROVER_IDENTITIES?: string }).APPROVER_IDENTITIES });
   const parameters = Object.entries(POLICY_PARAMETERS).map(([name, p]) => ({ name, min: p.min, max: p.max, description: p.description }));
   const r = await engine.run(task, { directive, policy_parameters: parameters, kpi_ids: KPI_IDS }, `directive:${textHash.slice(0, 12)}`);
   if (r.status !== "ok") {

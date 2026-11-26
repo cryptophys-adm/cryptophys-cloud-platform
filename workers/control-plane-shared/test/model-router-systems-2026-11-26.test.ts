@@ -308,7 +308,8 @@ test("BEAM-7. the guard reasons are unchanged, and the records: SSOT line 5 and 
   assert.equal(criticalPathReason("workers/control-plane-shared/src/organism.ts"), "capability_ceiling");
   assert.equal(criticalPathReason("workers/control-plane-shared/src/ai-engine.ts"), null);
   const ssot = read("docs/SSOT.md");
-  assert.ok(ssot.split("\n")[4].startsWith('Last reviewed: 2026-11-16 (beam toggles, 2026-11-26 (owner: "tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"; per-system Beam switches for Cerebrum, CTA and xauusd on Command, a paid sign stops all); '));
+  // Line 5's segments are prepended, so a later one may come first (chat flex, 2026-11-26).
+  assert.ok(/^Last reviewed: 2026-11-16 \((?:[^\n]*\); )?beam toggles, 2026-11-26 \(owner: "tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"; per-system Beam switches for Cerebrum, CTA and xauusd on Command, a paid sign stops all\); /.test(ssot.split("\n")[4]));
   assert.match(ssot, /\*\*Model router \(AIR1[^\n]*"tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"[^\n]*`model_router_global`/);
   const adr = read("architecture/adr/0007-ai-worker-os.md");
   const section = adr.slice(adr.indexOf("### Per-system Beam switches (owner 2026-11-26)"));

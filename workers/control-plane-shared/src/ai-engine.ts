@@ -1,5 +1,6 @@
 import type { AiBinding, D1Database } from "./types.ts";
 import { redact } from "./http.ts";
+import { ownersOf, redactForModel } from "./model-redact.ts";
 import { GROWTH_AI_BUDGET_RATIO, SURVIVAL_AI_BUDGET, isLearningAiPurpose, type AiPurpose } from "./power-mode.ts";
 import type { FallbackReason, ModelRouter } from "./model-router.ts";
 
@@ -92,6 +93,11 @@ export interface AiEngineOptions {
   ownBudget?: (day: string) => Promise<boolean>;
   /** AIR1: the model router (model-router.ts). Only Cerebrum's chat, directive and council engines pass one. */
   router?: ModelRouter;
+  /**
+   * The owners (APPROVER_IDENTITIES, a comma list): their emails reach a model as "the owner", every other email as
+   * "an operator" (redactForModel, review 2026-11-26). Without it every email is "an operator".
+   */
+  ownerIdentities?: string;
 }
 
 /** The token counts of a completion (OpenAI-style `usage`), or null when the model reported none. */
@@ -203,6 +209,7 @@ export class AiEngine {
   private readonly timeoutMs: number;
   private readonly ownBudget?: (day: string) => Promise<boolean>;
   private readonly router?: ModelRouter;
+  private readonly owners: ReadonlySet<string>;
 
   constructor(options: AiEngineOptions) {
     this.service = options.service;
@@ -216,6 +223,7 @@ export class AiEngine {
     this.timeoutMs = options.timeoutMs ?? 8000;
     this.ownBudget = options.ownBudget;
     this.router = options.router;
+    this.owners = ownersOf(options.ownerIdentities);
   }
 
   configured(): boolean {
@@ -373,7 +381,8 @@ export class AiEngine {
     if (!this.ai) return unavailable("ai_binding_missing");
     if (!this.allowedModels.includes(this.model)) return unavailable("model_not_allowed");
 
-    const serialized = JSON.stringify(redact(input));
+    // No secret and no person's email reaches a model, Beam (an outside provider) or Workers AI.
+    const serialized = JSON.stringify(redactForModel(redact(input), this.owners));
     if (serialized.length > task.maxInputChars) return unavailable("input_too_large");
 
     const day = utcDay();
@@ -533,7 +542,7 @@ export class AiEngine {
 }
 
 export function engineFor(
-  env: { AI?: AiBinding; DB: D1Database; AI_MODEL?: string; AI_DAILY_REQUEST_LIMIT?: string; AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string },
+  env: { AI?: AiBinding; DB: D1Database; AI_MODEL?: string; AI_DAILY_REQUEST_LIMIT?: string; AI_ACCOUNT_DAILY_REQUEST_LIMIT?: string; APPROVER_IDENTITIES?: string },
   service: string,
   allowedTasks: readonly string[],
   allowedModels: readonly string[] = ALLOWED_TEXT_MODELS,
@@ -547,5 +556,6 @@ export function engineFor(
     model: env.AI_MODEL || DEFAULT_MODEL,
     dailyLimit: Number(env.AI_DAILY_REQUEST_LIMIT ?? "") || undefined,
     accountDailyLimit: Number(env.AI_ACCOUNT_DAILY_REQUEST_LIMIT ?? "") || undefined,
+    ownerIdentities: env.APPROVER_IDENTITIES,
   });
 }
