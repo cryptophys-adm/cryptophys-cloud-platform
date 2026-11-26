@@ -11,8 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
-  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req, signAccessJwt,
-} from "./harness.ts";
+  APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, baseEnv, call, migratedDb, req, signAccessJwt, lastReviewedRecord } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import {
@@ -558,7 +557,7 @@ test("IL-16. the docs say where the identity lists come from and how the owner c
   assert.match(ops, /platform_identities/);
   const ssot = read("docs/SSOT.md");
   // The 2026-11-16 entry of the "Last reviewed" line (newer segments are prepended within it, as the other entries' tests allow).
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*the deploy-time identity lists get a native source, D1 `platform_identities`/);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*the deploy-time identity lists get a native source, D1 `platform_identities`/);
   assert.match(read("workers/deployment-orchestrator/src/deploy-vars.ts"), /vars_from_identity_table/);
 });
 

@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, call, migratedDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, call, migratedDb, req, lastReviewedRecord } from "./harness.ts";
 import { CAPABILITIES, hourlyLimit } from "../src/capabilities.ts";
 import { isLearningCapability, survivalDenies } from "../src/power-mode.ts";
 import {
@@ -436,7 +436,7 @@ test("PF3-11. before migration 0088 the reads answer as before, with latest_verd
 
 test("PF3-12. the SSOT carries PF3's entry on line 5, and the xauusd agent lists name shadow-knowledge", () => {
   const ssot = read("docs/SSOT.md");
-  const line = ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const line = lastReviewedRecord();
   assert.match(line, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Knowledge verdict write-back \(PF3\)/);
   assert.ok(line.includes(`Knowledge verdict write-back (PF3), 2026-11-24 (owner: "harus dibuat jalurnya untuk feedback loop"): `));
   for (const want of ["`knowledge.verdict`", "`shadow-knowledge`", "Migration 0088", "`knowledge.status`", "LM11", "`merge_owner_change`"]) assert.ok(line.includes(want), want);

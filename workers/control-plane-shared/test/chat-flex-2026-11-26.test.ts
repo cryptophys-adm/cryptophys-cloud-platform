@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, migratedDb, lastReviewedRecord } from "./harness.ts";
 import { runTurn, type ConversationStore } from "../../ai-kernel/src/conversation.ts";
 import { runTool } from "../../ai-kernel/src/conversation-tools.ts";
 import { ADVISORY_LANGUAGE, AiEngine, ALLOWED_TEXT_MODELS, OWNER_LANGUAGE_TASKS, PLAIN_ENGLISH_STYLE, PLAIN_OWNER_LANGUAGE_STYLE, type AiTask } from "../src/ai-engine.ts";
@@ -167,7 +167,7 @@ test("CF-7. no guard path is touched; the SSOT and the HAIC design record the ow
   ]) assert.equal(criticalPathReason(p), null, p);
   assert.equal(criticalPathReason("workers/control-plane-shared/src/model-router.ts"), "paid_model_guard", "the router is a guard path, and the chat only reads it");
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:[^\n]*\); )?chat flex, 2026-11-26 \(owner: "Ikuti bahasa pertanyaan"[^()]*\); /);
+  assert.match(lastReviewedRecord(), /^Last reviewed: 2026-11-16 \((?:[^\n]*\); )?chat flex, 2026-11-26 \(owner: "Ikuti bahasa pertanyaan"[^()]*\); /);
   assert.match(ssot, /  - Since 2026-11-26 \(owner: "Ikuti bahasa pertanyaan"\) one task follows the owner's language: the chat's answer \(`chat_answer`, `OWNER_LANGUAGE_TASKS` in `ai-engine\.ts`\) is in the language of the question/);
   const design = read("docs/design/HAIC-H0-H1.md");
   assert.match(design, /\*\*Amendment 2026-11-26 \(owner, on a stiff answer\)\.\*\*/);

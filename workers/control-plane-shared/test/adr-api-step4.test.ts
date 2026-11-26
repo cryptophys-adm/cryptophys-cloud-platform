@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv, baseEnv, call, migratedDb, registeredDb, req, signAccessJwt } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, OUTSIDER_JWT, accessEnv, baseEnv, call, migratedDb, registeredDb, req, signAccessJwt, lastReviewedRecord } from "./harness.ts";
 import { appendAuditEvent } from "../src/audit.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
 import { ADR_PROGRESS_DIR } from "../src/deploy-units.ts";
@@ -311,7 +311,7 @@ test("AR8. no guard path is touched; docs/SSOT.md documents the endpoints and th
   for (const p of ["workers/ai-kernel/src/adr-view.ts", "workers/ai-kernel/src/index.ts", "workers/console/src/index.ts", "workers/console/src/ui/routes.ts",
     "workers/control-plane-shared/test/adr-api-step4.test.ts", "docs/SSOT.md", "docs/design/ADR-STEWARD.md"]) assert.equal(criticalPathReason(p), null, p);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 4, the read-only API: [^()]*`GET \/v1\/adr`[^()]*`GET \/v1\/adr\/\{id\}`[^()]*; ADR Steward step 3, the agent: /);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 4, the read-only API: [^()]*`GET \/v1\/adr`[^()]*`GET \/v1\/adr\/\{id\}`[^()]*; ADR Steward step 3, the agent: /);
   assert.match(ssot, /read API, `GET \/v1\/adr` and `GET \/v1\/adr\/\{id\}` on the AI Kernel/);
   assert.match(read("docs/design/ADR-STEWARD.md"), /\| 4 \| API: [^\n]*\*\*Built 2026-11-17\*\*/);
 });

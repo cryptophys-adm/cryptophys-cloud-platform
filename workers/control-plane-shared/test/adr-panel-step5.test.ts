@@ -18,6 +18,7 @@ import {
   staleLabel, statusLabel, statusTone, stewardLabel, stewardTone, utcMinute,
 } from "../../console/ui/src/lib/adr.ts";
 import { ADR_VIEW_SCHEMA, type StewardStatus } from "../../ai-kernel/src/adr-view.ts";
+import { lastReviewedRecord } from "./harness.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -192,7 +193,7 @@ test("AV5. no guard path is touched; docs/SSOT.md records step 5 and the panel o
     "workers/console/ui/src/index.css", "workers/console/ui/scripts/render-smoke.mjs", "workers/ai-kernel/src/adr-view.ts", "workers/control-plane-shared/test/adr-panel-step5.test.ts",
     "workers/control-plane-shared/test/adr-api-step4.test.ts", "workers/control-plane-shared/test/vision-telos-0016.test.ts", "docs/SSOT.md", "docs/design/ADR-STEWARD.md"]) assert.equal(criticalPathReason(p), null, p);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 5, the Vision page's ADR panel: [^()]*`#\/vision\/adr\/<id>`[^()]*; ADR Steward step 4, the read-only API: /);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 5, the Vision page's ADR panel: [^()]*`#\/vision\/adr\/<id>`[^()]*; ADR Steward step 4, the read-only API: /);
   assert.match(ssot, /The Console's Vision page \(`#\/vision`\) shows it\.[^\n]*\n  - [^\n]*"ADR — Architecture Decision Records"/);
   assert.doesNotMatch(ssot, /Catatan Keputusan Arsitektur/, "the Indonesian title is gone from the SSOT");
   assert.doesNotMatch(ssot, /the Vision page's ADR panel is not built yet/);

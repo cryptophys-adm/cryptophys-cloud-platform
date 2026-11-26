@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt, lastReviewedRecord } from "./harness.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { councilRef, modelSubject, recordCorrection, turnRef } from "../../ai-kernel/src/corrections.ts";
 import {
@@ -317,7 +317,7 @@ test("H3d-9. wiring: the route index, one allow-list row and UI route, the Agent
 
 test("H3d-10. the SSOT: line 5 begins with H3d, the collaboration section says what is built, and the allow-list count", async () => {
   const ssot = read("docs/SSOT.md");
-  const line = ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const line = lastReviewedRecord();
   assert.match(line, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?HAIC H3d, 2026-11-19 \(owner: "Setuju semua rekomendasi"; `docs\/design\/HAIC-H3\.md` §11 step 4\): /);
   for (const want of ["teachingRecord(rows, now)", "`GET /v1/reputation?subject=`", "`ev:platform/correction/<id>`", "\"Owner corrections\"", "LM6 unchanged", "teaching-record-h3d (H3d-1..10)", "5/13"]) assert.ok(line.includes(want), want);
   assert.ok(line.indexOf("HAIC H3d, 2026-11-19") < line.indexOf("HAIC H3c, 2026-11-19"), "H3d before H3c");

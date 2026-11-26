@@ -14,6 +14,7 @@ import { CRITICAL_PATHS, criticalPathReason } from "../src/guard-paths.ts";
 import { CONSENSUS_ACTIONS } from "../src/consensus-rules.ts";
 import { pathRefusal } from "../src/evolution-limits.ts";
 import { criticalReasons } from "../../forge/src/changes.ts";
+import { lastReviewedRecord } from "./harness.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -328,6 +329,6 @@ test("AP10. the seed is honest: what the platform cannot see is open with a reas
 
 test("AP11. docs/SSOT.md names the manifests, and its 2026-11-16 entry records step 1", () => {
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 1[^\n]*`architecture\/adr\/progress\/0001\.json`/);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 1[^\n]*`architecture\/adr\/progress\/0001\.json`/);
   assert.match(ssot, /Each ADR's progress is described by its manifest in `architecture\/adr\/progress\/`/);
 });

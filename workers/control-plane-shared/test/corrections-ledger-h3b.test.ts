@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt, lastReviewedRecord } from "./harness.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import {
   BACKFILL_DONE_EVENT, CorrectionError, backfillChatRatings, backfillChatRatingsOnce, listCorrections, modelSubject, newCorrectionId, recordCorrection, turnRef,
@@ -368,7 +368,7 @@ test("H3b-10. wiring: the kernel's route index, the Console's allow-list and UI 
     { id: "kernel.correction_create", service: "kernel", method: "POST", path: "/v1/corrections", approverOnly: true, confirm: null },
   ]);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?HAIC H3b, 2026-11-19 [^\n]*migration 0084[^\n]*`GET` and `POST \/v1\/corrections`[^\n]*; HAIC H3a, 2026-11-19 /);
+  assert.match(lastReviewedRecord(), /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?HAIC H3b, 2026-11-19 [^\n]*migration 0084[^\n]*`GET` and `POST \/v1\/corrections`[^\n]*; HAIC H3a, 2026-11-19 /);
   assert.doesNotMatch(ssot, /\*\*Not built yet\.\*\* H0 and H1 start only after/, "the §2.6 drift is fixed");
   assert.match(ssot, /\*\*Built on the platform:\*\* H0 [^\n]*the corrections ledger \(H3b: migration 0084/);
 });

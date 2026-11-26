@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { migratedDb, registeredByConsensus } from "./harness.ts";
+import { migratedDb, registeredByConsensus, lastReviewedRecord } from "./harness.ts";
 import { BUNDLED_VISION, SELF_MODEL_MAX_BYTES, canonicalJson, selfModelContentHash, selfModelProblems, type Measure } from "../src/self-model.ts";
 import {
   ORGAN_HEALTH_METRIC_NAMES, SELF_MODEL_MAX_STATEMENTS, SELF_MODEL_SOURCE_IDS, VITALS_SUBJECTS, organHealthWhitelist, readSelfModelSources, selfModelWindows,
@@ -626,7 +626,7 @@ test("T1b-10. the copied constants match their modules, and the windows are the 
 });
 
 test("T1b-11. the build is recorded: the SSOT segment, and the design's Status says steps 1–2 are built", () => {
-  const ssot = read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const ssot = lastReviewedRecord();
   assert.match(ssot, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Telos T1b, 2026-11-22: [^\n]*self-model-assemble\.ts[^\n]*?; /);
   const design = read("docs/design/TELOS-T1-SELF-MODEL.md");
   assert.match(design, /^- \*\*Status:\*\* [^\n]*step 1 \(T1a[^\n]*step 2 \(T1b, the assembler[^\n]*steps 1–2[^\n]*\) built, the rest not built\.$/m);

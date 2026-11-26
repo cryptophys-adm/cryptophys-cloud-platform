@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
+import { APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_JWT, baseEnv, call, migratedDb, req, lastReviewedRecord } from "./harness.ts";
 import forge from "../../forge/src/index.ts";
 import { changeVerdict, registerChange } from "../../forge/src/changes.ts";
 import { RUNNER_ID, checkOf, checksTick, tickWith, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps, type TestReportPolicy } from "../../forge/src/checks.ts";
@@ -578,7 +578,7 @@ test("WB10. the route, the validator and the build scripts are the owner's; the 
 
 test("WB11. docs: SSOT line 5, the Forge checks row, ADR-0012's amendment and the READMEs say what runs where", () => {
   const ssot = read("docs/SSOT.md");
-  const line = ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const line = lastReviewedRecord();
   assert.match(line, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?CI-WB, 2026-11-25 \(owner: "ok jalankan rekomendasimu"; Forge tests on Workers Builds, Dynamic Workers only as a one-per-run fallback, no daily rerun of an unchanged head\); /);
   assert.match(ssot, /\| Forge checks \| Each new `main` commit: the full suite from the commit's Workers Builds run[^\n]*`test_report_files_mismatch`/);
   const adr = read("architecture/adr/0012-github-independence.md");

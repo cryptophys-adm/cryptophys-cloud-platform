@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CI_CLIENT_ID, APPROVER_EMAIL, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
+import { CI_CLIENT_ID, APPROVER_EMAIL, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb, lastReviewedRecord } from "./harness.ts";
 import { appendAuditEvent, sha256Hex } from "../src/audit.ts";
 import { CAPABILITIES } from "../src/capabilities.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
@@ -278,7 +278,7 @@ test("AD4. gate 4 part B's first live run is recorded, gate 4 is not marked met,
     assert.equal(criticalPathReason(p), null, p);
   }
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 7, the drift reports: [^()]*`adr_drift\.v1`[^()]*`adr_drift:<adr>:<phase>`[^()]*; ADR Steward step 6, the AI explanation: /);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 7, the drift reports: [^()]*`adr_drift\.v1`[^()]*`adr_drift:<adr>:<phase>`[^()]*; ADR Steward step 6, the AI explanation: /);
   assert.match(ssot, /drift episode[^\n]*`platform_digest` warning[^\n]*never critical[^\n]*never sent to Telegram/);
   assert.match(read("docs/design/ADR-STEWARD.md"), /\| 7 \| Drift: [^\n]*\*\*Built 2026-11-17\*\*/);
 });

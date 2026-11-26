@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeAi, migratedDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, fakeAi, migratedDb, req, lastReviewedRecord } from "./harness.ts";
 import { AiEngine, BEAM_MODEL_ID, type AiTask } from "../src/ai-engine.ts";
 import { CHAT_MODEL, CHAT_MODELS, CHAT_SERVICE } from "../src/conversation.ts";
 import {
@@ -456,7 +456,7 @@ test("AIR1-15. configuration and records: MODEL_ROUTER on in wrangler (owner, 20
   const req = read("architecture/AI-ENGINE-REQUIREMENT.md");
   assert.match(req, /No automatic paid upgrade, paid model fallback, or external AI provider fallback is permitted, with one scoped exception/);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?model router, 2026-11-25 \(owner: "Approve, but Cerebrum only"; Beam free_only for Cerebrum chat, directives and councils, Workers AI always the fallback; off by default\); /);
+  assert.match(lastReviewedRecord(), /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?model router, 2026-11-25 \(owner: "Approve, but Cerebrum only"; Beam free_only for Cerebrum chat, directives and councils, Workers AI always the fallback; off by default\); /);
   assert.match(ssot, /\*\*Model router \(AIR1/);
   const manifest = JSON.parse(read("architecture/adr/progress/0007.json"));
   assert.ok(manifest.phases.some((p: any) => p.id === "K3" && JSON.stringify(p.evidence).includes("0090_model_router.sql")));

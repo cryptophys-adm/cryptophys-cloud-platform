@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, OPERATOR_EMAIL, OPERATOR_JWT, accessCertsResponse, baseEnv, call, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, OPERATOR_EMAIL, OPERATOR_JWT, accessCertsResponse, baseEnv, call, migratedDb, lastReviewedRecord } from "./harness.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { MAX_DELIVERY_RETRIES, TOPICS } from "../../ai-kernel/src/owner-notices.ts";
 import { vaultOn } from "../../ai-kernel/src/alert-channels.ts";
@@ -242,5 +242,5 @@ test("EH8. wiring: every kernel tick relays; the Alerts page names the topic; th
   const xau = read("docs/XAUUSD-INTEGRATION.md");
   for (const s of ["telegram_topic", "ea_heartbeat", "xauusd_digest", String(RELAY_TEXT_MAX), String(RELAY_MAX_PER_HOUR), "xauusd-risk-manager"]) assert.ok(xau.includes(s), `XAUUSD-INTEGRATION names ${s}`);
   assert.match(read("docs/OPERATIONS.md"), /ea_heartbeat/);
-  assert.match(read("docs/SSOT.md"), /Last reviewed: (?:[^\n]*\); )?2026-11-16 \([^\n]*ea_heartbeat/, "the 2026-11-16 entry (newer entries come first)");
+  assert.match(lastReviewedRecord(), /Last reviewed: (?:[^\n]*\); )?2026-11-16 \([^\n]*ea_heartbeat/, "the 2026-11-16 entry (newer entries come first)");
 });

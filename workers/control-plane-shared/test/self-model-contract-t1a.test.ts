@@ -9,6 +9,7 @@ import {
 } from "../src/self-model.ts";
 import { visionProblems, type Vision } from "../src/vision.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
+import { lastReviewedRecord } from "./harness.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, ROOT), "utf8");
@@ -285,7 +286,7 @@ test("T1a-9. the contract is pure and import-light, touches no guard path, and i
   assert.equal(criticalPathReason("workers/control-plane-shared/src/self-model.ts"), null);
   assert.equal(criticalPathReason("workers/control-plane-shared/test/self-model-contract-t1a.test.ts"), null);
 
-  const ssot = read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const ssot = lastReviewedRecord();
   assert.match(ssot, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Telos T1a, 2026-11-22 \(owner: "setuju semua" to the ten T1 questions\): [^\n]*organism\.self_model\.v1/);
   const design = read("docs/design/TELOS-T1-SELF-MODEL.md");
   assert.match(design, /^- \*\*Status:\*\* design accepted by the owner on 2026-11-22[^;\n]*; step 1 \(T1a[^\n]*\) built, the rest not built\.$/m);

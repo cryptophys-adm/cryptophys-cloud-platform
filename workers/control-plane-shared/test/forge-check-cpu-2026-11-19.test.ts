@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CI_CLIENT_ID, migratedDb } from "./harness.ts";
+import { CI_CLIENT_ID, migratedDb, lastReviewedRecord } from "./harness.ts";
 import { changeVerdict, nextChangeHead, QUEUE_HOLD_MS, registerChange, verdictOf } from "../../forge/src/changes.ts";
 import { checkOf, tickWith, type ArtifactsReader, type ArtifactsTreeEntry, type CheckDeps, type CheckSummary } from "../../forge/src/checks.ts";
 import { affectedTests, depHit, readTestDeps, TEST_DEPS_PREFIX } from "../../forge/src/check-plan.ts";
@@ -526,7 +526,7 @@ test("CPU14. docs/SSOT.md describes the rule; none of the files it lives in is a
   const { criticalPathReason } = await import("../src/guard-paths.ts");
   for (const p of ["workers/control-plane-shared/src/forge-gate.ts", "workers/forge/src/check-plan.ts", "workers/forge/src/checks.ts", "workers/forge/src/changes.ts",
     "workers/forge/src/bundles.ts", "workers/forge/src/runner/core.ts", "workers/forge/src/runner/shims/node-fs.js"]) assert.equal(criticalPathReason(p), null, p);
-  const line = read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const line = lastReviewedRecord();
   assert.match(line, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Forge check CPU, 2026-11-19 \(owner: "setuju semua", "All 3 as proposed"/);
   assert.match(line, /docs_only[\s\S]*reused[\s\S]*partial[\s\S]*a run of main is always full[\s\S]*CPU1–CPU14/);
   // CI-WB (2026-11-25): no daily run any more; the row still describes the rule.

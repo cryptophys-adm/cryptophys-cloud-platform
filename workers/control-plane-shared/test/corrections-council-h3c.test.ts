@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt, lastReviewedRecord } from "./harness.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { COUNCIL_MODERATOR_SUBJECT, councilRef, knowledgeRef, modelSubject, proposalRef } from "../../ai-kernel/src/corrections.ts";
 import { CouncilError, MODERATOR, proposeCouncil, readCouncil, type CouncilStore } from "../../ai-kernel/src/council.ts";
@@ -303,7 +303,7 @@ test("H3c-10. wiring: the kernel's route index, the Console's allow-list and UI 
   assert.deepEqual(cats, [...CORRECTION_CATEGORIES], "the page offers the contract's categories");
   assert.match(box, /maxLength=\{500\}/);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?HAIC H3c, 2026-11-19 [^\n]*`POST \/v1\/councils\/\{id\}\/corrections`[^\n]*owner_decision[^\n]*corrections-boundary-h3[^\n]*; HAIC H3b, 2026-11-19 /);
+  assert.match(lastReviewedRecord(), /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?HAIC H3c, 2026-11-19 [^\n]*`POST \/v1\/councils\/\{id\}\/corrections`[^\n]*owner_decision[^\n]*corrections-boundary-h3[^\n]*; HAIC H3b, 2026-11-19 /);
   assert.match(ssot, /\*\*Built on the platform:\*\* H0 [^\n]*council and proposal corrections \(H3c/);
   assert.ok(ssot.includes(`a ${CONSOLE_ALLOW_LIST.length}-row allow-list`));
 });

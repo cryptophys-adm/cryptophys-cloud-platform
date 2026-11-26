@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { baseEnv, migratedDb } from "./harness.ts";
+import { baseEnv, migratedDb, lastReviewedRecord } from "./harness.ts";
 import { castVote, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { EXTERNAL_CEILING, EXTERNAL_ORIGINS } from "../src/organism.ts";
 import { compareInventory, knownOrganism } from "../src/observer-inventory.ts";
@@ -221,7 +221,7 @@ test("CR4. the Observer's inventory classifies cryptophys-cta as declared: in th
 
 test("CR5. the docs record the registration, gate 9's first live run and the binding-props result", () => {
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*`cryptophys-cta` gets its registry row, migration 0074/);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*`cryptophys-cta` gets its registry row, migration 0074/);
   const cutover = read("docs/GITHUB-CUTOVER.md");
   assert.match(cutover.split("\n").find((l) => l.startsWith("| 9 |"))!, /cns_8d019512-bae5-4a47-8952-091451f1340e/);
   assert.match(cutover, /ff6fd35[^\n]*\n[^\n]*service_binding_props_unverifiable:AGENTS/);

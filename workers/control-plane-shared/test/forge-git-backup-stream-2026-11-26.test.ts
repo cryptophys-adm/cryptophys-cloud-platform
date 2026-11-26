@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { migratedDb } from "./harness.ts";
+import { migratedDb, lastReviewedRecord } from "./harness.ts";
 import { FLUSH, pktLine, type Fetch } from "../../forge/src/merge.ts";
 import {
   BundleStreamWriter, MAX_PACK_BYTES, MAX_STREAMED_PACK_BYTES, STREAM_PART_BYTES, bundleHeader, gitBackupTick,
@@ -264,7 +264,7 @@ test("GS-6. the record: SSOT line 5 and the gate 8 bullets; no guard path", asyn
   const { readFileSync } = await import("node:fs");
   const { criticalPathReason } = await import("../src/guard-paths.ts");
   const ssot = readFileSync(new URL("../../../docs/SSOT.md", import.meta.url), "utf8");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*\); )?git backup streamed, 2026-11-26 \(review: /);
+  assert.match(lastReviewedRecord(), /^Last reviewed: 2026-11-16 \((?:[^\n]*\); )?git backup streamed, 2026-11-26 \(review: /);
   assert.match(ssot, /  - Streamed since 2026-11-26 \(review, after main's pack passed 32 MiB[^\n]*R2 multipart upload in 8 MiB parts \(`STREAM_PART_BYTES`\)/);
   assert.match(ssot, /fails as `bundle_too_large_to_verify` before it is read/);
   for (const p of ["workers/forge/src/git-backup.ts", "workers/forge/src/digest.ts", "workers/forge/src/bundle-verify.ts", "docs/SSOT.md"]) assert.equal(criticalPathReason(p), null, p);

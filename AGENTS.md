@@ -43,3 +43,10 @@ The canonical repository is `cryptophys/platform` on Cloudflare Artifacts; GitHu
 - A branch that does not contain the current `main` is `blocked` until it is rebased or merged with `main`.
 - Rebase onto `main`, or merge with `main` as the FIRST parent; `git merge main` on the branch (main as the second parent) is refused as `main_not_first_parent` (incident 2026-11-14, `docs/SSOT.md`).
 
+
+## The SSOT's "Last reviewed" record (owner, 2026-11-26: "Ya, setuju pindahkan")
+
+Every change that the SSOT records gets one entry in the "Last reviewed" record: `<topic>, <YYYY-MM-DD> (<owner's words or review>; <what changed>)`.
+- Prepend the entry on `docs/SSOT.md` line 5, right after `Last reviewed: 2026-11-16 (` and ending in `; `. Line 5 holds the newest five entries and then the pointer `; older entries: …`.
+- When a sixth entry is prepended, move the oldest entry of line 5 into a new file `docs/ssot-history/<YYYY-MM-DD>-<NN>-<slug>.md`: a title, a blank line, then the entry verbatim on the third line. Never edit a file in `docs/ssot-history/` or `docs/SSOT-HISTORY.md` once it is written. Every new version of a file is a new blob, and the 108 KB line 5 that every commit rewrote was most of the repository's growth (about 11 MB a week of packs).
+- Tests read an entry with `lastReviewedRecord()` (`workers/control-plane-shared/test/harness.ts`), which rebuilds the whole record newest first: line 5, then `docs/ssot-history/` newest first, then the frozen `docs/SSOT-HISTORY.md`.

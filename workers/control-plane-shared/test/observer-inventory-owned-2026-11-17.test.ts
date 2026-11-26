@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { migratedDb } from "./harness.ts";
+import { migratedDb, lastReviewedRecord } from "./harness.ts";
 import type { Finding } from "../src/observer.ts";
 import {
   CI_PREVIEW_RESOURCES, DECLARED_RESOURCES, LISTS, ORGAN_NAME_PREFIXES, ORGAN_RESOURCES, compareInventory, organOwnerOf, runInventory,
@@ -195,7 +195,7 @@ test("IO4. runInventory on the 2026-11-17 account, then the Supervisor's cycle: 
 
 test("IO5. docs/SSOT.md: the 2026-11-17 inventory fixes in the Last reviewed group and the Observer's inventory description", () => {
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*the Observer's inventory against what exists and who owns it: [^()]*`deleted_worker`[^()]*`organ_resource`[^()]*; /);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*the Observer's inventory against what exists and who owns it: [^()]*`deleted_worker`[^()]*`organ_resource`[^()]*; /);
   const inventory = ssot.split("\n").find((l) => l.startsWith("- **Inventory (:27 and :57).**"))!;
   for (const want of ["`deleted_worker`", "`organ_resource`", "`ORGAN_RESOURCES`", "`ORGAN_NAME_PREFIXES`", "owned by organ"]) assert.ok(inventory.includes(want), want);
 });

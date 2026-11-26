@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, lastReviewedRecord } from "./harness.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { CLOSE_EVENT, EvolutionCloseError, closeExternalIntent, closeReason } from "../../ai-kernel/src/evolution-close.ts";
 import { readCouncilDecisions } from "../../ai-kernel/src/council-decisions.ts";
@@ -243,6 +243,6 @@ test("XC10. wiring: the kernel lists the route, the Console forwards it and GET 
   const src = read("workers/ai-kernel/src/evolution-close.ts");
   assert.ok(src.includes("textCarriesPrice") && !/\\p\{Nd\}/.test(src), "the shared price rule, not a copy");
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?close external intent, 2026-11-25 \(owner via the coordinator: CT1 closed not supported;/m);
+  assert.match(lastReviewedRecord(), /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?close external intent, 2026-11-25 \(owner via the coordinator: CT1 closed not supported;/m);
   assert.ok(ssot.includes("POST /v1/evolution/intents/{id}/close"));
 });

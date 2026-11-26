@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DOCTRINE_BOUNDS, boundProblem, doctrineActionFor } from "../src/doctrine.ts";
+import { lastReviewedRecord } from "./harness.ts";
 
 const TABLE: Record<string, ["number" | "integer", number, number, number]> = {
   "mizan.de_weight_scalp": ["number", 0, 0.04, 0.02],
@@ -55,6 +56,6 @@ test("MZ-PF2-4. no mizan fact name carries a word the Policy Engine prohibits or
 });
 
 test("MZ-PF2-5. SSOT line 5 carries the PF2 entry", () => {
-  const line5 = readFileSync(new URL("../../../docs/SSOT.md", import.meta.url), "utf8").split("\n")[4];
+  const line5 = lastReviewedRecord();
   assert.match(line5, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?Mizan doctrine bounds \(PF2\), 2026-11-23/);
 });

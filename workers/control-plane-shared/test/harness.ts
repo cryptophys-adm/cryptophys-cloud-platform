@@ -355,3 +355,31 @@ export async function forgeSees(db: FakeD1, s: { main: string; files: string[]; 
   db.raw.prepare(`INSERT OR REPLACE INTO forge_check_runs (commit_sha, status, runner, files, pass, fail, skip, failures, started_at, finished_at, duration_ms, steps, guard_status, source)
     VALUES (?, ?, 'forge-runner/1', 1, 1, ?, 0, '[]', ?, ?, 1, ?, 'clean', 'main')`).run(s.main, s.ready ? "passed" : "failed", s.ready ? 0 : 1, at, at, steps);
 }
+
+// ---------------------------------------------------------------- the SSOT's "Last reviewed" record (owner 2026-11-26)
+
+/** The pointer that ends docs/SSOT.md line 5 since the history moved out of it ("Ya, setuju pindahkan", 2026-11-26). */
+export const SSOT_HISTORY_POINTER = "; older entries: `docs/ssot-history/` (newest first), then `docs/SSOT-HISTORY.md`).";
+export const SSOT_HISTORY_MARKER = "<!-- remainder -->";
+export const SSOT_ROTATED_FILE = /^\d{4}-\d{2}-\d{2}-\d{2}-[a-z0-9-]+\.md$/;
+
+/**
+ * The whole "Last reviewed" record, newest first, as one line in the form line 5 had before 2026-11-26: line 5's
+ * entries (without the pointer), then the entries pushed out of it (docs/ssot-history/, by file name, newest first,
+ * each on its file's third line), then the frozen rest (docs/SSOT-HISTORY.md, the line after its marker). Tests that
+ * read their own entry read it here, wherever it now lives.
+ */
+export function lastReviewedRecord(root = join(WORKERS, "..")): string {
+  const line5 = readFileSync(join(root, "docs/SSOT.md"), "utf8").split("\n")[4];
+  if (!line5.startsWith("Last reviewed: ") || !line5.endsWith(SSOT_HISTORY_POINTER)) throw new Error("docs/SSOT.md line 5 is not the Last reviewed line with its history pointer");
+  const head = line5.slice(0, -SSOT_HISTORY_POINTER.length);
+  let rotated: string[] = [];
+  try {
+    rotated = (readdirSync(join(root, "docs/ssot-history")) as string[]).filter((n) => SSOT_ROTATED_FILE.test(n)).sort().reverse()
+      .map((n) => readFileSync(join(root, "docs/ssot-history", n), "utf8").split("\n")[2]);
+  } catch { rotated = []; }
+  const archive = readFileSync(join(root, "docs/SSOT-HISTORY.md"), "utf8").split("\n");
+  const at = archive.indexOf(SSOT_HISTORY_MARKER);
+  if (at < 0 || !archive[at + 1]) throw new Error("docs/SSOT-HISTORY.md has no remainder after its marker");
+  return [head, ...rotated, archive[at + 1]].join("; ");
+}

@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, fakeAi, migratedDb, registeredDb, lastReviewedRecord } from "./harness.ts";
 import { CAPABILITIES, hourlyLimit, verifySyscallDecision } from "../src/capabilities.ts";
 import { isLearningCapability } from "../src/power-mode.ts";
 import { PRIVILEGED_UPDATE, VOTERS, castVote, classify, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
@@ -535,7 +535,7 @@ test("CS11e. read-backs: expires_at counts from created_at, not decided_at; an e
 
 test("CS12. the SSOT: line 5 carries the consensus.status entry and the owner-click rule; the external origins row names the council's read; ADR-0009 records the amendment", () => {
   const ssot = read("docs/SSOT.md");
-  const line5 = ssot.split("\n")[4];
+  const line5 = lastReviewedRecord();
   // The repository's convention: the entry may follow later entries on line 5.
   assert.match(line5, /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?consensus\.status, 2026-11-22/);
   assert.ok(line5.includes(`consensus.status, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; requested for Aether's knowledge council): `));

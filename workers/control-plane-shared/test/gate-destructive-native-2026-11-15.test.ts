@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, accessCertsResponse, baseEnv, fakeAi, forgeSees, isAccessCerts, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, accessCertsResponse, baseEnv, fakeAi, forgeSees, isAccessCerts, migratedDb, lastReviewedRecord } from "./harness.ts";
 import { verifyAuditChain } from "../src/audit.ts";
 import { DEPLOY_UNITS, unitForService } from "../src/deploy-units.ts";
 import { castVote, classify, CONSENSUS_ACTIONS, destructiveDeployVote, type Evidence } from "../src/consensus-rules.ts";
@@ -478,7 +478,7 @@ test("GD-8. wiring: DeployRpc, the kernel binding, the Console's click, the book
   assert.match(ops, /D1 → Read/);
   assert.match(read("docs/GITHUB-CUTOVER.md"), /deploy_destructive_migration/);
   // The 2026-11-15 entry of the "Last reviewed" line (newer entries come first).
-  assert.match(read("docs/SSOT.md").split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-15 \([^\n]*deploy_destructive_migration/);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-15 \([^\n]*deploy_destructive_migration/);
   // The rules every seat applies stay with the owner (guard paths).
   assert.equal(criticalPathReason("workers/control-plane-shared/src/consensus-rules.ts"), "consensus_kill_switch");
 });

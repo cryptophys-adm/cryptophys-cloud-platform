@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, migratedDb } from "./harness.ts";
+import { APPROVER_EMAIL, CI_CLIENT_ID, OPERATOR_EMAIL, baseEnv, migratedDb, lastReviewedRecord } from "./harness.ts";
 import { CAPABILITIES, hourlyLimit } from "../src/capabilities.ts";
 import { isLearningCapability } from "../src/power-mode.ts";
 import { AETHER_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, XAUUSD_CEILING, externalCeilingFor, externalCeilingViolations } from "../src/organism.ts";
@@ -330,7 +330,7 @@ test("H3e-10. an agent not granted is denied both: corrections.record and correc
 
 test("H3e-11. the SSOT: line 5 carries H3e's entry, the collaboration section lists H3e as built, and the ceilings name the two agents", () => {
   const ssot = read("docs/SSOT.md");
-  const line = ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!;
+  const line = lastReviewedRecord();
   // Later changes put their own entries first on line 5 (2026-11-22: "begins with" failed every branch after H3e).
   assert.ok(line.startsWith("Last reviewed: 2026-11-16 ("));
   assert.ok(line.includes(`(HAIC H3e, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; the H3 answers of 2026-11-19, "Setuju semua rekomendasi"): `) || line.includes(`; HAIC H3e, 2026-11-22 (owner: "ya kerjakan nomor 1 dan semuanya"; the H3 answers of 2026-11-19, "Setuju semua rekomendasi"): `), "H3e's entry");

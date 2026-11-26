@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { fakeAi, migratedDb, registeredDb } from "./harness.ts";
+import { fakeAi, migratedDb, registeredDb, lastReviewedRecord } from "./harness.ts";
 import * as aiEngine from "../src/ai-engine.ts";
 import { AiEngine, ALLOWED_TEXT_MODELS, DEFAULT_MODEL, PLAIN_ENGLISH_STYLE, utcDay, type AiTask } from "../src/ai-engine.ts";
 import { criticalPathReason } from "../src/guard-paths.ts";
@@ -416,10 +416,10 @@ test("AE10. no guard path is touched; docs/SSOT.md records step 6 and that every
   ]) assert.equal(criticalPathReason(p), null, p);
   assert.equal(criticalPathReason("workers/control-plane-shared/src/power-mode.ts"), "learning_mandate", "power-mode.ts is a guard path, and step 6 only reads it");
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 6, the AI explanation: [^()]*`draft_adr_explanation`[^()]*`adr\.explanation_skipped`[^()]*; ADR Steward step 5, the Vision page's ADR panel: /);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*ADR Steward step 6, the AI explanation: [^()]*`draft_adr_explanation`[^()]*`adr\.explanation_skipped`[^()]*; ADR Steward step 5, the Vision page's ADR panel: /);
   assert.match(ssot, /\*\*Workers AI\.\*\*[^\n]*\n(?:  - [^\n]*\n)*  - Every AI text is plain English for operators[^\n]*without exception[^\n]*all in english please/);
   assert.doesNotMatch(ssot, /explanation[^\n]*\bin Indonesian\b|Indonesian exception/, "the SSOT no longer says the explanation is Indonesian");
-  assert.match(ssot.split("\n").find((l) => l.startsWith("Last reviewed: "))!, /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*all in english please[^()]*INDONESIAN_STYLE_TASKS[^()]*; /);
+  assert.match(lastReviewedRecord(), /(?:^Last reviewed: |\); )2026-11-16 \([^\n]*all in english please[^()]*INDONESIAN_STYLE_TASKS[^()]*; /);
   const design = read("docs/design/ADR-STEWARD.md");
   assert.match(design, /\| 6 \| The explanation: [^\n]*\*\*Built 2026-11-17\*\*/);
   assert.match(design, /\*\*Q5\. [^\n]*\*\*Superseded 2026-11-17\*\* by the owner's "all in english please"/);

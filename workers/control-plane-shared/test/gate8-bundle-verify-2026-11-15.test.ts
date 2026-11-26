@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, deflateSync } from "node:zlib";
-import { OPERATOR_JWT, baseEnv, call, migratedDb, req } from "./harness.ts";
+import { OPERATOR_JWT, baseEnv, call, migratedDb, req, lastReviewedRecord } from "./harness.ts";
 import forge from "../../forge/src/index.ts";
 import { forgeTick } from "../../forge/src/tick.ts";
 import { GitBackupError } from "../../forge/src/git-backup.ts";
@@ -456,7 +456,7 @@ test("BV10. migration 0072 is additive (three nullable columns, a CHECK on verif
   const cutover = read("docs/GITHUB-CUTOVER.md");
   assert.match(cutover, /[Mm]et once the first scheduled verify succeeds live/);
   assert.match(cutover, /git_backup_verify/);
-  assert.match(read("docs/SSOT.md"), /Last reviewed: (?:[^\n]*\); )?2026-11-15 \([^\n]*git_backup_verify/, "the 2026-11-15 entry (newer entries come first)");
+  assert.match(lastReviewedRecord(), /Last reviewed: (?:[^\n]*\); )?2026-11-15 \([^\n]*git_backup_verify/, "the 2026-11-15 entry (newer entries come first)");
   assert.match(read("workers/console/ui/src/components/GitBackup.tsx"), /b\?\.verify/);
 });
 
