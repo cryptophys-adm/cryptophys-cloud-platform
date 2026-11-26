@@ -25,8 +25,10 @@ import { ago } from "../lib/format";
  * per system, Cerebrum, CTA and xauusd (its news_compare), from the GET's `systems` rows, each with its effective state
  * and why, and the owner's on and off (the same three phrases, the dialog naming the system; the body names it). CTA's
  * and xauusd's rows say "not connected yet" until their router has read its switch (`last_status_read_at`), then when it
- * last did. A paid sign from any system is one global stop (`global.paid_off`): every row reads off (a paid sign), and
- * turning any system on again (free only with BEAM ON FREE, or with a paid cap) clears it for all.
+ * last did. A paid sign from any system is one global stop (`global.paid_off`) and turns every switch that was on to off:
+ * every row reads off (a paid sign). Turning a system on again (free only with BEAM ON FREE, or with a paid cap) clears the
+ * stop and turns on that system only (coordinator review); each other row it turned off (`state.stopped_by_paid`) reads
+ * "off (paid sign); turn on again" with its own owner switch until the owner turns it on.
  */
 
 const MISSING = "—";
@@ -49,6 +51,7 @@ const SYSTEM_SCOPE: Record<System, string> = {
   cta: "CTA's own router may then call Beam within CTA's share; it falls back as it does today whenever Beam does not answer.",
   xauusd: "xauusd's own router may then call Beam for shadow:news_compare only (behind xauusd's FS1 switch); Workers AI answers whenever Beam does not.",
 };
+const PAID_STOPPED = "off (paid sign); turn on again";
 const toneOf = (e: string | null) => (e === "on" ? "green" : e === "off_paid" || e === "off_retention" ? "red" : e === "disabled" ? "amber" : "slate");
 
 /** Why the kernel reports Beam disabled on this deploy, from its `configured` block; null when it does not say. */
@@ -92,7 +95,7 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
     const capOk = cap.trim() !== "" && Number.isFinite(capValue) && capValue > 0 && capValue <= 100;
     const notConnected = system !== "cerebrum" && !r?.last_status_read_at ? `${name}'s router is not connected yet: the switch takes effect once it reads it.` : null;
     const pending = system === "cerebrum" ? pendingLine : notConnected;
-    const clears = paidStop ? [`This clears the paid stop for every system: Cerebrum, CTA and xauusd then follow their own switches again.`] : [];
+    const clears = paidStop ? [`This clears the paid stop and turns Beam on for ${name} only; every other system stays off until you turn it on.`] : [];
     if (!rs) return null;
     // The switch is the owner's alone (the kernel checks the owner and the body again); operators read the row only.
     const controls = who.owner ? (
@@ -129,18 +132,20 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
     const r = sys[system];
     const rs: any = r?.state ?? null;
     const eff: string | null = system === "cerebrum" ? effective : typeof r?.effective === "string" ? r.effective : null;
-    const label = system === "cerebrum" ? effectiveLabel : eff ? STATE_LABEL[eff] ?? eff : null;
+    // A switch the paid stop turned off, once the stop is cleared: off until the owner turns this system on again.
+    const stopped = !paidStop && rs?.stopped_by_paid === true && rs?.switch === "off";
+    const label = stopped ? PAID_STOPPED : system === "cerebrum" ? effectiveLabel : eff ? STATE_LABEL[eff] ?? eff : null;
     const connection = system === "cerebrum" ? "The kernel's own router." : !r ? null : r.last_status_read_at ? `Its router last read this switch ${ago(r.last_status_read_at)}.` : "Its router is not connected yet: it has not read this switch.";
     return (
       <div key={system} className="glass-inner flex flex-col gap-1.5 px-3 py-2" data-beam-system={system}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-[12px] font-semibold text-slate-200">{SYSTEM_LABEL[system]}</span>
-          {label ? <Badge tone={toneOf(eff)}>{label}</Badge> : <span className="mono text-slate-500">{MISSING}</span>}
+          {label ? <Badge tone={stopped ? "red" : toneOf(eff)}>{label}</Badge> : <span className="mono text-slate-500">{MISSING}</span>}
         </div>
         <div className="text-[11px] text-slate-400" data-beam-effective>
           Beam is <strong className="mono text-slate-100">{label ?? MISSING}</strong>.{" "}
           {system === "cerebrum" && d?.configured ? <>MODEL_ROUTER {d.configured.var_on ? "on" : "off"}, key {d.configured.key_present ? "set" : "not set"}. </> : null}
-          {rs ? <>The owner's switch: <span className="mono text-slate-300">{STATE_LABEL[rs.switch ?? rs.state] ?? rs.switch ?? rs.state ?? MISSING}</span>{rs.mode ? <> ({rs.mode}{rs.mode === "paid_capped" ? `, cap ${n(rs.paid_cap_usd)} USD` : ""})</> : null}, set by <span className="mono">{rs.updated_by ?? MISSING}</span> {rs.updated_at ? ago(rs.updated_at) : MISSING}{rs.reason ? <>: {rs.reason}</> : null}. </> : null}
+          {rs ? <>The owner's switch: <span className="mono text-slate-300">{stopped ? PAID_STOPPED : STATE_LABEL[rs.switch ?? rs.state] ?? rs.switch ?? rs.state ?? MISSING}</span>{rs.mode ? <> ({rs.mode}{rs.mode === "paid_capped" ? `, cap ${n(rs.paid_cap_usd)} USD` : ""})</> : null}, set by <span className="mono">{rs.updated_by ?? MISSING}</span> {rs.updated_at ? ago(rs.updated_at) : MISSING}{rs.reason ? <>: {rs.reason}</> : null}. </> : null}
           {connection ? <span className={system !== "cerebrum" && r && !r.last_status_read_at ? "text-amber-300/90" : "text-slate-500"}>{connection}</span> : null}
         </div>
         {system === "cerebrum" && pendingLine ? <p className="text-[11px] text-amber-300/90">{pendingLine}</p> : null}
@@ -150,7 +155,7 @@ export default function ModelRouterPanel({ compact = false }: { compact?: boolea
   };
   const paidLine = paidStop ? (
     <p className="text-[11px] text-rose-300/90" data-beam-paid-stop>
-      A paid sign stopped Beam for every system{global?.reason ? <> ({global.reason}{global.updated_by ? <>, {global.updated_by}</> : null}{global.updated_at ? <> {ago(global.updated_at)}</> : null})</> : null}. After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge. Either clears the stop for every system.
+      A paid sign stopped Beam for every system{global?.reason ? <> ({global.reason}{global.updated_by ? <>, {global.updated_by}</> : null}{global.updated_at ? <> {ago(global.updated_at)}</> : null})</> : null}. After a paid sign Beam turns on only with a paid cap, or free only once you confirm it was not a charge. Either clears the stop and turns on only that system.
     </p>
   ) : null;
   const switches = (

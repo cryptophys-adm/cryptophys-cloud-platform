@@ -101,6 +101,7 @@ test("BEAM-1. migration 0091: the 0090 row becomes Cerebrum's with every value k
     ], name);
     const g = await readRouterGlobal(db);
     assert.equal(g!.paid_off, before.state === "off_paid", `${name}: the paid sign moves to the global stop`);
+    assert.equal((await readRouterState(db))!.stopped_by_paid, before.state === "off_paid", `${name}: only an off_paid row is marked as stopped by the paid sign`);
     if (before.state === "off_paid") {
       assert.deepEqual([g!.updated_by, g!.updated_at, g!.reason], [before.updated_by, before.updated_at, before.reason]);
       for (const s of ["cta", "xauusd"] as const) assert.equal((await readRouterState(db, s))!.state, "off_paid", `${s} is stopped with it`);
@@ -113,6 +114,8 @@ test("BEAM-1. migration 0091: the 0090 row becomes Cerebrum's with every value k
   assert.throws(() => db.raw.exec("UPDATE model_router_state SET mode = 'paid_capped' WHERE system = 'cta'"));
   assert.throws(() => db.raw.exec("INSERT INTO model_router_global (id, paid_off, updated_by, updated_at) VALUES ('other', 0, 'x', 't0')"));
   assert.throws(() => db.raw.exec("UPDATE model_router_global SET paid_off = 2"));
+  assert.throws(() => db.raw.exec("UPDATE model_router_state SET stopped_by_paid = 1, state = 'on' WHERE system = 'cerebrum'"), "only an off switch is marked as stopped by the paid sign");
+  assert.throws(() => db.raw.exec("UPDATE model_router_state SET stopped_by_paid = 2, state = 'off' WHERE system = 'cta'"));
   assert.deepEqual([...ROUTER_SYSTEMS], ["cerebrum", "cta", "xauusd"]);
 });
 
@@ -153,7 +156,7 @@ test("BEAM-2. model_router.status answers for the caller's system: xauusd-model-
     ["cerebrum", "cerebrum", "xauusd", "cta", null, null]);
 });
 
-test("BEAM-3. a paid sign from xauusd stops every system (one global stop, one audit event, one owner notice); turning a system off does not clear it; the owner's confirmed free turn-on of any system clears it for all", async () => {
+test("BEAM-3. a paid sign from xauusd stops every system: the first sign turns every on switch off and sets the one global stop (one audit event listing them, one owner notice); a second writes nothing; clearing through Cerebrum turns on Cerebrum only; xauusd comes back only by its own click", async () => {
   const db = migratedDb();
   forgetRouterState(db);
   const env = kernelEnv(db);
@@ -166,21 +169,25 @@ test("BEAM-3. a paid sign from xauusd stops every system (one global stop, one a
   const notify = { DB: db, APPROVER_IDENTITIES: APPROVER_EMAIL, OWNER_NOTICE_CHANNELS: "telegram", OWNER_TELEGRAM: { notify: async (m: { title: string }) => { sent.push(m); return { sent: true }; } } };
   await reconcileNotices(notify as never);
   const before = sent.filter((m) => /production problem/i.test(m.title)).length;
+  const rows = () => db.raw.prepare("SELECT system, state, stopped_by_paid, updated_by, updated_at, reason FROM model_router_state ORDER BY system").all().map((r) => ({ ...r }));
   const rep = await rpcSyscall(env as never, { host_worker: XAU_AI }, XAUUSD_MODEL_ROUTER_AGENT, "model_router.report_paid", { signal: "http_402" }) as any;
   assert.deepEqual([rep.outcome, rep.result], ["succeeded", { state: "off_paid", changed: true }]);
+  const stopped = rows();
+  assert.deepEqual(stopped.map((r: any) => [r.system, r.state, r.stopped_by_paid, r.updated_by, r.reason]), ROUTER_SYSTEMS.map((s) => [s, "off", 1, `agent:${XAUUSD_MODEL_ROUTER_AGENT}`, "paid sign: http_402"]), "every switch that was on is off, in the same batch as the stop");
   const again = await rpcSyscall(env as never, { host_worker: XAU_AI }, XAUUSD_MODEL_ROUTER_AGENT, "model_router.report_paid", { signal: "billing_error" }) as any;
   assert.deepEqual(again.result, { state: "off_paid", changed: false }, "idempotent");
+  assert.deepEqual(rows(), stopped, "a second sign while the stop is set writes nothing");
   forgetRouterState(db);
   const get = await call(kernel, env, req("GET", "/v1/model-router", undefined, OPERATOR_JWT));
-  assert.deepEqual(get.body.systems.map((s: any) => [s.system, s.state.state, s.state.switch, s.effective]), [["cerebrum", "off_paid", "on", "off_paid"], ["cta", "off_paid", "on", "off_paid"], ["xauusd", "off_paid", "on", "off_paid"]]);
+  assert.deepEqual(get.body.systems.map((s: any) => [s.system, s.state.state, s.state.switch, s.state.stopped_by_paid, s.effective]), ROUTER_SYSTEMS.map((s) => [s, "off_paid", "off", true, "off_paid"]));
   assert.deepEqual([get.body.global.paid_off, get.body.global.reason, get.body.global.updated_by], [true, "paid sign: http_402", `agent:${XAUUSD_MODEL_ROUTER_AGENT}`]);
   const skipped = await c.run();
   assert.deepEqual([skipped.status === "ok" && skipped.provider, c.fetches.length], ["workers_ai", 1], "Cerebrum's router skips Beam");
   const ev = db.raw.prepare("SELECT actor, payload_json FROM audit_events WHERE event_type = 'model_router.paid_detected'").all() as any[];
-  assert.deepEqual(ev.map((e) => [e.actor, JSON.parse(e.payload_json).signal, JSON.parse(e.payload_json).system, JSON.parse(e.payload_json).scope]), [[`agent:${XAUUSD_MODEL_ROUTER_AGENT}`, "http_402", "xauusd", "all_systems"]]);
+  assert.deepEqual(ev.map((e) => { const p = JSON.parse(e.payload_json); return [e.actor, p.signal, p.system, p.scope, p.turned_off]; }), [[`agent:${XAUUSD_MODEL_ROUTER_AGENT}`, "http_402", "xauusd", "all_systems", ["cerebrum", "cta", "xauusd"]]], "one event, listing the systems it turned off");
   const problems = (await unhandledProblems(db as never)).filter((p) => p.code === "model_router_stopped");
   assert.deepEqual(problems.map((p) => p.subject), ["model_router:off_paid"]);
-  assert.match(problems[0].detail, /every system \(Cerebrum, CTA and xauusd's news_compare\)[^]*paid sign \(paid sign: http_402\)/);
+  assert.match(problems[0].detail, /every system \(Cerebrum, CTA and xauusd's news_compare\)[^]*paid sign \(paid sign: http_402\)[^]*turns on only that system/);
   await reconcileNotices(notify as never);
   await reconcileNotices(notify as never);
   assert.equal(sent.filter((m) => /production problem/i.test(m.title)).length - before, 1, "one owner notice");
@@ -189,23 +196,32 @@ test("BEAM-3. a paid sign from xauusd stops every system (one global stop, one a
     await assert.rejects(set(db, { system, state: "on" }), (e: unknown) => e instanceof ModelRouterError && e.status === 409 && e.code === "paid_sign_recorded", system);
   }
   await set(db, { system: "cta", state: "off" });
-  assert.deepEqual([(await readRouterGlobal(db))!.paid_off, (await readRouterState(db, "cta"))!.switch, (await readRouterState(db, "cta"))!.state], [true, "off_owner", "off_paid"]);
-  // The owner's confirmed free turn-on of xauusd clears the stop for all: Cerebrum follows its own switch (on) again, CTA stays off (its switch).
-  const cleared = await set(db, { system: "xauusd", state: "on", confirm_free: true });
-  assert.deepEqual([cleared.changed, cleared.state!.state], [true, "on"], "the row was already on: clearing the stop is still a change");
-  assert.deepEqual(await Promise.all(ROUTER_SYSTEMS.map(async (s) => (await readRouterState(db, s))!.state)), ["on", "off_owner", "on"]);
+  assert.deepEqual([(await readRouterGlobal(db))!.paid_off, (await readRouterState(db, "cta"))!.switch, (await readRouterState(db, "cta"))!.stopped_by_paid, (await readRouterState(db, "cta"))!.state], [true, "off_owner", false, "off_paid"]);
+  // The owner's confirmed free turn-on of Cerebrum clears the stop and turns on Cerebrum only; CTA and xauusd stay off.
+  const cleared = await set(db, { state: "on", confirm_free: true });
+  assert.deepEqual([cleared.changed, cleared.state!.state, cleared.state!.stopped_by_paid], [true, "on", false]);
+  assert.equal((await readRouterGlobal(db))!.paid_off, false);
+  assert.deepEqual(await Promise.all(ROUTER_SYSTEMS.map(async (s) => { const r = (await readRouterState(db, s))!; return [r.state, r.stopped_by_paid]; })), [["on", false], ["off_owner", false], ["off", true]]);
   const pc = db.raw.prepare("SELECT actor, payload_json FROM audit_events WHERE event_type = 'model_router.paid_cleared'").all() as any[];
-  assert.deepEqual(pc.map((e) => [e.actor, JSON.parse(e.payload_json)]), [[APPROVER_EMAIL, { via_system: "xauusd", mode: "free_only", scope: "all_systems", confirm_free: true }]]);
+  assert.deepEqual(pc.map((e) => [e.actor, JSON.parse(e.payload_json)]), [[APPROVER_EMAIL, { via_system: "cerebrum", mode: "free_only", scope: "all_systems", confirm_free: true }]]);
   const sc = db.raw.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'model_router.state_changed' ORDER BY rowid DESC LIMIT 1").get() as any;
-  assert.deepEqual(JSON.parse(sc.payload_json), { system: "xauusd", from: "off_paid", to: "on", mode: "free_only", paid_cap_usd: null, reason: null, confirm_free: true });
+  assert.deepEqual(JSON.parse(sc.payload_json), { system: "cerebrum", from: "off_paid", to: "on", mode: "free_only", paid_cap_usd: null, reason: null, confirm_free: true });
   assert.deepEqual((await unhandledProblems(db as never)).filter((p) => p.code === "model_router_stopped"), [], "the owner item closes");
   const back = await c.run();
   assert.deepEqual(back.status === "ok" && back.provider, "reflection");
-  // A paid_capped turn-on clears it too; the kernel's own paid sign (cost on free_only) stops everyone again.
+  // xauusd comes back only by its own click: the stop is cleared, so a plain free_only turn-on.
+  const xau = await rpcSyscall(env as never, { host_worker: XAU_AI }, XAUUSD_MODEL_ROUTER_AGENT, "model_router.status", {}) as any;
+  assert.deepEqual([xau.result.state.state, xau.result.state.stopped_by_paid], ["off", true], "xauusd's router reads off");
+  const own = await set(db, { system: "xauusd", state: "on" });
+  assert.deepEqual([own.changed, own.state!.state, own.state!.stopped_by_paid], [true, "on", false]);
+  // The kernel's own paid sign (a cost on free_only) turns the two on switches off again (CTA, off by the owner, is not
+  // listed); a paid_capped turn-on of CTA clears it and turns on CTA only.
   await reportPaid(db, "system:model-router", "cost_field");
+  const ev2 = JSON.parse((db.raw.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'model_router.paid_detected' ORDER BY rowid DESC LIMIT 1").get() as any).payload_json);
+  assert.deepEqual([ev2.signal, ev2.system, ev2.turned_off], ["cost_field", "cerebrum", ["cerebrum", "xauusd"]]);
   await set(db, { system: "cta", state: "on", mode: "paid_capped", paid_cap_usd: 2 });
   assert.equal((await readRouterGlobal(db))!.paid_off, false);
-  assert.deepEqual(await Promise.all(ROUTER_SYSTEMS.map(async (s) => (await readRouterState(db, s))!.state)), ["on", "on", "on"]);
+  assert.deepEqual(await Promise.all(ROUTER_SYSTEMS.map(async (s) => (await readRouterState(db, s))!.state)), ["off", "on", "off"]);
 });
 
 test("BEAM-4. the owner's route per system: POST /v1/model-router/state with system (cerebrum by default); 403 for anyone else; an unknown system is refused; GET returns every system's row and the global stop", async () => {
@@ -299,7 +315,7 @@ test("BEAM-7. the guard reasons are unchanged, and the records: SSOT line 5 and 
   assert.ok(section.length > 100, "the section exists");
   for (const want of ['"tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"', "`model_router_global`", "`model_router.status`", "0091", "`confirm_free`", "`last_status_read_at`"]) assert.ok(section.includes(want), want);
   const panel = read("workers/console/ui/src/components/ModelRouterPanel.tsx");
-  for (const want of ['"cerebrum"', '"cta"', '"xauusd"', "not connected yet", "data-beam-system"]) assert.ok(panel.includes(want), want);
+  for (const want of ['"cerebrum"', '"cta"', '"xauusd"', "not connected yet", "data-beam-system", "off (paid sign); turn on again", "stopped_by_paid"]) assert.ok(panel.includes(want), want);
   assert.doesNotMatch(panel, /REFLECTION_API_KEY/);
   assert.match(read("workers/control-plane-migrations/test_migrations.py"), /PASS: 0091 model_router_systems/);
 });

@@ -8,15 +8,18 @@
 --     A table of its own, not a 'global' row in model_router_state, so that every row there is a system's switch with one
 --     meaning and one CHECK, and the paid stop is one conditional UPDATE (idempotent: only the first sign writes).
 --   model_router_state: keyed by system ('cerebrum', 'cta', 'xauusd'), the owner's switch of that system (on, off,
---     off_owner, off_retention), its mode, paid cap and spend, and last_status_read_at, when that system's router agent
---     last read its state from the kernel. off_paid is no longer a row state: it is model_router_global.paid_off, and a reader
+--     off_owner, off_retention), its mode, paid cap and spend, last_status_read_at, when that system's router agent
+--     last read its state from the kernel, and stopped_by_paid (coordinator review): 1 when the first paid sign turned
+--     this system's switch from on to off (the same batch that sets the stop). Clearing the stop turns on only the system
+--     the owner clicked; every other one stays off, and the Console says "off (paid sign); turn on again", until the
+--     owner turns it on (any owner change sets it back to 0). off_paid is no longer a row state: it is model_router_global.paid_off, and a reader
 --     sees a system's effective state as off_paid while it is set.
 --
 -- SQLite cannot change a primary key or a CHECK in place, so model_router_state is rebuilt with its row kept, as in 0069:
 -- the 0090 row ('global', Cerebrum's switch until now) becomes the 'cerebrum' row with every value kept (state, mode,
 -- paid_cap_usd, spent_usd, updated_by, updated_at, reason). Only an off_paid row changes shape: its paid sign moves to
 -- model_router_global (paid_off 1, the same updated_by, updated_at and reason) and the cerebrum row underneath reads
--- 'off', so clearing the paid stop never turns Beam on by itself. CTA and xauusd are seeded off, free_only. The audit
+-- 'off' with stopped_by_paid 1, so clearing the paid stop never turns Beam on by itself. CTA and xauusd are seeded off, free_only. The audit
 -- trail (audit_events, subject model_router) is not touched. model_calls_daily, model_router_counters and
 -- model_router_health (Cerebrum's own router's ledger, counters and breaker) are not altered.
 CREATE TABLE IF NOT EXISTS model_router_global (
@@ -40,10 +43,13 @@ CREATE TABLE model_router_state_0091 (
   updated_at TEXT NOT NULL,
   reason TEXT CHECK (reason IS NULL OR length(reason) <= 300),
   last_status_read_at TEXT,
-  CHECK (mode = 'free_only' OR paid_cap_usd IS NOT NULL)
+  stopped_by_paid INTEGER NOT NULL DEFAULT 0 CHECK (stopped_by_paid IN (0, 1)),
+  CHECK (mode = 'free_only' OR paid_cap_usd IS NOT NULL),
+  CHECK (stopped_by_paid = 0 OR state = 'off')
 );
-INSERT INTO model_router_state_0091 (system, state, mode, paid_cap_usd, spent_usd, updated_by, updated_at, reason, last_status_read_at)
-  SELECT 'cerebrum', CASE WHEN state = 'off_paid' THEN 'off' ELSE state END, mode, paid_cap_usd, spent_usd, updated_by, updated_at, reason, NULL
+INSERT INTO model_router_state_0091 (system, state, mode, paid_cap_usd, spent_usd, updated_by, updated_at, reason, last_status_read_at, stopped_by_paid)
+  SELECT 'cerebrum', CASE WHEN state = 'off_paid' THEN 'off' ELSE state END, mode, paid_cap_usd, spent_usd, updated_by, updated_at, reason, NULL,
+    CASE WHEN state = 'off_paid' THEN 1 ELSE 0 END
   FROM model_router_state WHERE id = 'global';
 DROP TABLE model_router_state;
 ALTER TABLE model_router_state_0091 RENAME TO model_router_state;

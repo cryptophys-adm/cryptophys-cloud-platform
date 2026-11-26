@@ -306,8 +306,9 @@ function reasonsOf(evidenceJson: unknown): string[] {
  *     dijangkau atau menjadi berbayar"): the model router turned Beam off by itself, after a paid sign (off_paid) or a
  *     contributor retention header (off_retention). Cerebrum keeps answering on Workers AI; only the owner can turn Beam
  *     on again (after a paid sign: free_only with confirm_free, or paid_capped with a cap). A paid sign is global (owner
- *     2026-11-26, migration 0091): from any system, it stops Beam for Cerebrum, CTA and xauusd's news_compare, which read
- *     their own switch through model_router.status. Retention is Cerebrum's own switch. One item (subject
+ *     2026-11-26, migration 0091): from any system, it turns every switch that is on to off and stops Beam for Cerebrum,
+ *     CTA and xauusd's news_compare, which read their own switch through model_router.status; clearing it turns on only
+ *     the system the owner clicked. Retention is Cerebrum's own switch. One item (subject
  *     model_router:<state>), so the owner hears of it once; it closes when the state changes.
  */
 export async function unhandledProblems(db: D1Database, now = Date.now()): Promise<ProductionProblem[]> {
@@ -523,7 +524,7 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     router = [{
       code: "model_router_stopped", subject: `model_router:${rs.state}`,
       detail: (rs.state === "off_paid"
-        ? `The model router turned Beam off for every system (Cerebrum, CTA and xauusd's news_compare) after a paid sign (${rs.reason ?? "unknown"}); the chat, directives and councils answer on Workers AI. Beam stays off until you turn a system on again (free only, confirming it was not a charge, or with a paid cap), which clears the stop for all, or leave it off`
+        ? `The model router turned Beam off for every system (Cerebrum, CTA and xauusd's news_compare) after a paid sign (${rs.reason ?? "unknown"}); the chat, directives and councils answer on Workers AI. Beam stays off until you turn a system on again (free only, confirming it was not a charge, or with a paid cap), which clears the stop and turns on only that system; every other one stays off until you turn it on`
         : "The model router turned Beam off for Cerebrum: Reflection answered with a contributor data retention header; the chat, directives and councils answer on Workers AI. Beam stays off until you turn it on again").slice(0, 600),
       since: rs.updated_at, link: "#/organism/telemetry",
     }];

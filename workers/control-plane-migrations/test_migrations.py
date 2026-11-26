@@ -1219,6 +1219,7 @@ for label, update in (
     assert cer == want, (label, cer, old)
     g = mrs_db.execute("SELECT paid_off, updated_by, updated_at, reason FROM model_router_global").fetchall()
     assert g == ([(1,) + old[4:]] if old[0] == "off_paid" else [(0, "migration:0091", "2026-11-26T00:00:00.000Z", None)]), (label, g)
+    assert mrs_db.execute("SELECT system, stopped_by_paid FROM model_router_state ORDER BY system").fetchall() == [("cerebrum", 1 if old[0] == "off_paid" else 0), ("cta", 0), ("xauusd", 0)], f"{label}: only an off_paid row is marked as stopped by the paid sign"
     assert mrs_db.execute("SELECT system, state, mode, paid_cap_usd, spent_usd, last_status_read_at FROM model_router_state WHERE system != 'cerebrum' ORDER BY system").fetchall() == [
         ("cta", "off", "free_only", None, 0, None), ("xauusd", "off", "free_only", None, 0, None)], label
     assert mrs_db.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall() == audits, f"{label}: the audit trail is untouched"
@@ -1229,6 +1230,8 @@ for label, update in (
     expect_integrity_error("0091 paid_capped needs a cap", lambda: mrs_db.execute("UPDATE model_router_state SET mode = 'paid_capped' WHERE system = 'xauusd'"))
     expect_integrity_error("0091 one global row", lambda: mrs_db.execute("INSERT INTO model_router_global (id, paid_off, updated_by, updated_at) VALUES ('other', 0, 'x', 't0')"))
     expect_integrity_error("0091 paid_off is 0 or 1", lambda: mrs_db.execute("UPDATE model_router_global SET paid_off = 2"))
+    expect_integrity_error("0091 stopped_by_paid only on an off switch", lambda: mrs_db.execute("UPDATE model_router_state SET state = 'on', stopped_by_paid = 1 WHERE system = 'cta'"))
+    expect_integrity_error("0091 stopped_by_paid is 0 or 1", lambda: mrs_db.execute("UPDATE model_router_state SET stopped_by_paid = 2 WHERE system = 'cta'"))
     mrs_db.close()
 mrs_code = "\n".join(line.split("--", 1)[0] for line in mrs_sql.splitlines()).upper()
 assert re.findall(r"\bDROP\s+TABLE\s+(\w+)", mrs_code) == ["MODEL_ROUTER_STATE"], "0091 drops only the table it rebuilds"

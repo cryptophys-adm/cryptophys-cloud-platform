@@ -13,8 +13,8 @@
 //
 // Owner 2026-11-26 ("tambahkan untuk semua beam toggle dari cta dan juga xauusd di command"; migration 0091): the owner's
 // switch is per system (cerebrum, cta, xauusd) in model_router_state; this router reads Cerebrum's row only. A paid sign
-// from any system sets the one global stop (model_router_global), which turns Beam off for every system until the owner
-// clears it. CTA's and xauusd's own router copies read their own row through model_router.status (modelRouterStatusFor).
+// from any system sets the one global stop (model_router_global) and turns every switch that is on to off, so Beam is off
+// for every system; the owner's clearing turns on only the system clicked. CTA's and xauusd's own router copies read their own row through model_router.status (modelRouterStatusFor).
 import type { D1Database } from "./types.ts";
 import { appendAuditEvent } from "./audit.ts";
 
@@ -119,6 +119,8 @@ export type BeamAttempt = BeamAnswer | { kind: "skip"; reason: FallbackReason };
 export interface RouterStateRow {
   state: RouterState; mode: RouterMode; paid_cap_usd: number | null; spent_usd: number; updated_by: string; updated_at: string; reason: string | null;
   system: RouterSystem; switch: Exclude<RouterState, "off_paid">; last_status_read_at: string | null;
+  /** The first paid sign turned this switch from on to off; it stays off until the owner turns it on (coordinator review). */
+  stopped_by_paid: boolean;
 }
 /** The global paid stop (model_router_global, migration 0091). */
 export interface RouterGlobalRow { paid_off: boolean; updated_by: string; updated_at: string; reason: string | null }
@@ -249,11 +251,11 @@ export async function readRouterGlobal(db: D1Database): Promise<RouterGlobalRow 
 export async function readRouterState(db: D1Database, system: RouterSystem = ROUTER_SYSTEM): Promise<RouterStateRow | null> {
   try {
     const r = await db.prepare(
-      `SELECT s.state, s.mode, s.paid_cap_usd, s.spent_usd, s.updated_by, s.updated_at, s.reason, s.last_status_read_at,
+      `SELECT s.state, s.mode, s.paid_cap_usd, s.spent_usd, s.updated_by, s.updated_at, s.reason, s.last_status_read_at, s.stopped_by_paid,
               g.paid_off AS g_paid_off, g.updated_by AS g_updated_by, g.updated_at AS g_updated_at, g.reason AS g_reason
          FROM model_router_state s LEFT JOIN model_router_global g ON g.id = 'global' WHERE s.system = ?`,
     ).bind(system).first<{ state: string; mode: string; paid_cap_usd: number | null; spent_usd: number; updated_by: string; updated_at: string; reason: string | null;
-      last_status_read_at: string | null; g_paid_off: number | null; g_updated_by: string | null; g_updated_at: string | null; g_reason: string | null }>();
+      last_status_read_at: string | null; stopped_by_paid: number; g_paid_off: number | null; g_updated_by: string | null; g_updated_at: string | null; g_reason: string | null }>();
     if (!r || !(SWITCH_STATES as readonly string[]).includes(r.state) || !(ROUTER_MODES as readonly string[]).includes(r.mode)) return null;
     if (r.g_paid_off !== 0 && r.g_paid_off !== 1) return null;
     const paid = r.g_paid_off === 1;
@@ -261,7 +263,7 @@ export async function readRouterState(db: D1Database, system: RouterSystem = ROU
       state: paid ? "off_paid" : (r.state as RouterState), mode: r.mode as RouterMode,
       paid_cap_usd: typeof r.paid_cap_usd === "number" ? r.paid_cap_usd : null, spent_usd: Number(r.spent_usd) || 0,
       updated_by: paid ? String(r.g_updated_by) : r.updated_by, updated_at: paid ? String(r.g_updated_at) : r.updated_at, reason: paid ? r.g_reason ?? null : r.reason,
-      system, switch: r.state as Exclude<RouterState, "off_paid">, last_status_read_at: r.last_status_read_at ?? null,
+      system, switch: r.state as Exclude<RouterState, "off_paid">, last_status_read_at: r.last_status_read_at ?? null, stopped_by_paid: r.stopped_by_paid === 1,
     };
   } catch { return null; }
 }
@@ -284,21 +286,33 @@ export async function recordStatusRead(db: D1Database, system: RouterSystem, now
 
 /**
  * A paid sign (free_only), or a reached paid cap, from any system (the kernel's router, or model_router.report_paid from
- * a system's router agent): Beam is off for every system, at once, until the owner clears it (one system turned on as
- * paid_capped, or as free_only with confirm_free). Idempotent: only the first signal writes (one conditional UPDATE of
- * model_router_global); it records one audit event, and the owner hears of it once through the owner channel
- * (owner-inbox.ts production problem model_router_stopped, owner-notices.ts).
+ * a system's router agent): Beam is off for every system, at once, until the owner clears it. The first sign, in one batch,
+ * turns every switch that is on to off (stopped_by_paid, reason "paid sign: <signal>", by the reporter) and sets the
+ * global stop, both only while the stop is not yet set; so clearing it later (one system turned on as paid_capped, or as
+ * free_only with confirm_free) turns on only the system the owner clicked (coordinator review of 284b275). Idempotent: a
+ * later sign while the stop is set writes nothing. One audit event lists the systems it turned off, and the owner hears
+ * of it once through the owner channel (owner-inbox.ts production problem model_router_stopped, owner-notices.ts).
  */
 export async function reportPaid(db: D1Database, by: string, signal: PaidSignal, now = Date.now(), system: RouterSystem = ROUTER_SYSTEM): Promise<{ state: RouterState; changed: boolean }> {
   const before = await readRouterState(db, system);
-  const r = await db.prepare(
-    "UPDATE model_router_global SET paid_off = 1, updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global' AND paid_off = 0",
-  ).bind(by.slice(0, 120), iso(now), `paid sign: ${signal}`).run();
-  const changed = (r.meta.changes ?? 0) > 0;
+  const actor = by.slice(0, 120), t = iso(now), reason = `paid sign: ${signal}`;
+  const [, stop] = await db.batch([
+    db.prepare(
+      `UPDATE model_router_state SET state = 'off', stopped_by_paid = 1, updated_by = ?, updated_at = ?, reason = ?
+        WHERE state = 'on' AND EXISTS (SELECT 1 FROM model_router_global WHERE id = 'global' AND paid_off = 0)`,
+    ).bind(actor, t, reason),
+    db.prepare("UPDATE model_router_global SET paid_off = 1, updated_by = ?, updated_at = ?, reason = ? WHERE id = 'global' AND paid_off = 0").bind(actor, t, reason),
+  ]);
+  const changed = (stop?.meta.changes ?? 0) > 0;
   forgetRouterState(db);
   if (changed) {
-    await appendAuditEvent(db, { event_type: "model_router.paid_detected", actor: by.slice(0, 120), subject: "model_router", outcome: "off_paid",
-      payload: { from: before?.state ?? null, to: "off_paid", signal, mode: before?.mode ?? null, model: BEAM_MODEL, provider: BEAM_PROVIDER, system, scope: "all_systems" } });
+    let turnedOff: string[] = [];
+    try {
+      turnedOff = ((await db.prepare("SELECT system FROM model_router_state WHERE stopped_by_paid = 1 AND updated_by = ? AND updated_at = ? AND reason = ? ORDER BY system")
+        .bind(actor, t, reason).all<{ system: string }>()).results ?? []).map((r) => r.system);
+    } catch { turnedOff = []; }
+    await appendAuditEvent(db, { event_type: "model_router.paid_detected", actor, subject: "model_router", outcome: "off_paid",
+      payload: { from: before?.state ?? null, to: "off_paid", signal, mode: before?.mode ?? null, model: BEAM_MODEL, provider: BEAM_PROVIDER, system, scope: "all_systems", turned_off: turnedOff } });
   }
   return { state: "off_paid", changed };
 }
@@ -331,7 +345,8 @@ export class ModelRouterError extends Error {
  * (the global stop, every system off_paid), free_only needs the owner's explicit confirm_free: true (coordinator review,
  * 2026-11-25: the owner may judge the sign was not a charge); free_only then still goes off again at the next paid sign.
  * Turning any system on after a paid sign (paid_capped, or free_only with confirm_free) clears the stop for every system
- * (owner 2026-11-26); each other system then follows its own switch again. Turning a system off never clears it. Each
+ * (owner 2026-11-26) and turns on only that system: the first paid sign turned every switch that was on to off, so each
+ * other system stays off until the owner turns it on (coordinator review). Turning a system off never clears it. Each
  * change is audited (model_router.state_changed, with its system and from state; model_router.paid_cleared when the stop
  * is cleared); turning Cerebrum on closes its router's breaker; turning a system on starts its paid spend from 0.
  */
@@ -373,7 +388,7 @@ export async function setRouterState(db: D1Database, actor: string, body: Record
   const t = iso(now);
   const writes = [
     db.prepare(
-      `UPDATE model_router_state SET state = ?, mode = ?, paid_cap_usd = ?, spent_usd = CASE WHEN ? = 'on' THEN 0 ELSE spent_usd END, updated_by = ?, updated_at = ?, reason = ? WHERE system = ?`,
+      `UPDATE model_router_state SET state = ?, mode = ?, paid_cap_usd = ?, spent_usd = CASE WHEN ? = 'on' THEN 0 ELSE spent_usd END, stopped_by_paid = 0, updated_by = ?, updated_at = ?, reason = ? WHERE system = ?`,
     ).bind(next.state, next.mode, next.cap, next.state, actor.slice(0, 120), t, reason ?? (next.state === "on" ? `turned on (${next.mode})` : "turned off by the owner"), system),
   ];
   if (clearsPaid) {
@@ -684,7 +699,7 @@ export function modelRouterFor(env: ModelRouterEnv, db: D1Database, options: Omi
 
 // ---------------------------------------------------------------- the status read (GET /v1/model-router, model_router.status)
 
-const stateView = (r: RouterStateRow) => ({ state: r.state, mode: r.mode, paid_cap_usd: r.paid_cap_usd, spent_usd: r.spent_usd, updated_by: r.updated_by, updated_at: r.updated_at, reason: r.reason, switch: r.switch });
+const stateView = (r: RouterStateRow) => ({ state: r.state, mode: r.mode, paid_cap_usd: r.paid_cap_usd, spent_usd: r.spent_usd, updated_by: r.updated_by, updated_at: r.updated_at, reason: r.reason, switch: r.switch, stopped_by_paid: r.stopped_by_paid });
 const globalView = (g: RouterGlobalRow | null) => (g ? { paid_off: g.paid_off, updated_by: g.updated_by, updated_at: g.updated_at, reason: g.reason } : null);
 const kernelDisabled = (env: ModelRouterEnv) => !routerVarOn(env) || !routerKeyPresent(env) || routerBaseUrl(env) === null;
 /** A system's effective state: off without a row; Cerebrum's is "disabled" while the kernel's deploy cannot call Beam. */
