@@ -104,15 +104,15 @@
     },
     {
       "id": "q09",
-      "question": "How many warning reports did the agents publish today?",
+      "question": "Is Beam answering the chat today, and how many of its calls fell back to Workers AI?",
       "expect_tools": [
-        "reports"
+        "model_router"
       ],
       "expect_ref_prefixes": [
-        "ev:platform/reports@"
+        "ev:platform/model_router@"
       ],
       "expect": "metric",
-      "note": "Metric first, with its window and as-of time; every number cited from a tool result of the turn."
+      "note": "Owner 2026-11-26 (replaces the warning-report count; reports stay in q03, q08 and q30): the model router read, its switch, calls per provider and fallback reasons, each number cited."
     },
     {
       "id": "q10",

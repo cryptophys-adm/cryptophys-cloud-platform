@@ -11,7 +11,8 @@ import { AiEngine, type AiTask, type AiUsage } from "../../control-plane-shared/
 import { appendAuditEvent, sha256Hex } from "../../control-plane-shared/src/audit.ts";
 import type { AiBinding, D1Database } from "../../control-plane-shared/src/types.ts";
 import {
-  ANSWER_INSTRUCTIONS, CHAT_DAILY_TURN_LIMIT, CHAT_MODEL, CHAT_MODELS, CHAT_SERVICE, CHAT_TASKS, CHAT_TOOLS, CONVERSATION_ID, HISTORY_TURNS,
+  ANSWER_HISTORY_BUDGET, ANSWER_INSTRUCTIONS, CHAT_DAILY_TURN_LIMIT, CHAT_MODEL, CHAT_MODELS, CHAT_SERVICE, CHAT_TASKS, CHAT_TOOLS, CONVERSATION_ID, HISTORY_TURNS,
+  PLAN_HISTORY_BUDGET, PLAN_HISTORY_CHARS, chatAdvisoryLanguage, chatContext, fitHistory, type HistoryTurn,
   MAX_CALLS_PER_TURN, MAX_QUESTION_CHARS, PLAN_INSTRUCTIONS, checkCitations, injectionFlags, redactText, secretInText, toolText, validateAnswer, validatePlan,
   type ChatAnswer, type ChatPlan,
 } from "../../control-plane-shared/src/conversation.ts";
@@ -75,7 +76,8 @@ const audit = (db: D1Database, type: string, actor: string, id: string, outcome:
   appendAuditEvent(db, { event_type: `conversation.${type}`, actor, subject: `conversation:${id}`, outcome, payload: { conversation_id: id, ...payload } as never });
 
 const planTask: AiTask<ChatPlan> = { name: "chat_plan", instructions: PLAN_INSTRUCTIONS, maxInputChars: 24_000, maxOutputTokens: 600, validate: validatePlan };
-const answerTask: AiTask<ChatAnswer> = { name: "chat_answer", instructions: ANSWER_INSTRUCTIONS, maxInputChars: 64_000, maxOutputTokens: 2_000, validate: validateAnswer };
+// 96k (was 64k, owner 2026-11-26 "Memori lebih panjang"): 8 whole earlier turns (≤ 30k) and 4 tool results (≤ 4 × 12k).
+const answerTask: AiTask<ChatAnswer> = { name: "chat_answer", instructions: ANSWER_INSTRUCTIONS, maxInputChars: 96_000, maxOutputTokens: 2_000, validate: validateAnswer };
 
 async function metaOf(store: ConversationStore, actor: string, id: string): Promise<Meta | null> {
   const meta = await store.get<Meta>("meta");
@@ -131,11 +133,15 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
     return refused("daily_budget_used", `The chat's daily budget is used up (${limit} turns a day). It starts again at 00:00 UTC.`);
   }
 
-  const history: { question: string; answer: string }[] = [];
+  const earlier: HistoryTurn[] = [];
   for (let k = Math.max(1, n - HISTORY_TURNS); k < n; k++) {
     const t = await store.get<TurnRecord>(TURN_KEY(k));
-    if (t) history.push({ question: t.question.slice(0, 1_000), answer: t.answer.slice(0, 1_500) });
+    if (t) earlier.push({ question: t.question, answer: t.answer });
   }
+  // The answer sees the earlier turns whole, the plan a short form; the oldest go first when they would not fit.
+  const history = fitHistory(earlier, ANSWER_HISTORY_BUDGET);
+  const planHistory = fitHistory(earlier, PLAN_HISTORY_BUDGET, PLAN_HISTORY_CHARS);
+  const context = chatContext(now);
   // The turn was reserved above; its model calls are bounded per turn, not counted in ai_usage (the platform's caps).
   let calls = 0;
   const engine = new AiEngine({
@@ -149,7 +155,7 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
   const question = input.question.trim();
   const catalog = CHAT_TOOLS.map((t) => ({ name: t.name, description: t.description, args: t.args, required: t.required ?? [] }));
 
-  const plan = await engine.run(planTask, { question, history, tools: catalog }, `chat:${id}:${n}:plan`);
+  const plan = await engine.run(planTask, { question, history: planHistory, context, tools: catalog }, `chat:${id}:${n}:plan`);
   if (plan.status === "ok") add(plan.usage);
   // HAIC H3d: owner_corrections matches the subjects and refs of the turn's other tool results, so it runs after them.
   const plannedAll = plan.status === "ok" ? plan.data.tools : [];
@@ -172,7 +178,12 @@ export async function runTurn(env: ConversationEnv, store: ConversationStore, in
   const refs = [...new Set(results.flatMap((r) => r.refs))];
   const tools = results.map((r, i) => ({ name: r.name, args: planned[i].args, ok: r.ok, ...(r.error ? { error: r.error } : {}) }));
 
-  const ans = await engine.run(answerTask, { question, history, tool_results: quoted, plan_status: plan.status === "ok" ? "ok" : plan.reason }, `chat:${id}:${n}:answer`);
+  let ans = await engine.run(answerTask, { question, history, context, tool_results: quoted, plan_status: plan.status === "ok" ? "ok" : plan.reason }, `chat:${id}:${n}:answer`);
+  // The engine's trading-language rules are English; the answer may be Indonesian now, so the same rules run in Indonesian.
+  if (ans.status === "ok" && chatAdvisoryLanguage(ans.data.answer)) {
+    await audit(db, "advisory_withheld", actor, id, "refused", { turn: n, language: "id" });
+    ans = { status: "invalid_output", reason: "schema:advisory_language", correlation_id: ans.correlation_id };
+  }
   if (ans.status !== "ok") {
     const advisory = ans.reason === "schema:advisory_language";
     return record({

@@ -15,6 +15,7 @@ import { visionView } from "./vision-view.ts";
 import { adrDetailView, adrListView, validAdrId } from "./adr-view.ts";
 import { latestCensusRow } from "./organism.ts";
 import { ownerCorrections, ownerCorrectionsSection, type CorrectionKeys } from "./corrections-read.ts";
+import { modelRouterStatus } from "../../control-plane-shared/src/model-router.ts";
 
 export interface DocsBinding { read(input: Record<string, unknown>): Promise<Record<string, unknown>> }
 export interface PolicyDryRunBinding { dryRun?(input: Record<string, unknown>): Promise<Record<string, unknown>> }
@@ -24,6 +25,8 @@ export interface ToolResult { name: string; ok: boolean; data: unknown; refs: st
 export interface ToolContext extends Partial<CorrectionKeys> { since?: string | null }
 
 const at = (now: number) => new Date(now).toISOString();
+/** The data without its `updated_by` fields (an operator's email), at any depth. */
+const withoutActors = (v: unknown): unknown => JSON.parse(JSON.stringify(v, (k, x) => (k === "updated_by" ? undefined : x)));
 const own = (o: unknown, key: string): unknown[] => { const v = (o as Record<string, unknown> | null)?.[key]; return Array.isArray(v) ? v : []; };
 
 /** One tool call. A refusal or a failure is a result too (ok false), so the answer can say what was not measured. */
@@ -71,6 +74,9 @@ export async function runTool(env: ToolEnv, call: PlannedCall, now = Date.now(),
         const refs = [...own(d, "sections"), ...own(d, "results")].map((s) => (s as { ref?: string }).ref).filter((r): r is string => typeof r === "string");
         return { name: call.name, ok: d.available === true && !d.refused, data: d, refs: refs.length ? refs.slice(0, 30) : [base], ...(d.refused ? { error: String(d.refused) } : {}) };
       }
+      // Owner 2026-11-26: the Command page's Beam panel read (GET /v1/model-router), read only. Who switched (updated_by,
+      // an email) is left out: the result goes to the model, which may be an outside provider (Beam).
+      case "model_router": return { name: call.name, ok: true, data: withoutActors(await modelRouterStatus(env.DB, e, now)), refs: [base] };
       case "owner_corrections": {
         // The arguments, when given, say what to match; otherwise the turn's other results do; with neither, the newest.
         const subject = typeof a.subject === "string" ? a.subject : null, target = typeof a.target === "string" ? a.target : null;

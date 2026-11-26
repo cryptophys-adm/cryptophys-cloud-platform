@@ -163,7 +163,7 @@ test("H3d-5. the chat tool owner_corrections: in the catalog, read only; at most
   const spec = CHAT_TOOLS.find((t) => t.name === "owner_corrections")!;
   assert.deepEqual(spec.args, { subject: "string", target: "string", limit: "integer" });
   assert.match(spec.description, /ev:platform\/correction\/<id>/);
-  assert.equal(CHAT_TOOL_NAMES.length, 13);
+  assert.equal(CHAT_TOOL_NAMES.length, 14, "13, and model_router since 2026-11-26");
   assert.ok(validatePlan({ tools: [{ name: "owner_corrections", args: { subject: "agent:auditor", limit: 5 } }] }));
   assert.match(ANSWER_INSTRUCTIONS, /cite that correction's ref \(ev:platform\/correction\/<id>\)/);
   const s = setup();

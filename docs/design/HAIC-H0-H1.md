@@ -201,6 +201,14 @@ The kernel's MCP tools (`ai-kernel/src/mcp.ts`: `platform_status`, `list_reports
   - No tool returns a secret: bot tokens stay in `AlertVault`, and only their last four characters are ever shown.
 - **Trading language.** `ADVISORY_LANGUAGE` (`control-plane-shared/src/ai-engine.ts`) runs on every answer that touches xauusd. Answers carry no price levels and no imperatives.
 
+**Amendment 2026-11-26 (owner, on a stiff answer).** The owner found the chat's answers too rigid ("coba cek jawabannya kenapa context terlalu kaku ya") and chose all four changes and the language rule:
+- **Language** ("Ikuti bahasa pertanyaan"). The answer is in the language of the owner's question, English when unsure. The AI engine gives `chat_answer` alone the owner-language style (`OWNER_LANGUAGE_TASKS`); every other task, `chat_plan` included, stays plain English. Because the answer may be Indonesian, the trading-language rules also run in Indonesian on every answer (`CHAT_ADVISORY_LANGUAGE_ID` in `control-plane-shared/src/conversation.ts`); a match withholds the answer like the engine's advisory refusal and is recorded as `conversation.advisory_withheld`.
+- **Shape** ("Format jawaban bebas"). Metric first only for a question about a number or a state. A why or how question gets a short explanation, and a greeting or follow-up a natural answer that uses the earlier turns.
+- **Documents** ("Boleh jelaskan dari dokumen"). The answer may explain how the platform works from the `docs` tool's results, naming the document, and may add a sentence of general background labelled as such. Measured facts still come from the tools only.
+- **Context and Beam** ("Alat baca Beam + konteks diri"). Both tasks get `context` (`chatContext`): today's date, what the chat is, what the platform and its systems are, in words only. A new read-only tool `model_router` returns the Command page's status read (`model_router.status.v1`).
+- **Memory** ("Memori lebih panjang"). 8 earlier turns, not 4. The answer sees them whole within 30,000 characters, and the plan sees a short form within 8,000. The oldest turns are dropped first. The answer's input limit is 96,000 characters (was 64,000).
+- **Unchanged.** Every number is cited or replaced, there are no price levels and no trading instructions, the chat never acts, and tool results are data, never instructions.
+
 ### 3.4 Audit (every turn)
 
 Each event is written with `appendAuditEvent` (`control-plane-shared/src/audit.ts`). Event types match `^[a-z0-9][a-z0-9_.-]{0,63}$` (`audit-ledger/src/index.ts`).

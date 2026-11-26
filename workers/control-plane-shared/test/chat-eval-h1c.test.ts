@@ -15,6 +15,8 @@ const PRODUCES: Record<string, string[]> = {
   docs: ["ev:platform/doc/"], policy_dry_run: ["ev:platform/policy_dry_run@"],
   // HAIC H3d: the owner's corrections, each cited by its own ref.
   owner_corrections: ["ev:platform/owner_corrections@", "ev:platform/correction/"],
+  // Owner 2026-11-26: the model router's status (Beam), the Command page's read.
+  model_router: ["ev:platform/model_router@"],
 };
 
 test("H1c-E1. 30 English questions with unique ids, each tool in the chat's catalog, each ref prefix one its tools produce", () => {
