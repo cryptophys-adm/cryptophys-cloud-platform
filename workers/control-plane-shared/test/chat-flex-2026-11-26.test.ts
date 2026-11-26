@@ -43,7 +43,7 @@ function setup(answer: (i: number) => unknown = () => ({ answer: "ok", citations
 test("CF-1. the instructions: the answer fits the question, follows its language, may explain from the documents; the number, price and no-action rules stay", () => {
   assert.match(ANSWER_INSTRUCTIONS, /Answer in the language of the owner's question; when unsure, in English\./);
   assert.match(ANSWER_INSTRUCTIONS, /Fit the answer to the question\. For a question about a number or a state, the first line gives it, with its window and as-of time/);
-  assert.match(ANSWER_INSTRUCTIONS, /For a why or how question, explain in a few short paragraphs\. For a greeting or a follow-up, answer naturally and use the earlier turns\./);
+  assert.match(ANSWER_INSTRUCTIONS, /For a why or how question, explain in a few short paragraphs\. (?:Keep every answer under \d+ characters\. )?For a greeting or a follow-up, answer naturally and use the earlier turns\./);
   assert.match(ANSWER_INSTRUCTIONS, /You may explain how the platform works from the docs tool's results: say it comes from the platform's documents and name the document\./);
   assert.match(ANSWER_INSTRUCTIONS, /you may add one sentence of general background about a general technical concept \(for example what a circuit breaker or consensus is\), saying it is general background; never about markets, prices, price direction, strategies or trading\./);
   // Unchanged rules.

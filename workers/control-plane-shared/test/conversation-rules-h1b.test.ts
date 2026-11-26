@@ -30,7 +30,7 @@ test("C2. validatePlan: known tools, declared typed arguments, required ones pre
 test("C3. validateAnswer: a bounded answer and citations of refs and values", () => {
   assert.deepEqual(validateAnswer({ answer: " 7 open. ", citations: [{ ref: "ev:a", value: 7 }] }), { answer: "7 open.", citations: [{ ref: "ev:a", value: "7" }] });
   assert.deepEqual(validateAnswer({ answer: "ok" }), { answer: "ok", citations: [] });
-  for (const bad of [{ answer: "" }, { answer: "x".repeat(2401) }, { answer: "a", citations: [{ ref: 1, value: "1" }] }, { answer: "a", citations: "x" }]) assert.equal(validateAnswer(bad), null);
+  for (const bad of [{ answer: "" }, { answer: "x".repeat(4001) }, { answer: "a", citations: [{ ref: 1, value: "1" }] }, { answer: "a", citations: "x" }]) assert.equal(validateAnswer(bad), null);
 });
 
 test("C4. the citation post-check keeps cited numbers its tool output contains and replaces the rest", () => {

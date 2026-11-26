@@ -207,6 +207,7 @@ The kernel's MCP tools (`ai-kernel/src/mcp.ts`: `platform_status`, `list_reports
 - **Documents** ("Boleh jelaskan dari dokumen"). The answer may explain how the platform works from the `docs` tool's results, naming the document, and may add one labelled sentence of general background about a general technical concept (what a circuit breaker or consensus is), never about markets, prices, price direction, strategies or trading. Measured facts still come from the tools only.
 - **Context and Beam** ("Alat baca Beam + konteks diri"). Both tasks get `context` (`chatContext`): today's date, what the chat is, what the platform and its systems are, in words only. A new read-only tool `model_router` returns the Command page's status read (`model_router.status.v1`).
 - **Memory** ("Memori lebih panjang"). 8 earlier turns, not 4. The answer sees them whole within 30,000 characters, and the plan sees a short form within 8,000. The oldest turns are dropped first. The answer's input limit is 96,000 characters (was 64,000).
+- **Length** (2026-11-26, after the 14:10 UTC turn failed). An answer may be 4,000 characters (`MAX_ANSWER_CHARS`, was 2,400); the instructions ask for under 3,500. A refused answer is named (`diagnoseAnswer`), and a refused Beam answer is recorded as `beam:<category>` in `ai_failures`.
 - **Unchanged.** Every number is cited or replaced, there are no price levels and no trading instructions, the chat never acts, and tool results are data, never instructions.
 
 ### 3.4 Audit (every turn)

@@ -432,7 +432,9 @@ export class AiEngine {
           fallback = "output_budget";
         } else {
           // Empty, invalid JSON or a schema mismatch: this call falls back, and it counts as a failure for the breaker.
+          // Its category is kept as beam:<category> (2026-11-26: a chat answer fell back with no reason recorded).
           await beam.settle(false);
+          await this.recordFailureCategory(day, task.name, `beam:${verdict.category}`);
           fallback = "unreachable";
         }
       } else {
