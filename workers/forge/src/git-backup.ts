@@ -31,7 +31,7 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { GIT_BACKUP_PREFIX, GIT_BACKUP_RETAINED_DAYS, GIT_BACKUP_ROW_RETENTION_DAYS, type GitBackupRef } from "../../control-plane-shared/src/git-backup.ts";
 import { canonicalMainHead } from "./census.ts";
 import type { ArtifactsReader } from "./checks.ts";
-import { defaultHasher, type Hasher, type HasherFactory } from "./digest.ts";
+import { defaultHasher, digestOf, type Hasher, type HasherFactory } from "./digest.ts";
 import { CANONICAL_REPO, FLUSH, ZERO_SHA, discoverRefs, gitHeaders, pktLine, remoteBase, tokenSecret, trustedRemoteFor, validBranch, validSha, type Advertisement, type Fetch } from "./merge.ts";
 
 export const GIT_BACKUP_TOKEN_TTL_S = 120;
@@ -264,7 +264,7 @@ export async function verifyPack(pack: Uint8Array<ArrayBuffer>): Promise<PackInf
   const objects = view.getUint32(8);
   if (objects < 1) fail("pack_empty");
   const trailer = hex(pack.subarray(pack.length - 20));
-  const digest = hex(await crypto.subtle.digest("SHA-1", pack.subarray(0, pack.length - 20)));
+  const digest = await digestOf("SHA-1", pack.subarray(0, pack.length - 20));
   if (digest !== trailer) fail("pack_checksum_mismatch");
   return { version, objects, sha1: trailer };
 }
@@ -289,7 +289,7 @@ export async function assembleBundle(refs: GitBackupRef[], received: ReceivedPac
   }
   received.chunks.length = 0;
   const pack = await verifyPack(bundle.subarray(header.length));
-  return { bundle, pack, sha256: hex(await crypto.subtle.digest("SHA-256", bundle)), pack_bytes: received.bytes };
+  return { bundle, pack, sha256: await digestOf("SHA-256", bundle), pack_bytes: received.bytes };
 }
 
 // ---------------------------------------------------------------- the fetch

@@ -231,9 +231,9 @@ test("GM3. the peak does not grow with the history: twice the commits, twice the
   assert.deepEqual([a.objects, b.objects, a.reachable, b.reachable], [small.objects, large.objects, small.objects, large.objects]);
   // At the production bound and cache budget too.
   const c = await verifyBundle(bundleOf(refsOf(large), large.pack));
-  assert.ok(c.peak_held_bytes <= 1.1 * a.peak_held_bytes, `peak at 64 MiB: ${c.peak_held_bytes}`);
+  assert.ok(c.peak_held_bytes <= 1.1 * a.peak_held_bytes, `peak at the production bound: ${c.peak_held_bytes}`);
   assert.ok(VERIFY_CACHE_BYTES * 4 <= MAX_VERIFY_INFLATED_BYTES);
-  console.log(`GM3: 120 commits: inflated ${a.inflated_bytes} B, peak ${a.peak_held_bytes} B; 240 commits: inflated ${b.inflated_bytes} B, peak ${b.peak_held_bytes} B (${c.peak_held_bytes} B at 64 MiB)`);
+  console.log(`GM3: 120 commits: inflated ${a.inflated_bytes} B, peak ${a.peak_held_bytes} B; 240 commits: inflated ${b.inflated_bytes} B, peak ${b.peak_held_bytes} B (${c.peak_held_bytes} B at the production bound)`);
 });
 
 test("GM4. with no cache at all every base is inflated again from the pack: the same result, more work, still within the bound", async () => {

@@ -177,7 +177,7 @@ test("BV3. a truncated or corrupted pack fails: the checksum, a damaged zlib str
   assert.throws(() => applyDelta(enc.encode("abc"), cat(varint(3), varint(4), Uint8Array.of(0x90, 4))), /delta_copy_out_of_range/);
   // A pack that inflates past the bound fails as too large rather than exhausting memory.
   await rejects(indexPack(await pack(r.all), 100), /pack_too_large_to_verify/, "the memory bound");
-  assert.equal(MAX_VERIFY_INFLATED_BYTES, 64 * 1024 * 1024);
+  assert.equal(MAX_VERIFY_INFLATED_BYTES, 32 * 1024 * 1024, "32 MiB since 2026-11-26 (was 64 MiB): the measured peak in a 128 MB Worker");
 });
 
 test("BV4. the header: the signature, v3 capabilities, prerequisites, ref lines", async () => {
@@ -388,7 +388,7 @@ test("BV12. a failure recorded by an older verifier (no `verifier`, or another v
   const AT = Date.parse("2026-11-20T00:05:20.445Z");
   db.raw.prepare("UPDATE forge_git_backups SET verified_at = ?, verify_status = 'failed', verify_details = ? WHERE run_id = ?")
     .run(new Date(AT).toISOString(), JSON.stringify({ reason: "pack_too_large_to_verify", duration_ms: 1200 }), "gbk_v1");
-  assert.equal(VERIFIER_VERSION, 2);
+  assert.equal(VERIFIER_VERSION, 3, "3 since 2026-11-26 (no whole-input digest copies, the 32 MiB bound)");
   assert.ok(!TRANSIENT_VERIFY_FAILURES.has("pack_too_large_to_verify"), "the reason itself is not transient");
   assert.equal((await gitBackupVerifyTick(env, AT + GIT_BACKUP_VERIFY_RETRY_MS - 60_000)).outcome, "not_due", "not before the hour");
   const r = await gitBackupVerifyTick(env, AT + GIT_BACKUP_VERIFY_RETRY_MS);
@@ -408,7 +408,7 @@ test("BV12. a failure recorded by an older verifier (no `verifier`, or another v
   const f = await gitBackupVerifyTick(env, DAY3);
   assert.deepEqual([f.outcome, f.reason, f.verifier], ["failed", "sha256_mismatch", VERIFIER_VERSION]);
   assert.equal((await gitBackupVerifyTick(env, DAY3 + 2 * GIT_BACKUP_VERIFY_RETRY_MS)).outcome, "not_due", "its own failure waits for the next day");
-  assert.match(read("workers/forge/src/bundle-verify.ts"), /export const VERIFIER_VERSION = 2;/);
+  assert.match(read("workers/forge/src/bundle-verify.ts"), /export const VERIFIER_VERSION = 3;/);
 });
 
 test("BV9. the Forge tick runs git_backup_verify after git_backup when the bucket is bound; nothing to verify, no get(), and before migration 0072", async () => {

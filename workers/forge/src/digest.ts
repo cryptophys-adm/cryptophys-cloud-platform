@@ -124,3 +124,10 @@ export class Sha256 extends BlockHash {
     this.h = [(s[0] + a) | 0, (s[1] + bb) | 0, (s[2] + c) | 0, (s[3] + d) | 0, (s[4] + e) | 0, (s[5] + f) | 0, (s[6] + g) | 0, (s[7] + h) | 0];
   }
 }
+
+/** One digest of `bytes`, fed in views of `chunk` bytes: no copy of the whole input (crypto.subtle.digest copies it). */
+export async function digestOf(algorithm: DigestAlgorithm, bytes: Uint8Array, hasher: HasherFactory = defaultHasher, chunk = 1024 * 1024): Promise<string> {
+  const h = hasher(algorithm);
+  for (let at = 0; at < bytes.length; at += chunk) await h.update(bytes.subarray(at, Math.min(at + chunk, bytes.length)));
+  return await h.digest();
+}
