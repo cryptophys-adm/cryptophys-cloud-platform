@@ -45,7 +45,7 @@ test("CF-1. the instructions: the answer fits the question, follows its language
   assert.match(ANSWER_INSTRUCTIONS, /Fit the answer to the question\. For a question about a number or a state, the first line gives it, with its window and as-of time/);
   assert.match(ANSWER_INSTRUCTIONS, /For a why or how question, explain in a few short paragraphs\. For a greeting or a follow-up, answer naturally and use the earlier turns\./);
   assert.match(ANSWER_INSTRUCTIONS, /You may explain how the platform works from the docs tool's results: say it comes from the platform's documents and name the document\./);
-  assert.match(ANSWER_INSTRUCTIONS, /saying it is general background and not a measurement of this platform/);
+  assert.match(ANSWER_INSTRUCTIONS, /you may add one sentence of general background about a general technical concept \(for example what a circuit breaker or consensus is\), saying it is general background; never about markets, prices, price direction, strategies or trading\./);
   // Unchanged rules.
   assert.match(ANSWER_INSTRUCTIONS, /Every number you write must appear in a tool result; list each in citations as \{"ref": a ref given with that result, "value": the number exactly as written\}\. A number you cannot cite is not written: write "—" instead\./);
   assert.match(ANSWER_INSTRUCTIONS, /never guess a value or a default/);
@@ -80,18 +80,24 @@ test("CF-2. the engine: only chat_answer follows the owner's language; chat_plan
   for (const s of sent.slice(1)) { assert.ok(s.includes(`\n${PLAIN_ENGLISH_STYLE}\n`)); assert.ok(!s.includes(PLAIN_OWNER_LANGUAGE_STYLE)); }
   // The engine's English rules are untouched (TP-019); the Indonesian ones are the chat's own.
   assert.equal(ADVISORY_LANGUAGE.length, 3);
-  assert.equal(CHAT_ADVISORY_LANGUAGE_ID.length, 3);
+  assert.equal(CHAT_ADVISORY_LANGUAGE_ID.length, 7);
 });
 
 test("CF-3. the trading-language rules in Indonesian: a recommendation to trade is caught; ordinary Indonesian prose is not", () => {
   for (const s of [
     "Sebaiknya Anda beli emas minggu ini.", "Saya sarankan menjual sebagian.", "Beli sekarang sebelum naik.", "Jual di 2400.",
-    "Disarankan membuka posisi long.", "Pasang batas rugi di bawah support.", "Ambil untung separuh.", "Ukuran lot yang tepat adalah kecil.",
-    "Pertimbangkan untuk masuk posisi saat koreksi.",
+    "Disarankan membuka posisi long.", "Pasang batas rugi di bawah support.", "Pertimbangkan untuk masuk posisi saat koreksi.",
+    // Review 2026-11-26: code-switching, calls to trade, orders, a stop or a target at a level, a lot size.
+    "Sebaiknya buy di area itu.", "Saatnya sell.", "Silakan entry.", "Ayo masuk.", "Pasang buy limit.", "Op sell.", "Open buy sekarang.",
+    "Buy di level itu.", "Set SL di bawah swing.", "Taruh take profit di atas resistance.", "Take profit di 2450.", "Batas rugi pada harga 2380.",
+    "TP ke 2500.", "Ukuran lot 0.5 cukup.", "Langsung jual.", "Waktunya beli.",
   ]) assert.equal(chatAdvisoryLanguage(s), true, s);
   for (const s of [
     "Sebaiknya buka halaman Command untuk menyalakan Beam.", "Beam menjawab 4 panggilan hari ini tanpa fallback.", "Data penjualan tidak diukur oleh alat mana pun.",
     "Platform tidak pernah memberi instruksi perdagangan.", "Disarankan membaca dokumen SSOT bagian model router.",
+    // Review 2026-11-26: platform states and agent descriptions are not advice.
+    "Batas rugi harian tercapai.", "Batas rugi harian Omega tercapai.", "Ukuran posisi mengikuti profil risiko.", "Agen breakout membeli saat retest.",
+    "Ambil untung separuh adalah aturan agen Omega, bukan saran.", "Silakan masuk ke halaman Command.", "Ukuran lot ditentukan oleh profil.",
   ]) assert.equal(chatAdvisoryLanguage(s), false, s);
 });
 
