@@ -51,6 +51,13 @@ import { GIT_BACKUP_VERIFY_RETRY_MS, type GitBackupRef } from "../../control-pla
 import { GitBackupError, verifyPack, type GitBackupBucket } from "./git-backup.ts";
 
 export const MAX_VERIFY_INFLATED_BYTES = 64 * 1024 * 1024;
+/**
+ * The largest stored bundle verified in memory (review 2026-11-26). The verify holds the whole bundle and up to
+ * MAX_VERIFY_INFLATED_BYTES of content in a 128 MB Worker, so a larger bundle fails as `bundle_too_large_to_verify`
+ * (a production problem the owner sees) before it is read, rather than exhausting the Worker during the Forge's tick.
+ * Since the streamed backup a bundle can be larger than this; a verify that streams the stored object is the next step.
+ */
+export const MAX_VERIFY_BUNDLE_BYTES = 40 * 1024 * 1024;
 /** The longest header read (5,000 branches of about 100 bytes, with room). */
 export const MAX_BUNDLE_HEADER_BYTES = 1024 * 1024;
 const ACTOR = "system:forge-git-backup";
@@ -796,7 +803,7 @@ export const VERIFIER_VERSION = 2;
  * event forge.git_backup_verified (outcome verified or failed). A failed verify is a production problem the owner
  * sees (ai-kernel owner-inbox.ts, git_backup_unverified). Never throws.
  */
-export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: VerifyBucket }, nowMs = Date.now(), maxInflated = MAX_VERIFY_INFLATED_BYTES): Promise<Record<string, unknown>> {
+export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: VerifyBucket }, nowMs = Date.now(), maxInflated = MAX_VERIFY_INFLATED_BYTES, maxBundleBytes = MAX_VERIFY_BUNDLE_BYTES): Promise<Record<string, unknown>> {
   const bucket = env.BUNDLES;
   if (!bucket || typeof bucket.get !== "function") return { outcome: "not_configured" };
   const day = new Date(nowMs).toISOString().slice(0, 10);
@@ -823,8 +830,10 @@ export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: Verif
   let details: Record<string, unknown>;
   let status: "verified" | "failed";
   try {
+    if (Number(row.bundle_bytes) > maxBundleBytes) fail("bundle_too_large_to_verify");
     const obj = await bucket.get!(row.r2_key).catch(() => fail("r2_get_failed"));
     if (!obj) fail("bundle_missing_in_r2");
+    if (typeof obj!.size === "number" && obj!.size > maxBundleBytes) fail("bundle_too_large_to_verify");
     const bytes = new Uint8Array(await obj!.arrayBuffer());
     const v = await verifyStoredBundle(bytes, row, obj!.customMetadata, maxInflated);
     status = "verified";

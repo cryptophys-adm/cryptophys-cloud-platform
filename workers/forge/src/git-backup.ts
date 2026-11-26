@@ -31,13 +31,22 @@ import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { GIT_BACKUP_PREFIX, GIT_BACKUP_RETAINED_DAYS, GIT_BACKUP_ROW_RETENTION_DAYS, type GitBackupRef } from "../../control-plane-shared/src/git-backup.ts";
 import { canonicalMainHead } from "./census.ts";
 import type { ArtifactsReader } from "./checks.ts";
+import { defaultHasher, type Hasher, type HasherFactory } from "./digest.ts";
 import { CANONICAL_REPO, FLUSH, ZERO_SHA, discoverRefs, gitHeaders, pktLine, remoteBase, tokenSecret, trustedRemoteFor, validBranch, validSha, type Advertisement, type Fetch } from "./merge.ts";
 
 export const GIT_BACKUP_TOKEN_TTL_S = 120;
 /** A failed run of the same head is retried after this long. */
 export const GIT_BACKUP_RETRY_MS = 3_600_000;
-/** The largest pack the Worker assembles (see "Memory" above). */
+/** The largest pack the Worker assembles in memory (see "Memory" above): the fallback path and transfer.ts. */
 export const MAX_PACK_BYTES = 32 * 1024 * 1024;
+/**
+ * The streamed backup (review 2026-11-26, after main's pack passed 32 MiB): the pack goes to an R2 multipart upload
+ * part by part, so the Worker holds one part (STREAM_PART_BYTES) whatever the pack's size. The cap is a sanity bound,
+ * not a memory one; the fetch's own limit is the read token's lifetime (FETCH_TIMEOUT_MS).
+ */
+export const MAX_STREAMED_PACK_BYTES = 1024 * 1024 * 1024;
+/** One multipart part (R2: at least 5 MiB except the last, at most 10,000 parts). */
+export const STREAM_PART_BYTES = 8 * 1024 * 1024;
 /** Branches in one bundle; more fails the run (`too_many_refs`) rather than leaving some out. */
 export const MAX_REFS = 5_000;
 /** The fetch must finish within the read token's lifetime. */
@@ -160,12 +169,12 @@ class ByteReader {
   }
 
   /** The rest of the stream, chunk by chunk. */
-  async drain(sink: (c: Uint8Array) => void): Promise<void> {
+  async drain(sink: (c: Uint8Array) => void | Promise<void>): Promise<void> {
     for (;;) {
       if (this.available === 0 && !(await this.fill(1))) return;
       const c = this.chunks[this.head];
       const k = c.length - this.offset;
-      sink(c.subarray(this.offset));
+      await sink(c.subarray(this.offset));
       this.advance(k);
     }
   }
@@ -202,16 +211,18 @@ export interface ReceivedPack { chunks: Uint8Array[]; bytes: number; progress_li
  * Read an upload-pack result: the acknowledgement lines (NAK, or a final ACK; ACK … continue|common|ready are
  * skipped; ERR fails), then the pack, demultiplexed when side-band was requested. Bounded by maxPackBytes.
  */
-export async function receivePack(body: ReadableStream<Uint8Array>, sideband: Sideband, maxPackBytes = MAX_PACK_BYTES): Promise<ReceivedPack> {
+export async function receivePack(body: ReadableStream<Uint8Array>, sideband: Sideband, maxPackBytes = MAX_PACK_BYTES, sink?: (c: Uint8Array) => void | Promise<void>): Promise<ReceivedPack> {
   const reader = new ByteReader(body.getReader(), maxPackBytes + Math.ceil(maxPackBytes / 64) + 65_536);
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   let progress = 0;
-  const push = (c: Uint8Array) => {
+  // With a sink (the streamed backup) each piece of the pack goes to it and none is kept here.
+  const push = async (c: Uint8Array) => {
     if (!c.length) return;
     bytes += c.length;
     if (bytes > maxPackBytes) fail("pack_too_large");
-    chunks.push(c);
+    if (sink) await sink(c);
+    else chunks.push(c);
   };
   for (;;) {
     const pkt = await readPkt(reader);
@@ -233,7 +244,7 @@ export async function receivePack(body: ReadableStream<Uint8Array>, sideband: Si
     if (pkt === null) break;
     if (!pkt!.length) fail("sideband_malformed");
     const band = pkt![0];
-    if (band === 1) push(pkt!.subarray(1));
+    if (band === 1) await push(pkt!.subarray(1));
     else if (band === 2) progress++;
     else if (band === 3) fail(`remote_error:${printable(dec.decode(pkt!.subarray(1)))}`);
     else fail("sideband_malformed");
@@ -315,12 +326,169 @@ export async function fetchBundle(remote: string, token: string, fetchImpl: Fetc
   return { ...assembled, refs, main, skipped, sideband };
 }
 
+// ---------------------------------------------------------------- the streamed bundle (R2 multipart)
+
+export interface UploadedPart { partNumber: number; etag: string }
+/** The subset of an R2 multipart upload the streamed backup uses. */
+export interface BundleUpload {
+  uploadPart(partNumber: number, value: Uint8Array): Promise<UploadedPart>;
+  complete(parts: UploadedPart[]): Promise<{ size?: number } | null | unknown>;
+  abort(): Promise<void>;
+}
+
+export interface StreamedBundle { pack: PackInfo; sha256: string; bundle_bytes: number; pack_bytes: number; parts: number; peak_held_bytes: number; completed: { size?: number } | null | unknown }
+
+/**
+ * Writes a bundle (its header, then the pack as it arrives) into a multipart upload: one part buffer, reused, so what
+ * it holds is flat (peak_held_bytes: the part buffer, the pack's first 12 bytes and its last 20). The SHA-256 of the
+ * bundle and the SHA-1 of the pack are computed as the bytes pass. finish() checks the pack as verifyPack does
+ * ("PACK", version 2 or 3, at least one object, the trailing SHA-1) before it completes the upload; a failed check
+ * throws and the caller aborts, so nothing is stored.
+ */
+export class BundleStreamWriter {
+  private part: Uint8Array<ArrayBuffer>;
+  private used = 0;
+  private readonly parts: UploadedPart[] = [];
+  private readonly head = new Uint8Array(12);
+  private headUsed = 0;
+  private tail = new Uint8Array(0);
+  private packBytes = 0;
+  private bundleBytes = 0;
+  private readonly sha256: Hasher;
+  private readonly sha1: Hasher;
+  private peak = 0;
+  private readonly upload: BundleUpload;
+  private readonly maxPackBytes: number;
+  /** The bundle header, written before the first piece of the pack. */
+  private headerBytes: Uint8Array | null;
+
+  constructor(upload: BundleUpload, header: Uint8Array, o: { hasher?: HasherFactory; partBytes?: number; maxPackBytes?: number } = {}) {
+    this.upload = upload;
+    this.maxPackBytes = o.maxPackBytes ?? MAX_STREAMED_PACK_BYTES;
+    this.part = new Uint8Array(Math.max(o.partBytes ?? STREAM_PART_BYTES, 64));
+    const h = o.hasher ?? defaultHasher;
+    this.sha256 = h("SHA-256");
+    this.sha1 = h("SHA-1");
+    this.headerBytes = header;
+  }
+
+  private held(): number { return this.part.length + this.head.length + this.tail.length; }
+
+  private async put(bytes: Uint8Array): Promise<void> {
+    let at = 0;
+    while (at < bytes.length) {
+      const k = Math.min(this.part.length - this.used, bytes.length - at);
+      this.part.set(bytes.subarray(at, at + k), this.used);
+      this.used += k; at += k;
+      if (this.used === this.part.length) await this.flush();
+    }
+    this.bundleBytes += bytes.length;
+  }
+
+  private async flush(): Promise<void> {
+    if (!this.used) return;
+    // The part is uploaded before the buffer is reused: the upload has consumed it once its promise resolves.
+    this.parts.push(await this.upload.uploadPart(this.parts.length + 1, this.part.subarray(0, this.used)));
+    this.used = 0;
+  }
+
+  /** One piece of the pack, in order. */
+  async write(chunk: Uint8Array): Promise<void> {
+    if (this.headerBytes) { const h = this.headerBytes; this.headerBytes = null; await this.sha256.update(h); await this.put(h); }
+    if (!chunk.length) return;
+    this.packBytes += chunk.length;
+    if (this.packBytes > this.maxPackBytes) fail("pack_too_large");
+    if (this.headUsed < 12) {
+      const k = Math.min(12 - this.headUsed, chunk.length);
+      this.head.set(chunk.subarray(0, k), this.headUsed);
+      this.headUsed += k;
+      if (this.headUsed === 12) checkPackHead(this.head);
+    }
+    await this.sha256.update(chunk);
+    // The SHA-1 covers every byte but the last 20 (the trailer), so the newest 20 bytes are held back.
+    if (chunk.length >= 20) {
+      if (this.tail.length) await this.sha1.update(this.tail);
+      await this.sha1.update(chunk.subarray(0, chunk.length - 20));
+      this.tail = chunk.slice(chunk.length - 20);
+    } else {
+      const joined = new Uint8Array(this.tail.length + chunk.length);
+      joined.set(this.tail, 0); joined.set(chunk, this.tail.length);
+      const cut = Math.max(0, joined.length - 20);
+      if (cut) await this.sha1.update(joined.subarray(0, cut));
+      this.tail = joined.slice(cut);
+    }
+    await this.put(chunk);
+    this.peak = Math.max(this.peak, this.held());
+  }
+
+  /** Checks the pack and completes the upload. Throws GitBackupError when the pack is not one. */
+  async finish(): Promise<StreamedBundle> {
+    if (this.headerBytes) fail("pack_too_short");
+    if (this.packBytes < 32 || this.headUsed < 12) fail("pack_too_short");
+    const info = checkPackHead(this.head);
+    const digest = await this.sha1.digest();
+    const trailer = hex(this.tail);
+    if (digest !== trailer) fail("pack_checksum_mismatch");
+    await this.flush();
+    const sha256 = await this.sha256.digest();
+    const completed = await this.upload.complete(this.parts);
+    return { pack: { ...info, sha1: trailer }, sha256, bundle_bytes: this.bundleBytes, pack_bytes: this.packBytes, parts: this.parts.length, peak_held_bytes: this.peak, completed };
+  }
+}
+
+/** The pack's first 12 bytes: "PACK", version 2 or 3, at least one object. */
+function checkPackHead(b: Uint8Array): { version: number; objects: number } {
+  if (b[0] !== 0x50 || b[1] !== 0x41 || b[2] !== 0x43 || b[3] !== 0x4b) fail("not_a_pack");
+  const view = new DataView(b.buffer, b.byteOffset, 12);
+  const version = view.getUint32(4);
+  if (version !== 2 && version !== 3) fail(`pack_version_${version}`);
+  const objects = view.getUint32(8);
+  if (objects < 1) fail("pack_empty");
+  return { version, objects };
+}
+
+/** Ref discovery for the streamed backup: the refs, main and the capabilities, before any upload is opened. */
+export async function discoverBundle(remote: string, token: string, fetchImpl: Fetch): Promise<{ base: string; refs: GitBackupRef[]; main: string; skipped: number; caps: string[]; sideband: Sideband }> {
+  const base = remoteBase(remote);
+  if (!base) fail("invalid_remote");
+  const discovered = await discoverRefs(base!, token, fetchImpl, "git-upload-pack");
+  if (!discovered.ok) fail(`discovery_failed:${discovered.reason}`);
+  const adv = (discovered as { ok: true; adv: Advertisement }).adv;
+  const { refs, main, skipped } = selectRefs(adv);
+  const { caps, sideband } = chooseCapabilities(adv.capabilities);
+  return { base: base!, refs, main, skipped, caps, sideband };
+}
+
+/** The full-clone fetch streamed into `writer`. Throws GitBackupError; the caller aborts the upload. */
+export async function streamPackInto(found: { base: string; refs: GitBackupRef[]; caps: string[]; sideband: Sideband }, token: string, fetchImpl: Fetch, writer: BundleStreamWriter, maxPackBytes = MAX_STREAMED_PACK_BYTES): Promise<StreamedBundle> {
+  const body = uploadPackRequest(found.refs.map((r) => r.sha), found.caps);
+  let res: Response;
+  try {
+    const signal = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(FETCH_TIMEOUT_MS) : undefined;
+    res = await fetchImpl(`${found.base}/git-upload-pack`, {
+      method: "POST", redirect: "manual", body, ...(signal ? { signal } : {}),
+      headers: gitHeaders(token, { "content-type": "application/x-git-upload-pack-request", accept: "application/x-git-upload-pack-result" }),
+    });
+  } catch {
+    fail("fetch_unreachable");
+  }
+  if (res!.status !== 200) fail(`fetch_http_${res!.status}`);
+  if (!(res!.headers.get("content-type") ?? "").startsWith("application/x-git-upload-pack-result")) fail("fetch_not_smart_http");
+  const declared = Number(res!.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxPackBytes + Math.ceil(maxPackBytes / 64) + 65_536) fail("pack_too_large");
+  if (!res!.body) fail("fetch_empty");
+  await receivePack(res!.body!, found.sideband, maxPackBytes, (c) => writer.write(c));
+  return await writer.finish();
+}
+
 // ---------------------------------------------------------------- R2 and retention
 
 type PutOptions = { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> };
 /** The subset of the R2 bucket binding this step uses. */
 export interface GitBackupBucket {
   put(key: string, value: Uint8Array | ArrayBuffer, options?: PutOptions): Promise<{ size?: number } | null | unknown>;
+  /** R2 multipart: the streamed backup uses it when the binding has it (production), else the in-memory put. */
+  createMultipartUpload?(key: string, options?: PutOptions): Promise<BundleUpload>;
   list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<{ objects: Array<{ key: string; uploaded: Date }>; truncated: boolean; cursor?: string }>;
   delete(keys: string | string[]): Promise<void>;
 }
@@ -375,7 +543,8 @@ export function redact(text: string, token: string | null): string {
  * One git backup of `platform`, at most once per UTC day per head of main (a failed run of that head is retried
  * after GIT_BACKUP_RETRY_MS). Records the run; never throws.
  */
-export async function gitBackupTick(env: GitBackupEnv, repo: GitBackupRepo, nowMs = Date.now(), fetchImpl: Fetch = (i, init) => fetch(i, init), maxPackBytes = MAX_PACK_BYTES): Promise<Record<string, unknown>> {
+export interface GitBackupOptions { hasher?: HasherFactory; partBytes?: number; maxStreamedPackBytes?: number }
+export async function gitBackupTick(env: GitBackupEnv, repo: GitBackupRepo, nowMs = Date.now(), fetchImpl: Fetch = (i, init) => fetch(i, init), maxPackBytes = MAX_PACK_BYTES, options: GitBackupOptions = {}): Promise<Record<string, unknown>> {
   const bucket = env.BUNDLES;
   if (!bucket) return { outcome: "not_configured" };
   const day = new Date(nowMs).toISOString().slice(0, 10);
@@ -398,6 +567,11 @@ export async function gitBackupTick(env: GitBackupEnv, repo: GitBackupRepo, nowM
     if (typeof repo.createToken !== "function") fail("token_unavailable");
     token = (await repo.createToken!("read", GIT_BACKUP_TOKEN_TTL_S)).plaintext;
     if (typeof token !== "string" || !tokenSecret(token)) fail("token_unavailable");
+    if (typeof bucket.createMultipartUpload === "function") {
+      const written = await streamedBackup(env.DB, bucket, remote, token!, fetchImpl, { day, head, ranAt, runId, hasher: options.hasher, partBytes: options.partBytes, maxPackBytes: options.maxStreamedPackBytes });
+      const pruned = await prune(env.DB, bucket, written.key, nowMs);
+      return { ...written, pruned };
+    }
     const got = await fetchBundle(remote, token!, fetchImpl, maxPackBytes);
     if (got.main !== head) fail("main_moved_during_backup");
     const key = bundleKey(day, got.main);
@@ -432,6 +606,46 @@ export async function gitBackupTick(env: GitBackupEnv, repo: GitBackupRepo, nowM
       return { outcome: "failed", main_sha: head, error, recorded: false };
     }
   }
+}
+
+/**
+ * The streamed backup (production, R2 multipart): discovery, then an upload opened at the bundle's key with the
+ * metadata known before the pack (the SHA-256, sizes and the pack's SHA-1 are known only at the end, and R2 cannot
+ * change an object's metadata afterwards, so they are in D1 and the audit event, where verify reads them), the pack
+ * streamed into it, the checks, then complete. Any failure aborts the upload, so no partial bundle is ever stored.
+ */
+async function streamedBackup(db: D1Database, bucket: GitBackupBucket, remote: string, token: string, fetchImpl: Fetch,
+  o: { day: string; head: string; ranAt: string; runId: string; hasher?: HasherFactory; partBytes?: number; maxPackBytes?: number }): Promise<Record<string, unknown> & { key: string }> {
+  const found = await discoverBundle(remote, token, fetchImpl);
+  if (found.main !== o.head) fail("main_moved_during_backup");
+  const key = bundleKey(o.day, found.main);
+  const branches = found.refs.filter((r) => r.name !== "HEAD");
+  const upload = await bucket.createMultipartUpload!(key, {
+    httpMetadata: { contentType: BUNDLE_CONTENT_TYPE },
+    customMetadata: {
+      source: "cryptophys-forge", repo: `cryptophys/${CANONICAL_REPO}`, format: "git-bundle-v2", main_sha: found.main,
+      refs: String(branches.length), created_at: o.ranAt, run_id: o.runId, written: "streamed",
+    },
+  });
+  let got: StreamedBundle;
+  try {
+    const writer = new BundleStreamWriter(upload, bundleHeader(found.refs), { hasher: o.hasher, partBytes: o.partBytes, maxPackBytes: o.maxPackBytes });
+    got = await streamPackInto(found, token, fetchImpl, writer, o.maxPackBytes);
+  } catch (e) {
+    await upload.abort().catch(() => undefined);
+    throw e;
+  }
+  const size = (got.completed as { size?: unknown } | null)?.size;
+  if (typeof size === "number" && size !== got.bundle_bytes) fail("r2_size_mismatch");
+  await db.prepare(
+    `INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, pack_bytes, pack_sha1, pack_version, objects, refs, refs_json, error, pruned_at)
+     VALUES (?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+  ).bind(o.runId, found.main, o.day, o.ranAt, key, got.sha256, got.bundle_bytes, got.pack_bytes, got.pack.sha1, got.pack.version, got.pack.objects, branches.length, JSON.stringify(branches)).run();
+  await appendAuditEvent(db, {
+    event_type: "forge.git_backup_written", actor: ACTOR, subject: key, outcome: "succeeded",
+    payload: { run_id: o.runId, main_sha: found.main, bundle_sha256: got.sha256, bundle_bytes: got.bundle_bytes, pack_bytes: got.pack_bytes, pack_sha1: got.pack.sha1, pack_version: got.pack.version, objects: got.pack.objects, refs: branches.length, refs_skipped: found.skipped, sideband: found.sideband, written: "streamed", parts: got.parts, peak_held_bytes: got.peak_held_bytes },
+  }).catch(() => undefined);
+  return { outcome: "written", main_sha: found.main, key, bundle_sha256: got.sha256, bundle_bytes: got.bundle_bytes, objects: got.pack.objects, refs: branches.length, written: "streamed", parts: got.parts, peak_held_bytes: got.peak_held_bytes };
 }
 
 /** R2 retention, then D1: mark the deleted bundles, and drop rows older than the row retention whose bundle is gone. */
