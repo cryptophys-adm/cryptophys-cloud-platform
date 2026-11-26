@@ -383,3 +383,28 @@ export function lastReviewedRecord(root = join(WORKERS, "..")): string {
   if (at < 0 || !archive[at + 1]) throw new Error("docs/SSOT-HISTORY.md has no remainder after its marker");
   return [head, ...rotated, archive[at + 1]].join("; ");
 }
+
+// ---------------------------------------------------------------- runner support (2026-11-26, the Forge's workerd runner)
+
+/**
+ * Whether this runner can start a child process. The Forge's own runner (workerd) has no child_process: a test that
+ * measures memory in its own process skips that measurement there, explicitly, and keeps its other assertions.
+ */
+export async function canSpawn(): Promise<boolean> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync(process.execPath, ["-e", "0"], { encoding: "utf8" });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+export const NO_CHILD_PROCESS = "child_process unavailable in this runner";
+
+/** `n` pseudo-random bytes from a seed (xorshift32): no crypto.getRandomValues, which workerd caps at 64 KiB a call. */
+export function pseudoRandom(n: number, seed = 0x9e3779b9): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(n);
+  let x = seed >>> 0 || 1;
+  for (let i = 0; i < n; i++) { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; out[i] = x & 0xff; }
+  return out;
+}

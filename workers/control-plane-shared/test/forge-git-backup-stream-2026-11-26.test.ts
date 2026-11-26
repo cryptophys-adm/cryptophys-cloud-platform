@@ -5,10 +5,11 @@
 // (bundle_too_large_to_verify) instead of exhausting the Worker.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { migratedDb, lastReviewedRecord } from "./harness.ts";
+import { NO_CHILD_PROCESS, canSpawn, migratedDb, pseudoRandom } from "./harness.ts";
+import { lastReviewedRecord } from "./harness.ts";
 import { FLUSH, pktLine, type Fetch } from "../../forge/src/merge.ts";
 import {
   BundleStreamWriter, MAX_PACK_BYTES, MAX_STREAMED_PACK_BYTES, STREAM_PART_BYTES, bundleHeader, gitBackupTick,
@@ -108,7 +109,8 @@ const rows = (db: ReturnType<typeof migratedDb>) => db.raw.prepare("SELECT * FRO
 const audits = (db: ReturnType<typeof migratedDb>) => db.raw.prepare("SELECT event_type, outcome, payload_json FROM audit_events WHERE event_type LIKE 'forge.git_backup%' ORDER BY rowid").all().map((r: any) => ({ ...r, payload: JSON.parse(r.payload_json) }));
 
 test("GS-1. the JS SHA-1 and SHA-256 equal node:crypto at every block boundary and in any split; DigestStream is used where it exists", async () => {
-  const data = randomBytes(1_048_583);
+  // Pseudo-random, not crypto.getRandomValues (workerd caps it at 64 KiB a call): the same lengths and splits.
+  const data = pseudoRandom(1_048_583);
   for (const n of [0, 1, 3, 55, 56, 57, 63, 64, 65, 119, 120, 128, 1000, 65_537, data.length]) {
     const bytes = data.subarray(0, n);
     for (const [alg, H] of [["sha1", Sha1], ["sha256", Sha256]] as const) {
@@ -197,19 +199,9 @@ test("GS-3. a bad pack, a wrong checksum or a pack over the cap aborts the uploa
   assert.equal(STREAM_PART_BYTES, 8 * 1024 * 1024);
 });
 
-test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB part held, the heap and buffers stay far below the pack", async () => {
-  // Measured in its own process (A2, review 2026-11-26: in-process, the full suite's other tests disturbed it once):
-  // the test re-runs this file in a child with only GS-4 and --expose-gc, and passes when the child's run passes.
-  if (process.env.GS4_CHILD !== "1") {
-    const { spawnSync } = await import("node:child_process");
-    const r = spawnSync(process.execPath, ["--expose-gc", "--experimental-sqlite", "--disable-warning=ExperimentalWarning", "--test", "--test-name-pattern=^GS-4\\.", new URL(import.meta.url).pathname],
-      // Without the parent runner's NODE_TEST_CONTEXT, the child reports as a plain test run (TAP on stdout).
-      { encoding: "utf8", env: Object.fromEntries(Object.entries({ ...process.env, GS4_CHILD: "1" }).filter(([k]) => k !== "NODE_TEST_CONTEXT")), maxBuffer: 1 << 22 });
-    assert.equal(r.status, 0, `${r.stdout.slice(-3000)}\n${r.stderr.slice(-2000)}`);
-    assert.match(r.stdout, /# pass 1\n/);
-    return;
-  }
-  const gc = (globalThis as { gc?: () => void }).gc ?? (setFlagsFromString("--expose-gc"), runInNewContext("gc") as () => void);
+/** GS-4's run: the 80 MiB pack through the streamed writer; with `measure`, the process's memory at every part too. */
+async function streamEightyMiB(measure: boolean): Promise<void> {
+  const gc = measure ? ((globalThis as { gc?: () => void }).gc ?? (setFlagsFromString("--expose-gc"), runInNewContext("gc") as () => void)) : () => {};
   const PACK_BYTES = 80 * 1024 * 1024;
   // A synthetic pack: "PACK", version 2, one object, pseudo-random body, the SHA-1 trailer; generated as it is read.
   const head = Uint8Array.of(0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 1);
@@ -218,7 +210,7 @@ test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB par
   const header = bundleHeader(REFS);
   sha256.update(header);
   let produced = 0, trailerSent = false;
-  const block = randomBytes(65_000);
+  const block = pseudoRandom(65_000, 7);
   const next = () => {
     if (produced === 0) { produced = 1; sha1.update(head); sha256.update(head); return head; }
     const sent = produced - 1;
@@ -231,7 +223,7 @@ test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB par
   const buffers: number[] = [], heap: number[] = [];
   const b = multipartBucket({
     keep: false,
-    onPart: () => { gc(); const m = process.memoryUsage(); buffers.push(m.arrayBuffers - base.arrayBuffers); heap.push(m.heapUsed - base.heapUsed); },
+    onPart: () => { if (!measure) return; gc(); const m = process.memoryUsage(); buffers.push(m.arrayBuffers - base.arrayBuffers); heap.push(m.heapUsed - base.heapUsed); },
   });
   const db = migratedDb();
   const r = await gitBackupTick({ DB: db as never, BUNDLES: b.bucket }, repoAt(MAIN) as never, NOW, fakeServer(() => sidebandStream(next)), MAX_PACK_BYTES, { hasher: nodeHasher });
@@ -244,6 +236,7 @@ test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB par
   assert.ok(PACK_BYTES > 64 * 1024 * 1024);
   // What the writer holds, by its own account: one part, the pack's head and its last 20 bytes.
   assert.ok(Number(r.peak_held_bytes) <= STREAM_PART_BYTES + 32, String(r.peak_held_bytes));
+  if (!measure) return;
   // What the process holds, measured after a GC at every part (11 samples): flat at about one part. A single sample
   // can carry a transient of the runtime's own (seen up to 31 MiB once in a few runs), so the median and the last
   // sample are held to one part with room, and every sample to well below the pack (an in-memory copy is 80 MiB+).
@@ -254,6 +247,23 @@ test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB par
   assert.ok(median(buffers) <= 12 * MiB && buffers.at(-1)! <= 12 * MiB, `array buffers (MiB): ${show(buffers)}`);
   assert.ok(Math.max(...buffers) < 48 * MiB, `array buffers (MiB): ${show(buffers)}`);
   assert.ok(median(heap) <= 12 * MiB && Math.max(...heap) < 48 * MiB, `heap (MiB): ${show(heap)}`);
+}
+
+test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB part held, the heap and buffers stay far below the pack", async (t) => {
+  // The memory is measured in its own process (A2, review 2026-11-26: in-process, the full suite's other tests disturbed
+  // it once): the child re-runs this file with only GS-4, GS4_CHILD=1 and --expose-gc. Here the run itself is asserted
+  // in-process (the bundle, its SHA-256, the parts, the writer's own peak), on every runner.
+  if (process.env.GS4_CHILD === "1") { await streamEightyMiB(true); return; }
+  await streamEightyMiB(false);
+  await t.test("GS-4m. the process's memory, measured in a child process", async (st) => {
+    if (!(await canSpawn())) { st.skip(NO_CHILD_PROCESS); return; }
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync(process.execPath, ["--expose-gc", "--experimental-sqlite", "--disable-warning=ExperimentalWarning", "--test", "--test-name-pattern=^GS-4\\.", new URL(import.meta.url).pathname],
+      // Without the parent runner's NODE_TEST_CONTEXT, the child reports as a plain test run (TAP on stdout).
+      { encoding: "utf8", env: Object.fromEntries(Object.entries({ ...process.env, GS4_CHILD: "1" }).filter(([k]) => k !== "NODE_TEST_CONTEXT")), maxBuffer: 1 << 22 });
+    assert.equal(r.status, 0, `${r.stdout.slice(-3000)}\n${r.stderr.slice(-2000)}`);
+    assert.match(r.stdout, /# pass 1\n/);
+  });
 });
 
 test("GS-5. the verify refuses a bundle over its sanity bound before reading it; the in-memory path is unchanged", async () => {
@@ -280,7 +290,12 @@ test("GS-6. the record: SSOT line 5 and the gate 8 bullets; no guard path", asyn
   for (const p of ["workers/forge/src/git-backup.ts", "workers/forge/src/digest.ts", "workers/forge/src/bundle-verify.ts", "docs/SSOT.md"]) assert.equal(criticalPathReason(p), null, p);
 });
 
-test("GS-7. a 40 MiB bundle verifies at the production bound with a measured peak below 96 MB; an object past the bound fails, it does not exhaust memory", async () => {
+test("GS-7. a 40 MiB bundle verifies at the production bound with a measured peak below 96 MB; an object past the bound fails, it does not exhaust memory", async (t) => {
+  const { MAX_VERIFY_INFLATED_BYTES: BOUND, VERIFIER_VERSION: VERSION } = await import("../../forge/src/bundle-verify.ts");
+  assert.equal(BOUND, 32 * 1024 * 1024);
+  assert.equal(VERSION, 4);
+  // The measurement needs a process of its own (the bundle built and verified in a child, its maxRSS read).
+  if (!(await canSpawn())) { t.skip(NO_CHILD_PROCESS); return; }
   const { spawnSync } = await import("node:child_process");
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

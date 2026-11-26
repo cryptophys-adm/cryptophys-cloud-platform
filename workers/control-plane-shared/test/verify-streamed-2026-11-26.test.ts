@@ -6,14 +6,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { migratedDb } from "./harness.ts";
+import { NO_CHILD_PROCESS, canSpawn, migratedDb, pseudoRandom } from "./harness.ts";
 import {
   MAX_VERIFY_BUNDLE_BYTES, MAX_VERIFY_READS, PagedSource, VERIFIER_VERSION, VERIFY_ELAPSED_BUDGET_MS, VERIFY_PAGE_BYTES, VERIFY_PAGE_CACHE_BYTES,
-  gitBackupVerifyTick, verifyBundle, verifyBundleFrom,
+  adler32, gitBackupVerifyTick, verifyBundle, verifyBundleFrom,
 } from "../../forge/src/bundle-verify.ts";
 import { GitBackupError } from "../../forge/src/git-backup.ts";
 
@@ -122,27 +118,76 @@ test("VS-4. it fails closed: too many reads, the time budget, a missing object, 
   assert.deepEqual([bad.outcome, bad.reason], ["failed", "sha256_mismatch"]);
 });
 
-test("VS-5. an 80 MiB bundle verifies from pages in a child process: live buffers about two pages, maxRSS growth under 64 MB", () => {
-  const child = new URL("./fixtures/verify-memory-child.mts", import.meta.url).pathname;
-  const root = new URL("../../../", import.meta.url).pathname.replace(/\/$/, "");
-  const dir = mkdtempSync(join(tmpdir(), "vs5-"));
-  const run = (args: string[], gc = false) => {
-    const r = spawnSync(process.execPath, [...(gc ? ["--expose-gc"] : []), "--disable-warning=ExperimentalWarning", child, ...args], { encoding: "utf8", maxBuffer: 1 << 20 });
-    assert.equal(r.status, 0, r.stderr);
-    return JSON.parse(r.stdout.trim().split("\n").at(-1)!);
-  };
-  try {
-    const file = join(dir, "b.bundle");
-    const built = run(["build", root, file, "80", "0"]);
-    assert.ok(built.bundle_bytes > 64 * MiB, String(built.bundle_bytes));
-    const m = run(["verify-paged", root, file], true);
-    assert.equal(m.objects, built.objects);
-    assert.equal(m.bundle_bytes, built.bundle_bytes);
-    // Sequential sweeps: the SHA-256, the pack's SHA-1, the entries; about three reads per page, nothing more here.
-    const pages = Math.ceil(built.bundle_bytes / VERIFY_PAGE_BYTES);
-    assert.ok(m.r2_reads <= 3 * pages + 3, `reads ${m.r2_reads} for ${pages} pages`);
-    // With a GC before each read (memory pressure does that in a 128 MB isolate; node alone lets garbage pages pile up).
-    assert.ok(m.live_buffers < 24 * MiB, `live buffers ${(m.live_buffers / MiB).toFixed(1)} MiB`);
-    assert.ok(m.added < 64 * 1000 * 1000, `maxRSS grew ${(m.added / MiB).toFixed(1)} MiB`);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+const enc = new TextEncoder();
+const catBytes = (...p: Uint8Array[]) => { const o = new Uint8Array(p.reduce((n, x) => n + x.length, 0)); let a = 0; for (const x of p) { o.set(x, a); a += x.length; } return o; };
+const sha1Hex = (b: Uint8Array) => createHash("sha1").update(b).digest("hex");
+/** A zlib stream of stored blocks (no node:zlib, which a runner may lack): header, blocks of at most 65,535 bytes, Adler-32. */
+function zlibStored(d: Uint8Array): Uint8Array {
+  const parts: Uint8Array[] = [Uint8Array.of(0x78, 0x01)];
+  for (let i = 0; i < d.length || i === 0; i += 65_535) {
+    const n = Math.min(65_535, d.length - i), last = i + n >= d.length;
+    parts.push(Uint8Array.of(last ? 1 : 0, n & 0xff, n >> 8, ~n & 0xff, (~n >> 8) & 0xff), d.subarray(i, i + n));
+    if (!d.length) break;
+  }
+  const a = adler32(d);
+  parts.push(Uint8Array.of(a >>> 24, (a >>> 16) & 0xff, (a >>> 8) & 0xff, a & 0xff));
+  return catBytes(...parts);
+}
+/** A bundle of one commit, one tree and `blobs` pseudo-random 1 MiB blobs, built in memory. */
+function storedBundle(blobs: number): { bytes: Uint8Array<ArrayBuffer>; objects: number } {
+  const T = ["", "commit", "tree", "blob"];
+  const oid = (t: number, b: Uint8Array) => sha1Hex(catBytes(enc.encode(`${T[t]} ${b.length}\0`), b));
+  const hdr = (t: number, size: number) => { const o = [((t & 7) << 4) | (size & 15)]; let r = Math.floor(size / 16); while (r > 0) { o[o.length - 1] |= 0x80; o.push(r & 0x7f); r = Math.floor(r / 128); } return Uint8Array.from(o); };
+  const bodies = Array.from({ length: blobs }, (_, i) => pseudoRandom(MiB, i + 1));
+  const tree = catBytes(...bodies.map((b, i) => catBytes(enc.encode(`100644 f${String(i).padStart(4, "0")}\0`), Uint8Array.from(Buffer.from(oid(3, b), "hex")))));
+  const commit = enc.encode(`tree ${oid(2, tree)}\nauthor S <s@example.invalid> 1794700000 +0000\ncommitter S <s@example.invalid> 1794700000 +0000\n\nc\n`);
+  const objs: Array<[number, Uint8Array]> = [[1, commit], [2, tree], ...bodies.map((b) => [3, b] as [number, Uint8Array])];
+  const head = new Uint8Array(12); head.set(enc.encode("PACK")); new DataView(head.buffer).setUint32(4, 2); new DataView(head.buffer).setUint32(8, objs.length);
+  const pack0 = catBytes(head, ...objs.map(([t, b]) => catBytes(hdr(t, b.length), zlibStored(b))));
+  const pack = catBytes(pack0, Uint8Array.from(Buffer.from(sha1Hex(pack0), "hex")));
+  const cid = oid(1, commit);
+  return { bytes: catBytes(enc.encode(`# v2 git bundle\n${cid} refs/heads/main\n${cid} HEAD\n\n`), pack) as Uint8Array<ArrayBuffer>, objects: objs.length };
+}
+
+test("VS-5. a bundle verifies from 4 MiB pages with about three reads a page; an 80 MiB one, in a child process, with live buffers about two pages and maxRSS growth under 64 MB", async (t) => {
+  // In-process, on every runner: an 8 MiB bundle built in memory, read through the production page size and cache.
+  const b = storedBundle(8);
+  const src = new PagedSource(b.bytes.length, rangeOf(b.bytes));
+  const v = await verifyBundleFrom(src);
+  assert.equal(v.objects, b.objects);
+  assert.equal(v.bundle_sha256, createHash("sha256").update(b.bytes).digest("hex"));
+  assert.deepEqual(v, await verifyBundle(b.bytes), "the same verification as in memory");
+  const pages = Math.ceil(b.bytes.length / VERIFY_PAGE_BYTES);
+  assert.ok(src.reads >= pages && src.reads <= 3 * pages + 3, `reads ${src.reads} for ${pages} pages`);
+  assert.ok(v.peak_held_bytes <= 2 * MiB, `held ${v.peak_held_bytes}`);
+  // The memory needs a process of its own: the bundle built in a child, then verified in another, its maxRSS read.
+  await t.test("VS-5m. 80 MiB, measured in a child process", async (st) => {
+    if (!(await canSpawn())) { st.skip(NO_CHILD_PROCESS); return; }
+    const { spawnSync } = await import("node:child_process");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const child = new URL("./fixtures/verify-memory-child.mts", import.meta.url).pathname;
+    const root = new URL("../../../", import.meta.url).pathname.replace(/\/$/, "");
+    const dir = mkdtempSync(join(tmpdir(), "vs5-"));
+    const run = (args: string[], gc = false) => {
+      const r = spawnSync(process.execPath, [...(gc ? ["--expose-gc"] : []), "--disable-warning=ExperimentalWarning", child, ...args], { encoding: "utf8", maxBuffer: 1 << 20 });
+      assert.equal(r.status, 0, r.stderr);
+      return JSON.parse(r.stdout.trim().split("\n").at(-1)!);
+    };
+    try {
+      const file = join(dir, "b.bundle");
+      const built = run(["build", root, file, "80", "0"]);
+      assert.ok(built.bundle_bytes > 64 * MiB, String(built.bundle_bytes));
+      const m = run(["verify-paged", root, file], true);
+      assert.equal(m.objects, built.objects);
+      assert.equal(m.bundle_bytes, built.bundle_bytes);
+      // Sequential sweeps: the SHA-256, the pack's SHA-1, the entries; about three reads per page, nothing more here.
+      const n = Math.ceil(built.bundle_bytes / VERIFY_PAGE_BYTES);
+      assert.ok(m.r2_reads <= 3 * n + 3, `reads ${m.r2_reads} for ${n} pages`);
+      // With a GC before each read (memory pressure does that in a 128 MB isolate; node alone lets garbage pages pile up).
+      assert.ok(m.live_buffers < 24 * MiB, `live buffers ${(m.live_buffers / MiB).toFixed(1)} MiB`);
+      assert.ok(m.added < 64 * 1000 * 1000, `maxRSS grew ${(m.added / MiB).toFixed(1)} MiB`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
