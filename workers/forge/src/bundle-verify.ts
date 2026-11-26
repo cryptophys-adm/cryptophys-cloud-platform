@@ -49,7 +49,7 @@ import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { appendAuditEvent } from "../../control-plane-shared/src/audit.ts";
 import { GIT_BACKUP_VERIFY_RETRY_MS, type GitBackupRef } from "../../control-plane-shared/src/git-backup.ts";
 import { GitBackupError, verifyPack, type GitBackupBucket } from "./git-backup.ts";
-import { digestOf } from "./digest.ts";
+import { defaultHasher, digestOf, hexOf } from "./digest.ts";
 
 /**
  * The content held at once (2026-11-26: 32 MiB, was 64 MiB). Measured with a 40 MiB bundle (maxRSS in a child
@@ -59,12 +59,11 @@ import { digestOf } from "./digest.ts";
  */
 export const MAX_VERIFY_INFLATED_BYTES = 32 * 1024 * 1024;
 /**
- * The largest stored bundle verified in memory (review 2026-11-26). The verify holds the whole bundle and up to
- * MAX_VERIFY_INFLATED_BYTES of content in a 128 MB Worker, so a larger bundle fails as `bundle_too_large_to_verify`
- * (a production problem the owner sees) before it is read, rather than exhausting the Worker during the Forge's tick.
- * Since the streamed backup a bundle can be larger than this; a verify that streams the stored object is the next step.
+ * The largest stored bundle verified (A2, 2026-11-26: 256 MiB, was 40 MiB while the verify held the bundle whole). The
+ * verify reads it by range in pages, so this is a sanity bound, to be raised with measured data; a larger bundle fails
+ * as `bundle_too_large_to_verify` before it is read.
  */
-export const MAX_VERIFY_BUNDLE_BYTES = 40 * 1024 * 1024;
+export const MAX_VERIFY_BUNDLE_BYTES = 256 * 1024 * 1024;
 /** The longest header read (5,000 branches of about 100 bytes, with room). */
 export const MAX_BUNDLE_HEADER_BYTES = 1024 * 1024;
 const ACTOR = "system:forge-git-backup";
@@ -323,6 +322,145 @@ export function parseBundleHeader(bytes: Uint8Array): BundleHeader {
   return { version, capabilities, prerequisites, refs, packOffset: at };
 }
 
+// ---------------------------------------------------------------- where the bytes come from (A2, 2026-11-26)
+
+/**
+ * The bytes of a bundle or of its pack, read by range: the whole buffer in memory (memorySource), or pages of the
+ * stored R2 object (PagedSource), so the verify never holds the bundle whole. One verify runs on either.
+ */
+export interface ByteSource {
+  readonly length: number;
+  /** Bytes [start, end), contiguous: a view when they lie in memory or in one page, else a copy of them. */
+  bytes(start: number, end: number): Promise<Uint8Array>;
+  /** Ranged reads made so far (0 in memory). */
+  readonly reads: number;
+  /** Paged: a read past what is needed costs, so the first pass reads an entry's stream in a window it grows on demand. */
+  readonly paged: boolean;
+}
+export function memorySource(b: Uint8Array): ByteSource {
+  return { length: b.length, reads: 0, paged: false, bytes: async (s, e) => b.subarray(s, e) };
+}
+/** The part [offset, offset + length) of a source, as a source. */
+export function subSource(src: ByteSource, offset: number, length = src.length - offset): ByteSource {
+  return { length, paged: src.paged, get reads() { return src.reads; }, bytes: (s, e) => src.bytes(offset + s, offset + e) };
+}
+
+/** A page of the stored bundle read at once, and the most pages kept (least recently used out first). */
+export const VERIFY_PAGE_BYTES = 4 * 1024 * 1024;
+export const VERIFY_PAGE_CACHE_BYTES = 8 * 1024 * 1024;
+/** Ranged reads of one verify: past this it fails closed (verify_too_many_reads), below the platform's per-run limits. */
+export const MAX_VERIFY_READS = 900;
+/** The verify's time: past this it fails closed (verify_cpu_budget), before the Forge's cpu_ms limit (300,000). */
+export const VERIFY_ELAPSED_BUDGET_MS = 240_000;
+export type RangeReader = (offset: number, length: number) => Promise<Uint8Array>;
+export interface PagedOptions { pageBytes?: number; cacheBytes?: number; maxReads?: number; deadline?: number; clock?: () => number }
+
+/** Pages of `length` bytes read by `read(offset, length)`, a few kept. */
+export class PagedSource implements ByteSource {
+  readonly paged = true;
+  reads = 0;
+  private readonly pages = new Map<number, Uint8Array>();
+  private held = 0;
+  private readonly pageBytes: number;
+  private readonly cacheBytes: number;
+  private readonly maxReads: number;
+  readonly length: number;
+  private readonly read: RangeReader;
+  private readonly o: PagedOptions;
+  constructor(length: number, read: RangeReader, o: PagedOptions = {}) {
+    this.length = length; this.read = read; this.o = o;
+    this.pageBytes = Math.max(64, o.pageBytes ?? VERIFY_PAGE_BYTES);
+    this.cacheBytes = o.cacheBytes ?? VERIFY_PAGE_CACHE_BYTES;
+    this.maxReads = o.maxReads ?? MAX_VERIFY_READS;
+  }
+  private async page(i: number): Promise<Uint8Array> {
+    const hit = this.pages.get(i);
+    if (hit) { this.pages.delete(i); this.pages.set(i, hit); return hit; }
+    if (this.o.deadline !== undefined && (this.o.clock ?? Date.now)() > this.o.deadline) fail("verify_cpu_budget");
+    if (++this.reads > this.maxReads) fail("verify_too_many_reads");
+    const start = i * this.pageBytes, len = Math.min(this.pageBytes, this.length - start);
+    const data = await this.read(start, len);
+    if (data.length !== len) fail("r2_range_short");
+    this.pages.set(i, data);
+    this.held += len;
+    while (this.held > this.cacheBytes && this.pages.size > 1) {
+      const [k, v] = this.pages.entries().next().value as [number, Uint8Array];
+      this.pages.delete(k);
+      this.held -= v.length;
+    }
+    return data;
+  }
+  async bytes(start: number, end: number): Promise<Uint8Array> {
+    if (start < 0 || end > this.length || end < start) fail("source_out_of_range");
+    if (end === start) return new Uint8Array(0);
+    const P = this.pageBytes, p0 = Math.floor(start / P), p1 = Math.floor((end - 1) / P);
+    if (p0 === p1) return (await this.page(p0)).subarray(start - p0 * P, end - p0 * P);
+    const out = new Uint8Array(end - start);
+    let at = 0;
+    for (let i = p0; i <= p1; i++) {
+      const pg = await this.page(i);
+      const s = i === p0 ? start - i * P : 0, e = i === p1 ? end - i * P : pg.length;
+      out.set(pg.subarray(s, e), at);
+      at += e - s;
+    }
+    return out;
+  }
+}
+
+/** The digest of a whole source, fed a chunk at a time. */
+export async function digestSource(algorithm: "SHA-1" | "SHA-256", src: ByteSource, end = src.length, chunk = 1024 * 1024): Promise<string> {
+  const h = defaultHasher(algorithm);
+  for (let at = 0; at < end; at += chunk) await h.update(await src.bytes(at, Math.min(end, at + chunk)));
+  return await h.digest();
+}
+
+/** verifyPack on a source: "PACK", version 2 or 3, at least one object, the trailing SHA-1 of every byte before it. */
+export async function verifyPackFrom(src: ByteSource): Promise<{ version: number; objects: number; sha1: string }> {
+  if (src.length < 32) fail("pack_too_short");
+  const head = await src.bytes(0, 12);
+  if (head[0] !== 0x50 || head[1] !== 0x41 || head[2] !== 0x43 || head[3] !== 0x4b) fail("not_a_pack");
+  const view = new DataView(head.buffer, head.byteOffset, 12);
+  const version = view.getUint32(4);
+  if (version !== 2 && version !== 3) fail(`pack_version_${version}`);
+  const objects = view.getUint32(8);
+  if (objects < 1) fail("pack_empty");
+  const trailer = hexOf(await src.bytes(src.length - 20, src.length));
+  if ((await digestSource("SHA-1", src, src.length - 20)) !== trailer) fail("pack_checksum_mismatch");
+  return { version, objects, sha1: trailer };
+}
+
+/** Tests only (the equivalence run): every in-memory verify reads through PagedSource with these small pages. */
+let TEST_PAGING: PagedOptions | null = null;
+let TEST_PAGED_READS = 0;
+export function pageInMemoryVerifyForTests(o: PagedOptions | null): void { TEST_PAGING = o; }
+export const pagedReadsForTests = () => TEST_PAGED_READS;
+const sourceOf = (b: Uint8Array): ByteSource => (TEST_PAGING
+  ? new PagedSource(b.length, async (o, l) => { TEST_PAGED_READS++; return b.slice(o, o + l); }, { ...TEST_PAGING, maxReads: Infinity })
+  : memorySource(b));
+
+/** The longest entry header read (type and size, an ofs-delta's distance or a ref-delta's base id). */
+const ENTRY_HEADER_BYTES = 64;
+
+/**
+ * One entry's zlib stream from `pos`, inflated. In memory the window is the rest of the pack; paged it starts at what a
+ * stream of `size` bytes can take and doubles when the stream runs past it, at most to the end of the pack and to twice
+ * the bound (a longer one fails as too large rather than reading the pack into memory).
+ */
+async function inflateEntry(src: ByteSource, pos: number, size: number, end: number, prefix: number, maxInflated: number): Promise<{ framed: Uint8Array<ArrayBuffer>; next: number }> {
+  let span = src.paged ? Math.min(end - pos, size + (size >> 3) + 1024) : end - pos;
+  for (;;) {
+    const w = await src.bytes(pos, pos + span);
+    try {
+      const z = inflateFramed(w, 0, size, w.length, prefix);
+      return { framed: z.framed, next: pos + z.next };
+    } catch (err) {
+      if (!(err instanceof GitBackupError) || err.message !== "inflate_truncated" || pos + span >= end) throw err;
+      if (span >= 2 * maxInflated) fail("pack_too_large_to_verify");
+      span = Math.min(end - pos, span * 2);
+    }
+  }
+}
+
 // ---------------------------------------------------------------- the pack
 
 const TYPE_NAME = ["", "commit", "tree", "blob", "tag"] as const;
@@ -369,7 +507,7 @@ export interface PackIndex {
   /** Object id to its type and links; no content. */
   byId: Map<string, IndexedObject>;
   /** An object's content, inflated again from the pack (its delta chain resolved again); null when it is not in the index. */
-  readObject(id: string): { kind: number; data: Uint8Array } | null;
+  readObject(id: string): Promise<{ kind: number; data: Uint8Array } | null>;
 }
 
 /** The size varint of a delta header (little-endian base-128). */
@@ -443,8 +581,13 @@ const objectHeader = (kind: number, size: number) => enc.encode(`${TYPE_NAME[kin
  * evicted is inflated again from the pack, up its delta chain.
  */
 export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX_VERIFY_INFLATED_BYTES, cacheBytes = Math.min(VERIFY_CACHE_BYTES, Math.floor(maxInflated / 4))): Promise<PackIndex> {
-  const info = await verifyPack(pack);
-  const end = pack.length - 20;
+  return await indexPackFrom(sourceOf(pack), maxInflated, cacheBytes);
+}
+
+/** indexPack on a source (in memory or paged): the same passes, the pack read by range. */
+export async function indexPackFrom(src: ByteSource, maxInflated = MAX_VERIFY_INFLATED_BYTES, cacheBytes = Math.min(VERIFY_CACHE_BYTES, Math.floor(maxInflated / 4))): Promise<PackIndex> {
+  const info = src.paged ? await verifyPackFrom(src) : await verifyPack((await src.bytes(0, src.length)) as Uint8Array<ArrayBuffer>);
+  const end = src.length - 20;
   const entries: Entry[] = [];
   const byOffset = new Map<number, Entry>();
   const byId = new Map<string, Entry>();
@@ -478,18 +621,19 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
     cached += d.length;
     while (cached > cacheBytes && cache.size > 1) evictOne(e);
   };
-  const inflateAgain = (e: Entry, pin: Entry | null) => {
+  const inflateAgain = async (e: Entry, pin: Entry | null) => {
     hold(e.size, pin);
     reinflated += e.size;
-    return inflateZlib(pack, e.start, e.size, e.stop).data;
+    const w = await src.bytes(e.start, e.stop);
+    return inflateZlib(w, 0, e.size, w.length).data;
   };
 
   /**
    * A delta applied to its base's content, its payload inflated again and dropped; the result is live. With `framed`,
    * the result follows its object header in the buffer returned.
    */
-  const derive = (e: Entry, base: Entry, baseData: Uint8Array, framed: boolean): Uint8Array<ArrayBuffer> => {
-    const p = inflateAgain(e, base);
+  const derive = async (e: Entry, base: Entry, baseData: Uint8Array, framed: boolean): Promise<Uint8Array<ArrayBuffer>> => {
+    const p = await inflateAgain(e, base);
     const at = { p: 0 };
     // The result's size, read before it is allocated (applyDelta reports a header that does not match its base).
     if (deltaVarint(p, at) === baseData.length) {
@@ -503,15 +647,15 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
   };
 
   /** A resolved entry's content: from the cache, else inflated again (a delta's after its base's, up the chain). */
-  const content = (e: Entry): Uint8Array => {
+  const content = async (e: Entry): Promise<Uint8Array> => {
     const chain: Entry[] = [];
     let x = e;
     let data = cache.get(x);
     while (!data && x.base) { chain.push(x); x = x.base; data = cache.get(x); }
-    if (data) { cache.delete(x); cache.set(x, data); } else { data = inflateAgain(x, null); keep(x, data); }
+    if (data) { cache.delete(x); cache.set(x, data); } else { data = await inflateAgain(x, null); keep(x, data); }
     for (let i = chain.length - 1; i >= 0; i--) {
       const d = chain[i];
-      data = derive(d, x, data, false);
+      data = await derive(d, x, data!, false);
       reinflated += data.length;
       keep(d, data);
       x = d;
@@ -539,40 +683,41 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
   for (let i = 0; i < info.objects; i++) {
     if (pos >= end) fail(`pack_entries_missing:${info.objects - i}`);
     const offset = pos;
-    let c = pack[pos++];
+    const hb = await src.bytes(pos, Math.min(end, pos + ENTRY_HEADER_BYTES));
+    let j = 0;
+    const next = () => { if (j >= hb.length) fail("pack_entry_truncated"); return hb[j++]; };
+    let c = next();
     const raw = (c >> 4) & 7;
     let size = c & 0x0f, mult = 16;
     while (c & 0x80) {
-      if (pos >= end) fail("pack_entry_truncated");
-      c = pack[pos++];
+      c = next();
       size += (c & 0x7f) * mult;
       mult *= 128;
       if (mult > 2 ** 49) fail("pack_entry_bad_size");
     }
     let ofsBase: Entry | null = null, baseId: string | null = null;
     if (raw === OFS_DELTA) {
-      if (pos >= end) fail("pack_entry_truncated");
-      c = pack[pos++];
+      c = next();
       let ofs = c & 0x7f;
       while (c & 0x80) {
-        if (pos >= end) fail("pack_entry_truncated");
-        c = pack[pos++];
+        c = next();
         ofs = (ofs + 1) * 128 + (c & 0x7f);
       }
       const b = byOffset.get(offset - ofs);
       if (ofs <= 0 || !b) fail("pack_bad_ofs_delta");
       ofsBase = b!;
     } else if (raw === REF_DELTA) {
-      if (pos + 20 > end) fail("pack_entry_truncated");
-      baseId = hex(pack.subarray(pos, pos + 20));
-      pos += 20;
+      if (j + 20 > hb.length) fail("pack_entry_truncated");
+      baseId = hex(hb.subarray(j, j + 20));
+      j += 20;
     } else if (raw < 1 || raw > 4) {
       fail(`pack_bad_object_type_${raw}`);
     }
+    pos += j;
     if (size > maxInflated) fail("pack_too_large_to_verify");
     const head = raw <= 4 ? objectHeader(raw, size) : null;
     hold(size);
-    const z = inflateFramed(pack, pos, size, end, head?.length ?? 0);
+    const z = await inflateEntry(src, pos, size, end, head?.length ?? 0, maxInflated);
     const e: Entry = { offset, raw, size, start: pos, stop: z.next, base: ofsBase, baseId, kind: 0, links: NO_LINKS, malformed: null, id: null, depth: 0 };
     pos = z.next;
     inflated += size;
@@ -610,7 +755,7 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
         k.base = b;
         k.depth = b.depth + 1;
         if (k.depth > MAX_DELTA_DEPTH) fail("pack_delta_chain_too_deep");
-        const framed = derive(k, b, content(b), true);
+        const framed = await derive(k, b, await content(b), true);
         const out = framed.subarray(framed.indexOf(0) + 1); // after `<type> <size>\0`
         inflated += out.length;
         await name(k, b.kind, out, framed);
@@ -627,11 +772,11 @@ export async function indexPack(pack: Uint8Array<ArrayBuffer>, maxInflated = MAX
   return {
     version: info.version, objects: info.objects, sha1: info.sha1, deltas: entries.filter((e) => e.raw > 4).length,
     inflated_bytes: inflated, reinflated_bytes: reinflated, peak_held_bytes: peak, link_bytes: linkBytes, byId,
-    readObject(id: string) {
+    async readObject(id: string) {
       const e = byId.get(id);
       if (!e) return null;
       try {
-        return { kind: e.kind, data: content(e) };
+        return { kind: e.kind, data: await content(e) };
       } finally {
         cache.clear();
         cached = 0;
@@ -748,16 +893,21 @@ export interface BundleVerification extends Reachability {
 
 /** Steps 1 to 7 of the header comment, on the bytes of a bundle. Throws GitBackupError with the first failure. */
 export async function verifyBundle(bytes: Uint8Array<ArrayBuffer>, maxInflated = MAX_VERIFY_INFLATED_BYTES): Promise<BundleVerification> {
-  const header = parseBundleHeader(bytes);
+  return await verifyBundleFrom(sourceOf(bytes), maxInflated);
+}
+
+/** verifyBundle on a source; `sha256` when the caller has already taken the bundle's (verifyStoredFrom). */
+export async function verifyBundleFrom(src: ByteSource, maxInflated = MAX_VERIFY_INFLATED_BYTES, sha256?: string): Promise<BundleVerification> {
+  const header = parseBundleHeader(await src.bytes(0, Math.min(src.length, MAX_BUNDLE_HEADER_BYTES)));
   if (header.prerequisites.length) fail("bundle_has_prerequisites");
-  const idx = await indexPack(bytes.subarray(header.packOffset), maxInflated);
+  const idx = await indexPackFrom(subSource(src, header.packOffset), maxInflated);
   const reach = checkRefs(header.refs, idx.byId);
   idx.byId.clear();
   return {
     bundle_version: header.version, pack_version: idx.version, objects: idx.objects, deltas: idx.deltas, pack_sha1: idx.sha1,
     refs: header.refs, inflated_bytes: idx.inflated_bytes, reinflated_bytes: idx.reinflated_bytes, peak_held_bytes: idx.peak_held_bytes,
-    link_bytes: idx.link_bytes, bundle_bytes: bytes.length,
-    bundle_sha256: await digestOf("SHA-256", bytes), ...reach,
+    link_bytes: idx.link_bytes, bundle_bytes: src.length,
+    bundle_sha256: sha256 ?? await digestSource("SHA-256", src), ...reach,
   };
 }
 
@@ -769,12 +919,17 @@ export interface StoredBackup {
 
 /** verifyBundle, then the bundle against its record (and the object's R2 metadata, when it carries a SHA-256). */
 export async function verifyStoredBundle(bytes: Uint8Array<ArrayBuffer>, row: StoredBackup, metadata: Record<string, string> | undefined, maxInflated = MAX_VERIFY_INFLATED_BYTES): Promise<BundleVerification> {
+  return await verifyStoredFrom(sourceOf(bytes), row, metadata, maxInflated);
+}
+
+/** verifyStoredBundle on a source (the stored object read by range in the daily tick). */
+export async function verifyStoredFrom(src: ByteSource, row: StoredBackup, metadata: Record<string, string> | undefined, maxInflated = MAX_VERIFY_INFLATED_BYTES): Promise<BundleVerification> {
   // The SHA-256 first: a bundle that is not the one recorded fails as that, before any parsing.
-  const sha256 = await digestOf("SHA-256", bytes);
+  const sha256 = await digestSource("SHA-256", src);
   if (sha256 !== row.bundle_sha256) fail("sha256_mismatch");
   if (metadata?.sha256 !== undefined && metadata.sha256 !== sha256) fail("r2_metadata_sha256_mismatch");
-  if (bytes.length !== row.bundle_bytes) fail("size_mismatch");
-  const v = await verifyBundle(bytes, maxInflated);
+  if (src.length !== row.bundle_bytes) fail("size_mismatch");
+  const v = await verifyBundleFrom(src, maxInflated, sha256);
   if (v.pack_sha1 !== row.pack_sha1) fail("pack_sha1_mismatch");
   if (v.objects !== row.objects) fail("object_count_mismatch");
   const head = v.refs.find((r) => r.name === "HEAD")?.sha;
@@ -790,7 +945,9 @@ export async function verifyStoredBundle(bytes: Uint8Array<ArrayBuffer>, row: St
 // ---------------------------------------------------------------- the daily tick
 
 export interface VerifyBucket extends GitBackupBucket {
-  get?(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer>; size?: number; customMetadata?: Record<string, string> } | null>;
+  get?(key: string, options?: { range?: { offset: number; length: number } }): Promise<{ arrayBuffer(): Promise<ArrayBuffer>; size?: number; customMetadata?: Record<string, string> } | null>;
+  /** R2's head: with it the verify reads the object by range (A2); without it (older fakes) it reads it whole. */
+  head?(key: string): Promise<{ size: number; customMetadata?: Record<string, string> } | null>;
 }
 
 /** A failure of the read itself (R2 threw), not of the bundle; retried after GIT_BACKUP_VERIFY_RETRY_MS the same day. */
@@ -801,10 +958,11 @@ export const TRANSIENT_VERIFY_FAILURES: ReadonlySet<string> = new Set(["r2_get_f
  * this version, as a transient failure is. Version 2 (2026-11-20): indexPack no longer holds the pack's content, so
  * a pack_too_large_to_verify recorded by version 1 is checked again the day the fix deploys, not the next day.
  * Version 3 (2026-11-26): the SHA-1 and SHA-256 are fed in views (digest.ts digestOf), not by crypto.subtle.digest,
- * which copies its whole input (the bundle, twice), and the bound is 32 MiB.
+ * which copies its whole input (the bundle, twice), and the bound is 32 MiB. Version 4 (2026-11-26, A2): the stored
+ * object is read by range in pages (PagedSource), never whole, and a bundle up to 256 MiB is verified.
  * Raise it whenever a change to the verifier can turn a failure into a pass.
  */
-export const VERIFIER_VERSION = 3;
+export const VERIFIER_VERSION = 4;
 
 /**
  * Once per UTC day, after git_backup: `git bundle verify` in code of the newest stored bundle (status ok, not
@@ -812,7 +970,7 @@ export const VERIFIER_VERSION = 3;
  * event forge.git_backup_verified (outcome verified or failed). A failed verify is a production problem the owner
  * sees (ai-kernel owner-inbox.ts, git_backup_unverified). Never throws.
  */
-export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: VerifyBucket }, nowMs = Date.now(), maxInflated = MAX_VERIFY_INFLATED_BYTES, maxBundleBytes = MAX_VERIFY_BUNDLE_BYTES): Promise<Record<string, unknown>> {
+export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: VerifyBucket }, nowMs = Date.now(), maxInflated = MAX_VERIFY_INFLATED_BYTES, maxBundleBytes = MAX_VERIFY_BUNDLE_BYTES, paging: PagedOptions = {}): Promise<Record<string, unknown>> {
   const bucket = env.BUNDLES;
   if (!bucket || typeof bucket.get !== "function") return { outcome: "not_configured" };
   const day = new Date(nowMs).toISOString().slice(0, 10);
@@ -836,22 +994,41 @@ export async function gitBackupVerifyTick(env: { DB: D1Database; BUNDLES?: Verif
   }
   if (!row) return { outcome: "no_bundle" };
   const started = Date.now();
+  let source: PagedSource | null = null;
   let details: Record<string, unknown>;
   let status: "verified" | "failed";
   try {
     if (Number(row.bundle_bytes) > maxBundleBytes) fail("bundle_too_large_to_verify");
-    const obj = await bucket.get!(row.r2_key).catch(() => fail("r2_get_failed"));
-    if (!obj) fail("bundle_missing_in_r2");
-    if (typeof obj!.size === "number" && obj!.size > maxBundleBytes) fail("bundle_too_large_to_verify");
-    const bytes = new Uint8Array(await obj!.arrayBuffer());
-    const v = await verifyStoredBundle(bytes, row, obj!.customMetadata, maxInflated);
+    let v: BundleVerification;
+    if (typeof bucket.head === "function") {
+      // A2: the stored object read by range, in pages; never whole.
+      const meta = await bucket.head(row.r2_key).catch(() => fail("r2_get_failed"));
+      if (!meta) fail("bundle_missing_in_r2");
+      const size = meta!.size;
+      if (size > maxBundleBytes) fail("bundle_too_large_to_verify");
+      const key = row.r2_key;
+      source = new PagedSource(size, async (offset, length) => {
+        const r = await bucket.get!(key, { range: { offset, length } }).catch(() => fail("r2_get_failed"));
+        if (!r) fail("bundle_missing_in_r2");
+        const b = new Uint8Array(await r!.arrayBuffer());
+        // A binding that ignores the range returns the whole object; take the part asked for.
+        return b.length === size && length < size ? b.slice(offset, offset + length) : b;
+      }, { deadline: started + VERIFY_ELAPSED_BUDGET_MS, ...paging });
+      v = await verifyStoredFrom(source, row, meta!.customMetadata, maxInflated);
+    } else {
+      const obj = await bucket.get!(row.r2_key).catch(() => fail("r2_get_failed"));
+      if (!obj) fail("bundle_missing_in_r2");
+      if (typeof obj!.size === "number" && obj!.size > maxBundleBytes) fail("bundle_too_large_to_verify");
+      const bytes = new Uint8Array(await obj!.arrayBuffer());
+      v = await verifyStoredBundle(bytes, row, obj!.customMetadata, maxInflated);
+    }
     status = "verified";
     const { refs, ...rest } = v;
-    details = { ...rest, refs: refs.filter((r) => r.name !== "HEAD").length, duration_ms: Date.now() - started, verifier: VERIFIER_VERSION };
+    details = { ...rest, refs: refs.filter((r) => r.name !== "HEAD").length, duration_ms: Date.now() - started, verifier: VERIFIER_VERSION, ...(source ? { streamed: true, r2_reads: source.reads } : {}) };
   } catch (e) {
     status = "failed";
     const reason = e instanceof GitBackupError ? e.message : `verify_error:${String((e as Error)?.message ?? e)}`;
-    details = { reason: reason.replace(/[^\x20-\x7e]/g, "?").slice(0, 200), duration_ms: Date.now() - started, verifier: VERIFIER_VERSION };
+    details = { reason: reason.replace(/[^\x20-\x7e]/g, "?").slice(0, 200), duration_ms: Date.now() - started, verifier: VERIFIER_VERSION, ...(source ? { streamed: true, r2_reads: source.reads } : {}) };
   }
   const at = new Date(nowMs).toISOString();
   try {

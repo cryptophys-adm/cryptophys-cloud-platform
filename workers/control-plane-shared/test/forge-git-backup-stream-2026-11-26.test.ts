@@ -198,8 +198,18 @@ test("GS-3. a bad pack, a wrong checksum or a pack over the cap aborts the uploa
 });
 
 test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB part held, the heap and buffers stay far below the pack", async () => {
-  setFlagsFromString("--expose-gc");
-  const gc = runInNewContext("gc") as () => void;
+  // Measured in its own process (A2, review 2026-11-26: in-process, the full suite's other tests disturbed it once):
+  // the test re-runs this file in a child with only GS-4 and --expose-gc, and passes when the child's run passes.
+  if (process.env.GS4_CHILD !== "1") {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync(process.execPath, ["--expose-gc", "--experimental-sqlite", "--disable-warning=ExperimentalWarning", "--test", "--test-name-pattern=^GS-4\\.", new URL(import.meta.url).pathname],
+      // Without the parent runner's NODE_TEST_CONTEXT, the child reports as a plain test run (TAP on stdout).
+      { encoding: "utf8", env: Object.fromEntries(Object.entries({ ...process.env, GS4_CHILD: "1" }).filter(([k]) => k !== "NODE_TEST_CONTEXT")), maxBuffer: 1 << 22 });
+    assert.equal(r.status, 0, `${r.stdout.slice(-3000)}\n${r.stderr.slice(-2000)}`);
+    assert.match(r.stdout, /# pass 1\n/);
+    return;
+  }
+  const gc = (globalThis as { gc?: () => void }).gc ?? (setFlagsFromString("--expose-gc"), runInNewContext("gc") as () => void);
   const PACK_BYTES = 80 * 1024 * 1024;
   // A synthetic pack: "PACK", version 2, one object, pseudo-random body, the SHA-1 trailer; generated as it is read.
   const head = Uint8Array.of(0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 1);
@@ -246,7 +256,7 @@ test("GS-4. an 80 MiB pack (over 64 MiB) streams with flat memory: one 8 MiB par
   assert.ok(median(heap) <= 12 * MiB && Math.max(...heap) < 48 * MiB, `heap (MiB): ${show(heap)}`);
 });
 
-test("GS-5. the verify refuses a bundle too large to hold in memory before reading it; the in-memory path is unchanged", async () => {
+test("GS-5. the verify refuses a bundle over its sanity bound before reading it; the in-memory path is unchanged", async () => {
   const db = migratedDb();
   db.raw.prepare(`INSERT INTO forge_git_backups (run_id, main_sha, day, ran_at, status, r2_key, bundle_sha256, bundle_bytes, pack_bytes, pack_sha1, pack_version, objects, refs, refs_json)
     VALUES ('gbk_big', ?, '2026-11-26', '2026-11-26T12:00:00.000Z', 'ok', 'git-backups/platform/big.bundle', ?, ?, 1, ?, 2, 1, 1, '[]')`).run(MAIN, "0".repeat(64), MAX_VERIFY_BUNDLE_BYTES + 1, "0".repeat(40));
@@ -256,7 +266,7 @@ test("GS-5. the verify refuses a bundle too large to hold in memory before readi
   assert.equal(v.outcome, "failed");
   assert.equal(v.reason, "bundle_too_large_to_verify");
   assert.equal(reads, 0, "the object is never read");
-  assert.equal(MAX_VERIFY_BUNDLE_BYTES, 40 * 1024 * 1024);
+  assert.equal(MAX_VERIFY_BUNDLE_BYTES, 256 * 1024 * 1024, "256 MiB since A2 (was 40 MiB while the verify held the bundle whole)");
   assert.equal(MAX_PACK_BYTES, 32 * 1024 * 1024, "the in-memory cap (fallback path, transfer.ts) is unchanged");
 });
 
@@ -287,7 +297,7 @@ test("GS-7. a 40 MiB bundle verifies at the production bound with a measured pea
   try {
     const MiB = 1024 * 1024;
     assert.equal(MAX_VERIFY_INFLATED_BYTES, 32 * MiB);
-    assert.equal(VERIFIER_VERSION, 3);
+    assert.equal(VERIFIER_VERSION, 4);
     // Near the bound: 40 MiB of bundle, one object inflating to 30 MiB.
     const file = join(dir, "b.bundle");
     const built = run(["build", root, file, "40", "30"]);

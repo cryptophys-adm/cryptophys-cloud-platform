@@ -29,6 +29,26 @@ if (mode === "build") {
   const bundle = cat(enc.encode(`# v2 git bundle\n${cid} refs/heads/main\n${cid} HEAD\n\n`), pack);
   writeFileSync(file, bundle);
   console.log(JSON.stringify({ bundle_bytes: bundle.length, objects: objs.length }));
+} else if (mode === "verify-paged") {
+  // A2: the bundle read by range from the file, as the tick reads the R2 object, one fresh buffer per page.
+  const { openSync, readSync, fstatSync } = await import("node:fs");
+  const { PagedSource, verifyBundleFrom, MAX_VERIFY_INFLATED_BYTES } = await import(`${root}/workers/forge/src/bundle-verify.ts`);
+  const fd = openSync(file, "r");
+  const size = fstatSync(fd).size;
+  // A GC before each read, as memory pressure collects in a 128 MB isolate (node alone lets garbage pages pile up).
+  const gc = (globalThis as any).gc as (() => void) | undefined;
+  let liveBuffers = 0;
+  const base = process.memoryUsage().arrayBuffers;
+  const src = new PagedSource(size, async (offset: number, length: number) => {
+    if (gc) { gc(); liveBuffers = Math.max(liveBuffers, process.memoryUsage().arrayBuffers - base); }
+    const b = new Uint8Array(length); readSync(fd, b, 0, length, offset); return b;
+  });
+  (globalThis as any).gc?.();
+  const before = process.memoryUsage().rss;
+  let v: any;
+  try { v = await verifyBundleFrom(src, MAX_VERIFY_INFLATED_BYTES); } catch (e) { console.log(JSON.stringify({ failed: String((e as Error).message), r2_reads: src.reads })); process.exit(0); }
+  const peak = process.resourceUsage().maxRSS * 1024;
+  console.log(JSON.stringify({ objects: v.objects, bundle_bytes: size, bundle_sha256: v.bundle_sha256, rss_before: before, max_rss: peak, added: peak - before, peak_held_bytes: v.peak_held_bytes, r2_reads: src.reads, live_buffers: liveBuffers }));
 } else {
   const { verifyBundle, MAX_VERIFY_INFLATED_BYTES } = await import(`${root}/workers/forge/src/bundle-verify.ts`);
   const bytes = new Uint8Array(readFileSync(file));

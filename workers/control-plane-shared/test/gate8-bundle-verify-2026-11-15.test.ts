@@ -388,7 +388,7 @@ test("BV12. a failure recorded by an older verifier (no `verifier`, or another v
   const AT = Date.parse("2026-11-20T00:05:20.445Z");
   db.raw.prepare("UPDATE forge_git_backups SET verified_at = ?, verify_status = 'failed', verify_details = ? WHERE run_id = ?")
     .run(new Date(AT).toISOString(), JSON.stringify({ reason: "pack_too_large_to_verify", duration_ms: 1200 }), "gbk_v1");
-  assert.equal(VERIFIER_VERSION, 3, "3 since 2026-11-26 (no whole-input digest copies, the 32 MiB bound)");
+  assert.equal(VERIFIER_VERSION, 4, "4 since 2026-11-26 (A2: the stored object read by range; 3: no whole-input digest copies, the 32 MiB bound)");
   assert.ok(!TRANSIENT_VERIFY_FAILURES.has("pack_too_large_to_verify"), "the reason itself is not transient");
   assert.equal((await gitBackupVerifyTick(env, AT + GIT_BACKUP_VERIFY_RETRY_MS - 60_000)).outcome, "not_due", "not before the hour");
   const r = await gitBackupVerifyTick(env, AT + GIT_BACKUP_VERIFY_RETRY_MS);
@@ -408,7 +408,7 @@ test("BV12. a failure recorded by an older verifier (no `verifier`, or another v
   const f = await gitBackupVerifyTick(env, DAY3);
   assert.deepEqual([f.outcome, f.reason, f.verifier], ["failed", "sha256_mismatch", VERIFIER_VERSION]);
   assert.equal((await gitBackupVerifyTick(env, DAY3 + 2 * GIT_BACKUP_VERIFY_RETRY_MS)).outcome, "not_due", "its own failure waits for the next day");
-  assert.match(read("workers/forge/src/bundle-verify.ts"), /export const VERIFIER_VERSION = 3;/);
+  assert.match(read("workers/forge/src/bundle-verify.ts"), /export const VERIFIER_VERSION = 4;/);
 });
 
 test("BV9. the Forge tick runs git_backup_verify after git_backup when the bucket is bound; nothing to verify, no get(), and before migration 0072", async () => {

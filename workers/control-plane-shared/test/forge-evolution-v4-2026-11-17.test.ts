@@ -146,25 +146,25 @@ test("F3. a valid evolution: one commit on main's head, pushed to evo/<id> after
   const commit = idx.byId.get(r.head_sha!)!;
   assert.equal(commit.kind, 1);
   // The index keeps types and links, not content (bundle-verify.ts, 2026-11-20): the content is read again from the pack.
-  const text = dec.decode(idx.readObject(r.head_sha!)!.data);
+  const text = dec.decode((await idx.readObject(r.head_sha!))!.data);
   assert.ok(text.includes(`parent ${s.repo.main}\n`) && text.includes(`author ${EVOLVER_AUTHOR}`) && text.includes(`Evolution: ${ID}`));
   const root = /^tree ([0-9a-f]{40})/.exec(text)![1];
   // Walk the new root through the pack (new trees) and the base (unchanged subtrees).
-  const entriesOf = (sha: string) => {
+  const entriesOf = async (sha: string) => {
     const t = idx.byId.get(sha);
     if (!t) return s.repo.trees.get(sha)!.map((e) => ({ name: e.name, sha: e.hash }));
-    const out: Array<{ name: string; sha: string }> = []; let p = 0; const d = idx.readObject(sha)!.data;
+    const out: Array<{ name: string; sha: string }> = []; let p = 0; const d = (await idx.readObject(sha))!.data;
     while (p < d.length) { const sp = d.indexOf(0x20, p); const nul = d.indexOf(0, sp); out.push({ name: dec.decode(d.subarray(sp + 1, nul)), sha: [...d.subarray(nul + 1, nul + 21)].map((b) => b.toString(16).padStart(2, "0")).join("") }); p = nul + 21; }
     return out;
   };
-  const at = (path: string) => path.split("/").reduce((sha, name) => entriesOf(sha).find((e) => e.name === name)!.sha, root);
+  const at = async (path: string) => { let sha = root; for (const name of path.split("/")) sha = (await entriesOf(sha)).find((e) => e.name === name)!.sha; return sha; };
   // indexPack keeps no blob content once indexed; a blob's id is its content.
   const blobId = async (t: string) => (await gitObject("blob", enc.encode(t))).sha;
-  assert.equal(at("workers/ai-kernel/src/a.ts"), await blobId("export const a = 2;\n"));
-  assert.equal(at("workers/control-plane-shared/test/a.test.ts"), await blobId("assert.equal(a, 2);\nassert.ok(a > 1);\n"));
-  assert.equal(at("docs/new/y.md"), await blobId("# Y\n"));
-  for (const p of ["workers/ai-kernel/src/a.ts", "docs/new/y.md"]) assert.equal(idx.byId.get(at(p))?.kind, 3, `${p}: its blob is in the pack`);
-  assert.equal(at("docs/x.md"), (await gitObject("blob", enc.encode("# X\n"))).sha, "an unchanged file keeps its blob");
+  assert.equal(await at("workers/ai-kernel/src/a.ts"), await blobId("export const a = 2;\n"));
+  assert.equal(await at("workers/control-plane-shared/test/a.test.ts"), await blobId("assert.equal(a, 2);\nassert.ok(a > 1);\n"));
+  assert.equal(await at("docs/new/y.md"), await blobId("# Y\n"));
+  for (const p of ["workers/ai-kernel/src/a.ts", "docs/new/y.md"]) assert.equal(idx.byId.get(await at(p))?.kind, 3, `${p}: its blob is in the pack`);
+  assert.equal(await at("docs/x.md"), (await gitObject("blob", enc.encode("# X\n"))).sha, "an unchanged file keeps its blob");
   const a = audits(s.db);
   assert.deepEqual(a.map((x) => [x.event_type, x.subject, x.outcome]), [["forge.evolution_written", `evolution:${ID}`, "written"]]);
   assert.equal(a[0].payload.changed_lines, r.changed_lines);

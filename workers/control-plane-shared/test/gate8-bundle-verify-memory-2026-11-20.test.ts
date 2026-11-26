@@ -190,11 +190,11 @@ test("GM1. a pack whose content is far above the bound, every object below it, w
   const idx = await indexPack(s.pack, BOUND);
   assert.deepEqual([...idx.byId.keys()].sort(), [...s.bodies.keys()].sort());
   for (const id of [s.head, s.ids.readme, ...[...s.bodies.keys()].filter((_, k) => k % 97 === 0)]) {
-    const o = idx.readObject(id)!;
+    const o = (await idx.readObject(id))!;
     assert.deepEqual(o.data, s.bodies.get(id), id);
     assert.equal(o.kind, idx.byId.get(id)!.kind);
   }
-  assert.equal(idx.readObject("0".repeat(40)), null);
+  assert.equal(await idx.readObject("0".repeat(40)), null);
   console.log(`GM1: ${v.objects} objects (${s.ofs} ofs-, ${s.ref} ref-deltas), inflated ${v.inflated_bytes} B, peak held ${v.peak_held_bytes} B, re-inflated ${v.reinflated_bytes} B, links ${v.link_bytes} B, bound ${BOUND} B`);
 });
 
@@ -244,7 +244,7 @@ test("GM4. with no cache at all every base is inflated again from the pack: the 
   assert.equal(none.inflated_bytes, cached.inflated_bytes);
   assert.ok(none.reinflated_bytes > cached.reinflated_bytes, `${cached.reinflated_bytes} -> ${none.reinflated_bytes}`);
   assert.ok(none.peak_held_bytes < 8 * s.largest);
-  for (const id of [s.head, s.ids.readme]) assert.deepEqual(none.readObject(id)!.data, s.bodies.get(id));
+  for (const id of [s.head, s.ids.readme]) assert.deepEqual((await none.readObject(id))!.data, s.bodies.get(id));
 });
 
 test("GM5. every failure still fails with its reason: a corrupted ofs- or ref-delta, a missing object, a wrong type, a thin pack, a bad checksum", async () => {
@@ -293,6 +293,6 @@ test("GM6. the bound still holds: an object larger than it fails, so does a delt
   const ok = chain(MAX_DELTA_DEPTH);
   const idx = await indexPack(ok.pack, BOUND);
   assert.equal(idx.deltas, MAX_DELTA_DEPTH);
-  assert.equal(new TextDecoder().decode(idx.readObject(ok.last)!.data), `v${MAX_DELTA_DEPTH}\n`);
+  assert.equal(new TextDecoder().decode((await idx.readObject(ok.last))!.data), `v${MAX_DELTA_DEPTH}\n`);
   await rejects(indexPack(chain(MAX_DELTA_DEPTH + 1).pack, BOUND), /^pack_delta_chain_too_deep$/, "one delta more than git writes");
 });
