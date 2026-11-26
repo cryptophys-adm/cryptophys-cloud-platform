@@ -125,6 +125,33 @@ export function diagnoseAnswer(output: unknown): string {
   return "citation_invalid";
 }
 
+/**
+ * Why validatePlan refused an output, as a slug for ai_failures (schema:<slug>; review 2026-11-26, after two Beam plan
+ * and answer fallbacks at 14–15 s): plan_missing, too_many_calls, unknown_tool, bad_args, unknown_argument,
+ * bad_argument (a value of the wrong type or out of range), missing_required. Never the content.
+ */
+export function diagnosePlan(output: unknown): string {
+  const tools = (output as { tools?: unknown })?.tools;
+  if (!Array.isArray(tools)) return "plan_missing";
+  if (tools.length > MAX_TOOLS_PER_TURN) return "too_many_calls";
+  for (const t of tools) {
+    const spec = CHAT_TOOLS.find((x) => x.name === (t as { name?: unknown })?.name);
+    if (!spec) return "unknown_tool";
+    const raw = (t as { args?: unknown }).args ?? {};
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "bad_args";
+    const given = Object.entries(raw as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined && v !== "");
+    for (const [k, v] of given) {
+      const type = spec.args[k];
+      if (!type) return "unknown_argument";
+      if (type === "string" && (typeof v !== "string" || v.length > 200)) return "bad_argument";
+      if (type === "integer" && !(Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 50)) return "bad_argument";
+      if (type === "object" && (typeof v !== "object" || Array.isArray(v) || JSON.stringify(v).length > 2_000)) return "bad_argument";
+    }
+    for (const r of spec.required ?? []) if (!given.some(([k]) => k === r)) return "missing_required";
+  }
+  return "plan_invalid";
+}
+
 /** chat_answer's output: a bounded answer and its citations (each a ref of this turn and the value it supports). */
 export function validateAnswer(output: unknown): ChatAnswer | null {
   const o = output as { answer?: unknown; citations?: unknown };
