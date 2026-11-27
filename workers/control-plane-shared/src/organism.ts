@@ -240,6 +240,28 @@ export const XAUUSD_CEILING: ExternalCeilingSpec = Object.freeze({
   proposals: Object.freeze({}),
 });
 
+/**
+ * CTA's Beam client (ADR-0007 amendment 2026-11-25, "Design for CTA"; owner 2026-11-27: "Ya, buat draft-nya", confirming
+ * the proposal: Command's CTA row is CTA's Beam switch, and the CTA studio's own agent_model setting is a local kill
+ * switch that can only turn Beam off). The cta agent id of CTA's router client: it reads model_router.status (tier 0,
+ * read only; routerSystemOfOrigin maps a cta agent to the CTA switch) and calls model_router.report_paid (tier 1, can
+ * only turn Beam off) over AgentRpc, hosted by cryptophys-cta. One constant, as PF3 and AIR1. No migration seeds it:
+ * CTA's DNA declares it and the census proposes the routine register_agent (tier 1, no privileged capability).
+ */
+export const CTA_MODEL_ROUTER_AGENT = "cta-model-router";
+/**
+ * CTA's ceiling: every cta agent keeps exactly EXTERNAL_CEILING, as before this ceiling existed (AC-CTA). Only
+ * CTA_MODEL_ROUTER_AGENT holds the router's two capabilities, and nothing else. No seat, no proposal, tier 1.
+ */
+export const CTA_CEILING: ExternalCeilingSpec = Object.freeze({
+  tier_max: EXTERNAL_CEILING.tier_max,
+  capabilities: EXTERNAL_CEILING.capabilities,
+  agents: Object.freeze({
+    [CTA_MODEL_ROUTER_AGENT]: Object.freeze(["model_router.status", "model_router.report_paid"]),
+  }),
+  proposals: Object.freeze({}),
+});
+
 export const EXTERNAL_ORIGINS: readonly ExternalOrigin[] = Object.freeze([
   Object.freeze({
     origin: "xauusd", schema: "xauusd-organism.v1", binding: "EXT_ORGANISM_XAUUSD",
@@ -254,10 +276,12 @@ export const EXTERNAL_ORIGINS: readonly ExternalOrigin[] = Object.freeze([
   }),
   // Owner 2026-11-14/15 ("Buatkan aplikasi cta.cryptophys.work ... yang terhubung kernel, sebagai services/engine terpisah
   // dari xauusd-ai-trading-assistant"; "pindah content queue ke cta"): cryptophys-cta (repository cryptophys-adm/cryptophys-cta),
-  // read over EXT_ORGANISM_CTA once the Forge binds it (the Worker is not deployed yet). The general EXTERNAL_CEILING applies.
+  // read over EXT_ORGANISM_CTA once the Forge binds it (the Worker is not deployed yet). The general EXTERNAL_CEILING applies
+  // to every cta agent but CTA_MODEL_ROUTER_AGENT (CTA_CEILING; owner 2026-11-27, "Ya, buat draft-nya").
   Object.freeze({
     origin: "cta", schema: "cta-organism.v1", binding: "EXT_ORGANISM_CTA",
     services: Object.freeze(["cryptophys-cta"]),
+    ceiling: CTA_CEILING,
   }),
 ]);
 

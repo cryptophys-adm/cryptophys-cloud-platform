@@ -13,7 +13,7 @@ import {
 } from "../src/model-router.ts";
 import { CAPABILITIES, hourlyLimit } from "../src/capabilities.ts";
 import {
-  AETHER_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, XAUUSD_CEILING, XAUUSD_MODEL_ROUTER_AGENT, externalCeilingFor, externalCeilingViolations, externalOrgans, type Genome,
+  AETHER_CEILING, CTA_CEILING, CTA_MODEL_ROUTER_AGENT, EXTERNAL_CEILING, EXTERNAL_ORIGINS, XAUUSD_CEILING, XAUUSD_MODEL_ROUTER_AGENT, externalCeilingFor, externalCeilingViolations, externalOrgans, type Genome,
 } from "../src/organism.ts";
 import { castVote, privilegedCapabilities, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { rpcSyscall } from "../../ai-kernel/src/agent-rpc.ts";
@@ -394,15 +394,16 @@ test("AIR1-13. the kernel: operators read GET /v1/model-router; only the owner t
   assert.equal((await call(kernel, env, req("GET", "/v1/model-router/state", undefined, APPROVER_JWT))).status, 405);
 });
 
-test("AIR1-14. capabilities: model_router.status (tier 0) and model_router.report_paid (tier 1, rate limited); a granted agent reads and reports, an ungranted one is denied; only xauusd-model-router's ceiling and no migration grants them", async () => {
+test("AIR1-14. capabilities: model_router.status (tier 0) and model_router.report_paid (tier 1, rate limited); a granted agent reads and reports, an ungranted one is denied; only the router clients' ceiling entries (xauusd's, and CTA's since 2026-11-27) and no migration grant them", async () => {
   assert.deepEqual([CAPABILITIES["model_router.status"].tier, CAPABILITIES["model_router.report_paid"].tier, hourlyLimit("model_router.report_paid"), hourlyLimit("model_router.status")], [0, 1, 4, null]);
-  // Since 2026-11-25 (owner: "news_compare saja") exactly one ceiling entry holds them: xauusd's router client (AIR1-16).
+  // Since 2026-11-25 (owner: "news_compare saja") one ceiling entry held them: xauusd's router client (AIR1-16). Since
+  // 2026-11-27 (owner: "Ya, buat draft-nya") CTA's router client is the second and last (cta-model-router-2026-11-27).
   const holders: string[] = [];
-  for (const o of EXTERNAL_ORIGINS) for (const id of ["x", "cta-model-router", ...Object.keys(o.ceiling?.agents ?? {})]) {
+  for (const o of EXTERNAL_ORIGINS) for (const id of new Set(["x", "cta-model-router", ...Object.keys(o.ceiling?.agents ?? {})])) {
     const c = externalCeilingFor(o, id).capabilities;
     if (c.includes("model_router.status") || c.includes("model_router.report_paid")) holders.push(`${o.origin}:${id}`);
   }
-  assert.deepEqual(holders, [`xauusd:${XAUUSD_MODEL_ROUTER_AGENT}`]);
+  assert.deepEqual(holders, [`xauusd:${XAUUSD_MODEL_ROUTER_AGENT}`, `cta:${CTA_MODEL_ROUTER_AGENT}`]);
   assert.ok(!EXTERNAL_CEILING.capabilities.some((c) => c.startsWith("model_router.")));
   for (const f of ["0001_initial.sql", "0090_model_router.sql"]) assert.doesNotMatch(read(`workers/control-plane-migrations/${f}`), /model_router\.(status|report_paid)/);
   const db = migratedDb();
@@ -475,12 +476,13 @@ const XAU_AI = "xauusd-ai-trading-assistant";
 const XAU_ORIGIN = EXTERNAL_ORIGINS.find((o) => o.origin === "xauusd")!;
 const ROUTER_CAPS = ["model_router.status", "model_router.report_paid"];
 
-test("AIR1-16. the xauusd router grant: XAUUSD_CEILING names xauusd-model-router with exactly the two model router capabilities; no other agent or ceiling holds them; CTA keeps the general ceiling", () => {
+test("AIR1-16. the xauusd router grant: XAUUSD_CEILING names xauusd-model-router with exactly the two model router capabilities; no other xauusd or Aether agent holds them; CTA's other agents keep the general ceiling", () => {
   assert.equal(XAUUSD_MODEL_ROUTER_AGENT, "xauusd-model-router");
   assert.deepEqual([...XAUUSD_CEILING.agents[XAUUSD_MODEL_ROUTER_AGENT]], ROUTER_CAPS);
   assert.deepEqual(externalCeilingFor(XAU_ORIGIN, XAUUSD_MODEL_ROUTER_AGENT), { tier_max: 1, capabilities: ROUTER_CAPS, proposals: [] });
   assert.deepEqual(privilegedCapabilities(ROUTER_CAPS), [], "a routine registration, no owner click for the agent");
-  // Nobody else: no other xauusd agent, no xauusd default, no Aether agent, no CTA agent, not EXTERNAL_CEILING.
+  // Nobody else: no other xauusd agent, no xauusd default, no Aether agent, no CTA agent but CTA's router client
+  // (2026-11-27, cta-model-router-2026-11-27), not EXTERNAL_CEILING.
   for (const cap of ROUTER_CAPS) {
     assert.deepEqual(Object.entries(XAUUSD_CEILING.agents).filter(([, caps]) => caps.includes(cap)).map(([id]) => id), [XAUUSD_MODEL_ROUTER_AGENT], cap);
     assert.ok(!XAUUSD_CEILING.capabilities.includes(cap), cap);
@@ -489,16 +491,19 @@ test("AIR1-16. the xauusd router grant: XAUUSD_CEILING names xauusd-model-router
   }
   for (const o of EXTERNAL_ORIGINS) for (const id of [undefined, "x", "hud-prophet", "xauusd-moderator", "nexus-teacher", "shadow-knowledge", "xauusd-reasoner", "aether-curator", "knowledge-council", "cta-editor", "cta-model-router", ...Object.keys(o.ceiling?.agents ?? {})]) {
     if (o.origin === "xauusd" && id === XAUUSD_MODEL_ROUTER_AGENT) continue;
+    if (o.origin === "cta" && id === CTA_MODEL_ROUTER_AGENT) continue;
     const c = externalCeilingFor(o, id).capabilities;
     assert.ok(!ROUTER_CAPS.some((cap) => c.includes(cap)), `${o.origin}/${id}`);
   }
-  // AC-CTA holds: CTA has no ceiling of its own, so every cta agent, a cta router client included, has the general ceiling.
+  // AC-CTA holds for every cta agent but its router client: they have the general ceiling. Until 2026-11-27 CTA had no
+  // ceiling of its own and cta-model-router had the general ceiling too; the owner's "Ya, buat draft-nya" gave it the two.
   const CTA = EXTERNAL_ORIGINS.find((o) => o.origin === "cta")!;
-  assert.equal(CTA.ceiling, undefined);
-  for (const id of ["cta-editor", "cta-model-router"]) {
+  assert.equal(CTA.ceiling, CTA_CEILING);
+  for (const id of ["cta-editor", "cta-reviewer", "x"]) {
     assert.deepEqual(externalCeilingFor(CTA, id), { tier_max: EXTERNAL_CEILING.tier_max, capabilities: EXTERNAL_CEILING.capabilities, proposals: [] }, id);
   }
-  assert.deepEqual(externalCeilingViolations({ id: "cta-model-router", tier_max: 1, capabilities: ["model_router.status"] }, CTA), ["capability model_router.status"]);
+  assert.deepEqual(externalCeilingViolations({ id: "cta-editor", tier_max: 1, capabilities: ["model_router.status"] }, CTA), ["capability model_router.status"]);
+  assert.deepEqual(externalCeilingViolations({ id: CTA_MODEL_ROUTER_AGENT, tier_max: 1, capabilities: ["model_router.status"] }, CTA), []);
   // A census gene that puts them on another agent, or anything else on the router client, is refused.
   const xau = (id: string, capabilities: string[]) => externalCeilingViolations({ id, tier_max: 1, voter: false, capabilities }, XAU_ORIGIN);
   assert.deepEqual(xau(XAUUSD_MODEL_ROUTER_AGENT, ROUTER_CAPS), []);

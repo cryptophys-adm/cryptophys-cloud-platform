@@ -12,7 +12,7 @@ import { verifySyscallDecision } from "../src/capabilities.ts";
 import { castVote, RETIRE_IDLE_DAYS, type Evidence, type Proposal } from "../src/consensus-rules.ts";
 import { DOCTRINE_ACTIONS } from "../src/doctrine.ts";
 import {
-  AETHER_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, externalCeilingFor, externalCeilingViolations, externalOrgans, externalProposalRefusal,
+  AETHER_CEILING, CTA_CEILING, EXTERNAL_CEILING, EXTERNAL_ORIGINS, externalCeilingFor, externalCeilingViolations, externalOrgans, externalProposalRefusal,
   parseDna, schedulePeriodMs,
 } from "../src/organism.ts";
 import { SCHEDULE_IDLE_RUNS, SCHEDULED_IDLE_REASON, idleWindowMs, isIdle } from "../src/agent-idle.ts";
@@ -404,9 +404,11 @@ test("AC-G. the external capability ceilings (organism.ts) are a guard path: rai
   assert.equal(criticalPathReason("workers/ai-kernel/src/organism.ts"), "consensus_kill_switch");
 });
 
-test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling, bound in the Forge like Aether's; unbound, it is not read", () => {
+test("AC-CTA. cryptophys-cta is an external origin over EXT_ORGANISM_CTA with the general ceiling (but for its router client, 2026-11-27), bound in the Forge like Aether's; unbound, it is not read", () => {
   const CTA = EXTERNAL_ORIGINS.find((o) => o.origin === "cta")!;
-  assert.deepEqual({ ...CTA }, { origin: "cta", schema: "cta-organism.v1", binding: "EXT_ORGANISM_CTA", services: ["cryptophys-cta"] });
+  // Owner 2026-11-27 ("Ya, buat draft-nya"): CTA_CEILING, which is EXTERNAL_CEILING but for cta-model-router (cta-model-router-2026-11-27).
+  assert.deepEqual({ ...CTA }, { origin: "cta", schema: "cta-organism.v1", binding: "EXT_ORGANISM_CTA", services: ["cryptophys-cta"], ceiling: CTA_CEILING });
+  assert.deepEqual(Object.keys(CTA_CEILING.agents), ["cta-model-router"]);
   const c = externalCeilingFor(CTA, "cta-editor");
   assert.deepEqual([c.tier_max, [...c.capabilities], c.proposals], [EXTERNAL_CEILING.tier_max, [...EXTERNAL_CEILING.capabilities], []]);
   for (const cap of ["signals.observe", "reports.publish"]) assert.ok(EXTERNAL_CEILING.capabilities.includes(cap), `${cap} is within the general ceiling`);
