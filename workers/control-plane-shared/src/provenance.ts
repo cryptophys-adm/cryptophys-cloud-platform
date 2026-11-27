@@ -19,6 +19,7 @@
 // lists it at once (ai-kernel owner-inbox.ts, out_of_band_deploy). Reads Cloudflare; writes only audit events.
 import type { D1Database } from "./types.ts";
 import { appendAuditEvent } from "./audit.ts";
+import { unitForService } from "./deploy-units.ts";
 
 export const OOB_DETECTED = "deployment.out_of_band_detected";
 export const OOB_CLEARED = "deployment.out_of_band_cleared";
@@ -144,6 +145,27 @@ export async function openCodeUpload(db: D1Database, serviceId: string): Promise
 }
 
 /**
+ * The tags the platform deployed to a Worker: its desired version, and every deploy request of the window for it or for
+ * another Worker of its deploy unit, by the request's version_tag or, without one, by its requested commit (the first 12
+ * characters, the tag every deploy path gives a version). Review 2026-11-27: a consensus deploy that falls back to the
+ * unit's GitHub workflow records no version_tag (deploy-forge.yml tags the version with the commit), and the unit's
+ * request names one target only; the Forge's workflow deploy of 0754003 was read as a code upload until the ledger caught up.
+ */
+export async function platformTags(db: D1Database, serviceId: string, desired: string, nowMs: number): Promise<Set<string>> {
+  const tags = new Set<string>([desired]);
+  const services = [...new Set([serviceId, ...((unitForService(serviceId)?.services ?? []) as readonly string[])])];
+  const recent = (await db.prepare(
+    `SELECT json_extract(details_json, '$.version_tag') AS tag, requested_version FROM deployment_requests
+      WHERE service_id IN (${services.map(() => "?").join(", ")}) AND created_at >= ? ORDER BY created_at DESC LIMIT 40`,
+  ).bind(...services, new Date(nowMs - PLATFORM_DEPLOY_WINDOW_MS).toISOString()).all<{ tag: string | null; requested_version: string | null }>()).results ?? [];
+  for (const r of recent) {
+    if (typeof r.tag === "string" && HEX12.test(r.tag)) tags.add(r.tag);
+    else if (typeof r.requested_version === "string" && /^[0-9a-f]{12,40}$/.test(r.requested_version)) tags.add(r.requested_version.slice(0, 12));
+  }
+  return tags;
+}
+
+/**
  * One pass over the given Workers: reads each one's active version from Cloudflare, classifies it, and records what
  * changed since the last pass. A Worker whose record cannot be read is listed as unreadable and nothing is recorded
  * for it (no finding, no clearing). Never throws.
@@ -159,11 +181,7 @@ export async function provenanceSweep(db: D1Database, reader: ProvenanceReader, 
       if (!UUID.test(activeId)) throw new Error("active_deployment_unreadable");
       const active = await reader.version(s.service_id, activeId);
       out.checked++;
-      const tags = new Set<string>([desired]);
-      const recent = (await db.prepare(
-        `SELECT json_extract(details_json, '$.version_tag') AS tag FROM deployment_requests WHERE service_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 20`,
-      ).bind(s.service_id, new Date(nowMs - PLATFORM_DEPLOY_WINDOW_MS).toISOString()).all<{ tag: string | null }>()).results ?? [];
-      for (const r of recent) if (typeof r.tag === "string" && HEX12.test(r.tag)) tags.add(r.tag);
+      const tags = await platformTags(db, s.service_id, desired, nowMs);
       const last = await lastProvenanceEvent(db, s.service_id);
       if (tags.has(tagOf(active))) {
         if (last?.event_type === OOB_DETECTED) {

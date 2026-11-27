@@ -245,3 +245,29 @@ test("OB7. the alarm outside the kernel: a code upload on the AI Kernel goes str
   assert.match(toml, /\[\[services\]\]\nbinding = "OWNER_TELEGRAM"\nservice = "xauusd-ai-trading-assistant"\nentrypoint = "OwnerNotifier"\n/);
   assert.doesNotMatch(toml, /TELEGRAM_BOT|BOT_TOKEN/);
 });
+
+test("OB8. review 2026-11-27: a consensus deploy through the unit's GitHub workflow (no version_tag in its request) is the platform's by its requested commit, for every Worker of the unit; a foreign tag still is a code upload", async () => {
+  const db = db0();
+  const sha = "0754003a1b2c3d4e5f60718293a4b5c6d7e8f901", tag = sha.slice(0, 12);
+  // As deploy-orchestrator index.ts records a workflow fallback: requested_version is the commit, details_json has no version_tag.
+  const workflow = JSON.stringify({ workflow: "deploy-control-plane.yml", unit: "control-plane", ref: "main", workflows: [], proposal_id: "cns_1", policy_decision_id: "pd_1" });
+  db.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at)
+    VALUES ('dep_w', ?, ?, 'consensus', 'running', 'k-w', ?, ?, ?)`).run(KERNEL, sha, workflow, "2026-11-21T00:30:00.000Z", "2026-11-21T00:30:00.000Z");
+  const DRIFT = "cryptophys-drift-detector";
+  db.raw.prepare(`INSERT INTO service_registry (service_id, display_name, environment, status, desired_version, created_at, updated_at) VALUES (?, ?, 'production', 'healthy', ?, '2026-11-01T00:00:00.000Z', '2026-11-20T12:00:00.000Z')
+    ON CONFLICT(service_id) DO UPDATE SET status = 'healthy', desired_version = excluded.desired_version`).run(DRIFT, DRIFT, TAG);
+  const cf = cloudflare({
+    // wrangler deploy --tag <commit:12> by the workflow, before the ledger moves the desired version.
+    [KERNEL]: [{ at: "2026-11-21T00:34:00.000Z", source: "wrangler", v: version(8, { tag, etag: "wf-kernel", source: "wrangler" }) }, { at: "2026-11-20T13:10:16.649Z", source: "api", v: native }],
+    [DRIFT]: [{ at: "2026-11-21T00:34:10.000Z", source: "wrangler", v: version(9, { tag, etag: "wf-drift", source: "wrangler" }) }, { at: "2026-11-20T13:10:16.649Z", source: "api", v: version(10, { tag: TAG, etag: "d0" }) }],
+    // The Console is in no unit with that request: the same tag there is not trusted.
+    [CONSOLE]: [{ at: "2026-11-21T00:35:00.000Z", source: "wrangler", v: version(11, { tag, etag: "c1", source: "wrangler" }) }, { at: "2026-11-20T13:10:16.649Z", source: "api", v: version(12, { tag: TAG, etag: "c0" }) }],
+  });
+  const r = await provenanceSweep(db as never, cf.reader, await provenanceTargets(db as never, [KERNEL, DRIFT, CONSOLE]), "test", NOW);
+  assert.equal(r.checked, 3);
+  assert.deepEqual(r.findings.map((f) => [f.service_id, f.kind]), [[CONSOLE, "code_upload"]], "the kernel and the drift detector run the platform's workflow deploy");
+  assert.deepEqual(events(db, OOB_DETECTED).map((e) => e.subject), [CONSOLE]);
+  // A request outside the window is not trusted.
+  const late = await provenanceSweep(db as never, cf.reader, await provenanceTargets(db as never, [KERNEL]), "test", NOW + 49 * 3_600_000);
+  assert.deepEqual(late.findings.map((f) => [f.service_id, f.kind]), [[KERNEL, "code_upload"]]);
+});
