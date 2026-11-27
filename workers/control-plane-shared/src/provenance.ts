@@ -150,13 +150,18 @@ export async function openCodeUpload(db: D1Database, serviceId: string): Promise
  * characters, the tag every deploy path gives a version). Review 2026-11-27: a consensus deploy that falls back to the
  * unit's GitHub workflow records no version_tag (deploy-forge.yml tags the version with the commit), and the unit's
  * request names one target only; the Forge's workflow deploy of 0754003 was read as a code upload until the ledger caught up.
+ * Only a request the platform approved and dispatched counts (TRUSTED_REQUEST_STATUSES), for either tag: a pending,
+ * rejected, cancelled or failed request never makes a code upload under its commit's tag look like the platform's.
  */
+/** The deploy request statuses whose tags are the platform's: approved (dispatched or queued), running, succeeded. */
+export const TRUSTED_REQUEST_STATUSES = ["approved", "running", "succeeded"] as const;
 export async function platformTags(db: D1Database, serviceId: string, desired: string, nowMs: number): Promise<Set<string>> {
   const tags = new Set<string>([desired]);
   const services = [...new Set([serviceId, ...((unitForService(serviceId)?.services ?? []) as readonly string[])])];
   const recent = (await db.prepare(
     `SELECT json_extract(details_json, '$.version_tag') AS tag, requested_version FROM deployment_requests
-      WHERE service_id IN (${services.map(() => "?").join(", ")}) AND created_at >= ? ORDER BY created_at DESC LIMIT 40`,
+      WHERE service_id IN (${services.map(() => "?").join(", ")}) AND status IN (${TRUSTED_REQUEST_STATUSES.map((t) => `'${t}'`).join(", ")}) AND created_at >= ?
+      ORDER BY created_at DESC LIMIT 40`,
   ).bind(...services, new Date(nowMs - PLATFORM_DEPLOY_WINDOW_MS).toISOString()).all<{ tag: string | null; requested_version: string | null }>()).results ?? [];
   for (const r of recent) {
     if (typeof r.tag === "string" && HEX12.test(r.tag)) tags.add(r.tag);

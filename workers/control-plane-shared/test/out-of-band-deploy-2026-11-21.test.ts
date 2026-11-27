@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { migratedDb } from "./harness.ts";
 import {
-  OOB_CLEARED, OOB_DETECTED, OOB_REASON, bindingNames, classifyVersion, lastProvenanceEvent, openCodeUpload, provenanceReport, provenanceSweep, provenanceTargets,
+  OOB_CLEARED, OOB_DETECTED, OOB_REASON, bindingNames, classifyVersion, lastProvenanceEvent, openCodeUpload, platformTags, provenanceReport, provenanceSweep, provenanceTargets, TRUSTED_REQUEST_STATUSES,
   type DeploymentLike, type ProvenanceReader, type VersionLike,
 } from "../src/provenance.ts";
 import { OOB_NOTIFIED, PROVENANCE_CRITICAL, PROVENANCE_DIRECT, provenanceTick } from "../../deployment-orchestrator/src/provenance-tick.ts";
@@ -270,4 +270,23 @@ test("OB8. review 2026-11-27: a consensus deploy through the unit's GitHub workf
   // A request outside the window is not trusted.
   const late = await provenanceSweep(db as never, cf.reader, await provenanceTargets(db as never, [KERNEL]), "test", NOW + 49 * 3_600_000);
   assert.deepEqual(late.findings.map((f) => [f.service_id, f.kind]), [[KERNEL, "code_upload"]]);
+  // Coordinator review: only an approved, running or succeeded request is the platform's, by either tag. A pending,
+  // rejected, cancelled or failed one for the same unit and commit leaves a code upload under that tag flagged.
+  assert.deepEqual([...TRUSTED_REQUEST_STATUSES], ["approved", "running", "succeeded"]);
+  for (const status of ["pending", "rejected", "cancelled", "failed"]) {
+    const d = db0();
+    d.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at)
+      VALUES ('dep_w', ?, ?, 'consensus', ?, 'k-w', ?, ?, ?)`).run(KERNEL, sha, status, workflow, "2026-11-21T00:30:00.000Z", "2026-11-21T00:30:00.000Z");
+    d.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at)
+      VALUES ('dep_n', ?, ?, 'consensus', ?, 'k-n', ?, ?, ?)`).run(KERNEL, sha, status, JSON.stringify({ executor: "native:deploy", version_tag: tag }), "2026-11-21T00:31:00.000Z", "2026-11-21T00:31:00.000Z");
+    const r2 = await provenanceSweep(d as never, cf.reader, await provenanceTargets(d as never, [KERNEL]), "test", NOW);
+    assert.deepEqual(r2.findings.map((f) => [f.service_id, f.kind]), [[KERNEL, "code_upload"]], status);
+    assert.deepEqual([...(await platformTags(d as never, KERNEL, TAG, NOW))], [TAG], status);
+  }
+  for (const status of ["approved", "succeeded"]) {
+    const d = db0();
+    d.raw.prepare(`INSERT INTO deployment_requests (request_id, service_id, requested_version, requested_by, status, idempotency_key, details_json, created_at, updated_at)
+      VALUES ('dep_w', ?, ?, 'consensus', ?, 'k-w', ?, ?, ?)`).run(KERNEL, sha, status, workflow, "2026-11-21T00:30:00.000Z", "2026-11-21T00:30:00.000Z");
+    assert.deepEqual([...(await platformTags(d as never, DRIFT, TAG, NOW))], [TAG, tag], status);
+  }
 });
