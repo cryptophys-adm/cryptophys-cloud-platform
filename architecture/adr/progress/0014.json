@@ -131,13 +131,17 @@
         "C4"
       ],
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "CB2a built; the owner-merged allowlist gate (CB2b) is not"
+        "kind": "audit_event",
+        "event_type": "forge.council_allowlist_merged"
       },
       "built": [
         "workers/forge/src/council-sync.ts",
-        "workers/control-plane-shared/src/council-repo.ts"
-      ]
+        "workers/forge/src/council-allowlist.ts",
+        "workers/control-plane-shared/src/council-repo.ts",
+        "workers/control-plane-migrations/0093_council_allowlist_changes.sql"
+      ],
+      "note": "built (CB2a, CB2b); proven at the owner's first allowlist merge",
+      "next": "xauusd declares council_owned_keys in organism.json"
     },
     {
       "id": "C6",

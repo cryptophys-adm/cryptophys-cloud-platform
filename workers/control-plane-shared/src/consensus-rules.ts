@@ -61,6 +61,9 @@ export const CONSENSUS_ACTIONS: Record<string, { class: ConsensusClass; target: 
   // A routine change merges by consensus; one that touches a guard path (ADR-0012 §2.4) needs the owner's click.
   merge_change: { class: "routine", target: "change", description: "Fast-forward canonical main to a change request whose checks passed (routine paths only)" },
   merge_owner_change: { class: "critical", target: "change", description: "Fast-forward canonical main to a change request that touches a guard path; one owner approval click" },
+  // CB2b (2026-11-28, ADR-0014 §13): the council repository's allowlist, mirrored from xauusd's organism.json, changes
+  // only by the owner's click; the autonomy dial never raises it (critical: at most owner_click).
+  merge_council_allowlist: { class: "critical", target: "change", description: "Fast-forward the council repository's main to the allowlist change mirrored from xauusd's organism.json (keys and bounds only); one owner approval click" },
 };
 
 export const MERGE_ACTIONS: ReadonlySet<string> = new Set(["merge_change", "merge_owner_change"]);
@@ -81,6 +84,22 @@ export function mergeVote(p: Proposal, e: Evidence): { vote: Vote["vote"]; reaso
   const want = p.action === "merge_change" ? "would_merge" : "needs_owner";
   if (c.verdict !== want) return { vote: "reject", reason: `the Forge's verdict is ${c.verdict}, not ${want}` };
   return { vote: "approve", reason: p.action === "merge_change" ? "every check passed and only routine paths change" : "every check passed; it touches a guard path, so the owner decides" };
+}
+
+/**
+ * Every voter's rule for merge_council_allowlist (CB2b), from the Forge's state of the pending change: approve only when
+ * it is still pending, names the proposal's base and head, and council main is still its base. The owner then decides;
+ * the executor re-checks all of it (MergeRpc.mergeCouncilAllowlist, CAS on main).
+ */
+export function councilAllowlistVote(p: Proposal, e: Evidence): { vote: Vote["vote"]; reason: string } | null {
+  if (p.action !== "merge_council_allowlist") return null;
+  const c = e.council_allowlist;
+  if (!c) return { vote: "reject", reason: "the Forge did not report the allowlist change's state" };
+  if (c.change_id !== p.target) return { vote: "reject", reason: "the evidence is for another allowlist change" };
+  if (c.status !== "pending") return { vote: "reject", reason: `the allowlist change is ${c.status}` };
+  if (String(p.params.head_sha ?? "") !== c.head_sha || String(p.params.base_sha ?? "") !== c.base_sha) return { vote: "reject", reason: "the change moved after the proposal" };
+  if (c.main_sha !== c.base_sha) return { vote: "reject", reason: "the council repository's main moved: not a fast-forward" };
+  return { vote: "approve", reason: "the allowlist change is pending on the council repository's current main; the owner decides" };
 }
 
 /**
@@ -253,6 +272,8 @@ export interface Evidence {
   recent_same: number;
   /** G3b: the change request a merge proposal names (merge actions only). */
   change?: ChangeEvidence | null;
+  /** CB2b: the council allowlist change a merge_council_allowlist proposal names. */
+  council_allowlist?: { change_id: string; status: string; base_sha: string; head_sha: string; main_sha: string | null } | null;
 }
 
 export interface Proposal { action: string; target: string; params: JsonObject; class: ConsensusClass }
@@ -280,6 +301,8 @@ export function castVote(voter: Voter, p: Proposal, e: Evidence): Vote {
   if (registration) return v(registration.vote, registration.reason);
   const merge = mergeVote(p, e);
   if (merge) return v(merge.vote, merge.reason);
+  const allowlist = councilAllowlistVote(p, e);
+  if (allowlist) return v(allowlist.vote, allowlist.reason);
   const destructive = destructiveDeployVote(p);
   if (destructive) return v(destructive.vote, destructive.reason);
   const svc = e.services[p.target];

@@ -79,6 +79,9 @@ export interface SyscallEnv extends BaseEnv, ModelRouterEnv {
   FORGE_MERGE?: {
     changeState(crId: string): Promise<import("../../control-plane-shared/src/merge-path.ts").ChangeEvidence | null>;
     mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<JsonObject>;
+    /** CB2b: the council allowlist change's state and its executor (MergeRpc). */
+    councilAllowlistState?(changeId: string): Promise<{ change_id: string; status: string; base_sha: string; head_sha: string; main_sha: string | null } | null>;
+    mergeCouncilAllowlist?(proposalId: string, decisionId: string, changeId: string, params: Record<string, unknown>): Promise<JsonObject>;
   };
   VOTE_PLATFORM_API?: VoteRpcBinding;
   VOTE_DEPLOYMENT_ORCHESTRATOR?: VoteRpcBinding;

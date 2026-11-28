@@ -120,6 +120,7 @@ const ACTION_TEXT: Record<string, string> = {
   change_access: "update Cloudflare Access for the",
   merge_change: "merge the change request",
   merge_owner_change: "merge the change request that touches a guarded path,",
+  merge_council_allowlist: "merge the council allowlist change",
   "consensus.execute": "carry out",
   "recovery.execute": "run the recovery plan for",
   deploy: "deploy",

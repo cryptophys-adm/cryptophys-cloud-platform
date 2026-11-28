@@ -65,7 +65,7 @@ export async function councilRepo(binding: CouncilBinding, name: string = COUNCI
 
 // ---------------------------------------------------------------- git objects (this module's own; not evolution.ts)
 
-const enc = new TextEncoder();
+export const enc = new TextEncoder();
 const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 const unhex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
 function concat(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
@@ -76,8 +76,8 @@ function concat(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
 }
 const sha1 = async (b: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-1", b as Uint8Array<ArrayBuffer>));
 type GitType = "commit" | "tree" | "blob";
-interface GitObject { type: GitType; body: Uint8Array; sha: string }
-async function gitObject(type: GitType, body: Uint8Array): Promise<GitObject> {
+export interface GitObject { type: GitType; body: Uint8Array; sha: string }
+export async function gitObject(type: GitType, body: Uint8Array): Promise<GitObject> {
   return { type, body, sha: hex(await sha1(concat([enc.encode(`${type} ${body.length}\0`), body]))) };
 }
 function treeBody(entries: Array<{ mode: string; name: string; hash: string }>): Uint8Array {
@@ -90,7 +90,7 @@ async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 const PACK_TYPE: Record<GitType, number> = { commit: 1, tree: 2, blob: 3 };
-async function packOf(objects: GitObject[]): Promise<Uint8Array<ArrayBuffer>> {
+export async function packOf(objects: GitObject[]): Promise<Uint8Array<ArrayBuffer>> {
   const head = new Uint8Array(12);
   head.set(enc.encode("PACK"), 0);
   const view = new DataView(head.buffer);
@@ -109,7 +109,7 @@ async function packOf(objects: GitObject[]): Promise<Uint8Array<ArrayBuffer>> {
 }
 type Reader = Pick<ArtifactsReader, "readCommit" | "readTree" | "readBlob">;
 
-async function readAt(repo: Reader, treeHash: string | null, path: string): Promise<string | null> {
+export async function readAt(repo: Reader, treeHash: string | null, path: string): Promise<string | null> {
   if (!treeHash) return null;
   let tree = treeHash;
   const parts = path.split("/");
@@ -122,7 +122,7 @@ async function readAt(repo: Reader, treeHash: string | null, path: string): Prom
   }
   return null;
 }
-async function buildTree(repo: Reader, treeHash: string | null, files: Map<string, string>, out: GitObject[]): Promise<string> {
+export async function buildTree(repo: Reader, treeHash: string | null, files: Map<string, string>, out: GitObject[]): Promise<string> {
   const entries: ArtifactsTreeEntry[] = treeHash ? [...((await repo.readTree(treeHash)) ?? [])] : [];
   const byName = new Map(entries.map((e) => [e.name, e]));
   const sub = new Map<string, Map<string, string>>();
@@ -143,7 +143,7 @@ async function buildTree(repo: Reader, treeHash: string | null, files: Map<strin
   out.push(obj);
   return obj.sha;
 }
-async function commitObject(tree: string, parent: string | null, title: string, body: string, nowMs: number): Promise<GitObject> {
+export async function commitObject(tree: string, parent: string | null, title: string, body: string, nowMs: number): Promise<GitObject> {
   const ts = `${Math.floor(nowMs / 1000)} +0000`;
   const text = `tree ${tree}\n${parent ? `parent ${parent}\n` : ""}author ${COUNCIL_AUTHOR} ${ts}\ncommitter ${COUNCIL_AUTHOR} ${ts}\n\n${title}\n\n${body}\n`;
   return gitObject("commit", enc.encode(text));

@@ -300,7 +300,7 @@ test("CB1-10. the record: ADR-0014 §13 cites the owner, the manifest lists C4 t
   const sec = adr.slice(adr.indexOf("### 13. Amendment 2026-11-28"), adr.indexOf("## Consequences"));
   for (const s of ['"sementara B dulu', '"comfirmed"', "`council`", "council_ledger.v1", "never writes `platform` or `platform-work`", "council_policy_verdict.v1", "planned, not built"]) assert.ok(sec.includes(s), s);
   const m = JSON.parse(read("architecture/adr/progress/0014.json"));
-  assert.deepEqual(m.phases.filter((p: any) => ["C4", "C5", "C6"].includes(p.id)).map((p: any) => [p.id, p.evidence.kind]), [["C4", "audit_event"], ["C5", "not_measurable_yet"], ["C6", "not_measurable_yet"]]);
+  assert.deepEqual(m.phases.filter((p: any) => ["C4", "C5", "C6"].includes(p.id)).map((p: any) => [p.id, p.evidence.kind]), [["C4", "audit_event"], ["C5", "audit_event"], ["C6", "not_measurable_yet"]]);
   const ssot = read("docs/SSOT.md");
   assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?council repository, 2026-11-28 \(owner: "sementara B dulu/);
   assert.ok(ssot.includes("- **Council repository** (owner, 2026-11-28"));
@@ -452,6 +452,138 @@ test("CB3-2. wiring: two Forge entrypoints with read methods only, pinned to the
 test("CB3-3. the record: ADR-0014 §13 and the SSOT document the readers", () => {
   assert.ok(read("architecture/adr/0014-evolution-loop.md").includes("`CouncilPolicyRpc`"));
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council readers, 2026-11-28 /);
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?council readers, 2026-11-28 /);
   assert.ok(ssot.includes("- **Council readers** (CB3, 2026-11-28"));
+});
+
+// ---------------------------------------------------------------- CB2b (2026-11-28): the allowlist changes only by the owner's click
+
+const DNA = { council_owned_keys: { [KNOB]: { type: "number", min: 0.3, max: 0.8 }, risk_per_trade: { type: "number", min: 0, max: 1 }, "decision.mode": { type: "enum", enum: ["strict", "loose"] } } };
+const dnaEnv = (db: Db, b: { binding: unknown }, dna: unknown = DNA) => ({ DB: db as never, ARTIFACTS: b.binding as never, EXT_ORGANISM_XAUUSD: { dna: async () => dna } });
+const rowsOf = (db: Db) => (db.raw.prepare("SELECT * FROM council_allowlist_changes ORDER BY created_at, rowid").all() as any[]).map((r) => ({ ...r }));
+
+test("CB2b-1. a differing council_owned_keys block becomes a branch and a pending row, never main; the same change is recorded once; denied keys are left out", async () => {
+  const { councilAllowlistTick } = await import("../../forge/src/council-allowlist.ts");
+  const db = migratedDb();
+  const b = await binding({ "README.md": "council\n" });
+  const g = gitServer(new Map([["refs/heads/main", b.main()!]]));
+  const r = await councilAllowlistTick(dnaEnv(db, b), NOW, g.fetchImpl);
+  assert.equal(r.outcome, "proposed_branch", JSON.stringify(r));
+  assert.match(r.change_id!, /^cal-[0-9a-f]{12}$/);
+  assert.match(r.problems!.join(" "), /risk_per_trade is never council-owned/);
+  assert.deepEqual(g.pushes.map((p) => [p.from, p.ref]), [[ZERO_SHA, `refs/heads/allowlist/${r.change_id!.slice(4)}`]]);
+  assert.equal(g.refs.get("refs/heads/main"), b.main(), "main never moves here");
+  const [row] = rowsOf(db);
+  assert.deepEqual([row.change_id, row.status, row.base_sha, row.head_sha, row.branch], [r.change_id, "pending", b.main(), g.pushes[0].to, `allowlist/${r.change_id!.slice(4)}`]);
+  const summary = JSON.parse(row.summary_json);
+  assert.deepEqual([summary.added, summary.removed, summary.keys["decision.mode"]], [["decision.min_confidence", "decision.mode"], [], { type: "enum", enum_size: 2 }]);
+  assert.ok(!row.summary_json.includes("strict") && !row.summary_json.includes("risk_per_trade"), "keys and bounds only; no enum value, no denied key");
+  const again = await councilAllowlistTick(dnaEnv(db, b), NOW + 900_000, g.fetchImpl);
+  assert.deepEqual([again.outcome, again.change_id, g.pushes.length], ["pending", r.change_id, 1]);
+  // xauusd changes the block again: a new change supersedes the waiting one.
+  const r2 = await councilAllowlistTick(dnaEnv(db, b, { council_owned_keys: { [KNOB]: { type: "number", min: 0.3, max: 0.7 } } }), NOW + 1_800_000, g.fetchImpl);
+  assert.equal(r2.outcome, "proposed_branch");
+  assert.deepEqual(rowsOf(db).map((x) => x.status), ["superseded", "pending"]);
+  // No block, no main, no binding: nothing.
+  assert.equal((await councilAllowlistTick(dnaEnv(db, b, { organs: [] }), NOW, g.fetchImpl)).outcome, "no_block");
+  assert.equal((await councilAllowlistTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW, g.fetchImpl)).outcome, "not_configured");
+  const empty = await binding(null);
+  assert.equal((await councilAllowlistTick(dnaEnv(db, empty), NOW, gitServer().fetchImpl)).outcome, "no_main");
+});
+
+test("CB2b-2. equal to main's allowlist: nothing is proposed and a waiting change is superseded", async () => {
+  const { councilAllowlistTick } = await import("../../forge/src/council-allowlist.ts");
+  const { allowlistFromDna, allowlistText } = await import("../src/council-repo.ts");
+  const db = migratedDb();
+  const b0 = await binding({ "README.md": "council\n" });
+  const g0 = gitServer(new Map([["refs/heads/main", b0.main()!]]));
+  await councilAllowlistTick(dnaEnv(db, b0), NOW, g0.fetchImpl);
+  const b = await binding({ "policy/allowlist.json": allowlistText(allowlistFromDna(DNA)!.allowlist) });
+  const g = gitServer(new Map([["refs/heads/main", b.main()!]]));
+  assert.equal((await councilAllowlistTick(dnaEnv(db, b), NOW + 60_000, g.fetchImpl)).outcome, "equal");
+  assert.equal(g.pushes.length, 0);
+  assert.deepEqual(rowsOf(db).map((x) => x.status), ["superseded"]);
+});
+
+test("CB2b-3. the action: critical, in the merges group, never above owner_click; every voter's rule reads the Forge's state", async () => {
+  const { CONSENSUS_ACTIONS, councilAllowlistVote } = await import("../src/consensus-rules.ts");
+  const { actionCeiling, effectiveLevel, groupOf } = await import("../src/autonomy-dial.ts");
+  const { CONSENSUS_KINDS } = await import("../src/owner-inbox-rank.ts");
+  assert.equal(CONSENSUS_ACTIONS.merge_council_allowlist.class, "critical");
+  assert.deepEqual([groupOf("merge_council_allowlist"), actionCeiling("merge_council_allowlist"), effectiveLevel("merge_council_allowlist", "consensus")], ["merges", "owner_click", "owner_click"]);
+  assert.ok(CONSENSUS_KINDS.merge_council_allowlist);
+  const id = "cal-0123456789ab";
+  const base = "a".repeat(40), head = "b".repeat(40);
+  const p = { action: "merge_council_allowlist", target: id, params: { base_sha: base, head_sha: head }, class: "critical" as const };
+  const e = (c: unknown) => ({ council_allowlist: c } as never);
+  assert.equal(councilAllowlistVote(p, e({ change_id: id, status: "pending", base_sha: base, head_sha: head, main_sha: base }))!.vote, "approve");
+  for (const [c, why] of [
+    [null, /did not report/], [{ change_id: "cal-ffffffffffff", status: "pending", base_sha: base, head_sha: head, main_sha: base }, /another/],
+    [{ change_id: id, status: "superseded", base_sha: base, head_sha: head, main_sha: base }, /superseded/],
+    [{ change_id: id, status: "pending", base_sha: base, head_sha: "c".repeat(40), main_sha: base }, /moved after/],
+    [{ change_id: id, status: "pending", base_sha: base, head_sha: head, main_sha: "d".repeat(40) }, /main moved/],
+  ] as const) {
+    const v = councilAllowlistVote(p, e(c))!;
+    assert.equal(v.vote, "reject");
+    assert.match(v.reason, why);
+  }
+  assert.equal(councilAllowlistVote({ ...p, action: "merge_change" }, e(null)), null);
+});
+
+test("CB2b-4. the executor: only after the owner's click, and only while council main is still the change's base (CAS)", async () => {
+  const { councilAllowlistTick, mergeCouncilAllowlist } = await import("../../forge/src/council-allowlist.ts");
+  const db = migratedDb();
+  db.raw.prepare("UPDATE consensus_controls SET value = 'critical' WHERE control = 'mode'").run();
+  db.raw.prepare("UPDATE kernel_controls SET value = '1' WHERE control = 'agents_enabled'").run();
+  const b = await binding({ "README.md": "council\n" });
+  const g = gitServer(new Map([["refs/heads/main", b.main()!]]));
+  const t = await councilAllowlistTick(dnaEnv(db, b), NOW, g.fetchImpl);
+  const row = rowsOf(db)[0];
+  const approve = (k: number, owner = true) => {
+    const proposal = `cns_${String(k).padStart(8, "0")}-1111-4111-8111-111111111111`;
+    const decision = `dec_${String(k).padStart(8, "0")}-2222-4222-8222-222222222222`;
+    const at = new Date(NOW).toISOString();
+    db.raw.prepare(`INSERT INTO consensus_proposals (proposal_id, proposer_agent_id, action, target, class, params_json, evidence_json, mode, eligible, approvals, rejections, passed, policy_decision_id, policy_decision, status, outcome_json, created_at, decided_at)
+      VALUES (?, 'supervisor', 'merge_council_allowlist', ?, 'critical', ?, '{}', 'critical', 8, 8, 0, 1, ?, 'allow', 'executing', NULL, ?, ?)`).run(proposal, t.change_id!, JSON.stringify({ base_sha: row.base_sha, head_sha: row.head_sha }), decision, at, at);
+    db.raw.prepare(`INSERT INTO policy_decisions (decision_id, subject, action, resource, decision, reason, evidence_json, created_at) VALUES (?, 'ai:kernel', 'consensus.execute', ?, 'allow', 'ok', '{}', ?)`)
+      .run(decision, `merge_council_allowlist:${t.change_id}`, at);
+    if (owner) db.raw.prepare("INSERT INTO consensus_owner_decisions (proposal_id, decision, decided_by, reason, created_at) VALUES (?, 'approve', 'owner@example.com', 'allowlist', ?)").run(proposal, at);
+    return { proposal, decision };
+  };
+  const env = dnaEnv(db, b);
+  const noClick = approve(1, false);
+  await assert.rejects(mergeCouncilAllowlist(env, noClick.proposal, noClick.decision, t.change_id!, { base_sha: row.base_sha, head_sha: row.head_sha }, g.fetchImpl, NOW), /consensus_owner_approval_required/);
+  const ok = approve(2);
+  await assert.rejects(mergeCouncilAllowlist(env, ok.proposal, ok.decision, t.change_id!, { base_sha: row.base_sha, head_sha: "e".repeat(40) }, g.fetchImpl, NOW), /params_do_not_match/);
+  assert.equal(rowsOf(db)[0].status, "refused", "a refused execution closes the change; the Forge records a new one at its next tick");
+  // A fresh change, executed: main moves from base to head, the row is merged.
+  db.raw.prepare("UPDATE council_allowlist_changes SET status = 'pending' WHERE change_id = ?").run(t.change_id!);
+  const ok2 = approve(3);
+  const r = await mergeCouncilAllowlist(env, ok2.proposal, ok2.decision, t.change_id!, { base_sha: row.base_sha, head_sha: row.head_sha }, g.fetchImpl, NOW);
+  assert.deepEqual([r.merged, r.from, r.to], [true, row.base_sha, row.head_sha]);
+  assert.equal(g.refs.get("refs/heads/main"), row.head_sha);
+  assert.equal(rowsOf(db)[0].status, "merged");
+});
+
+test("CB2b-5. wiring: the Supervisor proposes from the pending row, the kernel executes through MergeRpc, the tick runs the step", () => {
+  const sup = read("workers/ai-kernel/src/supervisor.ts");
+  assert.match(sup, /FROM council_allowlist_changes WHERE status = 'pending'/);
+  assert.match(sup, /proposeConsensus\(\{ action: "merge_council_allowlist", target: row\.change_id, params: \{ base_sha: row\.base_sha, head_sha: row\.head_sha \} \}\)/);
+  const k = read("workers/ai-kernel/src/consensus.ts");
+  assert.match(k, /env\.FORGE_MERGE\.mergeCouncilAllowlist\(proposalId, decisionId, p\.target, p\.params\)/);
+  assert.match(read("workers/forge/src/worker.ts"), /async mergeCouncilAllowlist\(/);
+  assert.match(read("workers/forge/src/tick.ts"), /await step\("council_allowlist", \(\) => councilAllowlistTick\(env as never, nowMs\(\)\)\);/);
+  const src = read("workers/forge/src/council-allowlist.ts");
+  assert.ok(!/proposeConsensus|consensus_proposals \(/.test(src), "the Forge never proposes");
+});
+
+test("CB2b-6. the record: migration 0093 is additive; ADR-0014 §13, manifest C5 and the SSOT document the gate", () => {
+  const sql = read("workers/control-plane-migrations/0093_council_allowlist_changes.sql");
+  assert.ok(!/\b(DROP|DELETE|UPDATE|ALTER)\b/.test(sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")), "additive only");
+  assert.ok(read("architecture/adr/0014-evolution-loop.md").includes("`merge_council_allowlist`"));
+  const c5 = JSON.parse(read("architecture/adr/progress/0014.json")).phases.find((p: any) => p.id === "C5");
+  assert.deepEqual([c5.evidence.kind, c5.evidence.event_type], ["audit_event", "forge.council_allowlist_merged"]);
+  const ssot = read("docs/SSOT.md");
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council allowlist gate, 2026-11-28 /);
+  assert.ok(ssot.includes("- **Council allowlist gate** (CB2b, 2026-11-28"));
 });

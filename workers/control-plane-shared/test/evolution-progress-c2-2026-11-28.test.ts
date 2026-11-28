@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, migratedDb, req, signAccessJwt } from "./harness.ts";
+import { APPROVER_EMAIL, APPROVER_JWT, CI_CLIENT_ID, CI_JWT, OPERATOR_EMAIL, OPERATOR_JWT, baseEnv, call, lastReviewedRecord, migratedDb, req, signAccessJwt } from "./harness.ts";
 import kernel from "../../ai-kernel/src/index.ts";
 import { FRESH_MS, intakeCouncil, triageCouncilTask } from "../../ai-kernel/src/evolution-intake.ts";
 import {
@@ -289,7 +289,8 @@ test("EP9. an external repository without a worker still waits unassigned (adr_0
 test("EP10. migration 0092 is additive (three nullable columns and an index), the next number; the kernel lists the route", async () => {
   const dir = new URL("../../control-plane-migrations/", import.meta.url);
   const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
-  assert.equal(files.at(-1), "0092_evolution_external_progress.sql");
+  // The next free number on 2026-11-28 (later migrations follow it: 0093 since CB2b).
+  assert.equal(files[files.indexOf("0091_model_router_systems.sql") + 1], "0092_evolution_external_progress.sql");
   const sql = readFileSync(new URL("0092_evolution_external_progress.sql", dir), "utf8");
   assert.equal(destructiveMigration(sql), false);
   const code = sql.split("\n").map((l) => l.split("--")[0]).join("\n");
@@ -313,7 +314,7 @@ test("EP11. the record: ADR-0014 §12 cites the owner, the 0014 manifest lists C
   assert.deepEqual([c3.evidence.kind, c3.evidence.event_type], ["audit_event", PROGRESS_EVENT]);
   assert.ok(c3.built.includes("workers/ai-kernel/src/evolution-progress.ts"));
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?external intent progress, 2026-11-28 \(owner: "Ya Kerjakan"/);
+  assert.match(lastReviewedRecord(), /(?:\(|; )external intent progress, 2026-11-28 \(owner: "Ya Kerjakan"/, "in line 5 or, once rotated, in docs/ssot-history");
   assert.ok(ssot.includes("- **External intent progress** (owner, 2026-11-28") && ssot.includes("`EVOLUTION_PROGRESS_IDENTITIES`"));
 });
 

@@ -31,7 +31,7 @@ export const isAutonomyGroup = (v: unknown): v is AutonomyGroup => typeof v === 
 /** Every action of CONSENSUS_ACTIONS is in exactly one group (a test pins it); a trading action is always "trading". */
 export const GROUP_ACTIONS: Readonly<Record<Exclude<AutonomyGroup, "trading">, readonly string[]>> = {
   deploys: ["deploy_commit", "redeploy_desired_version", "deploy_destructive_migration"],
-  merges: ["merge_change", "merge_owner_change"],
+  merges: ["merge_change", "merge_owner_change", "merge_council_allowlist"],
   recovery: ["rollback_worker_version", "observe_drift"],
   registry: ["set_desired_version", "registry_disable_service", "registry_enable_service", "retire_worker"],
   agents: ["suspend_agent", "resume_agent", "retire_agent", "register_agent", "update_agent_capabilities", "register_engine", "retire_engine", "register_privileged_agent", "update_privileged_agent_capabilities", "admit_voter", "register_principal"],

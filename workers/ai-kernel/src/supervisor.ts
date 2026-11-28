@@ -741,6 +741,33 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
     }
   }
 
+  // CB2b (2026-11-28, ADR-0014 §13): a council allowlist change the Forge recorded as pending (council_allowlist_changes,
+  // migration 0093) is proposed as merge_council_allowlist, the owner's click, one per cycle, once per change while a
+  // proposal for it is open or was decided in the last 24 hours. The Forge never proposes; it only writes the row.
+  if (env.FORGE_MERGE && trigger !== "operator") {
+    try {
+      const row = await env.DB.prepare("SELECT change_id, base_sha, head_sha FROM council_allowlist_changes WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1")
+        .first<{ change_id: string; base_sha: string; head_sha: string }>();
+      if (row) {
+        const seen = await env.DB.prepare(
+          `SELECT 1 AS x FROM consensus_proposals WHERE action = 'merge_council_allowlist' AND target = ?
+             AND (status IN ('pending_owner', 'executing') OR created_at >= ?) LIMIT 1`,
+        ).bind(row.change_id, new Date(now - OWNER_DECISION_WINDOW_MS).toISOString()).first();
+        if (!seen) {
+          const r = await proposeConsensus({ action: "merge_council_allowlist", target: row.change_id, params: { base_sha: row.base_sha, head_sha: row.head_sha } });
+          if (r) {
+            report.actions.push(r);
+            report.findings.push({ kind: "council_allowlist", service_id: row.change_id, action: "consensus.propose", outcome: r.outcome });
+          }
+        }
+      }
+    } catch (err) {
+      if (!/no such table/i.test(String((err as Error)?.message ?? err))) {
+        report.findings.push({ kind: "council_allowlist", action: "none", why: `council allowlist proposals unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
+      }
+    }
+  }
+
   // HAIC H2 (owner 2026-11-18: "Konsensus rutin"): a policy_parameter typed proposal the owner confirmed is proposed to
   // consensus as set_policy_parameter, one per cycle; the owner's confirmation was the click. The proposal records the
   // consensus proposal id, or why it failed (a full rate window leaves it waiting for the next cycle).

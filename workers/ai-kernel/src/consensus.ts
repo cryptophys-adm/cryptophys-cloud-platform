@@ -124,6 +124,8 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
     recent_same: same?.n ?? 0,
     // G3b: a merge vote reads the change request's state as the Forge computes it; unreadable is null (every voter rejects).
     ...(MERGE_ACTIONS.has(action) ? { change: await mergeEvidence(env, target) } : {}),
+    // CB2b: a council allowlist vote reads the pending change and council main as the Forge sees them; unreadable is null.
+    ...(action === "merge_council_allowlist" ? { council_allowlist: await allowlistEvidence(env, target) } : {}),
   };
 }
 
@@ -131,6 +133,11 @@ export async function gatherEvidence(env: SyscallEnv, action: string, target: st
 function capabilitiesOf(json: string | null | undefined): string[] | undefined {
   if (typeof json !== "string") return undefined;
   try { const v = JSON.parse(json); return Array.isArray(v) && v.every((c) => typeof c === "string") ? v : undefined; } catch { return undefined; }
+}
+
+async function allowlistEvidence(env: SyscallEnv, changeId: string): Promise<Evidence["council_allowlist"]> {
+  if (!env.FORGE_MERGE?.councilAllowlistState) return null;
+  try { return await env.FORGE_MERGE.councilAllowlistState(changeId); } catch { return null; }
 }
 
 async function mergeEvidence(env: SyscallEnv, crId: string): Promise<Evidence["change"]> {
@@ -280,6 +287,7 @@ export async function propose(env: SyscallEnv, proposer: string, decisionId: str
     agents_enabled: evidence.agents_enabled, audit_valid: evidence.audit_valid, critical_reports_24h: evidence.critical_reports_24h,
     target_service: evidence.services[target] as unknown as JsonObject ?? null, target_registry: evidence.registry[target] as unknown as JsonObject ?? null,
     ...(evidence.change !== undefined ? { change: evidence.change as unknown as JsonObject } : {}),
+    ...(evidence.council_allowlist !== undefined ? { council_allowlist: evidence.council_allowlist as unknown as JsonObject } : {}),
     policy_reason: policy?.reason ?? "policy_unavailable",
     votes_via: { rpc: votes.filter((v) => v.via === "rpc").length, kernel: votes.filter((v) => v.via === "kernel").length, unreachable: votes.filter((v) => v.via === "unreachable").length },
   };
@@ -359,7 +367,7 @@ export async function getProposal(env: SyscallEnv, id: string): Promise<JsonObje
  * they need credentials no Worker holds, or already have a direct approver control.
  */
 export const OWNER_DECISION_WINDOW_MS = 24 * 3_600_000;
-export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", "deploy_destructive_migration", ...CRITICAL_REGISTRATIONS]);
+export const PHASE4_EXECUTABLE = new Set(["register_principal", "retire_worker", "retire_agent", "change_access", "amend_constitution", "merge_owner_change", "merge_council_allowlist", "deploy_destructive_migration", ...CRITICAL_REGISTRATIONS]);
 
 export class OwnerDecisionError extends Error {
   readonly status: number;
@@ -390,6 +398,10 @@ async function executeCritical(env: SyscallEnv, proposalId: string, decisionId: 
   if (p.action === "merge_owner_change") {
     if (!env.FORGE_MERGE) throw new Error("forge_merge_binding_missing");
     return await env.FORGE_MERGE.mergeForConsensus(proposalId, decisionId, p.target, p.params);
+  }
+  if (p.action === "merge_council_allowlist") {
+    if (!env.FORGE_MERGE?.mergeCouncilAllowlist) throw new Error("forge_merge_binding_missing");
+    return await env.FORGE_MERGE.mergeCouncilAllowlist(proposalId, decisionId, p.target, p.params);
   }
   if (p.action === "retire_agent") {
     return await retireAgent(env as never, p.target, `owner:${approver} via consensus:${proposalId}`, String(p.params.reason ?? `consensus ${proposalId}`).slice(0, 200));

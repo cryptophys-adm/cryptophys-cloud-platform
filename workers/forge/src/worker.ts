@@ -15,6 +15,7 @@ import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
 import { proposeEvolution, readCode, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
 import { readDocs } from "./docs-index.ts";
+import { councilAllowlistState, mergeCouncilAllowlist, type CouncilAllowlistEvidence } from "./council-allowlist.ts";
 import { councilList, councilReadFile, type ListAnswer, type ReadAnswer } from "./council-read.ts";
 import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
@@ -67,6 +68,13 @@ export class MergeRpc extends WorkerEntrypoint<Env> {
   }
   async mergeForConsensus(proposalId: string, decisionId: string, crId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     return mergeForConsensus(this.env as never, String(proposalId), String(decisionId), String(crId), params && typeof params === "object" ? params : {});
+  }
+  /** CB2b: a merge_council_allowlist vote's evidence, and its executor after the owner's click (CAS on council main). */
+  async councilAllowlistState(changeId: string): Promise<CouncilAllowlistEvidence | null> {
+    return councilAllowlistState(this.env as never, String(changeId));
+  }
+  async mergeCouncilAllowlist(proposalId: string, decisionId: string, changeId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return mergeCouncilAllowlist(this.env as never, String(proposalId), String(decisionId), String(changeId), params && typeof params === "object" ? params : {});
   }
 }
 

@@ -29,6 +29,7 @@ import { gitBackupVerifyTick, type VerifyBucket } from "./bundle-verify.ts";
 import { crSourcesTick } from "./transfer.ts";
 import { githubMirrorTick } from "./github-mirror.ts";
 import { councilSyncTick } from "./council-sync.ts";
+import { councilAllowlistTick } from "./council-allowlist.ts";
 import { mergeSpikeUntilProven } from "./merge.ts";
 
 export const CHECK_BUDGET_MS = 120_000;
@@ -128,6 +129,9 @@ export async function forgeTick(env: TickEnv, repoName: string, deps: ((commit: 
   // CB1 (owner 2026-11-28: "sementara B dulu", ADR-0014 §13): the council ledger into the Forge's data repository
   // `council` (council-sync.ts; pinned to that repository, every commit checked before main moves).
   if (env.ARTIFACTS) await step("council_sync", () => councilSyncTick(env as never, nowMs()));
+  // CB2b: xauusd's council_owned_keys differing from council main's allowlist becomes a branch and a pending row the
+  // Supervisor proposes as merge_council_allowlist (the owner's click); main never moves here.
+  if (env.ARTIFACTS && env.EXT_ORGANISM_XAUUSD) await step("council_allowlist", () => councilAllowlistTick(env as never, nowMs()));
   // Owner 2026-11-12: the account's Workers Builds minutes against the free-tier budget (hourly; read only).
   if (env.CF_BUILDS_API_TOKEN) await step("build_usage", () => buildUsageTick(env, nowMs()));
   if (env.ARTIFACTS) {

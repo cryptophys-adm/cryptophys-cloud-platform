@@ -270,3 +270,41 @@ export function overlayText(entries: OverlayEntry[]): string {
   const rows = sorted.map((e) => ({ key: e.key, value: e.value, from: e.from, session_id: e.session_id, proposal_id: e.proposal_id, state: e.state, since: e.since, at: e.at, ...(e.reason ? { reason: e.reason } : {}) }));
   return `${JSON.stringify({ schema: COUNCIL_POLICY_SCHEMA, entries: rows }, null, 2)}\n`;
 }
+
+// ---------------------------------------------------------------- CB2b: the allowlist from xauusd's DNA
+
+/** The allowlist file's text for these entries: keys sorted, stable key order, a final newline. */
+export function allowlistText(a: Allowlist): string {
+  const keys: Record<string, AllowlistEntry> = {};
+  for (const k of [...a.keys()].sort()) {
+    const e = a.get(k)!;
+    keys[k] = { type: e.type, ...(e.min !== undefined ? { min: e.min } : {}), ...(e.max !== undefined ? { max: e.max } : {}), ...(e.enum ? { enum: e.enum } : {}) };
+  }
+  return `${JSON.stringify({ schema: COUNCIL_ALLOWLIST_SCHEMA, keys }, null, 2)}\n`;
+}
+
+/**
+ * xauusd's council_owned_keys block (its organism.json, read through OrganismDna.dna()) as an allowlist: the same
+ * rules as the file (typed, bounded, the denylist); a key that fails is left out and named. Null: no block.
+ */
+export function allowlistFromDna(dna: unknown): { allowlist: Allowlist; problems: string[] } | null {
+  const block = isObj(dna) ? dna.council_owned_keys : undefined;
+  if (!isObj(block)) return null;
+  const parsed = parseAllowlist(JSON.stringify({ schema: COUNCIL_ALLOWLIST_SCHEMA, keys: block }));
+  return { allowlist: parsed.allowlist ?? new Map(), problems: parsed.problems };
+}
+
+export interface AllowlistSummary { added: string[]; removed: string[]; changed: string[]; keys: Record<string, { type: string; min?: number; max?: number; enum_size?: number }> }
+/** What a change does, by key and bounds only (never a value from free text: an enum is its size). */
+export function allowlistSummary(from: Allowlist | null, to: Allowlist): AllowlistSummary {
+  const before = from ?? new Map<string, AllowlistEntry>();
+  const same = (a: AllowlistEntry, b: AllowlistEntry) => JSON.stringify(a) === JSON.stringify(b);
+  const keys: AllowlistSummary["keys"] = {};
+  for (const [k, e] of [...to].sort(([a], [b]) => (a < b ? -1 : 1))) keys[k] = { type: e.type, ...(e.min !== undefined ? { min: e.min } : {}), ...(e.max !== undefined ? { max: e.max } : {}), ...(e.enum ? { enum_size: e.enum.length } : {}) };
+  return {
+    added: [...to.keys()].filter((k) => !before.has(k)).sort(),
+    removed: [...before.keys()].filter((k) => !to.has(k)).sort(),
+    changed: [...to.keys()].filter((k) => before.has(k) && !same(before.get(k)!, to.get(k)!)).sort(),
+    keys,
+  };
+}

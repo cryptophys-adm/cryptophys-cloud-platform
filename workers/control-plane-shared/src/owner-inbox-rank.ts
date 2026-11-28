@@ -35,6 +35,8 @@ const k = (urgency: Urgency, ...blocks: Block[]): Kind => ({ urgency, blocks });
  */
 export const CONSENSUS_KINDS: Readonly<Record<string, Kind>> = {
   merge_owner_change: k("high", "merges", "deploys"),
+  // CB2b: the council repository's allowlist; nothing on the platform waits on it (xauusd's council settings do).
+  merge_council_allowlist: k("normal"),
   change_access: k("high", "cutover_gate", "deploys"),
   retire_worker: k("high", "cutover_gate", "deploys"),
   deploy_destructive_migration: k("high", "cutover_gate", "deploys"),
@@ -88,7 +90,7 @@ export const AUTONOMY_RAISE_KIND = k("low");
 
 /** Known reversibility of a critical action once executed (null: not stated; the UI shows "—"). */
 const REVERSIBLE: Readonly<Record<string, boolean>> = {
-  merge_owner_change: true, change_access: true, amend_constitution: true, agents_enable: true, admit_voter: true,
+  merge_owner_change: true, merge_council_allowlist: true, change_access: true, amend_constitution: true, agents_enable: true, admit_voter: true,
   register_privileged_agent: true, register_principal: true,
   // Review 2026-11-22: a privileged capability the update removes cannot be given back by any consensus action.
   update_privileged_agent_capabilities: false,
