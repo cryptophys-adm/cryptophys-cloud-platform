@@ -587,3 +587,60 @@ test("CB2b-6. the record: migration 0093 is additive; ADR-0014 §13, manifest C5
   assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council allowlist gate, 2026-11-28 /);
   assert.ok(ssot.includes("- **Council allowlist gate** (CB2b, 2026-11-28"));
 });
+
+// ---------------------------------------------------------------- CB3b (2026-11-28): the session record
+
+test("CB3b-1. xauusd's awaiting_owner report becomes ledger/<topic>/<session>/session.json: words only, option knobs by name, never a value", async () => {
+  const { sessionOf } = await import("../../forge/src/council-sync.ts");
+  const db = withModerator(migratedDb());
+  const body = (schema: string, extra: Record<string, unknown> = {}) => ({
+    schema, session_id: "cfc_mx01aa_sess01", topic: "free:evaluasi-strategy", question: "Evaluasi strategy",
+    summary: "Members disagree on the volatility filter.", participants: ["risk", "trend", "flow"],
+    options: [
+      { option_id: "atr", title: "Add a volatility filter", kind: "repository_task", spec: "x" },
+      { option_id: "conf", title: "Raise the confidence bar", kind: "policy_parameter", knob: KNOB, value: 0.5 },
+      { option_id: "no_change", title: "No change", kind: "no_change" },
+    ], ...extra,
+  });
+  report(db, body("council_decision.v1"), NOW - 30 * 60_000);
+  const s = (await sessionOf(db as never, "cfc_mx01aa_sess01"))!;
+  assert.equal(s.path, "ledger/free:evaluasi-strategy/cfc_mx01aa_sess01/session.json");
+  const f = JSON.parse(s.text);
+  assert.deepEqual([f.schema, f.question, f.summary, f.participants], ["council_session.v1", "Evaluasi strategy", "Members disagree on the volatility filter.", ["risk", "trend", "flow"]]);
+  assert.deepEqual(f.options, [
+    { option_id: "atr", title: "Add a volatility filter", kind: "repository_task", knob: null },
+    { option_id: "conf", title: "Raise the confidence bar", kind: "policy_parameter", knob: KNOB },
+    { option_id: "no_change", title: "No change", kind: "no_change", knob: null },
+  ]);
+  assert.ok(!s.text.includes("0.5") && !s.text.includes("\"spec\""), "no value, no spec");
+  assert.deepEqual(checkCouncilCommit(new Map([[s.path, s.text]])), []);
+  // The renamed schema (council_options.v1) is read too, the newest report wins; a price-like summary is withheld.
+  report(db, body("council_options.v1", { summary: "Members want entries below 4095" }), NOW - 10 * 60_000);
+  const s2 = JSON.parse((await sessionOf(db as never, "cfc_mx01aa_sess01"))!.text);
+  assert.equal(s2.summary, null);
+  // The sync writes it next to the session's proposals.
+  const b = await binding(null);
+  const g = gitServer();
+  const r = await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW, g.fetchImpl);
+  assert.equal(r.outcome, "written", JSON.stringify(r));
+  assert.deepEqual(events(db, SYNC_EVENT)[0].payload.files, ["ledger/free:evaluasi-strategy/cfc_mx01aa_sess01/session.json"]);
+});
+
+test("CB3b-2. the session file's check: its schema, the path, no value, no price; proposal id \"session\" is reserved", async () => {
+  const { sessionProblems } = await import("../src/council-repo.ts");
+  const path = "ledger/t1/s1/session.json";
+  const ok = { schema: "council_session.v1", session_id: "s1", topic: "t1", question: null, summary: null, participants: [], options: [{ option_id: "a", title: "A", kind: "no_change", knob: null }], at: "2026-11-28T00:00:00.000Z" };
+  assert.deepEqual(sessionProblems(ok, path), []);
+  for (const [v, re] of [
+    [{ ...ok, options: [{ ...ok.options[0], value: 1 }] }, /unknown keys/],
+    [{ ...ok, summary: "below 4095" }, /price-like/],
+    [{ ...ok, topic: "t2" }, /path does not match/],
+    [{ ...ok, schema: "council_ledger.v1" }, /schema/],
+  ] as const) assert.match(sessionProblems(v, path).join(" "), re);
+  assert.match(read("workers/forge/src/council-sync.ts"), /if \(a\.proposal_id === "session"\) \{ skipped\.push/);
+});
+
+test("CB3b-3. the record: the SSOT and ADR-0014 §13 name the session file", () => {
+  assert.ok(read("docs/SSOT.md").includes("`council_session.v1`, CB3b"));
+  assert.ok(read("architecture/adr/0014-evolution-loop.md").includes("one `session.json` per council session"));
+});

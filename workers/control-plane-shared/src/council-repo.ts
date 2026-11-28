@@ -72,7 +72,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof
 
 /** Every forbidden key and every string with a price-like number or a secret, at any depth (path-named problems). */
 /** Identifier fields: their shape is checked by the schema (an id or a commit may hold digit runs that are not prices). */
-const ID_KEYS = new Set(["proposal_id", "session_id", "intent_id", "sha", "pr_url", "at", "since"]);
+const ID_KEYS = new Set(["proposal_id", "session_id", "intent_id", "sha", "pr_url", "at", "since", "option_id"]);
 export function contentProblems(v: unknown, at = "$", depth = 0, key = ""): string[] {
   if (depth > 8) return [`${at}: too deep`];
   if (typeof v === "string") {
@@ -147,7 +147,7 @@ export function checkCouncilCommit(files: Map<string, string>, allowlist: Allowl
     if (new TextEncoder().encode(text).length > MAX_FILE_BYTES) { p.push(`${path}: over ${MAX_FILE_BYTES} bytes`); continue; }
     let v: unknown;
     try { v = JSON.parse(text); } catch { p.push(`${path}: not JSON`); continue; }
-    p.push(...ledgerProblems(v, path));
+    p.push(...(path.endsWith(`/${SESSION_FILE}`) ? sessionProblems(v, path) : ledgerProblems(v, path)));
   }
   return p;
 }
@@ -307,4 +307,50 @@ export function allowlistSummary(from: Allowlist | null, to: Allowlist): Allowli
     changed: [...to.keys()].filter((k) => before.has(k) && !same(before.get(k)!, to.get(k)!)).sort(),
     keys,
   };
+}
+
+// ---------------------------------------------------------------- CB3b: the session record
+
+/**
+ * ledger/<topic>/<session_id>/session.json (council_session.v1; the coordinator, 2026-11-28: the ledger consumes
+ * xauusd's awaiting_owner report, council_decision.v1 today and council_options.v1 after its rename): the topic, the
+ * question and summary (words only, else withheld), the seats, and each option's id, title, kind and knob name (never
+ * a value). "session" is never a proposal id.
+ */
+export const SESSION_FILE = "session.json";
+export const COUNCIL_SESSION_SCHEMA = "council_session.v1";
+export const SESSION_REPORT_SCHEMAS = Object.freeze(["council_decision.v1", "council_options.v1"] as const);
+export const MAX_OPTIONS = 8;
+export interface SessionOption { option_id: string; title: string; kind: string; knob: string | null }
+export interface SessionFile { schema: typeof COUNCIL_SESSION_SCHEMA; session_id: string; topic: string | null; question: string | null; summary: string | null; participants: string[]; options: SessionOption[]; at: string }
+
+export function sessionPath(topic: string | null, session: string): string | null {
+  const segs = [topic || NO_TOPIC, session];
+  if (!segs.every((x) => SEGMENT.test(x))) return null;
+  return `ledger/${segs[0]}/${segs[1]}/${SESSION_FILE}`;
+}
+
+export function sessionProblems(v: unknown, path: string): string[] {
+  if (!isObj(v)) return [`${path}: not an object`];
+  const p: string[] = [];
+  for (const k of Object.keys(v)) if (!["schema", "session_id", "topic", "question", "summary", "participants", "options", "at"].includes(k)) p.push(`${path}: unknown key ${k}`);
+  if (v.schema !== COUNCIL_SESSION_SCHEMA) p.push(`${path}: schema is not ${COUNCIL_SESSION_SCHEMA}`);
+  if (typeof v.session_id !== "string" || sessionPath(typeof v.topic === "string" ? v.topic : null, v.session_id) !== path) p.push(`${path}: the path does not match topic/session_id`);
+  for (const k of ["question", "summary"]) if (v[k] !== null && (typeof v[k] !== "string" || !(v[k] as string).length || (v[k] as string).length > 1000)) p.push(`${path}: ${k} is a text of 1 to 1000 or null`);
+  if (!Array.isArray(v.participants) || v.participants.length > 12 || !v.participants.every((x) => typeof x === "string" && SEGMENT.test(x))) p.push(`${path}: participants are up to 12 seat ids`);
+  if (!Array.isArray(v.options) || v.options.length > MAX_OPTIONS) p.push(`${path}: options are up to ${MAX_OPTIONS}`);
+  else for (const [i, o] of v.options.entries()) {
+    if (!isObj(o) || Object.keys(o).some((k) => !["option_id", "title", "kind", "knob"].includes(k))) { p.push(`${path}: options[${i}] has unknown keys`); continue; }
+    if (typeof o.option_id !== "string" || !SEGMENT.test(o.option_id)) p.push(`${path}: options[${i}].option_id`);
+    if (typeof o.title !== "string" || !o.title || o.title.length > 200) p.push(`${path}: options[${i}].title`);
+    if (!["policy_parameter", "repository_task", "no_change"].includes(String(o.kind))) p.push(`${path}: options[${i}].kind`);
+    if (o.knob !== null && (typeof o.knob !== "string" || !KEY_SHAPE.test(o.knob))) p.push(`${path}: options[${i}].knob`);
+  }
+  if (typeof v.at !== "string" || !ISO.test(v.at)) p.push(`${path}: at is an ISO time`);
+  return [...p, ...contentProblems(v).map((x) => `${path}: ${x}`)];
+}
+
+export function sessionText(f: SessionFile): string {
+  const o = { schema: f.schema, session_id: f.session_id, topic: f.topic, question: f.question, summary: f.summary, participants: f.participants, options: f.options.map((x) => ({ option_id: x.option_id, title: x.title, kind: x.kind, knob: x.knob })), at: f.at };
+  return `${JSON.stringify(o, null, 2)}\n`;
 }

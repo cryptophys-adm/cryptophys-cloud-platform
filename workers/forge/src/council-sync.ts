@@ -26,6 +26,7 @@ import {
   ALLOWLIST_PATH, COUNCIL_LEDGER_SCHEMA, COUNCIL_POLICY_VERDICT_SCHEMA, COUNCIL_REPO, LEDGER_STATES, MAX_FILES_PER_COMMIT, MAX_HISTORY,
   MAX_OVERLAY_ENTRIES, OVERLAY_PATH, OVERLAY_SHADOW_MS, checkCouncilCommit, entryProblems, ledgerPath, ledgerText, overlayText,
   parseAllowlist, verdictProblems, type LedgerFile, type LedgerStep, type OverlayEntry,
+  COUNCIL_SESSION_SCHEMA, KEY_SHAPE, MAX_OPTIONS, SEGMENT, SESSION_REPORT_SCHEMAS, sessionPath, sessionText,
 } from "../../control-plane-shared/src/council-repo.ts";
 import type { ArtifactsReader, ArtifactsTreeEntry } from "./checks.ts";
 import { fastForward, refHead, trustedRemoteFor, ZERO_SHA, type Fetch, type MergeRepo } from "./merge.ts";
@@ -174,10 +175,36 @@ async function touched(db: D1Database, after: { at: string; id: string }): Promi
        WHERE a.host_worker IN (${q}) AND r.kind = 'xauusd_digest' AND json_extract(r.body_json, '$.schema') = 'typed_proposal.v1' AND r.created_at >= ?
        UNION ALL
        SELECT proposal_id, created_at AS at FROM evolution_updates_v2 WHERE origin = ? AND created_at >= ?
+       UNION ALL
+       SELECT 'session:' || json_extract(r.body_json, '$.session_id') AS proposal_id, r.created_at AS at FROM agent_reports r JOIN agents a ON a.agent_id = r.agent_id
+       WHERE a.host_worker IN (${q}) AND r.kind = 'xauusd_digest' AND json_extract(r.body_json, '$.schema') IN (${SESSION_REPORT_SCHEMAS.map(() => "?").join(", ")}) AND r.created_at >= ?
      ) WHERE proposal_id IS NOT NULL GROUP BY proposal_id
      HAVING last_at > ? OR (last_at = ? AND proposal_id > ?)
      ORDER BY last_at, proposal_id LIMIT ${BATCH}`,
-  ).bind(...COUNCIL_HOSTS, after.at, COUNCIL_ORIGIN, after.at, after.at, after.at, after.id).all<Activity>()).results;
+  ).bind(...COUNCIL_HOSTS, after.at, COUNCIL_ORIGIN, after.at, ...COUNCIL_HOSTS, ...SESSION_REPORT_SCHEMAS, after.at, after.at, after.at, after.id).all<Activity>()).results;
+}
+
+/** CB3b: a council session's record from its latest awaiting_owner report; null when it has no safe path. */
+export async function sessionOf(db: D1Database, sessionId: string): Promise<{ path: string; text: string } | null> {
+  if (!ID.test(sessionId) || !COUNCIL_HOSTS.length) return null;
+  const q = COUNCIL_HOSTS.map(() => "?").join(", ");
+  const r = await db.prepare(
+    `SELECT r.body_json, r.created_at FROM agent_reports r JOIN agents a ON a.agent_id = r.agent_id
+     WHERE a.host_worker IN (${q}) AND r.kind = 'xauusd_digest' AND json_extract(r.body_json, '$.schema') IN (${SESSION_REPORT_SCHEMAS.map(() => "?").join(", ")})
+       AND json_extract(r.body_json, '$.session_id') = ? ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1`,
+  ).bind(...COUNCIL_HOSTS, ...SESSION_REPORT_SCHEMAS, sessionId).first<{ body_json: string; created_at: string }>();
+  if (!r) return null;
+  const b = parse(r.body_json);
+  const topic = text(b.topic, 100);
+  const path = sessionPath(topic, sessionId);
+  if (!path) return null;
+  const options = (Array.isArray(b.options) ? b.options : []).slice(0, MAX_OPTIONS).map((o) => obj(o)).filter((o) => typeof o.option_id === "string" && ID.test(o.option_id)).map((o) => ({
+    option_id: String(o.option_id), title: words(o.title, 200) ?? "(title withheld: not words only)",
+    kind: ["policy_parameter", "repository_task", "no_change"].includes(String(o.kind)) ? String(o.kind) : "repository_task",
+    knob: typeof o.knob === "string" && KEY_SHAPE.test(o.knob) ? o.knob : null,
+  }));
+  const participants = (Array.isArray(b.participants) ? b.participants : []).filter((x): x is string => typeof x === "string" && SEGMENT.test(x)).slice(0, 12);
+  return { path, text: sessionText({ schema: COUNCIL_SESSION_SCHEMA, session_id: sessionId, topic, question: words(b.question, 1000), summary: words(b.summary, 1000), participants, options, at: r.created_at }) };
 }
 
 /** One proposal's ledger file, rebuilt whole from D1; null when the proposal has no safe path. */
@@ -354,6 +381,16 @@ export async function councilSyncTick(env: CouncilEnv, nowMs = Date.now(), fetch
     const skipped: string[] = [];
     const refused: Array<{ proposal_id: string; problems: string[] }> = [];
     for (const a of batch) {
+      if (a.proposal_id.startsWith("session:")) {
+        const sess = await sessionOf(env.DB, a.proposal_id.slice("session:".length));
+        if (!sess) { skipped.push(a.proposal_id); continue; }
+        if ((await readAt(repo, tree, sess.path)) === sess.text) continue;
+        const problems = checkCouncilCommit(new Map([[sess.path, sess.text]]));
+        if (problems.length) { refused.push({ proposal_id: a.proposal_id, problems: problems.slice(0, 10) }); continue; }
+        files.set(sess.path, sess.text);
+        continue;
+      }
+      if (a.proposal_id === "session") { skipped.push(a.proposal_id); continue; } // reserved for session.json
       const l = await ledgerOf(env.DB, a.proposal_id);
       if (!l) { skipped.push(a.proposal_id); continue; }
       const next = ledgerText(l.file);
