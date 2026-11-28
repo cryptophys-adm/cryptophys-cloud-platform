@@ -29,7 +29,18 @@ export interface FetchBinding {
  * CtaHealth): health() answers `{ ok, service, ... }`, never a version.
  */
 export interface ExternalHealthRpcBinding {
-  health(): Promise<{ ok?: unknown; service?: unknown } | null | undefined>;
+  health(): Promise<{ ok?: unknown; service?: unknown; version?: { tag?: unknown } } | null | undefined>;
+}
+
+/**
+ * desired_version option B (the coordinator, 2026-11-28): an external organ that deploys with `--tag <commit12>` reports
+ * that tag as `version.tag` in its health answer (HTTP /health JSON, or its health RPC). Only a 7 to 40 lowercase hex
+ * tag is read; anything else is no observable version, as before.
+ */
+export const EXTERNAL_TAG = /^[0-9a-f]{7,40}$/;
+export function externalVersionTag(body: unknown): string | null {
+  const tag = body && typeof body === "object" ? (body as { version?: { tag?: unknown } }).version?.tag : undefined;
+  return typeof tag === "string" && EXTERNAL_TAG.test(tag) ? tag : null;
 }
 
 export interface Env extends BaseEnv {
@@ -109,34 +120,36 @@ async function withTimeout<T>(work: Promise<T>): Promise<T> {
 
 /**
  * HTTP health of an external Worker. `/health` must return JSON `status: "ok"`; any other
- * path (a page without a health endpoint) must return 2xx. The version is not observable
- * from outside the Worker, so external services are health-managed only.
+ * path (a page without a health endpoint) must return 2xx. Since 2026-11-28 (option B) a /health body's
+ * `version.tag` (7 to 40 hex) is the observed version; without one the organ stays health-managed only.
  */
-async function probeHttp(binding: FetchBinding, path: string): Promise<Probe> {
+export async function probeHttp(binding: FetchBinding, path: string): Promise<Probe> {
   try {
     const res = await withTimeout(binding.fetch(`https://drift-probe.internal${path}`, { headers: { accept: "application/json" } }));
     let healthy = res.ok;
+    let version_tag: string | null = null;
     if (healthy && path === "/health") {
       const body = await res.json().catch(() => null) as { status?: unknown } | null;
       healthy = body?.status === "ok";
+      version_tag = healthy ? externalVersionTag(body) : null;
     } else {
       await res.body?.cancel();
     }
-    return { reachable: true, healthy, version_tag: null, error: healthy ? null : res.ok ? "health_check_failed" : `http_${res.status}` };
+    return { reachable: true, healthy, version_tag, error: healthy ? null : res.ok ? "health_check_failed" : `http_${res.status}` };
   } catch (err) {
     return { reachable: false, healthy: false, version_tag: null, error: String((err as Error)?.message) === "timeout" ? "timeout" : "fetch_failed" };
   }
 }
 
 /**
- * RPC health of an external Worker: healthy only when health() answers `ok: true` and names this service. The
- * version is not observable, so external services are health-managed only.
+ * RPC health of an external Worker: healthy only when health() answers `ok: true` and names this service. Since
+ * 2026-11-28 (option B) its `version.tag` (7 to 40 hex) is the observed version, when it reports one.
  */
-async function probeExternalRpc(binding: ExternalHealthRpcBinding, serviceId: string): Promise<Probe> {
+export async function probeExternalRpc(binding: ExternalHealthRpcBinding, serviceId: string): Promise<Probe> {
   try {
     const body = await withTimeout(binding.health());
     const healthy = body?.ok === true && body?.service === serviceId;
-    return { reachable: true, healthy, version_tag: null, error: healthy ? null : "health_check_failed" };
+    return { reachable: true, healthy, version_tag: healthy ? externalVersionTag(body) : null, error: healthy ? null : "health_check_failed" };
   } catch (err) {
     return { reachable: false, healthy: false, version_tag: null, error: String((err as Error)?.message) === "timeout" ? "timeout" : "rpc_failed" };
   }

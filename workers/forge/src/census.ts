@@ -105,8 +105,21 @@ export const EXTERNAL_DNA_TIMEOUT_MS = 5_000;
  * schema, is a finding and adds nothing; an organ or agent above the ceiling is a finding and is left out; an
  * organ may never replace one of main's. Returns the organs' origins, for the census summary.
  */
-export async function addExternalOrgans(genome: Genome, readers: ExternalDnaReader[], timeoutMs = EXTERNAL_DNA_TIMEOUT_MS): Promise<{ origins: Map<string, string>; findings: Finding[] }> {
-  const origins = new Map<string, string>(); const findings: Finding[] = [];
+/**
+ * desired_version option B (the coordinator, 2026-11-28): an external organ's DNA may declare the commit its own deploy
+ * shipped, `deploy_commit` (7 to 40 lowercase hex, written by that organ's deploy). The census keeps it with the organ;
+ * the Supervisor proposes set_desired_version only when it agrees with the organ's observed health version.tag.
+ */
+export const DEPLOY_COMMIT = /^[0-9a-f]{7,40}$/;
+export function deployCommitOf(raw: unknown, service: string): string | null {
+  const organs = raw && typeof raw === "object" ? (raw as { organs?: unknown }).organs : undefined;
+  if (!Array.isArray(organs)) return null;
+  const o = organs.find((x) => x && typeof x === "object" && (x as { service?: unknown }).service === service) as { deploy_commit?: unknown } | undefined;
+  return typeof o?.deploy_commit === "string" && DEPLOY_COMMIT.test(o.deploy_commit) ? o.deploy_commit : null;
+}
+
+export async function addExternalOrgans(genome: Genome, readers: ExternalDnaReader[], timeoutMs = EXTERNAL_DNA_TIMEOUT_MS): Promise<{ origins: Map<string, string>; findings: Finding[]; deployCommits: Map<string, string> }> {
+  const origins = new Map<string, string>(); const findings: Finding[] = []; const deployCommits = new Map<string, string>();
   for (const r of readers) {
     let raw: unknown;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -118,6 +131,8 @@ export async function addExternalOrgans(genome: Genome, readers: ExternalDnaRead
         if (genome.has(dna.service)) { findings.push({ kind: "external_organ_refused", subject: dna.service, detail: `${dna.service} is declared by main; ${r.origin.origin} cannot replace it` }); continue; }
         genome.set(dna.service, dna);
         origins.set(dna.service, r.origin.origin);
+        const commit = deployCommitOf(raw, dna.service);
+        if (commit) deployCommits.set(dna.service, commit);
       }
     } catch (e) {
       findings.push({ kind: "external_dna_unavailable", subject: r.origin.origin, detail: `${r.origin.origin} DNA not read (${String((e as Error)?.message ?? e).slice(0, 120)}); its organs are left out of this census` });
@@ -125,7 +140,7 @@ export async function addExternalOrgans(genome: Genome, readers: ExternalDnaRead
       if (timer) clearTimeout(timer);
     }
   }
-  return { origins, findings };
+  return { origins, findings, deployCommits };
 }
 
 /** A census of an unchanged head is retaken this often, so registrations by consensus show up in it. */
@@ -146,10 +161,12 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
   let findings: Finding[] = [];
   let genome: Genome = new Map();
   let origins = new Map<string, string>();
+  let deployCommits = new Map<string, string>();
   try {
     genome = (await readGenome(repo, head)).genome;
     const ext = await addExternalOrgans(genome, external);
     origins = ext.origins;
+    deployCommits = ext.deployCommits;
     findings = [...await compare(db, genome), ...ext.findings].sort((x, y) => (x.kind + x.subject).localeCompare(y.kind + y.subject));
     status = findings.length ? "changes" : "consistent";
   } catch (e) {
@@ -162,6 +179,7 @@ export async function censusTick(db: D1Database, repo: ArtifactsReader, nowMs = 
     agents: d.agents.map((a) => ({ id: a.id, display_name: a.display_name, capabilities: [...a.capabilities].sort(), tier_max: a.tier_max, voter: a.voter, ...(a.vote_binding ? { vote_binding: a.vote_binding } : {}), ...(a.schedule ? { schedule: { cron: a.schedule.cron } } : {}) })),
     engines: d.engines.map((e) => e.task),
     ...(origins.has(d.service) ? { origin: origins.get(d.service) } : {}),
+    ...(deployCommits.has(d.service) ? { deploy_commit: deployCommits.get(d.service) } : {}),
   }));
   const counts = { organs: dnas.length, agents: dnas.reduce((n, d) => n + d.agents.length, 0), engines: dnas.reduce((n, d) => n + d.engines.length, 0), voters: dnas.reduce((n, d) => n + d.agents.filter((a) => a.voter).length, 0) };
   const previous = await db.prepare("SELECT findings FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first<{ findings: string }>();

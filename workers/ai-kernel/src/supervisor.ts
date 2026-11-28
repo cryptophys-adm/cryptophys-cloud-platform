@@ -16,6 +16,7 @@ import { CAPABILITIES, OWNER_ONLY_STEP_ACTIONS, RECOVERY_STEP_ACTIONS, agentsEna
 import { recallContextForAgent, rememberOutcomeForAgent } from "./memory.ts";
 import { syscall, observeMetabolism, type SyscallEnv, type SyscallResult } from "./syscall.ts";
 import { OWNER_DECISION_WINDOW_MS, expireOwnerProposals } from "./consensus.ts";
+import { DESIRED_VERSION_COOLDOWN_MS, EXTERNAL_SERVICE_IDS, nextDesiredVersion, type CensusOrgan, type RegistryState } from "../../control-plane-shared/src/desired-version.ts";
 import { openCriticalReportRows } from "./owner-inbox.ts";
 import { latestCensusRow, latestCensusRows, newPrivilegedCapabilities, proposalFor, undeclaredEngineProven, undeclaredEnginePersistent, RETIRE_ENGINE_PERSIST_ROWS, type CensusRow } from "./organism.ts";
 import { POLICY_PARAMETERS, readPolicyParameter } from "../../control-plane-shared/src/policy-params.ts";
@@ -320,6 +321,12 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
   for (const s of obs.services) {
     const managed = !(s.reasons.length === 1 && s.reasons[0] === "desired_version_unset");
     if (!s.drifted || !s.persistent || !managed || s.service_id === SERVICE) continue;
+    // desired_version option B (2026-11-28): the platform never deploys an external organ. A version change of a healthy
+    // one is its own deploy; its desired version follows once its DNA deploy_commit agrees (below), with no recovery plan.
+    if (EXTERNAL_SERVICE_IDS.has(s.service_id) && s.reasons.every((r) => r === "version_mismatch" || r === "observed_version_unavailable")) {
+      report.findings.push({ kind: "drift", service_id: s.service_id, action: "none", why: "an external organ runs another version than recorded; its desired version follows its DNA deploy_commit (option B), no recovery plan" });
+      continue;
+    }
     if (onlyUntaggedVersion(s)) {
       report.findings.push({ kind: "drift", service_id: s.service_id, action: "none", why: "healthy; only the version tag is missing (e.g. a dashboard secret change); the next tagged deploy clears it" });
       continue;
@@ -765,6 +772,33 @@ export async function runCycle(env: KernelEnv, memory: Memory, trigger: "schedul
       if (!/no such table/i.test(String((err as Error)?.message ?? err))) {
         report.findings.push({ kind: "council_allowlist", action: "none", why: `council allowlist proposals unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
       }
+    }
+  }
+
+  // desired_version option B (the coordinator, 2026-11-28): an external organ whose DNA deploy_commit (the newest census)
+  // agrees with its observed health version.tag (service_registry.observed_version, from the Drift Detector) and whose
+  // desired_version differs is proposed as set_desired_version with the observed tag: one per cycle, one per organ per
+  // 6 hours. Two independent sources must agree; nothing is written by hand.
+  if (trigger !== "operator") {
+    try {
+      const census = await env.DB.prepare("SELECT genome FROM forge_organism_census ORDER BY taken_at DESC LIMIT 1").first<{ genome: string | null }>();
+      let genome: CensusOrgan[] = [];
+      try { const g = JSON.parse(census?.genome ?? "[]"); genome = Array.isArray(g) ? g : []; } catch { genome = []; }
+      if (genome.some((o) => typeof o?.deploy_commit === "string")) {
+        const registry = (await env.DB.prepare("SELECT service_id, status, desired_version, observed_version FROM service_registry").all<RegistryState>()).results ?? [];
+        const recent = new Set(((await env.DB.prepare("SELECT target FROM consensus_proposals WHERE action = 'set_desired_version' AND created_at >= ?")
+          .bind(new Date(now - DESIRED_VERSION_COOLDOWN_MS).toISOString()).all<{ target: string }>()).results ?? []).map((r) => r.target));
+        const next = nextDesiredVersion(genome, registry, recent);
+        if (next) {
+          const r = await proposeConsensus({ action: "set_desired_version", target: next.service, params: { version: next.version } });
+          if (r) {
+            report.actions.push(r);
+            report.findings.push({ kind: "desired_version", service_id: next.service, action: "consensus.propose", outcome: r.outcome });
+          }
+        }
+      }
+    } catch (err) {
+      report.findings.push({ kind: "desired_version", action: "none", why: `desired versions unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}` });
     }
   }
 
