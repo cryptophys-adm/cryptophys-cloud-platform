@@ -183,7 +183,8 @@ test("R5. council.decisions.read returns the caller origin's updates, oldest fir
   assert.equal(r1.origin, "xauusd");
   assert.equal(r1.updates.length, MAX_UPDATES);
   assert.deepEqual(Object.keys(r1.updates[0]).sort(), ["at", "proposal_id", "reason", "refs", "schema", "state"]);
-  assert.ok(r1.updates.every((u: any) => ["queued", "waiting_external"].includes(u.state) && typeof u.refs.intent_id === "string"));
+  // queued_external since Issue #327 (2026-11-28): an xauusd task is assigned to xauusd-worker.
+  assert.ok(r1.updates.every((u: any) => ["queued", "waiting_external", "queued_external"].includes(u.state) && typeof u.refs.intent_id === "string"));
   // The planted price must not appear as a value or a word. A bare substring check also matched random UUIDs
   // (intent_id, proposal_id) that happen to contain "2650", which failed canonical main 7cbc789 once.
   const r1Text = JSON.stringify(r1);

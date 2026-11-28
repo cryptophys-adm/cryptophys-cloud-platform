@@ -6,6 +6,7 @@
 // Before migration 0076 the view answers available: false and the switch reads "off".
 import type { D1Database } from "../../control-plane-shared/src/types.ts";
 import { AuditMutationConflictError, appendAuditEventWithMutation } from "../../control-plane-shared/src/audit.ts";
+import { nextActor } from "./evolution-progress.ts";
 
 export const EVOLVER_MODES = ["on", "off"] as const;
 export type EvolverMode = (typeof EVOLVER_MODES)[number];
@@ -34,10 +35,13 @@ export async function evolverMode(db: D1Database): Promise<EvolverControl> {
   return { mode: "off", updated_by: null, updated_at: null };
 }
 
-export async function evolutionView(db: D1Database): Promise<Record<string, unknown>> {
+// Issue #327 C2: each intent also carries assignee, expires_at and close_code (migration 0092), and next_actor and stale
+// from nextActor (evolution-progress.ts), so the Console renders them and never derives them itself.
+export async function evolutionView(db: D1Database, now = Date.now()): Promise<Record<string, unknown>> {
   try {
     const intents = await db.prepare(
-      `SELECT intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at
+      `SELECT intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at,
+         assignee, expires_at, close_code
        FROM evolution_intents_v2 ORDER BY created_at DESC, rowid DESC LIMIT ${LIST_LIMIT}`,
     ).all<Record<string, unknown>>();
     const evolutions = await db.prepare(
@@ -49,7 +53,10 @@ export async function evolutionView(db: D1Database): Promise<Record<string, unkn
       available: true,
       control: await evolverMode(db),
       counts: Object.fromEntries(counts.results.map((c) => [c.state, Number(c.n)])),
-      intents: intents.results.map(({ origin_json, evidence_refs_json, ...r }) => ({ ...r, origin: parse(origin_json, {}), evidence_refs: parse(evidence_refs_json, []) })),
+      intents: intents.results.map(({ origin_json, evidence_refs_json, ...r }) => ({
+        ...r, origin: parse(origin_json, {}), evidence_refs: parse(evidence_refs_json, []),
+        ...nextActor(r as { state: string; assignee: string | null; updated_at: string }, now),
+      })),
       evolutions: evolutions.results.map(({ files_json, refusals_json, ...r }) => ({ ...r, files: parse(files_json, []), refusals: parse(refusals_json, []) })),
     };
   } catch (err) {

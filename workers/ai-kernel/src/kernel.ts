@@ -34,6 +34,8 @@ export interface CouncilStub {
   storeTranscript(): Promise<unknown>;
 }
 export interface KernelHttpEnv extends KernelEnv {
+  /** Issue #327 C2: the Access service-token common names that may move an assigned external intent; empty: owner only. */
+  EVOLUTION_PROGRESS_IDENTITIES?: string;
   SUPERVISOR: SupervisorNamespace;
   SIGNAL_ANALYST?: SupervisorNamespace;
   AUDITOR?: SupervisorNamespace;

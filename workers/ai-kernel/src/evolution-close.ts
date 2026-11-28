@@ -72,14 +72,15 @@ export async function closeExternalIntent(db: D1Database, actor: string, intentI
       db,
       { event_type: CLOSE_EVENT, actor, subject: `intent:${intentId}`, outcome: "closed", payload: { intent_id: intentId, proposal_id, reason } },
       () => {
-        const close = db.prepare("UPDATE evolution_intents_v2 SET state = 'closed', state_reason = ?, updated_at = ? WHERE intent_id = ? AND state = 'waiting_external'")
+        // Issue #327: close_code owner_closed (migration 0092); expires_at cleared, a closed intent never expires.
+        const close = db.prepare("UPDATE evolution_intents_v2 SET state = 'closed', state_reason = ?, close_code = 'owner_closed', expires_at = NULL, updated_at = ? WHERE intent_id = ? AND state = 'waiting_external'")
           .bind(reason, at, intentId);
         if (!update_id) return close;
         // Only when the close above changed the intent: a lost race inserts no update, and the audit row then fails too.
         return [close, db.prepare(
           `INSERT INTO evolution_updates_v2 (update_id, intent_id, origin, proposal_id, state, reason, refs_json, created_at)
            SELECT ?, ?, ?, ?, 'closed', ?, ?, ? WHERE changes() = 1`,
-        ).bind(update_id, intentId, originName, proposal_id, reason, JSON.stringify({ intent_id: intentId }), at)];
+        ).bind(update_id, intentId, originName, proposal_id, reason, JSON.stringify({ intent_id: intentId, close_code: "owner_closed" }), at)];
       },
     );
   } catch (err) {

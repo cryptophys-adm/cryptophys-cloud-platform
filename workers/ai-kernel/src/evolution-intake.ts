@@ -8,6 +8,13 @@
 //   - kind repository_task, executor cryptophys, state handoff_pending or handed_off (xauusd #430), origin.side nexus, chosen_by an owner: valid;
 //   - the platform repository → queued; any other repository → waiting_external (owner 2026-11-17: "Tunggu ADR-0018
 //     X1/X2"); a missing title or spec, or a spec over SPEC_MAX bytes → rejected (invalid_spec);
+//   - ADR-0018 X1 amendment 2026-11-28 (Issue #327; owner: "Ya Kerjakan"): a repository with a worker in
+//     EXTERNAL_ASSIGNEES (xauusd → xauusd-worker) is queued_external: waiting_external with that assignee and an
+//     expires_at of now + 7 days (FRESH_MS); its return-path row says queued_external. The worker (or the owner) moves it
+//     with POST /v1/evolution/intents/{id}/progress (evolution-progress.ts); no Forge change request (X2 stays held);
+//   - chosen_by is an owner ("owner:<actor>"), or "council" (the council chose inside a topic the owner approved):
+//     then topic_approved_by is "owner:<actor>" and session_id names the owner-approved council session (the same id
+//     as origin.council when that is given); otherwise rejected (not_chosen_by_owner, topic_not_owner_approved);
 //   - any other kind or state (a policy_parameter is xauusd's own; a later state update) is not an intent: ignored.
 // Each council intent's state goes to evolution_updates_v2 (migration 0077), the return path that council.decisions.read serves (V3).
 // The body's price fields are never stored (the kernel drops them as signals.observe does).
@@ -31,6 +38,20 @@ export const HANDOFF_STATES: readonly string[] = Object.freeze(["handoff_pending
 export const PLATFORM_REPOS: readonly string[] = Object.freeze(["cryptophys/platform", "cryptophys-adm/cryptophys-cloud-platform"]);
 export const PLATFORM_REPO = "platform";
 export const SPEC_MAX = 8192;
+/** ADR-0018 X1 amendment 2026-11-28: the external repositories whose council tasks a worker of theirs builds. */
+export const EXTERNAL_ASSIGNEES: Readonly<Record<string, string>> = Object.freeze({ "cryptophys-adm/xauusd-ai-trading-assistant": "xauusd-worker" });
+/** An external intent with no progress for this long returns to the council (owner: "harus selalu segar"). */
+export const FRESH_MS = 7 * 86_400_000;
+export const QUEUED_EXTERNAL = "queued_external";
+/** The worker that builds a repository's council tasks, or null (nobody: the owner assigns or closes). */
+export function assigneeOf(repo: string): string | null {
+  const key = Object.keys(EXTERNAL_ASSIGNEES).find((k) => k.toLowerCase() === repo.toLowerCase());
+  return key ? EXTERNAL_ASSIGNEES[key] : null;
+}
+/** The repository a worker builds in (its progress refs must be there), or null. */
+export function repoOfAssignee(assignee: string): string | null {
+  return Object.entries(EXTERNAL_ASSIGNEES).find(([, a]) => a === assignee)?.[0] ?? null;
+}
 export const TITLE_MAX = 300;
 export const MAX_EVIDENCE_REFS = 12;
 /** Reports scanned per tick: the last 7 days, at most SCAN_LIMIT, so a missed tick loses nothing. */
@@ -45,6 +66,8 @@ export interface CouncilTriage {
   proposal_id: string | null;
   state: IntentState;
   reason: string | null;
+  /** The worker assigned (queued_external), or null. */
+  assignee: string | null;
   target_repo: string;
   title: string;
   spec: string;
@@ -92,19 +115,29 @@ export function triageCouncilTask(body: Record<string, unknown>): CouncilTriage 
     proposal_id, council: str(origin.council, 120), option_id: str(origin.option_id, 120), side: str(origin.side, 20),
     repo: str(origin.repo, 200), topic: str(origin.topic, 120), question: str(origin.question, 300),
     chosen_by: str(body.chosen_by, 200), chosen_at: str(body.chosen_at, 40),
+    ...(body.chosen_by === "council" ? { topic_approved_by: str(body.topic_approved_by, 200), session_id: str(body.session_id, 120) } : {}),
     hypothesis: str(body.hypothesis, 1000), risk: str(body.risk, 1000), dissent: str(body.dissent, 300),
   }) as Record<string, unknown>;
   const evidence_refs = (Array.isArray(body.evidence_refs) ? body.evidence_refs : [])
     .filter((r): r is string => typeof r === "string" && r.length > 0 && r.length <= 300).slice(0, MAX_EVIDENCE_REFS);
-  const base = { proposal_id, target_repo: target_repo || "unknown", title: title || "(untitled council task)", spec: rawSpec.slice(0, SPEC_MAX), origin: kept, evidence_refs };
+  const base = { proposal_id, assignee: null, target_repo: target_repo || "unknown", title: title || "(untitled council task)", spec: rawSpec.slice(0, SPEC_MAX), origin: kept, evidence_refs };
   const reject = (reason: string): CouncilTriage => ({ ...base, state: "rejected", reason });
   if (!proposal_id) return reject("invalid_proposal_id");
   if (body.executor !== "cryptophys") return reject("executor_not_cryptophys");
   if (origin.side !== "nexus") return reject("not_from_nexus");
-  if (typeof body.chosen_by !== "string" || !body.chosen_by.startsWith("owner:")) return reject("not_chosen_by_owner");
+  if (body.chosen_by === "council") {
+    const sid = body.session_id;
+    if (typeof body.topic_approved_by !== "string" || !/^owner:.{1,190}$/.test(body.topic_approved_by)
+      || typeof sid !== "string" || !ID.test(sid) || (typeof origin.council === "string" && origin.council && origin.council !== sid)) {
+      return reject("topic_not_owner_approved");
+    }
+  } else if (typeof body.chosen_by !== "string" || !body.chosen_by.startsWith("owner:")) return reject("not_chosen_by_owner");
   if (!title || !rawSpec || bytes(rawSpec) > SPEC_MAX) return reject("invalid_spec");
   if (!target_repo) return reject("no_repository");
-  if (target_repo !== PLATFORM_REPO) return { ...base, state: "waiting_external", reason: "adr_0018_x1_x2" };
+  if (target_repo !== PLATFORM_REPO) {
+    const assignee = assigneeOf(target_repo);
+    return assignee ? { ...base, assignee, state: "waiting_external", reason: QUEUED_EXTERNAL } : { ...base, state: "waiting_external", reason: "adr_0018_x1_x2" };
+  }
   return { ...base, state: "queued", reason: null };
 }
 
@@ -137,17 +170,21 @@ export async function intakeCouncil(db: D1Database, now = Date.now()): Promise<I
     const source_ref = t.proposal_id ?? `report:${r.report_id}`;
     const intent_id = `int_${hex12()}`;
     const origin = { ...t.origin, origin: COUNCIL_ORIGIN, report_id: r.report_id, agent_id: r.agent_id };
+    // queued_external (an assignee) carries its freshness; any other intent has none (NULL never expires).
+    const expires_at = t.assignee ? new Date(now + FRESH_MS).toISOString() : null;
     const inserted = await db.prepare(
-      `INSERT OR IGNORE INTO evolution_intents_v2 (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at)
-       VALUES (?, 'council', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-    ).bind(intent_id, source_ref, JSON.stringify(origin), t.target_repo, t.title, t.spec, JSON.stringify(t.evidence_refs), t.state, t.reason, at, at).run();
+      `INSERT OR IGNORE INTO evolution_intents_v2 (intent_id, source, source_ref, origin_json, target_repo, title, spec, evidence_refs_json, state, state_reason, evolution_id, created_at, updated_at${t.assignee ? ", assignee, expires_at" : ""})
+       VALUES (?, 'council', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?${t.assignee ? ", ?, ?" : ""})`,
+    ).bind(intent_id, source_ref, JSON.stringify(origin), t.target_repo, t.title, t.spec, JSON.stringify(t.evidence_refs), t.state, t.reason, at, at, ...(t.assignee ? [t.assignee, expires_at] : [])).run();
     if (!inserted.meta?.changes) continue; // the same proposal in two reports of one batch: recorded once
+    // The return path names queued_external for an assigned task (the intent's own state is waiting_external).
+    const label = t.assignee ? QUEUED_EXTERNAL : t.state;
     if (t.proposal_id) {
       await db.prepare("INSERT INTO evolution_updates_v2 (update_id, intent_id, origin, proposal_id, state, reason, refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(`evu_${crypto.randomUUID()}`, intent_id, COUNCIL_ORIGIN, t.proposal_id, t.state, t.reason, JSON.stringify({ intent_id }), at).run();
+        .bind(`evu_${crypto.randomUUID()}`, intent_id, COUNCIL_ORIGIN, t.proposal_id, label, t.assignee ? `assigned to ${t.assignee}` : t.reason, JSON.stringify(t.assignee ? { intent_id, assignee: t.assignee } : { intent_id }), at).run();
     }
-    await audit(db, intent_id, t.state, { source: "council", source_ref, report_id: r.report_id, agent_id: r.agent_id, target_repo: t.target_repo, state: t.state, reason: t.reason });
-    out.push({ intent_id, source: "council", source_ref, state: t.state, reason: t.reason, outcome: "recorded" });
+    await audit(db, intent_id, label, { source: "council", source_ref, report_id: r.report_id, agent_id: r.agent_id, target_repo: t.target_repo, state: t.state, reason: t.reason, assignee: t.assignee, expires_at, chosen_by: t.origin.chosen_by ?? null });
+    out.push({ intent_id, source: "council", source_ref, state: label, reason: t.reason, outcome: "recorded" });
   }
   return out;
 }

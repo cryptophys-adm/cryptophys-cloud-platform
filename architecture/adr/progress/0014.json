@@ -88,6 +88,24 @@
       "next": "xauusd declares council.decisions.read for xauusd-moderator"
     },
     {
+      "id": "C3",
+      "title": "External intents: queued_external, progress, freshness and archive",
+      "depends_on": [
+        "C1"
+      ],
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "evolution.intent_progress"
+      },
+      "built": [
+        "workers/ai-kernel/src/evolution-progress.ts",
+        "workers/ai-kernel/src/evolution-intake.ts",
+        "workers/control-plane-migrations/0092_evolution_external_progress.sql"
+      ],
+      "note": "built (owner 2026-11-28: \"Ya Kerjakan\", Issue #327 C2); proven at the first progress step",
+      "next": "The owner issues the xauusd worker's service token; Console archive (Issue #327 C3)"
+    },
+    {
       "id": "E3",
       "title": "Fitness, automatic revert, freeze",
       "depends_on": [

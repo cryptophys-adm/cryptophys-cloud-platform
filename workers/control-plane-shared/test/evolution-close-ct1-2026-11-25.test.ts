@@ -60,9 +60,11 @@ test("XC1. the owner closes a waiting_external intent: 200, the intent closed wi
   assert.match(res.body.update_id, /^evu_[0-9a-f-]{36}$/);
   const row = intent(db);
   assert.deepEqual([row.state, row.state_reason], ["closed", "not supported by the replay"], "stored normalised");
+  // Issue #327 (2026-11-28, migration 0092): the machine-readable close_code, in the intent and in the return path.
+  assert.equal(row.close_code, "owner_closed");
   const ups = closeUpdates(db);
   assert.equal(ups.length, 1);
-  assert.deepEqual({ ...ups[0], created_at: undefined }, { update_id: res.body.update_id, intent_id: ID, origin: "xauusd", proposal_id: PROPOSAL, state: "closed", reason: "not supported by the replay", refs_json: JSON.stringify({ intent_id: ID }), created_at: undefined });
+  assert.deepEqual({ ...ups[0], created_at: undefined }, { update_id: res.body.update_id, intent_id: ID, origin: "xauusd", proposal_id: PROPOSAL, state: "closed", reason: "not supported by the replay", refs_json: JSON.stringify({ intent_id: ID, close_code: "owner_closed" }), created_at: undefined });
   const ev = closeEvents(db);
   assert.equal(ev.length, 1);
   assert.deepEqual([ev[0].actor, ev[0].subject, ev[0].outcome], [APPROVER_EMAIL, `intent:${ID}`, "closed"]);
@@ -211,7 +213,7 @@ test("XC8. council.decisions.read for xauusd-moderator returns the closed update
   const updates = out.updates as any[];
   assert.equal(updates.length, 1);
   const u = updates[0];
-  assert.deepEqual([u.schema, u.proposal_id, u.state, u.reason, u.refs], ["typed_proposal.v1", PROPOSAL, "closed", CT1, { intent_id: ID }]);
+  assert.deepEqual([u.schema, u.proposal_id, u.state, u.reason, u.refs], ["typed_proposal.v1", PROPOSAL, "closed", CT1, { intent_id: ID, close_code: "owner_closed" }]);
 });
 
 test("XC9. an intent without a proposal id (recorded under its report) or not from a council closes with no update; audited", async () => {

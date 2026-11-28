@@ -42,6 +42,7 @@ import { ADR_CACHE_CONTROL, adrDetailView, adrListView, validAdrId } from "./adr
 import { intakeEvolutionIntents } from "./evolution-intake.ts";
 import { EvolverModeError, evolutionView, setEvolverMode } from "./evolution-view.ts";
 import { EvolutionCloseError, closeExternalIntent } from "./evolution-close.ts";
+import { EvolutionProgressError, expireExternalIntents, progressExternalIntent } from "./evolution-progress.ts";
 import { listConversations } from "./conversation.ts";
 import { listCouncils } from "./council.ts";
 import { proposeCouncils } from "./council-proposals.ts";
@@ -99,7 +100,7 @@ export default {
       }
       if (path === "/") {
         return serviceMetadata(env, "AI Worker OS kernel: agent processes, policy-gated syscalls, MCP front door", [
-          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/model-router", "POST /v1/model-router/state (the owner)", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "POST /v1/evolution/intents/{id}/close (a waiting_external intent, with a reason; the owner)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
+          "POST /mcp (MCP, JSON-RPC)", "GET /v1/kernel", "GET /v1/model-router", "POST /v1/model-router/state (the owner)", "GET /v1/incidents", "POST /v1/kernel/agents-enabled", "GET /v1/status", "GET /v1/notices", "GET /v1/owner/inbox", "GET /v1/conversations", "GET /v1/conversations/{id}", "POST /v1/conversations/{id}/turns", "POST /v1/conversations/{id}/turns/{n}/rating", "GET /v1/corrections?subject=&target=&side=&since=&limit= (the owner)", "POST /v1/corrections (the owner)", "GET /v1/reputation?subject= (operators; the teaching record)", "GET /v1/hub (WebSocket; operators)", "GET /v1/autonomy", "POST /v1/autonomy/{group} (the owner)", "GET /v1/proposals", "POST /v1/proposals (a chat directive into a draft; the owner)", "GET /v1/proposals/{id}", "POST /v1/proposals/{id}/confirm | reject | corrections (the owner)", "GET /v1/councils", "GET /v1/councils/{id}", "POST /v1/councils", "POST /v1/councils/{id}/messages | pick | dismiss | start | corrections", "GET /v1/metabolism", "GET /v1/mesh", "GET /v1/vision", "GET /v1/adr", "GET /v1/adr/{id}", "GET /v1/evolution", "POST /v1/evolution/mode (off: operators; on: the owner)", "POST /v1/evolution/intents/{id}/close (a waiting_external intent, with a reason; the owner)", "POST /v1/evolution/intents/{id}/progress (an external intent one step forward or refused; the owner, or an EVOLUTION_PROGRESS_IDENTITIES service on an assigned intent)", "GET /v1/consensus", "GET /v1/consensus/report?days=7", "POST /v1/consensus/mode (raise: APPROVER_IDENTITIES person; lower: operators)", "GET /v1/consensus/{id}", "POST /v1/consensus/{id}/approve|reject (APPROVER_IDENTITIES)", "GET /v1/reports?agent_id=&kind=&limit=",
           "POST /v1/reports/{id}/acknowledge (APPROVER_IDENTITIES person; critical reports only)",
           "GET /v1/alerts", "POST /v1/alerts | /v1/alerts/{id} | /v1/alerts/{id}/test, DELETE /v1/alerts/{id} (APPROVER_IDENTITIES)",
           "GET /v1/agents", "GET /v1/agents/{id}", "GET /v1/agents/{id}/actions", "POST /v1/agents/{id}/wake",
@@ -146,6 +147,31 @@ export default {
       }
       const operator = await requireOperator(request, env);
       return operator.ok ? await handleMcp(request, env, operator.actor, await isApprover(request, env), undefined, await isOwnerRequest(request, env)) : operator.response;
+    }
+
+    // Issue #327 C2 (owner 2026-11-28: "Ya Kerjakan"): an external intent's progress, before the operator gate so that the
+    // worker's service token needs no operator role: the owner, or a service token in EVOLUTION_PROGRESS_IDENTITIES
+    // (empty by default) on an intent assigned to a worker. Anyone else is 403.
+    const progress = /^\/v1\/evolution\/intents\/(int_[0-9a-f]{12})\/progress$/.exec(path);
+    if (progress) {
+      if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+      const auth = await authenticate(request, env);
+      if (!auth.ok) return auth.response;
+      const owner = isOwner(auth.identity, env);
+      const service = auth.identity.type === "service_token" && identityAllowed(auth.identity, env.EVOLUTION_PROGRESS_IDENTITIES);
+      if (!owner && !service) return errorResponse(403, "owner_required", "only the owner or the assigned worker's service identity moves an external intent");
+      const body = await readJsonObject(request);
+      if (!body.ok) return body.response;
+      const extra = Object.keys(body.value).filter((k) => k !== "state" && k !== "ref" && k !== "note");
+      if (extra.length) return errorResponse(400, "unknown_field", `the body carries only state, ref and note, not ${extra.slice(0, 3).join(", ")}`);
+      try {
+        const out = await progressExternalIntent(env.DB, { actor: actorOf(auth.identity), owner }, progress[1], body.value);
+        if (out.changed) await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "evolution" } }]);
+        return json(out);
+      } catch (err) {
+        if (err instanceof EvolutionProgressError) return errorResponse(err.status, err.code, err.message);
+        throw err;
+      }
     }
 
     const operator = await requireOperator(request, env);
@@ -630,6 +656,15 @@ export default {
     }
     // HAIC H3b (Q8, "yes, once"): the existing chat ratings into the corrections ledger, at :07 until one complete run;
     // after that a single indexed read of the done event. Idempotent, and it writes only corrections and their audit.
+    // Issue #327 (owner: "harus selalu segar ada umur kadaluarsa"): at :07, an external intent with no progress for 7 days
+    // returns to the council (closed, "expired: ..."; the return path says expired).
+    if (minute === 7) {
+      ctx.waitUntil(expireExternalIntents(env.DB, event.scheduledTime).then(async (expired) => {
+        if (expired.length) await publishHub(env, [{ channel: "inbox", kind: "inbox_changed", data: { source: "evolution" } }]);
+      }, (err) => {
+        console.error(JSON.stringify({ service: SERVICE, event: "evolution_expiry_failed", message: String((err as Error)?.message ?? err) }));
+      }));
+    }
     if (minute === 7) {
       ctx.waitUntil(backfillChatRatingsOnce(env.DB).then(() => undefined, (err) => {
         console.error(JSON.stringify({ service: SERVICE, event: "corrections_backfill_failed", message: String((err as Error)?.message ?? err) }));

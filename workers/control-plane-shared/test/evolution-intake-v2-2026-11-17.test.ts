@@ -78,20 +78,23 @@ test("EV1. migration 0076 is additive: the next number, four new tables, never d
   assert.throws(() => db.raw.prepare("UPDATE evolver_controls SET value = 'maybe'").run(), /CHECK/);
 });
 
-test("EV2. an owner-accepted council task for the xauusd repository waits for ADR-0018 X1/X2, recorded once, with its return-path update and audit", async () => {
+test("EV2. an owner-accepted council task for the xauusd repository is queued_external for xauusd-worker (ADR-0018 X1 amendment 2026-11-28), recorded once, with its return-path update and audit", async () => {
+  // Issue #327 (owner 2026-11-28: "Ya Kerjakan"): until then it waited unassigned (waiting_external, adr_0018_x1_x2);
+  // an external repository without a worker still does (EP10 in evolution-progress-c2-2026-11-28.test.ts).
   const db = withModerator(migratedDb());
   const rid = report(db, TASK);
   const r1 = await intakeEvolutionIntents(db, NOW);
-  assert.deepEqual(r1.map((r) => [r.source, r.source_ref, r.state, r.reason, r.outcome]), [["council", TASK.proposal_id, "waiting_external", "adr_0018_x1_x2", "recorded"]]);
+  assert.deepEqual(r1.map((r) => [r.source, r.source_ref, r.state, r.reason, r.outcome]), [["council", TASK.proposal_id, "queued_external", "queued_external", "recorded"]]);
   const [i] = intents(db);
   assert.match(i.intent_id, /^int_[0-9a-f]{12}$/);
-  assert.deepEqual([i.source, i.target_repo, i.title, i.state, i.state_reason, i.evolution_id], ["council", TASK.origin.repo, TASK.title, "waiting_external", "adr_0018_x1_x2", null]);
+  assert.deepEqual([i.source, i.target_repo, i.title, i.state, i.state_reason, i.evolution_id], ["council", TASK.origin.repo, TASK.title, "waiting_external", "queued_external", null]);
+  assert.deepEqual([i.assignee, i.expires_at], ["xauusd-worker", new Date(NOW + 7 * 86_400_000).toISOString()]);
   assert.equal(i.spec, TASK.spec);
   const origin = JSON.parse(i.origin_json);
   assert.deepEqual([origin.origin, origin.report_id, origin.agent_id, origin.council, origin.option_id, origin.side, origin.chosen_by], ["xauusd", rid, "xauusd-moderator", TASK.origin.council, "vol_filter", "nexus", TASK.chosen_by]);
   assert.deepEqual(JSON.parse(i.evidence_refs_json), TASK.evidence_refs);
-  assert.deepEqual(updates(db).map((u) => [u.intent_id, u.origin, u.proposal_id, u.state, u.reason]), [[i.intent_id, "xauusd", TASK.proposal_id, "waiting_external", "adr_0018_x1_x2"]]);
-  assert.deepEqual(intentEvents(db).map((e) => [e.subject, e.outcome, e.payload.source, e.payload.report_id]), [[`intent:${i.intent_id}`, "waiting_external", "council", rid]]);
+  assert.deepEqual(updates(db).map((u) => [u.intent_id, u.origin, u.proposal_id, u.state, u.reason]), [[i.intent_id, "xauusd", TASK.proposal_id, "queued_external", "assigned to xauusd-worker"]]);
+  assert.deepEqual(intentEvents(db).map((e) => [e.subject, e.outcome, e.payload.source, e.payload.report_id]), [[`intent:${i.intent_id}`, "queued_external", "council", rid]]);
   // Every later tick, and the same proposal sent again (xauusd retries a failed send hourly): never a second intent.
   report(db, TASK, { at: NOW - 30_000 });
   for (let k = 1; k <= 3; k++) assert.deepEqual(await intakeEvolutionIntents(db, NOW + k * 900_000), []);
@@ -139,7 +142,7 @@ test("EV4. the deterministic triage: invalid tasks are rejected with their reaso
   report(db, { ...TASK, proposal_id: "cp_handed", state: "handed_off" });
   const r = await intakeCouncil(db, NOW);
   const handed = r.filter((x) => x.source_ref === "cp_handed");
-  assert.deepEqual(handed.map((x) => [x.state, x.reason]), [["waiting_external", "adr_0018_x1_x2"]], "state handed_off (xauusd #430) is a hand-off too");
+  assert.deepEqual(handed.map((x) => [x.state, x.reason]), [["queued_external", "queued_external"]], "state handed_off (xauusd #430) is a hand-off too");
   const invalid = r.filter((x) => x.source_ref !== "cp_handed");
   assert.deepEqual(invalid.map((x) => x.reason).sort(), cases.map(([, reason]) => reason).sort(), "each invalid task recorded once, rejected, with its reason");
   assert.ok(invalid.every((x) => x.state === "rejected"));

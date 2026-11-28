@@ -28,7 +28,9 @@ function draftOf(v: unknown): JsonObject | null {
   return { kind: "shadow_arm", target: d.target, params: flat(d.params) ?? {}, measurement: flat(d.measurement), requires: Array.isArray(d.requires) ? d.requires.filter((x) => typeof x === "string").slice(0, 6) : [] } as JsonObject;
 }
 const CURSOR = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\|(evu_[A-Za-z0-9-]{1,64})$/;
-const REFS = ["intent_id", "evolution_id", "cr_id", "merge_sha", "deploy_ref"] as const;
+// Issue #327 C2: an external intent's progress carries its pull request (pr_url), commit (sha), worker (assignee) and,
+// once it ended, why (close_code: owner_closed, expired, refused, completed).
+const REFS = ["intent_id", "evolution_id", "cr_id", "merge_sha", "deploy_ref", "pr_url", "sha", "assignee", "close_code"] as const;
 
 export async function readCouncilDecisions(env: Pick<SyscallEnv, "DB">, agentId: string, input: JsonObject): Promise<JsonObject> {
   const agent = await env.DB.prepare("SELECT host_worker FROM agents WHERE agent_id = ? AND status = 'enabled'").bind(agentId).first<{ host_worker: string }>();
