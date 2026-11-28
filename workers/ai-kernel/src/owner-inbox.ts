@@ -73,7 +73,7 @@ export const RECOVERY_FAILURE_WINDOW_MS = 24 * 3_600_000;
 /** A succeeded break-glass deploy is listed this long (or until it is reported resolved). */
 export const BREAK_GLASS_WINDOW_MS = 24 * 3_600_000;
 
-export type ProblemCode = "out_of_band_deploy" | "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path" | "model_router_stopped";
+export type ProblemCode = "out_of_band_deploy" | "self_unhealthy" | "observations_stale" | "drift_unhandled" | "recovery_failed" | "critical_advisory" | "build_minutes_exhausted" | "break_glass_deployed" | "deploys_stalled" | "git_backup_unverified" | "executor_deploy_failed" | "identity_source_invalid" | "deploy_no_path" | "model_router_stopped" | "council_sync_refused";
 /** out_of_band_deploy: a code upload outside the platform is looked for this far back (it stays listed while it is the Worker's newest provenance event). */
 export const OUT_OF_BAND_WINDOW_MS = 30 * 24 * 3_600_000;
 /** The Orchestrator's own failed native deploy of its unit is listed this long, unless a later deploy of it succeeded. */
@@ -530,5 +530,28 @@ export async function unhandledProblems(db: D1Database, now = Date.now()): Promi
     }];
   }
 
-  return [...outOfBand, ...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities, ...router];
+  // CB2a (2026-11-28, ADR-0014 §13): the Forge's council sync left files or settings out of the council repository. Open
+  // while its newest refusal (forge.council_sync_refused, last 24 hours) has no later sync that refused nothing.
+  let council: ProductionProblem[] = [];
+  try {
+    const ref = await db.prepare("SELECT created_at, payload_json FROM audit_events WHERE event_type = 'forge.council_sync_refused' AND created_at >= ? ORDER BY created_at DESC LIMIT 1")
+      .bind(iso(now - 86_400_000)).first<{ created_at: string; payload_json: string }>();
+    if (ref) {
+      const later = await db.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'forge.council_synced' AND created_at > ? ORDER BY created_at DESC LIMIT 1")
+        .bind(ref.created_at).first<{ payload_json: string }>();
+      let cleared = false;
+      try { const p = later ? JSON.parse(later.payload_json) : null; cleared = Boolean(p && Array.isArray(p.refused) && p.refused.length === 0); } catch { cleared = false; }
+      if (!cleared) {
+        let ids: string[] = [];
+        try { const p = JSON.parse(ref.payload_json); ids = (Array.isArray(p.refused) ? p.refused : []).map((r: { proposal_id?: unknown }) => String(r?.proposal_id ?? "")).filter(Boolean); } catch { ids = []; }
+        council = [{
+          code: "council_sync_refused", subject: "council",
+          detail: `The Forge left ${ids.length} council item${ids.length === 1 ? "" : "s"} out of the council repository (${ids.slice(0, 5).join(", ")}${ids.length > 5 ? ", ..." : ""}): not on the allowlist, out of bounds, a forbidden key, a price-like number or a secret. The rest was written. Nothing waits on it; the item returns at its next activity`.slice(0, 600),
+          since: ref.created_at, link: "#/proposals",
+        }];
+      }
+    }
+  } catch { council = []; }
+
+  return [...outOfBand, ...self, ...stale, ...drift, ...recovery, ...advisories, ...builds, ...breakGlass, ...stalls, ...noPath, ...backups, ...executor, ...identities, ...router, ...council];
 }

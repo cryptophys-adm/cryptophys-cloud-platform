@@ -222,8 +222,9 @@ test("CB1-6. the commit check: only ledger files, each valid, no forbidden key, 
   const t = (v: unknown) => JSON.stringify(v);
   assert.deepEqual(checkCouncilCommit(new Map([[path, t(ok)]])), []);
   const cases: Array<[string, string, RegExp]> = [
-    ["policy/overlay.json", t(ok), /only ledger/],
-    ["policy/allowlist.json", t(ok), /only ledger/],
+    // CB2a: the overlay is checked as council_policy.v1; the allowlist is never written by the sync (the owner's click).
+    ["policy/overlay.json", t(ok), /not council_policy\.v1/],
+    ["policy/allowlist.json", t(ok), /the allowlist changes only by the owner's click/],
     ["README.md", "x", /only ledger/],
     ["ledger/../platform/x.json", t(ok), /only ledger/],
     [path, "{", /not JSON/],
@@ -301,6 +302,109 @@ test("CB1-10. the record: ADR-0014 §13 cites the owner, the manifest lists C4 t
   const m = JSON.parse(read("architecture/adr/progress/0014.json"));
   assert.deepEqual(m.phases.filter((p: any) => ["C4", "C5", "C6"].includes(p.id)).map((p: any) => [p.id, p.evidence.kind]), [["C4", "audit_event"], ["C5", "not_measurable_yet"], ["C6", "not_measurable_yet"]]);
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council repository, 2026-11-28 \(owner: "sementara B dulu/);
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?council repository, 2026-11-28 \(owner: "sementara B dulu/);
   assert.ok(ssot.includes("- **Council repository** (owner, 2026-11-28"));
+});
+
+// ---------------------------------------------------------------- CB2a (2026-11-28): the overlay of council-owned settings
+
+const KNOB = "decision.min_confidence";
+const ALLOW = JSON.stringify({ schema: "council_allowlist.v1", keys: { [KNOB]: { type: "number", min: 0.3, max: 0.8 } } });
+function knob(db: Db, id: string, state: string, at: number, value = 0.45, from: number | null = 0.4) {
+  report(db, { ...BODY, kind: "policy_parameter", executor: "xauusd", proposal_id: id, state, knob: KNOB, from, value }, at);
+}
+function verdict(db: Db, id: string, state: string, v: string, at: number) {
+  report(db, { schema: "council_policy_verdict.v1", proposal_id: id, session_id: "cfc_mx01aa_sess01", key: KNOB, state, verdict: v, evidence: { n: 31, mean_r: 0.2, holdout: true }, at: iso(at) }, at);
+}
+
+test("CB2-1. the allowlist: typed and bounded keys; risk, arming, the ceiling, hashed or protected engines, Pine and prices are never council-owned", async () => {
+  const { parseAllowlist, keyDenied } = await import("../src/council-repo.ts");
+  const ok = parseAllowlist(ALLOW);
+  assert.deepEqual([ok.problems, [...ok.allowlist!.keys()]], [[], [KNOB]]);
+  for (const k of ["risk_per_trade", "live.arm", "profile_ceiling", "engine_hash", "protected.engines", "pine.ssot", "omega.mode", "entry.price", "Risk", "a..b"]) assert.ok(keyDenied(k) || !/^[a-z]/.test(k), k);
+  const bad = parseAllowlist(JSON.stringify({ schema: "council_allowlist.v1", keys: { risk_per_trade: { type: "number", min: 0, max: 1 }, "x.y": { type: "number" }, "z.e": { type: "enum", enum: [] } } }));
+  assert.deepEqual([...bad.allowlist!.keys()], []);
+  assert.equal(bad.problems.length, 3);
+  assert.deepEqual(parseAllowlist(null), { allowlist: null, problems: [] });
+});
+
+test("CB2-2. overlay candidates: shadow from xauusd's report, live or reverted by a verdict, reverted after 14 days in shadow with no verdict", async () => {
+  const { overlayCandidates } = await import("../../forge/src/council-sync.ts");
+  const db = withModerator(migratedDb());
+  knob(db, "cp_k_shadow", "queued_shadow", NOW - 2 * 86_400_000);
+  knob(db, "cp_k_live", "queued_shadow", NOW - 5 * 86_400_000);
+  verdict(db, "cp_k_live", "live", "pass", NOW - 86_400_000);
+  knob(db, "cp_k_revert", "queued_shadow", NOW - 5 * 86_400_000);
+  verdict(db, "cp_k_revert", "shadow", "revert", NOW - 86_400_000);
+  knob(db, "cp_k_old", "queued_shadow", NOW - 15 * 86_400_000);
+  knob(db, "cp_k_draft", "draft", NOW - 86_400_000);
+  const out = await overlayCandidates(db as never, NOW);
+  const by = (id: string) => out.find((e) => e.proposal_id === id)!;
+  assert.deepEqual([by("cp_k_shadow").state, by("cp_k_shadow").value, by("cp_k_shadow").reason], ["shadow", 0.45, undefined]);
+  assert.deepEqual([by("cp_k_live").state, by("cp_k_live").reason], ["live", "verdict"]);
+  assert.deepEqual([by("cp_k_revert").state, by("cp_k_revert").value, by("cp_k_revert").reason], ["reverted", 0.4, "verdict"]);
+  assert.deepEqual([by("cp_k_old").state, by("cp_k_old").value, by("cp_k_old").reason, by("cp_k_old").at], ["reverted", 0.4, "expired", iso(NOW - 15 * 86_400_000 + 14 * 86_400_000)]);
+  assert.equal(out.some((e) => e.proposal_id === "cp_k_draft"), false, "not in shadow yet: not a setting");
+  // The expired entry is the same at every later tick (deterministic: no churn of commits).
+  assert.deepEqual((await overlayCandidates(db as never, NOW + 3_600_000)).find((e) => e.proposal_id === "cp_k_old"), by("cp_k_old"));
+});
+
+test("CB2-3. the sync writes the overlay against main's allowlist; a key off the allowlist is left out, audited once, and listed in the owner's inbox", async () => {
+  const { unhandledProblems } = await import("../../ai-kernel/src/owner-inbox.ts");
+  const db = withModerator(migratedDb());
+  knob(db, "cp_k_ok", "queued_shadow", NOW - 86_400_000);
+  report(db, { ...BODY, kind: "policy_parameter", executor: "xauusd", proposal_id: "cp_k_off", state: "queued_shadow", knob: "decision.other_knob", from: 1, value: 2 }, NOW - 86_400_000);
+  knob(db, "cp_k_far", "queued_shadow", NOW - 86_400_000, 0.95);
+  const b = await binding({ "policy/allowlist.json": ALLOW });
+  const g = gitServer(new Map([["refs/heads/main", b.main()!]]));
+  const r = await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW, g.fetchImpl);
+  assert.equal(r.outcome, "written", JSON.stringify(r));
+  assert.ok(g.pushes.length === 1);
+  const ev = events(db, SYNC_EVENT);
+  assert.ok(ev[0].payload.files.includes("policy/overlay.json"));
+  assert.deepEqual(ev[0].payload.refused.sort(), ["cp_k_far", "cp_k_off"]);
+  const refusals = events(db, REFUSED_EVENT);
+  assert.equal(refusals.length, 1);
+  assert.match(JSON.stringify(refusals[0].payload.refused), /not on the allowlist/);
+  assert.match(JSON.stringify(refusals[0].payload.refused), /outside the allowlist's type or bounds/);
+  const problems = (await unhandledProblems(db as never, NOW + 60_000)).filter((p: any) => p.code === "council_sync_refused");
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].detail, /cp_k_off|cp_k_far/);
+  // The same refusals on the next tick are not audited again.
+  await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW + 900_000, g.fetchImpl);
+  assert.equal(events(db, REFUSED_EVENT).length, 1);
+});
+
+test("CB2-4. no allowlist on main: nothing is council-owned, no overlay is written; the allowlist itself is never written by the sync", async () => {
+  const db = withModerator(migratedDb());
+  knob(db, "cp_k_ok", "queued_shadow", NOW - 86_400_000);
+  const b = await binding(null);
+  const g = gitServer();
+  const r = await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW, g.fetchImpl);
+  // The proposal's ledger file is written; its setting is not (nothing is on an allowlist that does not exist).
+  assert.equal(r.outcome, "written");
+  const ev = events(db, SYNC_EVENT)[0].payload;
+  assert.deepEqual([ev.files.includes("policy/overlay.json"), ev.files.some((f: string) => f.startsWith("ledger/")), ev.refused], [false, true, ["cp_k_ok"]]);
+  assert.match(r.problems!.join(" "), /not on the allowlist/);
+  const src = read("workers/forge/src/council-sync.ts");
+  assert.ok(!/files\.set\(ALLOWLIST_PATH/.test(src), "the sync never writes the allowlist");
+});
+
+test("CB2-5. the overlay text is valid council_policy.v1 and the commit check refuses a forbidden key, a price, a duplicate and a reverted value", async () => {
+  const { overlayText, overlayProblems, parseAllowlist } = await import("../src/council-repo.ts");
+  const { allowlist } = parseAllowlist(ALLOW);
+  const e = { key: KNOB, value: 0.45, from: 0.4, session_id: "cfc_s", proposal_id: "cp_a", state: "shadow" as const, since: iso(NOW - 1000), at: iso(NOW) };
+  assert.deepEqual(overlayProblems(JSON.parse(overlayText([e])), allowlist), []);
+  assert.match(overlayProblems(JSON.parse(overlayText([e, e])), allowlist).join(" "), /twice/);
+  assert.match(overlayProblems(JSON.parse(overlayText([{ ...e, state: "reverted" }])), allowlist).join(" "), /carries its from value/);
+  assert.match(overlayProblems({ schema: "council_policy.v1", entries: [{ ...e, price: 1 }] }, allowlist).join(" "), /unknown key price|forbidden key/);
+  assert.match(overlayProblems({ schema: "council_policy.v1", entries: [{ ...e, key: "risk_per_trade" }] }, allowlist).join(" "), /never council-owned/);
+  assert.match(checkCouncilCommit(new Map([["policy/overlay.json", overlayText([e])]]), null).join(" "), /not on the allowlist/);
+});
+
+test("CB2-6. the record: ADR-0014 §13 and the SSOT document CB2a", () => {
+  assert.ok(read("architecture/adr/0014-evolution-loop.md").includes("CB2a builds the overlay"));
+  const ssot = read("docs/SSOT.md");
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council settings, 2026-11-28 /);
+  assert.ok(ssot.includes("- **Council settings** (CB2a, 2026-11-28"));
 });

@@ -4,7 +4,10 @@
 //
 //   ledger/<topic>/<session_id>/<proposal_id>.json   council_ledger.v1: one file per council proposal, every status
 //                                                     transition one commit (councilSync in forge/src/council-sync.ts)
-//   policy/overlay.json, policy/allowlist.json        CB2 (not written yet; refused by the CB1 check)
+//   policy/overlay.json                               council_policy.v1 (CB2a): the settings the council owns, each in
+//                                                     shadow, live or reverted, checked against the allowlist
+//   policy/allowlist.json                             council_allowlist.v1: changes only by the owner's click (CB2b);
+//                                                     councilSync never writes it
 //
 // Pure: the path rules, the file schema and the check every commit passes before the Forge fast-forwards main. No price,
 // level or lot ever enters the repository (the PRICE rule of correction.ts and a key denylist at any depth), and no
@@ -28,10 +31,24 @@ export const MAX_HISTORY = 100;
 export const FORBIDDEN_KEY = /^(price|prices|level|levels|lot|lots|sl|tp\d?|entry|entry_price|stop|stop_loss|take_profit|bid|ask|volume)$/i;
 export const LEDGER_STATES = Object.freeze([
   // xauusd's own proposal states (cfc-session.mjs) and the platform's return path (evolution-intake.ts, evolution-progress.ts)
-  "draft", "accepted", "handoff_pending", "handed_off", "shadow", "live", "reverted", "rejected", "dismissed", "no_change",
+  "draft", "accepted", "queued_shadow", "handoff_pending", "handed_off", "shadow", "live", "reverted", "rejected", "dismissed", "no_change",
   "queued", "queued_external", "waiting_external", "in_progress", "proposed", "merged", "deployed", "closed", "refused", "expired",
 ] as const);
 export const CLOSE_CODES = Object.freeze(["owner_closed", "expired", "refused", "completed"] as const);
+export const OVERLAY_PATH = "policy/overlay.json";
+export const ALLOWLIST_PATH = "policy/allowlist.json";
+export const COUNCIL_POLICY_SCHEMA = "council_policy.v1";
+export const COUNCIL_ALLOWLIST_SCHEMA = "council_allowlist.v1";
+export const MAX_OVERLAY_ENTRIES = 200;
+/** A setting in shadow with no verdict for this long is reverted (owner: "harus selalu segar"). */
+export const OVERLAY_SHADOW_MS = 14 * 86_400_000;
+/**
+ * Never a council-owned setting, whatever the allowlist says: a key with any of these segments (split on "." and "_").
+ * Risk per trade, live arming, the profile ceiling, hashed or protected engines, Pine SSOT, Omega, and prices.
+ */
+export const DENIED_SEGMENTS: ReadonlySet<string> = new Set(["risk", "arm", "armed", "arming", "ceiling", "profile", "pine", "hash", "hashed", "protected", "omega", "price", "level", "lot", "lots", "sl", "tp", "stop", "entry"]);
+export const KEY_SHAPE = /^(?=.{1,80}$)[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*$/;
+export const keyDenied = (key: string): boolean => !KEY_SHAPE.test(key) || key.split(/[._]/).some((seg) => DENIED_SEGMENTS.has(seg));
 
 export interface LedgerStep { at: string; state: string; source: "xauusd" | "platform"; close_code?: string; ref?: { pr_url?: string; sha?: string }; note?: string }
 export interface LedgerFile {
@@ -55,7 +72,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof
 
 /** Every forbidden key and every string with a price-like number or a secret, at any depth (path-named problems). */
 /** Identifier fields: their shape is checked by the schema (an id or a commit may hold digit runs that are not prices). */
-const ID_KEYS = new Set(["proposal_id", "session_id", "intent_id", "sha", "pr_url", "at"]);
+const ID_KEYS = new Set(["proposal_id", "session_id", "intent_id", "sha", "pr_url", "at", "since"]);
 export function contentProblems(v: unknown, at = "$", depth = 0, key = ""): string[] {
   if (depth > 8) return [`${at}: too deep`];
   if (typeof v === "string") {
@@ -114,12 +131,19 @@ export function ledgerProblems(v: unknown, path: string): string[] {
  * ledger/ in the ledger shape (policy/ waits for CB2 and its owner-merged allowlist), every file at most MAX_FILE_BYTES,
  * JSON, valid against council_ledger.v1, with no forbidden key, price-like number or secret. [] when it may merge.
  */
-export function checkCouncilCommit(files: Map<string, string>): string[] {
+export function checkCouncilCommit(files: Map<string, string>, allowlist: Allowlist | null = null): string[] {
   const p: string[] = [];
   if (files.size === 0) return ["the commit changes nothing"];
   if (files.size > MAX_FILES_PER_COMMIT) p.push(`at most ${MAX_FILES_PER_COMMIT} files per commit`);
   for (const [path, text] of files) {
-    if (!LEDGER_PATH.test(path)) { p.push(`${path}: only ledger/<topic>/<session_id>/<proposal_id>.json is written (CB1)`); continue; }
+    if (path === OVERLAY_PATH) {
+      if (new TextEncoder().encode(text).length > 64 * 1024) { p.push(`${path}: over 65536 bytes`); continue; }
+      let v: unknown;
+      try { v = JSON.parse(text); } catch { p.push(`${path}: not JSON`); continue; }
+      p.push(...overlayProblems(v, allowlist));
+      continue;
+    }
+    if (!LEDGER_PATH.test(path)) { p.push(`${path}: only ledger files and ${OVERLAY_PATH} are written here (the allowlist changes only by the owner's click)`); continue; }
     if (new TextEncoder().encode(text).length > MAX_FILE_BYTES) { p.push(`${path}: over ${MAX_FILE_BYTES} bytes`); continue; }
     let v: unknown;
     try { v = JSON.parse(text); } catch { p.push(`${path}: not JSON`); continue; }
@@ -149,7 +173,6 @@ export interface CouncilPolicyVerdict {
   evidence: { n: number; mean_r: number; holdout: boolean };
   at: string;
 }
-const KEY = /^[a-z][a-z0-9_.]{0,79}$/;
 /** The verdict's problems; [] when it is valid. */
 export function verdictProblems(v: unknown): string[] {
   if (!isObj(v)) return ["not an object"];
@@ -158,11 +181,92 @@ export function verdictProblems(v: unknown): string[] {
   if (v.schema !== COUNCIL_POLICY_VERDICT_SCHEMA) p.push("schema");
   if (typeof v.proposal_id !== "string" || !SEGMENT.test(v.proposal_id)) p.push("proposal_id");
   if (typeof v.session_id !== "string" || !SEGMENT.test(v.session_id)) p.push("session_id");
-  if (typeof v.key !== "string" || !KEY.test(v.key)) p.push("key");
+  if (typeof v.key !== "string" || !KEY_SHAPE.test(v.key)) p.push("key");
   if (!["shadow", "live", "reverted"].includes(String(v.state))) p.push("state");
   if (!["pass", "fail", "revert"].includes(String(v.verdict))) p.push("verdict");
   const e = v.evidence;
   if (!isObj(e) || !Number.isInteger(e.n) || (e.n as number) < 0 || typeof e.mean_r !== "number" || !Number.isFinite(e.mean_r) || Math.abs(e.mean_r) > 20 || typeof e.holdout !== "boolean" || Object.keys(e).length !== 3) p.push("evidence is {n, mean_r, holdout}");
   if (typeof v.at !== "string" || !ISO.test(v.at)) p.push("at");
   return [...p, ...contentProblems(v)];
+}
+
+// ---------------------------------------------------------------- CB2a: the allowlist and the overlay
+
+export interface AllowlistEntry { type: "number" | "integer" | "boolean" | "enum"; min?: number; max?: number; enum?: Array<string | number> }
+export type Allowlist = Map<string, AllowlistEntry>;
+
+/** The allowlist file (council_allowlist.v1 {schema, keys: {key: entry}}), or its problems. A denied key is a problem. */
+export function parseAllowlist(text: string | null): { allowlist: Allowlist | null; problems: string[] } {
+  if (text === null) return { allowlist: null, problems: [] };
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return { allowlist: null, problems: ["allowlist: not JSON"] }; }
+  if (!isObj(v) || v.schema !== COUNCIL_ALLOWLIST_SCHEMA || !isObj(v.keys)) return { allowlist: null, problems: ["allowlist: not council_allowlist.v1"] };
+  const out: Allowlist = new Map();
+  const problems: string[] = [];
+  for (const [k, e] of Object.entries(v.keys)) {
+    if (keyDenied(k)) { problems.push(`allowlist: ${k} is never council-owned`); continue; }
+    if (!isObj(e) || !["number", "integer", "boolean", "enum"].includes(String(e.type))) { problems.push(`allowlist: ${k} has no valid type`); continue; }
+    const entry: AllowlistEntry = { type: e.type as AllowlistEntry["type"] };
+    if (typeof e.min === "number" && Number.isFinite(e.min)) entry.min = e.min;
+    if (typeof e.max === "number" && Number.isFinite(e.max)) entry.max = e.max;
+    if (Array.isArray(e.enum)) entry.enum = e.enum.filter((x): x is string | number => typeof x === "string" || typeof x === "number").slice(0, 40);
+    if ((entry.type === "number" || entry.type === "integer") && (entry.min === undefined || entry.max === undefined || entry.min > entry.max)) { problems.push(`allowlist: ${k} needs min <= max`); continue; }
+    if (entry.type === "enum" && !entry.enum?.length) { problems.push(`allowlist: ${k} needs an enum`); continue; }
+    out.set(k, entry);
+  }
+  return { allowlist: out, problems };
+}
+
+/** Whether a value fits its allowlist entry. */
+export function valueFits(e: AllowlistEntry, v: unknown): boolean {
+  switch (e.type) {
+    case "boolean": return typeof v === "boolean";
+    case "enum": return (typeof v === "string" || typeof v === "number") && e.enum!.includes(v);
+    case "integer": return typeof v === "number" && Number.isInteger(v) && v >= e.min! && v <= e.max!;
+    case "number": return typeof v === "number" && Number.isFinite(v) && v >= e.min! && v <= e.max!;
+  }
+}
+
+export interface OverlayEntry {
+  key: string; value: number | boolean | string; from: number | boolean | string | null; session_id: string; proposal_id: string;
+  state: "shadow" | "live" | "reverted"; since: string; at: string; reason?: "verdict" | "expired";
+}
+
+/** One overlay entry's problems against the allowlist (absent: nothing is allowed); [] when it may be written. */
+export function entryProblems(e: OverlayEntry, allowlist: Allowlist | null): string[] {
+  const p: string[] = [];
+  if (keyDenied(e.key)) return [`${e.key}: never council-owned`];
+  const a = allowlist?.get(e.key);
+  if (!a) return [`${e.key}: not on the allowlist`];
+  if (!valueFits(a, e.value)) p.push(`${e.key}: value outside the allowlist's type or bounds`);
+  if (e.from !== null && !valueFits(a, e.from)) p.push(`${e.key}: from outside the allowlist's type or bounds`);
+  if (e.state === "reverted" && e.value !== e.from) p.push(`${e.key}: a reverted setting carries its from value`);
+  if (!SEGMENT.test(e.proposal_id) || !SEGMENT.test(e.session_id)) p.push(`${e.key}: invalid proposal or session id`);
+  if (!ISO.test(e.since) || !ISO.test(e.at) || e.at < e.since) p.push(`${e.key}: invalid since or at`);
+  if (!["shadow", "live", "reverted"].includes(e.state)) p.push(`${e.key}: invalid state`);
+  return p;
+}
+
+/** The overlay file's problems: the schema, every entry against the allowlist, one entry per proposal. */
+export function overlayProblems(v: unknown, allowlist: Allowlist | null): string[] {
+  if (!isObj(v) || v.schema !== COUNCIL_POLICY_SCHEMA || !Array.isArray(v.entries)) return [`${OVERLAY_PATH}: not ${COUNCIL_POLICY_SCHEMA}`];
+  const p: string[] = [];
+  for (const k of Object.keys(v)) if (k !== "schema" && k !== "entries") p.push(`${OVERLAY_PATH}: unknown key ${k}`);
+  if (v.entries.length > MAX_OVERLAY_ENTRIES) p.push(`${OVERLAY_PATH}: at most ${MAX_OVERLAY_ENTRIES} entries`);
+  const seen = new Set<string>();
+  for (const e of v.entries as OverlayEntry[]) {
+    if (!isObj(e)) { p.push(`${OVERLAY_PATH}: an entry is not an object`); continue; }
+    for (const k of Object.keys(e)) if (!["key", "value", "from", "session_id", "proposal_id", "state", "since", "at", "reason"].includes(k)) p.push(`${OVERLAY_PATH}: unknown key ${k}`);
+    if (seen.has(e.proposal_id)) p.push(`${OVERLAY_PATH}: ${e.proposal_id} twice`);
+    seen.add(e.proposal_id);
+    p.push(...entryProblems(e, allowlist).map((x) => `${OVERLAY_PATH}: ${x}`));
+  }
+  return [...p, ...contentProblems(v).map((x) => `${OVERLAY_PATH}: ${x}`)];
+}
+
+/** The overlay as stored: entries sorted by key then proposal, stable key order, a final newline. */
+export function overlayText(entries: OverlayEntry[]): string {
+  const sorted = [...entries].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.proposal_id < b.proposal_id ? -1 : 1));
+  const rows = sorted.map((e) => ({ key: e.key, value: e.value, from: e.from, session_id: e.session_id, proposal_id: e.proposal_id, state: e.state, since: e.since, at: e.at, ...(e.reason ? { reason: e.reason } : {}) }));
+  return `${JSON.stringify({ schema: COUNCIL_POLICY_SCHEMA, entries: rows }, null, 2)}\n`;
 }

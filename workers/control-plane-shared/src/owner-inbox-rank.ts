@@ -52,7 +52,7 @@ const TRADING_KIND = k("critical", "trading_safety");
 /** An action this table does not know yet (a new critical action) still lists, as normal and blocking nothing. */
 const UNKNOWN_CONSENSUS_KIND = k("normal");
 
-/** Production problems no agent is handling (owner-inbox.ts unhandledProblems(), 14 codes). */
+/** Production problems no agent is handling (owner-inbox.ts unhandledProblems(), 15 codes). */
 export const PROBLEM_KINDS: Readonly<Record<string, Kind>> = {
   executor_deploy_failed: k("critical", "deploys", "cutover_gate"),
   self_unhealthy: k("critical", "deploys"),
@@ -69,6 +69,9 @@ export const PROBLEM_KINDS: Readonly<Record<string, Kind>> = {
   break_glass_deployed: k("normal", "deploys"),
   // AIR1 (2026-11-25): Beam turned itself off (a paid sign or a contributor retention header); Workers AI answers meanwhile.
   model_router_stopped: k("high"),
+  // CB2a (2026-11-28): the Forge left a council ledger file or overlay setting out of the council repository (it failed
+  // the check: not on the allowlist, out of bounds, a forbidden key, a price-like number or a secret). Nothing waits on it.
+  council_sync_refused: k("normal"),
 };
 export const CRITICAL_REPORT_KIND = k("critical", "deploys", "merges");
 export const RECOVERY_PLAN_KIND = k("high", "deploys");
