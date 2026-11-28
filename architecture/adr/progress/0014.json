@@ -100,10 +100,12 @@
       "built": [
         "workers/ai-kernel/src/evolution-progress.ts",
         "workers/ai-kernel/src/evolution-intake.ts",
-        "workers/control-plane-migrations/0092_evolution_external_progress.sql"
+        "workers/control-plane-migrations/0092_evolution_external_progress.sql",
+        "workers/ai-kernel/src/evolution-view.ts",
+        "workers/console/ui/src/pages/Proposals.tsx"
       ],
-      "note": "built (owner 2026-11-28: \"Ya Kerjakan\", Issue #327 C2); proven at the first progress step",
-      "next": "The owner issues the xauusd worker's service token; Console archive (Issue #327 C3)"
+      "note": "built (owner 2026-11-28: \"Ya Kerjakan\", #327 C2 and C3); proven at the first progress step",
+      "next": "Owner issues the xauusd worker's service token; xauusd accepts the new states (CFC-A)"
     },
     {
       "id": "E3",

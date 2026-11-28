@@ -94,6 +94,11 @@ export const UI_ROUTES: readonly UiRoute[] = [
   // checks the owner, the intent's state and that the reason carries no price and no secret).
   r("kernel.evolution", "kernel", "GET", "/v1/evolution", false, null),
   r("kernel.intent_close", "kernel", "POST", "/v1/evolution/intents/{id}/close", true, null),
+  // Issue #327 C3 (owner 2026-11-28: "Ya Kerjakan"): an intent's history for the Archive (operators read), and the owner's
+  // progress buttons (Start, PR, Merged, Deployed, Close, Refuse). No typed phrase: each step is one forward move the
+  // kernel checks (order, owner, ref and words), and a wrong step is refused, never applied.
+  r("kernel.intent", "kernel", "GET", "/v1/evolution/intents/{id}", false, null),
+  r("kernel.intent_progress", "kernel", "POST", "/v1/evolution/intents/{id}/progress", true, null),
   // AIR1 (ADR-0007 amendment 2026-11-25): the Organism Telemetry tab's model router panel reads the router; only the owner
   // turns Beam on (typed phrase: Beam then answers Cerebrum's chat, directives and councils) or off (the kernel checks).
   r("kernel.model_router", "kernel", "GET", "/v1/model-router", false, null),

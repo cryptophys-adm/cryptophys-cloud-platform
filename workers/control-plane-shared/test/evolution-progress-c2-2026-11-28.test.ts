@@ -313,7 +313,7 @@ test("EP11. the record: ADR-0014 §12 cites the owner, the 0014 manifest lists C
   assert.deepEqual([c3.evidence.kind, c3.evidence.event_type], ["audit_event", PROGRESS_EVENT]);
   assert.ok(c3.built.includes("workers/ai-kernel/src/evolution-progress.ts"));
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(external intent progress, 2026-11-28 \(owner: "Ya Kerjakan"/);
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?external intent progress, 2026-11-28 \(owner: "Ya Kerjakan"/);
   assert.ok(ssot.includes("- **External intent progress** (owner, 2026-11-28") && ssot.includes("`EVOLUTION_PROGRESS_IDENTITIES`"));
 });
 

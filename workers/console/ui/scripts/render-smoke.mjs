@@ -433,12 +433,25 @@ MOCK[`/api/kernel/v1/proposals/${TP2}`] = MOCK["/api/kernel/v1/proposals"].propo
 // CT1 (2026-11-25): the Proposals page's External intents panel: one council task waiting for another repository, and a
 // queued platform intent that the panel does not list.
 const XI = "int_0a1b2c3d4e5f";
-MOCK["/api/kernel/v1/evolution"] = { available: true, control: { mode: "on", updated_by: "owner@example.com", updated_at: at(600) }, counts: { waiting_external: 1, queued: 1 },
+MOCK["/api/kernel/v1/evolution"] = { available: true, control: { mode: "on", updated_by: "owner@example.com", updated_at: at(600) }, counts: { waiting_external: 1, queued: 1, proposed: 1, closed: 1 },
   intents: [
     { intent_id: XI, source: "council", source_ref: "cp_mwkvn9ec_1en88v", target_repo: "cryptophys-adm/xauusd-ai-trading-assistant", title: "Add a 15-minute ATR volatility filter for zone_pullback entries",
-      spec: "Before a zone_pullback entry is sent, compute the ATR.", state: "waiting_external", state_reason: "adr_0018_x1_x2", evolution_id: null, created_at: at(60 * 30), updated_at: at(60 * 30), origin: { origin: "xauusd" }, evidence_refs: [] },
+      spec: "Before a zone_pullback entry is sent, compute the ATR.", state: "waiting_external", state_reason: "adr_0018_x1_x2", evolution_id: null, created_at: at(60 * 30), updated_at: at(60 * 30), origin: { origin: "xauusd" }, evidence_refs: [],
+      assignee: null, expires_at: null, close_code: null, next_actor: "owner", stale: false, last_update: { at: at(60 * 30), event: "recorded", actor: "agent:supervisor", state: "waiting_external", from: null, ref: null, note: null } },
+    // Issue #327 C3: a queued_external task in progress for xauusd-worker, with its PR, and an expired one in the Archive.
+    { intent_id: "int_0a1b2c3d4e60", source: "council", source_ref: "cp_c3smoke", target_repo: "cryptophys-adm/xauusd-ai-trading-assistant", title: "Tighten the session filter",
+      spec: "x", state: "proposed", state_reason: "proposed", evolution_id: null, created_at: at(60 * 60), updated_at: at(60 * 20), origin: { origin: "xauusd" }, evidence_refs: [],
+      assignee: "xauusd-worker", expires_at: null, close_code: null, next_actor: "owner/orchestrator", stale: false,
+      last_update: { at: at(60 * 20), event: "progress", actor: "cryptophys-agent-xauusd-worker.access", state: "proposed", from: "in_progress", ref: { pr_url: "https://github.com/cryptophys-adm/xauusd-ai-trading-assistant/pull/661" }, note: "PR opened" } },
+    { intent_id: "int_0a1b2c3d4e61", source: "council", source_ref: "cp_c3old", target_repo: "cryptophys-adm/xauusd-ai-trading-assistant", title: "An expired council task",
+      spec: "x", state: "closed", state_reason: "expired: no progress in 7 days; returned to the council", evolution_id: null, created_at: at(60 * 24 * 9), updated_at: at(60 * 24 * 2), origin: { origin: "xauusd" }, evidence_refs: [],
+      assignee: "xauusd-worker", expires_at: null, close_code: "expired", next_actor: "none", stale: false, last_update: null },
     { intent_id: "int_00000000000a", source: "inventory", source_ref: "undeclared_worker:x", target_repo: "platform", title: "undeclared worker: x", spec: "x", state: "queued", state_reason: null, evolution_id: null, created_at: at(90), updated_at: at(90), origin: {}, evidence_refs: [] },
   ], evolutions: [] };
+MOCK["/api/kernel/v1/evolution/intents/int_0a1b2c3d4e61"] = { available: true, intent: MOCK["/api/kernel/v1/evolution"].intents[2], history: [
+  { at: at(60 * 24 * 9), event: "recorded", actor: "agent:supervisor", state: "queued_external", from: null, ref: null, note: null },
+  { at: at(60 * 24 * 2), event: "expired", actor: "agent:supervisor", state: "expired", from: "waiting_external", ref: null, note: null },
+] };
 // AIR1 (2026-11-25): the model router panel on #/organism/telemetry: Beam on for Cerebrum, today's calls per purpose and
 // provider, fallbacks by reason; a second fixture after a paid sign (off_paid), where a capped turn-on and the owner's
 // confirmed free turn-on (BEAM ON FREE, confirm_free) are offered.
@@ -808,7 +821,7 @@ for (const width of [390, 1440]) {
 // CT1 (2026-11-25): External intents on #/proposals. The owner sees the waiting intent with Close…, an operator does not;
 // a refused close shows the kernel's error inline (role="alert") and keeps the row; an accepted one posts {reason} only
 // and removes the row.
-const XCLOSE_CHECKS = 3;
+const XCLOSE_CHECKS = 5; // + Issue #327 C3: the step buttons, the Archive and its history
 for (const width of [390, 1440]) {
   OVERRIDE = {};
   for (const who of ["owner", "operator"]) {
@@ -817,12 +830,22 @@ for (const width of [390, 1440]) {
     page.on("pageerror", (e) => problems.push(`${width}px proposals/external-${who} page error: ${e.message}`));
     await page.goto(`${base}#/proposals`);
     await page.waitForTimeout(700);
-    const main = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
-    for (const w of ["External intents", "Add a 15-minute ATR volatility filter for zone_pullback entries", "cryptophys-adm/xauusd-ai-trading-assistant", "adr_0018_x1_x2", "waiting external"]) {
+    const main = await page.evaluate(() => document.querySelector('main [aria-label="External intents"]')?.textContent ?? "");
+    for (const w of ["External intents", "Add a 15-minute ATR volatility filter for zone_pullback entries", "cryptophys-adm/xauusd-ai-trading-assistant", "adr_0018_x1_x2", "waiting external",
+      // Issue #327 C3: state, last update (time, ref, note) and next actor of an assigned task.
+      "Tighten the session filter", "proposed", "PR #661", "PR opened", "next: owner/orchestrator", "next: owner"]) {
       if (!main.includes(w)) problems.push(`${width}px #/proposals (external-${who}): missing "${w}"`);
     }
     if (main.includes("undeclared worker: x")) problems.push(`${width}px #/proposals (external-${who}): lists a queued intent`);
-    if (who === "operator" && main.includes("Close…")) problems.push(`${width}px #/proposals (external-operator): shows Close…`);
+    if (main.includes("An expired council task")) problems.push(`${width}px #/proposals (external-${who}): lists a closed intent`);
+    if (who === "operator" && /Close…|Start…|Merged…|Refuse…/.test(main)) problems.push(`${width}px #/proposals (external-operator): shows an owner button`);
+    if (who === "owner" && !(main.includes("Start…") && main.includes("Merged…") && main.includes("Refuse…"))) problems.push(`${width}px #/proposals (external-owner): the step buttons are missing`);
+    const archive = await page.evaluate(() => document.querySelector('main [aria-label="Archive"]')?.textContent ?? "");
+    for (const w of ["Archive", "undeclared worker: x", "An expired council task", "expired", "next: none"]) if (!archive.includes(w)) problems.push(`${width}px #/proposals (archive-${who}): missing "${w}"`);
+    await page.click('main [aria-label="Archive"] button:has-text("An expired council task")');
+    await page.waitForTimeout(400);
+    const hist = await page.evaluate(() => document.querySelector('main [aria-label="Archive"] ol')?.textContent ?? "");
+    if (!(hist.includes("queued external") && hist.includes("from waiting external"))) problems.push(`${width}px #/proposals (archive-${who}): the history is not shown (${hist})`);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) problems.push(`${width}px #/proposals (external-${who}): horizontal scroll of ${overflow}px`);
     if (who === "owner") {
@@ -849,9 +872,8 @@ for (const width of [390, 1440]) {
       await box.fill("not supported by the replay");
       await page.click('main button:text-is("Submit")');
       await page.waitForTimeout(600);
-      const after = await page.evaluate(() => document.querySelector("main")?.textContent ?? "");
+      const after = await page.evaluate(() => document.querySelector('main [aria-label="External intents"]')?.textContent ?? "");
       if (after.includes("Add a 15-minute ATR volatility filter for zone_pullback entries")) problems.push(`${width}px #/proposals: the closed intent is still listed`);
-      if (!after.includes("No intent waits for another repository.")) problems.push(`${width}px #/proposals: no empty state after the close`);
       if (posts.length !== 2 || posts.some((p) => p.method !== "POST") || posts[1]?.body !== JSON.stringify({ reason: "not supported by the replay" })) problems.push(`${width}px #/proposals: close requests were ${JSON.stringify(posts)}`);
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${width}-proposals-external.png`), fullPage: true });
     }
