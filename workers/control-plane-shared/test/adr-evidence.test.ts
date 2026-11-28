@@ -578,10 +578,12 @@ test("AE5. the 0012 seed reads 18 of 26 (12 proven, 6 asserted) on matching evid
   assert.deepEqual(row("0014"), ["in_progress", 1, 15, 7], "E1: merge_change executed");
   assert.equal(all.find((y) => y.adr === "0014")!.deferred, false);
   assert.deepEqual(row("0016"), ["in_progress", 1, 6, 17]);
-  assert.deepEqual(row("0017"), ["not_started", 0, 6, 0]);
+  // 2026-11-28 (protocol audit): H0 (inbox), H1 (chat), H2 (typed proposals) and H4 (autonomy dial) are built.
+  assert.deepEqual(row("0017"), ["in_progress", 3, 6, 50]);
   assert.deepEqual(row("0018"), ["held", 1, 5, 20]);
   assert.deepEqual(row("0019"), ["planned", 0, 0, 0]);
-  assert.deepEqual(row("0015"), ["in_progress", 3, 8, 38]);
+  // 2026-11-28 (protocol audit): platform phase 1's minimal slice (the push hub) is built.
+  assert.deepEqual(row("0015"), ["in_progress", 4, 8, 50]);
   assert.equal(all.find((y) => y.adr === "0015")!.phases_external_asserted, 3);
 
   // Every query: read-only, bounded by a LIMIT, through an index; a full pass stays well under D1's per-call limit.

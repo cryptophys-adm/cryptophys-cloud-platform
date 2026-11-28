@@ -4,7 +4,7 @@
   "title": "Organs as cells: Durable Object actors, push to the senses, D1 as the ledger",
   "adr_file": "architecture/adr/0015-organs-as-cells.md",
   "lifecycle": "accepted",
-  "lifecycle_note": "The ADR's Status line says nothing in the Decision is built: true of the platform; the xauusd phases are asserted from that repository.",
+  "lifecycle_note": "Platform phase 1's minimal slice (the push hub) and phase 3's writers are built; the other platform phases are not. The xauusd phases are asserted from that repository.",
   "groups": [
     {
       "id": "platform",
@@ -21,9 +21,11 @@
       "group": "platform",
       "title": "Platform 1: push hub DO for the Console, Cache API for the rest",
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "no push hub exists: no Worker accepts a WebSocket"
-      }
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "Built, the minimal slice of phase 1 (HAIC push hub, 2026-11-18)"
+      },
+      "note": "minimal slice built: the kernel's ConsoleHub DO behind GET /v1/hub, change signals only; the Cache API part is not built"
     },
     {
       "id": "2",
