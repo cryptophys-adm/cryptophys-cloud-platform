@@ -108,6 +108,44 @@
       "next": "Owner issues the xauusd worker's service token; xauusd accepts the new states (CFC-A)"
     },
     {
+      "id": "C4",
+      "title": "Council ledger in the Forge repository council",
+      "depends_on": [
+        "C3"
+      ],
+      "evidence": {
+        "kind": "audit_event",
+        "event_type": "forge.council_synced"
+      },
+      "built": [
+        "workers/forge/src/council-sync.ts",
+        "workers/control-plane-shared/src/council-repo.ts"
+      ],
+      "note": "built (owner 2026-11-28: \"sementara B dulu\", CB1); proven at the first ledger commit"
+    },
+    {
+      "id": "C5",
+      "title": "Council-owned settings: policy overlay and allowlist",
+      "depends_on": [
+        "C4"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "CB2 not built"
+      }
+    },
+    {
+      "id": "C6",
+      "title": "xauusd code in the Forge, improvements through Cerebrum",
+      "depends_on": [
+        "C5"
+      ],
+      "evidence": {
+        "kind": "not_measurable_yet",
+        "reason": "planned: after xauusd settles and leaves GitHub"
+      }
+    },
+    {
       "id": "E3",
       "title": "Fitness, automatic revert, freeze",
       "depends_on": [

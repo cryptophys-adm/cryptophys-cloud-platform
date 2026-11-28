@@ -574,7 +574,8 @@ test("AE5. the 0012 seed reads 18 of 26 (12 proven, 6 asserted) on matching evid
   const row = (id: string) => { const x = all.find((y) => y.adr === id)!; return [x.status, x.phases_complete, x.phases_total, x.percent]; };
   // 11 phases since the owner lifted the deferral (2026-11-17): C1 (council intents) and C2 (the return path) added;
   // 12 since 2026-11-28 (owner: "Ya Kerjakan", Issue #327): C3 (external intents' progress, freshness and archive).
-  assert.deepEqual(row("0014"), ["in_progress", 1, 12, 8], "E1: merge_change executed");
+  // 15 since 2026-11-28 (CB, owner: "sementara B dulu"): C4 (the council ledger), C5 (council settings) and C6 (planned).
+  assert.deepEqual(row("0014"), ["in_progress", 1, 15, 7], "E1: merge_change executed");
   assert.equal(all.find((y) => y.adr === "0014")!.deferred, false);
   assert.deepEqual(row("0016"), ["in_progress", 1, 6, 17]);
   assert.deepEqual(row("0017"), ["not_started", 0, 6, 0]);
