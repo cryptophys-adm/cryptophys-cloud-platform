@@ -363,6 +363,10 @@ test("EP14. next_actor in one pure function, exposed by GET /v1/evolution with a
     [{ state: "proposed", assignee: "xauusd-worker", updated_at: old }, "owner/orchestrator", true],
     [{ state: "merged", updated_at: old }, "deploy", false],
     [{ state: "deployed", updated_at: old }, "measurement", false],
+    // An external intent: only the owner records deployed and closed there (the coordinator's review, 2026-11-28).
+    [{ state: "merged", target_repo: XAU, updated_at: old }, "owner", false],
+    [{ state: "deployed", target_repo: XAU, updated_at: old }, "owner", false],
+    [{ state: "merged", target_repo: "platform", updated_at: old }, "deploy", false],
     [{ state: "closed" }, "none", false],
     [{ state: "refused" }, "none", false],
   ];

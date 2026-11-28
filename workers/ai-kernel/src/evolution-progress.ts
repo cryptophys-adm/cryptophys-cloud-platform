@@ -65,16 +65,19 @@ export const freshnessApplies = (state: string, assignee: string | null): boolea
  * Who acts next on an intent, in one place (the API exposes it; the Console only renders it):
  * queued_external and in_progress → the assignee (an unassigned waiting_external → the owner, to assign or close);
  * proposed → owner/orchestrator (review and merge); merged → deploy; deployed → measurement; closed, refused → none.
+ * For an external intent (target_repo not the platform) merged and deployed → owner: nothing but the owner records
+ * deployed or closed for another repository today (the coordinator's review, 2026-11-28).
  * `stale` marks a proposed intent unchanged for 7 days (display only: proposed never expires).
  */
-export function nextActor(i: { state: string; assignee?: string | null; updated_at?: string | null }, now = Date.now()): { next_actor: NextActor; stale: boolean } {
+export function nextActor(i: { state: string; assignee?: string | null; updated_at?: string | null; target_repo?: string | null }, now = Date.now()): { next_actor: NextActor; stale: boolean } {
+  const external = typeof i.target_repo === "string" && i.target_repo !== PLATFORM_REPO;
   const stale = i.state === "proposed" && typeof i.updated_at === "string" && Date.parse(i.updated_at) + FRESH_MS <= now;
   switch (i.state) {
     case "waiting_external": return { next_actor: i.assignee ? i.assignee : "owner", stale: false };
     case "in_progress": return { next_actor: i.assignee ? i.assignee : "owner", stale: false };
     case "proposed": return { next_actor: "owner/orchestrator", stale };
-    case "merged": return { next_actor: "deploy", stale: false };
-    case "deployed": return { next_actor: "measurement", stale: false };
+    case "merged": return { next_actor: external ? "owner" : "deploy", stale: false };
+    case "deployed": return { next_actor: external ? "owner" : "measurement", stale: false };
     case "closed": case "refused": case "rejected": return { next_actor: "none", stale: false };
     default: return { next_actor: "evolver", stale: false }; // the platform's own intents
   }

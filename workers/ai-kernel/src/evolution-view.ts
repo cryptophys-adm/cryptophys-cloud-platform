@@ -55,7 +55,7 @@ export async function evolutionView(db: D1Database, now = Date.now()): Promise<R
       counts: Object.fromEntries(counts.results.map((c) => [c.state, Number(c.n)])),
       intents: intents.results.map(({ origin_json, evidence_refs_json, ...r }) => ({
         ...r, origin: parse(origin_json, {}), evidence_refs: parse(evidence_refs_json, []),
-        ...nextActor(r as { state: string; assignee: string | null; updated_at: string }, now),
+        ...nextActor(r as { state: string; assignee: string | null; updated_at: string; target_repo: string }, now),
       })),
       evolutions: evolutions.results.map(({ files_json, refusals_json, ...r }) => ({ ...r, files: parse(files_json, []), refusals: parse(refusals_json, []) })),
     };
