@@ -243,18 +243,38 @@ test("CB1-6. the commit check: only ledger files, each valid, no forbidden key, 
   void db;
 });
 
-test("CB1-7. a refused commit writes nothing and keeps the cursor; it is audited with its problems", async () => {
-  const db = seed();
-  // A history step the schema refuses (an unknown close_code reaches the file from a malformed return-path row).
-  update(db, "cp_mx01aa_cb1", "closed", "closed", { close_code: "vanished" }, NOW - 1000);
+test("CB1-7. no poison pill: one refused proposal is left out and audited, the others are written, and the cursor advances", async () => {
+  const db = seed("cp_good_one");
+  report(db, { ...BODY, proposal_id: "cp_good_two", state: "handoff_pending" }, NOW - 20 * 60_000);
+  // A history step the schema refuses (an unknown close_code from a malformed return-path row).
+  report(db, { ...BODY, proposal_id: "cp_bad", state: "handoff_pending" }, NOW - 15 * 60_000);
+  update(db, "cp_bad", "closed", "closed", { close_code: "vanished" }, NOW - 14 * 60_000);
   const b = await binding(null);
   const g = gitServer();
   const r = await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW, g.fetchImpl);
-  assert.equal(r.outcome, "refused");
+  assert.equal(r.outcome, "written", JSON.stringify(r));
+  assert.equal(r.files, 2);
   assert.match(r.problems!.join(" "), /unknown close_code/);
-  assert.equal(g.pushes.length, 0);
-  assert.equal(events(db, SYNC_EVENT).length, 0, "the cursor does not move");
-  assert.equal(events(db, REFUSED_EVENT).length, 1);
+  assert.equal(g.pushes.length, 1);
+  const ref = events(db, REFUSED_EVENT);
+  assert.deepEqual(ref.map((e) => e.payload.refused.map((x: any) => x.proposal_id)), [["cp_bad"]]);
+  const sync = events(db, SYNC_EVENT);
+  assert.deepEqual([sync[0].outcome, sync[0].payload.refused], ["written", ["cp_bad"]]);
+  assert.match(sync[0].payload.cursor, /^2026-11-28T03:50:00\.000Z\|cp_bad$/, "the cursor advanced through the refused proposal, the batch's latest activity");
+  // The next tick does not retry it; new activity on it does.
+  assert.equal((await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW + 900_000, g.fetchImpl)).outcome, "up_to_date");
+  update(db, "cp_bad", "closed", "closed", { close_code: "vanished" }, NOW + 1000);
+  const again = await councilSyncTick({ DB: db as never, ARTIFACTS: b.binding as never }, NOW + 1_800_000, g.fetchImpl);
+  assert.equal(again.outcome, "refused");
+  assert.equal(events(db, REFUSED_EVENT).length, 2);
+  assert.equal(g.pushes.length, 1);
+});
+
+test("CB1-7b. a repeated state is one step only when it repeats in a row: shadow, live, shadow keeps three", async () => {
+  const db = withModerator(migratedDb());
+  for (const [state, m] of [["shadow", 50], ["shadow", 49], ["live", 40], ["shadow", 30]] as const) report(db, { ...BODY, kind: "policy_parameter", proposal_id: "cp_knob", state }, NOW - m * 60_000);
+  const l = (await ledgerOf(db, "cp_knob"))!;
+  assert.deepEqual(l.file.history.map((s) => s.state), ["shadow", "live", "shadow"]);
 });
 
 test("CB1-8. the verdict schema xauusd publishes for CB2: valid and refused shapes", () => {

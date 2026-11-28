@@ -8,8 +8,9 @@
 //   - evolution_updates_v2 of origin xauusd: the platform's return path (queued_external, in_progress, ..., expired),
 //     with close_code and the pr_url or sha ref, source platform.
 // Each touched proposal's file is rebuilt whole from D1 (idempotent), compared with main's copy, and the changed files
-// become one commit on main's head, checked by checkCouncilCommit before the fast-forward. A refused commit writes
-// nothing and is audited with its problems. Only the words a writer validated reach the file (titles with a price-like
+// become one commit on main's head. Each file is checked by checkCouncilCommit before the fast-forward: a refused file
+// is left out of the commit and audited with its problems (forge.council_sync_refused), and the cursor still advances,
+// so one bad proposal never blocks the others; it is tried again at its next activity. Only the words a writer validated reach the file (titles with a price-like
 // number are withheld); never a price, a level, a lot or a secret.
 //
 // Pinned: the only repository this module writes is COUNCIL_REPO (a constant; councilRepo refuses any other name, the
@@ -217,8 +218,14 @@ export async function ledgerOf(db: D1Database, proposalId: string): Promise<{ pa
     });
   }
   steps.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.source === b.source ? 0 : a.source === "xauusd" ? -1 : 1));
-  // A repeated report of the same state (xauusd retries a send) is one step.
-  const history = steps.filter((s, i) => i === 0 || !(s.source === "xauusd" && steps.slice(0, i).some((p) => p.source === "xauusd" && p.state === s.state))).slice(-MAX_HISTORY);
+  // A repeated report of the same state in a row (xauusd retries a send) is one step; shadow → live → shadow keeps all three.
+  let lastXau = "";
+  const history = steps.filter((s) => {
+    if (s.source !== "xauusd") return true;
+    const repeat = s.state === lastXau;
+    lastXau = s.state;
+    return !repeat;
+  }).slice(-MAX_HISTORY);
   if (!history.length) return null;
   const title = words(first.title, 300) ?? words(intent?.title, 300) ?? "(title withheld: not words only)";
   const opt = (v: unknown) => text(v, 200);
@@ -265,19 +272,27 @@ export async function councilSyncTick(env: CouncilEnv, nowMs = Date.now(), fetch
 
     const files = new Map<string, string>();
     const skipped: string[] = [];
+    const refused: Array<{ proposal_id: string; problems: string[] }> = [];
     for (const a of batch) {
       const l = await ledgerOf(env.DB, a.proposal_id);
       if (!l) { skipped.push(a.proposal_id); continue; }
       const next = ledgerText(l.file);
-      if ((await readAt(repo, tree, l.path)) !== next) files.set(l.path, next);
+      if ((await readAt(repo, tree, l.path)) === next) continue;
+      // Each file on its own: a refused one is left out, the others are written (no poison pill).
+      const problems = checkCouncilCommit(new Map([[l.path, next]]));
+      if (problems.length) { refused.push({ proposal_id: a.proposal_id, problems: problems.slice(0, 10) }); continue; }
+      files.set(l.path, next);
     }
-    if (!files.size) { await record("unchanged", { skipped }); return { outcome: "unchanged", cursor }; }
-    const problems = checkCouncilCommit(files);
-    if (problems.length) {
-      // Nothing is written; the cursor stays, so the same batch is checked again after a fix.
-      await appendAuditEvent(env.DB, { event_type: REFUSED_EVENT, actor: SYNC_ACTOR, subject: `repo:${COUNCIL_REPO}`, outcome: "refused", payload: { problems: problems.slice(0, 20), files: [...files.keys()].slice(0, 20) } });
-      return { outcome: "refused", problems };
+    if (refused.length) {
+      await appendAuditEvent(env.DB, { event_type: REFUSED_EVENT, actor: SYNC_ACTOR, subject: `repo:${COUNCIL_REPO}`, outcome: "refused", payload: { refused: refused.slice(0, 20) } });
     }
+    const refusedIds = refused.map((r) => r.proposal_id);
+    if (!files.size) {
+      await record(refused.length ? "refused" : "unchanged", { skipped, refused: refusedIds });
+      return { outcome: refused.length ? "refused" : "unchanged", cursor, problems: refused.flatMap((r) => r.problems) };
+    }
+    const whole = checkCouncilCommit(files);
+    if (whole.length) return { outcome: "refused", problems: whole }; // the commit's own limits; each file already passed
     const objects: GitObject[] = [];
     const blobs = new Map<string, string>();
     for (const [path, body] of files) { const b = await gitObject("blob", enc.encode(body)); objects.push(b); blobs.set(path, b.sha); }
@@ -289,8 +304,8 @@ export async function councilSyncTick(env: CouncilEnv, nowMs = Date.now(), fetch
     const token = (await repo.createToken("write", TOKEN_TTL_S)).plaintext;
     const pushed = await fastForward({ remote, token, branch: "main", from: head ?? ZERO_SHA, to: commit.sha, fetchImpl, pack: await packOf(objects) });
     if (!pushed.ok) return { outcome: "failed", reason: pushed.reason };
-    await record("written", { commit: commit.sha, files: [...files.keys()], skipped });
-    return { outcome: "written", files: files.size, commit: commit.sha, cursor };
+    await record("written", { commit: commit.sha, files: [...files.keys()], skipped, refused: refusedIds });
+    return { outcome: "written", files: files.size, commit: commit.sha, cursor, ...(refused.length ? { problems: refused.flatMap((r) => r.problems) } : {}) };
   } finally {
     repo[Symbol.dispose]?.();
   }
