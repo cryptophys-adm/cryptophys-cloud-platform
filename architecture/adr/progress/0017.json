@@ -9,10 +9,11 @@
       "id": "H0",
       "title": "\"Needs you\" inbox and Telegram digest with deep links",
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "not built: GET /v1/owner/inbox does not exist yet"
+        "kind": "doc_asserted",
+        "ref": "docs/SSOT.md",
+        "quote": "H0 (the \"Needs you\" inbox, `GET /v1/owner/inbox`)"
       },
-      "note": "designed; the owner answered Q1–Q11 on 2026-11-16; design in docs/design/HAIC-H0-H1.md",
+      "note": "built: GET /v1/owner/inbox and the Console Owner page",
       "doc_claim": {
         "state": "not_built",
         "ref": "docs/design/HAIC-H0-H1.md",
@@ -23,10 +24,10 @@
       "id": "H1",
       "title": "\"Ask the organism\" chat: read-only, English, metric-first, cited",
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "not built: no chat route or tool set exists"
+        "kind": "audit_event",
+        "event_type": "conversation.turn"
       },
-      "note": "designed; the owner answered Q1–Q11 on 2026-11-16; design in docs/design/HAIC-H0-H1.md",
+      "note": "built (migration 0078): the read-only chat on Cerebrum's Ask page",
       "doc_claim": {
         "state": "not_built",
         "ref": "docs/design/HAIC-H0-H1.md",
@@ -37,32 +38,34 @@
       "id": "H2",
       "title": "Directives as structured proposals, with the owner's confirmation",
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "not started"
-      }
+        "kind": "migration_applied",
+        "name": "0082_typed_proposals.sql"
+      },
+      "note": "built: typed proposals (H2a) and chat directives into drafts (H2b)"
     },
     {
       "id": "H3",
       "title": "Corrections and ratings in Nexus become knowledge",
       "evidence": {
         "kind": "not_measurable_yet",
-        "reason": "not started"
+        "reason": "H3a to H3e built (corrections ledger, council corrections, teaching record, Nexus ingress); later steps not built"
       }
     },
     {
       "id": "H4",
       "title": "Autonomy dial per action class",
       "evidence": {
-        "kind": "not_measurable_yet",
-        "reason": "not started"
-      }
+        "kind": "migration_applied",
+        "name": "0083_autonomy_dial.sql"
+      },
+      "note": "built: the autonomy dial per action class, with its auto-downgrade"
     },
     {
       "id": "H5",
       "title": "Collaborators and roles",
       "evidence": {
         "kind": "not_measurable_yet",
-        "reason": "not started"
+        "reason": "H5b (owner-only critical routes) and H5d (collaborator schema, migration 0085) built; the rest not"
       }
     }
   ]

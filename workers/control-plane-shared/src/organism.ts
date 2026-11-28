@@ -276,7 +276,7 @@ export const EXTERNAL_ORIGINS: readonly ExternalOrigin[] = Object.freeze([
   }),
   // Owner 2026-11-14/15 ("Buatkan aplikasi cta.cryptophys.work ... yang terhubung kernel, sebagai services/engine terpisah
   // dari xauusd-ai-trading-assistant"; "pindah content queue ke cta"): cryptophys-cta (repository cryptophys-adm/cryptophys-cta),
-  // read over EXT_ORGANISM_CTA once the Forge binds it (the Worker is not deployed yet). The general EXTERNAL_CEILING applies
+  // read over EXT_ORGANISM_CTA (the Forge binds it; the Worker is deployed). The general EXTERNAL_CEILING applies
   // to every cta agent but CTA_MODEL_ROUTER_AGENT (CTA_CEILING; owner 2026-11-27, "Ya, buat draft-nya").
   Object.freeze({
     origin: "cta", schema: "cta-organism.v1", binding: "EXT_ORGANISM_CTA",

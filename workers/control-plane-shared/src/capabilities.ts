@@ -70,7 +70,7 @@ export const CAPABILITIES: Record<string, Capability> = {
   // proposals an hour, so a deploy waited a whole hour behind merges (21 Nov: the Console deploy). Eight lets each of the
   // Supervisor's four cycles propose a deploy and a merge; the Supervisor still proposes one deploy per cycle.
   "consensus.propose": { tier: 1, reversible: true, description: "Propose a platform action to the control-plane consensus (ADR-0009); voting and the Policy Engine decide", max_per_hour: 8 },
-  "deploy.release": { tier: 3, reversible: false, description: "Deploy a new Worker version (GitHub Actions with human gates only)" },
+  "deploy.release": { tier: 3, reversible: false, description: "Deploy a new Worker version (human only; production deploys go through consensus deploy_commit: the Orchestrator's native deploy, the unit's workflow as fallback)" },
   "secrets.rotate": { tier: 3, reversible: false, description: "Rotate or replace a secret (human only)" },
   "data.delete": { tier: 3, reversible: false, description: "Delete or rewrite stored data (human only)" },
 };
