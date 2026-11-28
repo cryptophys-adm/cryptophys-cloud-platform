@@ -405,6 +405,53 @@ test("CB2-5. the overlay text is valid council_policy.v1 and the commit check re
 test("CB2-6. the record: ADR-0014 §13 and the SSOT document CB2a", () => {
   assert.ok(read("architecture/adr/0014-evolution-loop.md").includes("CB2a builds the overlay"));
   const ssot = read("docs/SSOT.md");
-  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council settings, 2026-11-28 /);
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \((?:[^\n]*; )?council settings, 2026-11-28 /);
   assert.ok(ssot.includes("- **Council settings** (CB2a, 2026-11-28"));
+});
+
+// ---------------------------------------------------------------- CB3 (2026-11-28): the read-only view for the organs
+
+test("CB3-1. the scope is the entrypoint: policy reads policy/ and ledger/, ledger reads ledger/ only; traversal and other paths are refused", async () => {
+  const { councilReadFile, councilList, fileInScope, prefixInScope } = await import("../../forge/src/council-read.ts");
+  const L = "ledger/free:evaluasi-strategy/cfc_mx01aa_sess01/cp_mx01aa_cb1.json";
+  const b = await binding({ [L]: "{\"x\":1}\n", "policy/overlay.json": "{\"schema\":\"council_policy.v1\",\"entries\":[]}\n", "policy/allowlist.json": ALLOW, "README.md": "council\n" });
+  const env = { ARTIFACTS: b.binding as never };
+  const r = await councilReadFile(env, "policy", "policy/overlay.json");
+  assert.deepEqual([r.available, (r as any).main_sha, (r as any).text], [true, b.main(), "{\"schema\":\"council_policy.v1\",\"entries\":[]}\n"]);
+  assert.equal(((await councilReadFile(env, "ledger", L)) as any).text, "{\"x\":1}\n");
+  for (const [scope, p] of [["ledger", "policy/overlay.json"], ["ledger", "policy/allowlist.json"], ["policy", "README.md"], ["policy", "ledger/../policy/overlay.json"], ["policy", "../platform/docs/SSOT.md"], ["policy", "ledger/a/b"], ["policy", 7]] as const) {
+    assert.deepEqual(await councilReadFile(env, scope, p), { available: false, reason: "path_not_in_scope" }, `${scope} ${p}`);
+  }
+  assert.equal(fileInScope("policy", "policy/other.json"), false);
+  assert.equal(((await councilReadFile(env, "policy", "ledger/t/s/cp_missing.json")) as any).text, null, "a missing file reads as null");
+  const all = await councilList(env, "ledger", "ledger/");
+  assert.deepEqual((all as any).paths, [L]);
+  assert.deepEqual(((await councilList(env, "policy", "policy/")) as any).paths, ["policy/allowlist.json", "policy/overlay.json"]);
+  for (const [scope, p] of [["ledger", "policy/"], ["ledger", "ledger/../"], ["ledger", "ledger/a/b/c/"], ["ledger", ""], ["ledger", "/"]] as const) assert.equal(prefixInScope(scope, p), false, `${scope} ${p}`);
+  assert.deepEqual(((await councilList(env, "ledger", "ledger/free:evaluasi-strategy/")) as any).paths, [L]);
+  // No repository or no main: available false, never another repository.
+  assert.deepEqual(await councilReadFile({}, "policy", "policy/overlay.json"), { available: false, reason: "artifacts_not_configured" });
+  const empty = await binding(null);
+  assert.deepEqual(await councilReadFile({ ARTIFACTS: empty.binding as never }, "policy", "policy/overlay.json"), { available: false, reason: "no_main" });
+  assert.deepEqual(b.gets.every((n) => n === COUNCIL_REPO), true);
+});
+
+test("CB3-2. wiring: two Forge entrypoints with read methods only, pinned to the council repository", () => {
+  const worker = read("workers/forge/src/worker.ts");
+  for (const cls of ["CouncilPolicyRpc", "CouncilLedgerRpc"]) {
+    const at = worker.indexOf(`export class ${cls}`);
+    const body = worker.slice(at, worker.indexOf("\n}\n", at) + 3);
+    assert.deepEqual([...body.matchAll(/async (\w+)\(/g)].map((m) => m[1]), ["readFile", "list"], cls);
+  }
+  assert.match(worker, /CouncilPolicyRpc[\s\S]*councilReadFile\(this\.env as never, "policy", path\)/);
+  assert.match(worker, /CouncilLedgerRpc[\s\S]*councilReadFile\(this\.env as never, "ledger", path\)/);
+  const src = read("workers/forge/src/council-read.ts");
+  assert.ok(src.includes("ARTIFACTS.get(COUNCIL_REPO)") && !/createToken|fastForward|receive-pack/.test(src), "read only, the council repository only");
+});
+
+test("CB3-3. the record: ADR-0014 §13 and the SSOT document the readers", () => {
+  assert.ok(read("architecture/adr/0014-evolution-loop.md").includes("`CouncilPolicyRpc`"));
+  const ssot = read("docs/SSOT.md");
+  assert.match(ssot.split("\n")[4], /^Last reviewed: 2026-11-16 \(council readers, 2026-11-28 /);
+  assert.ok(ssot.includes("- **Council readers** (CB3, 2026-11-28"));
 });

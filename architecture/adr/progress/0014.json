@@ -119,7 +119,8 @@
       },
       "built": [
         "workers/forge/src/council-sync.ts",
-        "workers/control-plane-shared/src/council-repo.ts"
+        "workers/control-plane-shared/src/council-repo.ts",
+        "workers/forge/src/council-read.ts"
       ],
       "note": "built (owner 2026-11-28: \"sementara B dulu\", CB1); proven at the first ledger commit"
     },

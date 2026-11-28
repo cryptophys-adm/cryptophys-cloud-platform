@@ -15,6 +15,7 @@ import { WORK_REPO } from "./work-repo.ts";
 import { changeState, mergeForConsensus } from "./consensus-merge.ts";
 import { proposeEvolution, readCode, type EvolutionInput, type EvolutionResult } from "./evolution.ts";
 import { readDocs } from "./docs-index.ts";
+import { councilList, councilReadFile, type ListAnswer, type ReadAnswer } from "./council-read.ts";
 import type { ChangeEvidence } from "../../control-plane-shared/src/merge-path.ts";
 
 type RunnerEnv = Env & { LOADER?: WorkerLoader };
@@ -92,6 +93,19 @@ export class DocsRpc extends WorkerEntrypoint<Env> {
   async read(input: { path?: unknown; section?: unknown; query?: unknown; limit?: unknown }): Promise<Record<string, unknown>> {
     return readDocs(this.env as never, input && typeof input === "object" ? input : {});
   }
+}
+
+/**
+ * CB3 (ADR-0014 §13): the council repository at main, read only. The entrypoint is the scope: xauusd's AI Worker binds
+ * CouncilPolicyRpc (policy/ and ledger/), Aether binds CouncilLedgerRpc (ledger/ only). No write method exists.
+ */
+export class CouncilPolicyRpc extends WorkerEntrypoint<Env> {
+  async readFile(path: string): Promise<ReadAnswer> { return councilReadFile(this.env as never, "policy", path); }
+  async list(prefix: string): Promise<ListAnswer> { return councilList(this.env as never, "policy", prefix); }
+}
+export class CouncilLedgerRpc extends WorkerEntrypoint<Env> {
+  async readFile(path: string): Promise<ReadAnswer> { return councilReadFile(this.env as never, "ledger", path); }
+  async list(prefix: string): Promise<ListAnswer> { return councilList(this.env as never, "ledger", prefix); }
 }
 
 /**
